@@ -2,7 +2,6 @@ use futures::future::BoxFuture;
 use futures::FutureExt;
 use std::{future::Future, sync::Arc};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::{middleware::RequestMetadata, AppError, AppState};
 use crate::impls::admin::{RequestContext, ValidatedAdmin};
@@ -124,10 +123,6 @@ impl HttpAdminApi for ProviderCommonApiImpl {
     }
 }
 
-pub(crate) fn request_metadata(request_meta: RequestMetadata) -> ImplRequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
-}
-
 pub(crate) fn request_context(request_meta: &ImplRequestMetadata) -> RequestContext {
     RequestContext {
         ip_address: request_meta.client_ip.map(|ip| ip.to_string()),
@@ -149,7 +144,7 @@ where
     Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
 {
     async move {
-        let request_meta = request_metadata(request_meta);
+        let request_meta = request_meta.0;
         let ctx = request_context(&request_meta);
         let api = get_api(state)?;
         let executor = api.clone();
@@ -177,7 +172,7 @@ where
     Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
 {
     async move {
-        let request_meta = request_metadata(request_meta);
+        let request_meta = request_meta.0;
         let ctx = request_context(&request_meta);
         let api = get_api(state)?;
         let executor = api.clone();
@@ -206,7 +201,7 @@ where
     Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
 {
     async move {
-        let request_meta = request_metadata(request_meta);
+        let request_meta = request_meta.0;
         let ctx = request_context(&request_meta);
         let api = get_api(state)?;
         let executor = api.clone();

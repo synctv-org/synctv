@@ -231,6 +231,34 @@ fn live_danmaku_event_from_message(
     }
 }
 
+/// Parse a proto quality field (0 = unset/default) into an optional `u32` qn.
+fn parse_quality(quality: u64) -> Result<Option<u32>, BilibiliError> {
+    if quality == 0 {
+        return Ok(None);
+    }
+    u32::try_from(quality)
+        .map(Some)
+        .map_err(|_| BilibiliError::Parse(format!("quality {quality} exceeds u32 range")))
+}
+
+/// Convert a client-layer `VideoUrlInfo` into the proto `VideoUrl`.
+fn to_proto_video_url(url_info: super::client::VideoUrlInfo) -> VideoUrl {
+    VideoUrl {
+        accept_description: url_info.accept_description,
+        accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
+        current_quality: u64::from(url_info.current_quality),
+        url: url_info.url,
+        segments: url_info
+            .segments
+            .into_iter()
+            .map(|s| ProtoVideoSegment {
+                url: s.url,
+                size: s.size,
+            })
+            .collect(),
+    }
+}
+
 /// Convert client-layer `VideoPageInfo` to proto `VideoPageInfo`
 fn to_proto_page_info(page_info: super::client::VideoPageInfo) -> VideoPageInfo {
     VideoPageInfo {
@@ -362,31 +390,12 @@ impl BilibiliInterface for BilibiliService {
             self.wbi_state.clone(),
             self.ssrf_guard.clone(),
         );
-        let quality = if request.quality == 0 {
-            None
-        } else {
-            Some(u32::try_from(request.quality).map_err(|_| {
-                BilibiliError::Parse(format!("quality {} exceeds u32 range", request.quality))
-            })?)
-        };
+        let quality = parse_quality(request.quality)?;
         let url_info = client
             .get_video_url(request.aid, &request.bvid, request.cid, quality)
             .await?;
 
-        Ok(VideoUrl {
-            accept_description: url_info.accept_description,
-            accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
-            current_quality: u64::from(url_info.current_quality),
-            url: url_info.url,
-            segments: url_info
-                .segments
-                .into_iter()
-                .map(|s| ProtoVideoSegment {
-                    url: s.url,
-                    size: s.size,
-                })
-                .collect(),
-        })
+        Ok(to_proto_video_url(url_info))
     }
 
     async fn get_dash_video_url(
@@ -450,31 +459,12 @@ impl BilibiliInterface for BilibiliService {
             self.wbi_state.clone(),
             self.ssrf_guard.clone(),
         );
-        let quality = if request.quality == 0 {
-            None
-        } else {
-            Some(u32::try_from(request.quality).map_err(|_| {
-                BilibiliError::Parse(format!("quality {} exceeds u32 range", request.quality))
-            })?)
-        };
+        let quality = parse_quality(request.quality)?;
         let url_info = client
             .get_pgc_url(request.epid, request.cid, quality)
             .await?;
 
-        Ok(VideoUrl {
-            accept_description: url_info.accept_description,
-            accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
-            current_quality: u64::from(url_info.current_quality),
-            url: url_info.url,
-            segments: url_info
-                .segments
-                .into_iter()
-                .map(|s| ProtoVideoSegment {
-                    url: s.url,
-                    size: s.size,
-                })
-                .collect(),
-        })
+        Ok(to_proto_video_url(url_info))
     }
 
     async fn get_dash_pgcurl(

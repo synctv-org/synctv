@@ -51,15 +51,15 @@ async fn test_memory_backend_remove_nonexistent() {
 }
 
 #[tokio::test]
-async fn test_memory_backend_contains() -> TestResult {
+async fn test_memory_backend_get_presence() -> TestResult {
     let backend = default_backend();
-    assert!(!backend.contains("k1").await);
+    assert!(backend.get("k1").await.is_none());
 
     backend
         .put("k1", make_entry(b"x", Duration::from_mins(1)))
         .await?;
     backend.run_pending_tasks().await;
-    assert!(backend.contains("k1").await);
+    assert!(backend.get("k1").await.is_some());
     Ok(())
 }
 

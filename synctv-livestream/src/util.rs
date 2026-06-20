@@ -8,32 +8,45 @@ const MAX_STREAM_ID_COMPONENT_LEN: usize = 128;
 const MAX_HLS_SEGMENT_NAME_LEN: usize = 256;
 const MAX_HLS_SEGMENT_URL_PART_LEN: usize = 2048;
 
+/// Shared validation logic for stream identifiers and segment names.
+fn validate_identifier_common(
+    value: &str,
+    field: &str,
+    max_len: usize,
+) -> anyhow::Result<()> {
+    if value.is_empty() {
+        return Err(anyhow::anyhow!("{field} must not be empty"));
+    }
+    if value.len() > max_len {
+        return Err(anyhow::anyhow!(
+            "{field} exceeds maximum length of {max_len} bytes"
+        ));
+    }
+    if value.contains(':') {
+        return Err(anyhow::anyhow!("{field} must not contain ':'"));
+    }
+    if value.contains('/') || value.contains('\\') {
+        return Err(anyhow::anyhow!("{field} must not contain path separators"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(anyhow::anyhow!(
+            "{field} must not contain control characters"
+        ));
+    }
+    synctv_common::validation::validate_path_for_traversal(value)
+        .map_err(|error| anyhow::anyhow!("invalid {field}: {error}"))?;
+    Ok(())
+}
+
 /// Validate a stream identifier component before it is used in internal
 /// registry/cache keys.
 pub(crate) fn validate_stream_id_component(component: &str, field: &str) -> anyhow::Result<()> {
-    if component.is_empty() {
-        return Err(anyhow::anyhow!("{field} must not be empty"));
-    }
-    if component.len() > MAX_STREAM_ID_COMPONENT_LEN {
-        return Err(anyhow::anyhow!(
-            "{field} exceeds maximum length of {MAX_STREAM_ID_COMPONENT_LEN} bytes"
-        ));
-    }
+    validate_identifier_common(component, field, MAX_STREAM_ID_COMPONENT_LEN)?;
     if component.contains(':') {
         return Err(anyhow::anyhow!(
             "{field} must not contain ':' because stream keys use ':' as an internal delimiter"
         ));
     }
-    if component.contains('/') || component.contains('\\') {
-        return Err(anyhow::anyhow!("{field} must not contain path separators"));
-    }
-    if component.chars().any(char::is_control) {
-        return Err(anyhow::anyhow!(
-            "{field} must not contain control characters"
-        ));
-    }
-    synctv_common::validation::validate_path_for_traversal(component)
-        .map_err(|error| anyhow::anyhow!("invalid {field}: {error}"))?;
     Ok(())
 }
 
@@ -46,30 +59,7 @@ pub(crate) fn validate_stream_ids(room_id: &str, media_id: &str) -> anyhow::Resu
 
 /// Validate a HLS segment name before it is sent over gRPC or used in cache/storage keys.
 pub fn validate_hls_segment_name(segment_name: &str) -> anyhow::Result<()> {
-    if segment_name.is_empty() {
-        return Err(anyhow::anyhow!("segment_name must not be empty"));
-    }
-    if segment_name.len() > MAX_HLS_SEGMENT_NAME_LEN {
-        return Err(anyhow::anyhow!(
-            "segment_name exceeds maximum length of {MAX_HLS_SEGMENT_NAME_LEN} bytes"
-        ));
-    }
-    if segment_name.contains(':') {
-        return Err(anyhow::anyhow!("segment_name must not contain ':'"));
-    }
-    if segment_name.contains('/') || segment_name.contains('\\') {
-        return Err(anyhow::anyhow!(
-            "segment_name must not contain path separators"
-        ));
-    }
-    if segment_name.chars().any(char::is_control) {
-        return Err(anyhow::anyhow!(
-            "segment_name must not contain control characters"
-        ));
-    }
-    synctv_common::validation::validate_path_for_traversal(segment_name)
-        .map_err(|error| anyhow::anyhow!("invalid segment_name: {error}"))?;
-    Ok(())
+    validate_identifier_common(segment_name, "segment_name", MAX_HLS_SEGMENT_NAME_LEN)
 }
 
 /// Validate the segment URL prefix embedded into remote HLS playlists.
@@ -95,6 +85,19 @@ fn validate_hls_segment_url_part(value: &str, field: &str) -> anyhow::Result<()>
         return Err(anyhow::anyhow!("{field} must not contain null bytes"));
     }
     Ok(())
+}
+
+/// Get current unix timestamp in seconds.
+///
+/// Returns 0 if the system clock is before the Unix epoch (defensive fallback).
+pub(crate) fn unix_now_secs() -> u64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(error) => {
+            tracing::warn!(%error, "system clock is before Unix epoch");
+            0
+        }
+    }
 }
 
 /// Exponential backoff with jitter.

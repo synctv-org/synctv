@@ -479,80 +479,71 @@ impl ShutdownHook for CacheFenceRepairHook {
     }
 }
 
-/// Stops the health monitor background task.
-pub struct HealthMonitorShutdownHook {
-    pub monitor: Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime>,
+/// Generic shutdown hook for services with a `shutdown()` method.
+///
+/// Replaces four identical implementations (HealthMonitor, RealtimeManager,
+/// PermissionService, PlaybackService) that all just call `.shutdown().await`.
+pub struct SimpleShutdownHook<T: SimpleShutdownTarget> {
+    name: &'static str,
+    timeout: Duration,
+    target: T,
 }
 
-impl ShutdownHook for HealthMonitorShutdownHook {
+impl<T: SimpleShutdownTarget> SimpleShutdownHook<T> {
+    pub fn new(name: &'static str, timeout: Duration, target: T) -> Self {
+        Self {
+            name,
+            timeout,
+            target,
+        }
+    }
+}
+
+impl<T: SimpleShutdownTarget> ShutdownHook for SimpleShutdownHook<T> {
     fn name(&self) -> &'static str {
-        "health_monitor"
+        self.name
     }
     fn timeout(&self) -> Duration {
-        Duration::from_secs(5)
+        self.timeout
     }
     fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async move {
-            self.monitor.shutdown().await;
+            self.target.shutdown().await;
         })
     }
 }
 
-/// Shuts down the `RealtimeManager`, ensuring node unregister and task drain run
-/// on startup rollback and normal process shutdown.
-pub struct RealtimeManagerShutdownHook {
-    pub manager: Arc<synctv_realtime::sync::RealtimeManager>,
+/// Trait for types that can be shut down via a simple `shutdown()` call.
+#[async_trait::async_trait]
+pub trait SimpleShutdownTarget: Send + Sync + 'static {
+    async fn shutdown(&self);
 }
 
-impl ShutdownHook for RealtimeManagerShutdownHook {
-    fn name(&self) -> &'static str {
-        "realtime_manager"
-    }
-    fn timeout(&self) -> Duration {
-        Duration::from_secs(15)
-    }
-    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async move {
-            self.manager.shutdown().await;
-        })
+#[async_trait::async_trait]
+impl SimpleShutdownTarget for Arc<dyn synctv_cluster::discovery::ClusterHealthRuntime> {
+    async fn shutdown(&self) {
+        (**self).shutdown().await;
     }
 }
 
-/// Stops the permission cache invalidation listener tasks.
-pub struct PermissionServiceShutdownHook {
-    pub service: synctv_core::service::PermissionService,
-}
-
-impl ShutdownHook for PermissionServiceShutdownHook {
-    fn name(&self) -> &'static str {
-        "permission_service"
-    }
-    fn timeout(&self) -> Duration {
-        Duration::from_secs(10)
-    }
-    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async move {
-            self.service.shutdown().await;
-        })
+#[async_trait::async_trait]
+impl SimpleShutdownTarget for Arc<synctv_realtime::sync::RealtimeManager> {
+    async fn shutdown(&self) {
+        (**self).shutdown().await;
     }
 }
 
-/// Stops the playback cache invalidation listener task.
-pub struct PlaybackServiceShutdownHook {
-    pub service: synctv_core::service::PlaybackService,
+#[async_trait::async_trait]
+impl SimpleShutdownTarget for synctv_core::service::PermissionService {
+    async fn shutdown(&self) {
+        synctv_core::service::PermissionService::shutdown(self).await;
+    }
 }
 
-impl ShutdownHook for PlaybackServiceShutdownHook {
-    fn name(&self) -> &'static str {
-        "playback_service"
-    }
-    fn timeout(&self) -> Duration {
-        Duration::from_secs(10)
-    }
-    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async move {
-            self.service.shutdown().await;
-        })
+#[async_trait::async_trait]
+impl SimpleShutdownTarget for synctv_core::service::PlaybackService {
+    async fn shutdown(&self) {
+        synctv_core::service::PlaybackService::shutdown(self).await;
     }
 }
 
@@ -1045,7 +1036,11 @@ mod tests {
         );
 
         let mut coord = ShutdownCoordinator::new(Duration::from_secs(1));
-        coord.register_hook(RealtimeManagerShutdownHook { manager });
+        coord.register_hook(SimpleShutdownHook::new(
+            "realtime_manager",
+            Duration::from_secs(15),
+            manager,
+        ));
         coord.shutdown().await;
 
         assert!(

@@ -541,28 +541,8 @@ impl BruteForceProtection {
         user_message_prefix: &'static str,
     ) -> Result<()> {
         // Check IP-level lockout first
-        if let Some(ip_addr) = ip {
-            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            let (ip_attempts, ip_last_failure_at) =
-                run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
-            if ip_attempts >= self.config.ip_threshold {
-                let now = chrono::Utc::now().timestamp();
-                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
-                if elapsed < self.config.ip_lockout_secs {
-                    let remaining = self.config.ip_lockout_secs - elapsed;
-                    tracing::warn!(
-                        ip = %ip_addr,
-                        attempts = ip_attempts,
-                        remaining_secs = remaining,
-                        "{} blocked: IP temporarily locked",
-                        log_subject
-                    );
-                    return Err(Error::Authentication(format!(
-                        "{user_message_prefix}. Please try again in {remaining} seconds.",
-                    )));
-                }
-            }
-        }
+        self.check_ip_lockout(ip, control, log_subject, user_message_prefix)
+            .await?;
 
         let (attempts, last_failure_at) =
             run_with_control(control, self.username_tracker.get_attempts(subject_key)).await?;
@@ -583,6 +563,38 @@ impl BruteForceProtection {
                 return Err(Error::Authentication(format!(
                     "{user_message_prefix}. Please try again in {remaining} seconds.",
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn check_ip_lockout(
+        &self,
+        ip: Option<IpAddr>,
+        control: Option<&ExecutionControl>,
+        log_subject: &'static str,
+        user_message_prefix: &'static str,
+    ) -> Result<()> {
+        if let Some(ip_addr) = ip {
+            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
+            let (ip_attempts, ip_last_failure_at) =
+                run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
+            if ip_attempts >= self.config.ip_threshold {
+                let now = chrono::Utc::now().timestamp();
+                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
+                if elapsed < self.config.ip_lockout_secs {
+                    let remaining = self.config.ip_lockout_secs - elapsed;
+                    tracing::warn!(
+                        ip = %ip_addr,
+                        attempts = ip_attempts,
+                        remaining_secs = remaining,
+                        "{} blocked: IP temporarily locked",
+                        log_subject
+                    );
+                    return Err(Error::Authentication(format!(
+                        "{user_message_prefix}. Please try again in {remaining} seconds.",
+                    )));
+                }
             }
         }
         Ok(())
@@ -689,28 +701,13 @@ impl BruteForceProtection {
         ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
-        if let Some(ip_addr) = ip {
-            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            let (ip_attempts, ip_last_failure_at) =
-                run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
-            if ip_attempts >= self.config.ip_threshold {
-                let now = chrono::Utc::now().timestamp();
-                let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
-                if elapsed < self.config.ip_lockout_secs {
-                    let remaining = self.config.ip_lockout_secs - elapsed;
-                    tracing::warn!(
-                        ip = %ip_addr,
-                        attempts = ip_attempts,
-                        remaining_secs = remaining,
-                        "Login attempt blocked: IP temporarily locked"
-                    );
-                    return Err(Error::Authentication(format!(
-                        "Too many failed login attempts. Please try again in {remaining} seconds.",
-                    )));
-                }
-            }
-        }
-        Ok(())
+        self.check_ip_lockout(
+            ip,
+            control,
+            "Login attempt",
+            "Too many failed login attempts",
+        )
+        .await
     }
 
     /// Reset the failed login attempt counter on successful login.

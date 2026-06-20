@@ -557,23 +557,31 @@ impl SsrfGuardBuilder {
             denied_hosts,
             allowed_hosts,
         });
+
+        Ok(SsrfGuard::from_acl_and_policy(acl, policy))
+    }
+}
+
+impl SsrfGuard {
+    /// Build a guard from a validated ACL and policy, wiring up the
+    /// system DNS resolver. Shared by [`SsrfGuardBuilder::try_build`] and
+    /// [`SsrfGuard::deny_all_fallback`].
+    fn from_acl_and_policy(acl: HttpAcl, policy: Arc<SsrfPolicy>) -> Self {
         let resolver = Arc::new(SsrfDnsResolver {
             acl: Arc::new(acl.clone()),
             inner: Arc::new(SystemDnsResolver),
             policy: policy.clone(),
         }) as Arc<dyn Resolve>;
 
-        Ok(SsrfGuard {
+        Self {
             inner: Some(Arc::new(SsrfGuardInner {
                 acl,
                 resolver,
                 policy,
             })),
-        })
+        }
     }
-}
 
-impl SsrfGuard {
     fn deny_all_fallback(reason: &str) -> Self {
         tracing::error!(
             reason,
@@ -593,19 +601,8 @@ impl SsrfGuard {
             denied_hosts: HashSet::new(),
             allowed_hosts: HashSet::new(),
         });
-        let resolver = Arc::new(SsrfDnsResolver {
-            acl: Arc::new(acl.clone()),
-            inner: Arc::new(SystemDnsResolver),
-            policy: policy.clone(),
-        }) as Arc<dyn Resolve>;
 
-        Self {
-            inner: Some(Arc::new(SsrfGuardInner {
-                acl,
-                resolver,
-                policy,
-            })),
-        }
+        Self::from_acl_and_policy(acl, policy)
     }
 }
 

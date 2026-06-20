@@ -4,8 +4,8 @@ use synctv_core::{
 };
 
 use super::{
-    content_report_row_to_proto, i64_to_i32_api, page_i32_to_usize, page_offset_usize,
-    usize_to_i64_api, AdminApiImpl, ApiError, RequestContext,
+    content_report_row_to_proto, i64_to_i32_api, pagination_limit_offset_i64, AdminApiImpl,
+    ApiError, RequestContext,
 };
 
 impl AdminApiImpl {
@@ -16,66 +16,39 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListContentReportsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page)?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let offset = page_offset_usize(page, page_size, "content report offset")?;
-        let limit = usize_to_i64_api(page_size, "content report page size")?;
-        let offset = usize_to_i64_api(offset, "content report offset")?;
+        let (limit, offset) =
+            pagination_limit_offset_i64(req.page, req.page_size, "content report")?;
 
-        let reporter_user_id = if req.reporter_user_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.reporter_user_id,
-                "reporter_user_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let room_id = if req.room_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_room_id_param(
-                &req.room_id,
-                "room_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let target_room_id = if req.target_room_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_room_id_param(
-                &req.target_room_id,
-                "target_room_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let target_user_id = if req.target_user_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.target_user_id,
-                "target_user_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let target_member_room_id = if req.target_member_room_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_room_id_param(
-                &req.target_member_room_id,
-                "target_member_room_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let target_member_user_id = if req.target_member_user_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.target_member_user_id,
-                "target_member_user_id",
-                &self.public_id_codec,
-            )?)
-        };
+        let reporter_user_id = crate::impls::parse_optional_id_param(
+            &req.reporter_user_id,
+            "reporter_user_id",
+            &self.public_id_codec,
+        )?;
+        let room_id = crate::impls::parse_optional_id_param(
+            &req.room_id,
+            "room_id",
+            &self.public_id_codec,
+        )?;
+        let target_room_id = crate::impls::parse_optional_id_param(
+            &req.target_room_id,
+            "target_room_id",
+            &self.public_id_codec,
+        )?;
+        let target_user_id = crate::impls::parse_optional_id_param(
+            &req.target_user_id,
+            "target_user_id",
+            &self.public_id_codec,
+        )?;
+        let target_member_room_id = crate::impls::parse_optional_id_param(
+            &req.target_member_room_id,
+            "target_member_room_id",
+            &self.public_id_codec,
+        )?;
+        let target_member_user_id = crate::impls::parse_optional_id_param(
+            &req.target_member_user_id,
+            "target_member_user_id",
+            &self.public_id_codec,
+        )?;
         let target_chat_message_id = if req.target_chat_message_id <= 0 {
             None
         } else {

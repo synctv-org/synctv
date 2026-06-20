@@ -4,7 +4,7 @@ use synctv_core::models::{
     ProviderInstance, UserProviderCredential,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
-use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::{ExecutionControl, ProviderAccessService};
 use synctv_core::provider::ProviderError;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{
@@ -885,6 +885,41 @@ fn mask_url_credentials(endpoint: &str) -> String {
         }
         Err(_) => endpoint.to_string(),
     }
+}
+
+pub(crate) async fn delete_credential_and_notify(
+    credential_repo: &Arc<UserProviderCredentialRepository>,
+    access_service: &Arc<dyn ProviderAccessService>,
+    event_service: &Arc<dyn crate::runtime::RealtimeEventService>,
+    caller_user_id: &UserId,
+    provider_name: &str,
+    server_id: &str,
+) -> Result<(), synctv_core::provider::ProviderError> {
+    if let Some(existing) = credential_repo
+        .get_by_provider_and_server(*caller_user_id, provider_name, server_id)
+        .await
+        .map_err(|e| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to query credential: {e}"
+            ))
+        })?
+    {
+        credential_repo.delete(existing.id).await.map_err(|e| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to delete credential: {e}"
+            ))
+        })?;
+        access_service
+            .invalidate(*caller_user_id, provider_name, server_id)
+            .await?;
+        super::publish_provider_credential_changed(
+            event_service,
+            *caller_user_id,
+            provider_name,
+            server_id,
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

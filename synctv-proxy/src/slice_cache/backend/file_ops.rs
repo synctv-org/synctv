@@ -137,7 +137,7 @@ pub(super) fn expired_keys(index: &FileIndex) -> Vec<String> {
         .collect()
 }
 
-fn cache_path(cache_dir: &Path, dir_levels: (usize, usize), key: &str) -> PathBuf {
+pub(super) fn cache_path(cache_dir: &Path, dir_levels: (usize, usize), key: &str) -> PathBuf {
     let (level1_len, level2_len) = dir_levels;
     let level1 = &key[..level1_len.min(key.len())];
     let level2 = &key[level1_len..((level1_len + level2_len).min(key.len()))];

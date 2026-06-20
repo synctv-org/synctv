@@ -2728,7 +2728,7 @@ impl ResourceObserver {
                 matches!(invalidation, ResourceInvalidation::PlaybackState)
             }
             ObservedResource::Playback { .. } => {
-                Self::playback_invalidated_by(observation, invalidation)
+                matches!(invalidation, ResourceInvalidation::Playback(_))
             }
             ObservedResource::RoomSettings => {
                 matches!(invalidation, ResourceInvalidation::RoomSettings)
@@ -2758,13 +2758,6 @@ impl ResourceObserver {
                 matches!(invalidation, ResourceInvalidation::OnlineEvent)
             }
         }
-    }
-
-    fn playback_invalidated_by(
-        _observation: &ResourceObservation,
-        invalidation: &ResourceInvalidation,
-    ) -> bool {
-        matches!(invalidation, ResourceInvalidation::Playback(_))
     }
 
     fn online_event_matches_observation(

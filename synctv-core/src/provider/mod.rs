@@ -22,6 +22,9 @@ pub mod provider_client;
 pub mod store;
 pub mod traits;
 
+// Shared helpers
+mod live_helpers;
+
 // MediaProvider implementations (adapters)
 pub mod alist;
 pub mod bilibili;

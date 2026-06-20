@@ -175,106 +175,16 @@ fn test_cache_key_different_headers() {
 }
 
 // Range parsing tests
-
-#[test]
-fn test_parse_range_single_range() {
-    let (start, end) = synctv_proxy::slice_cache::parse_range_header("bytes=0-999", 10000).unwrap();
-    assert_eq!(start, 0);
-    assert_eq!(end, 999);
-}
-
-#[test]
-fn test_parse_range_open_ended() {
-    // "bytes=500-" means from 500 to end
-    let (start, end) = synctv_proxy::slice_cache::parse_range_header("bytes=500-", 10000).unwrap();
-    assert_eq!(start, 500);
-    assert_eq!(end, 9999);
-}
-
-#[test]
-fn test_parse_range_suffix() {
-    // "bytes=-500" means last 500 bytes
-    let (start, end) = synctv_proxy::slice_cache::parse_range_header("bytes=-500", 10000).unwrap();
-    assert_eq!(start, 9500);
-    assert_eq!(end, 9999);
-}
-
-#[test]
-fn test_parse_range_multi_range_rejected() {
-    let result = synctv_proxy::slice_cache::parse_range_header("bytes=0-100,200-300", 10000);
-    assert!(result.is_err(), "Multi-range must be rejected");
-}
-
-#[test]
-fn test_parse_range_invalid_format() {
-    let result = synctv_proxy::slice_cache::parse_range_header("invalid", 10000);
-    assert!(result.is_err(), "Invalid range format must be rejected");
-}
-
-#[test]
-fn test_parse_range_start_beyond_total() {
-    let result = synctv_proxy::slice_cache::parse_range_header("bytes=20000-", 10000);
-    assert!(
-        result.is_err(),
-        "Range start beyond total size must be rejected"
-    );
-}
-
-#[test]
-fn test_parse_range_start_after_end_rejected() {
-    let result = synctv_proxy::slice_cache::parse_range_header("bytes=10-5", 10000);
-    assert!(result.is_err(), "Range start after end must be rejected");
-}
-
-#[test]
-fn test_parse_range_end_capped_at_total() {
-    // If end > total-1, should be capped
-    let (start, end) =
-        synctv_proxy::slice_cache::parse_range_header("bytes=0-99999", 10000).unwrap();
-    assert_eq!(start, 0);
-    assert_eq!(end, 9999);
-}
+//
+// Note: HEAD-path Range parsing now goes through `parse_client_range_plan` +
+// `range_bounds_for_total` (see range_tests.rs), so the dedicated
+// `parse_range_header` tests were removed along with that function.
 
 // Slice index calculation tests
-
-#[test]
-fn test_compute_needed_slices_single_slice() {
-    // Range 0-100 with slice_size=2MB needs only slice 0
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(0, 100, 2 * 1024 * 1024);
-    assert_eq!(slices, vec![0]);
-}
-
-#[test]
-fn test_compute_needed_slices_multiple_slices() {
-    // Range 0-4194303 (4MB) with slice_size=2MB needs slices 0 and 1
-    let slices =
-        synctv_proxy::slice_cache::compute_needed_slices(0, 4 * 1024 * 1024 - 1, 2 * 1024 * 1024);
-    assert_eq!(slices, vec![0, 1]);
-}
-
-#[test]
-fn test_compute_needed_slices_cross_boundary() {
-    // Range 1MB-3MB with slice_size=2MB needs slices 0 and 1
-    let mb: u64 = 1024 * 1024;
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(
-        mb,
-        3 * mb - 1,
-        2 * usize::try_from(mb).expect("megabyte constant must fit in usize"),
-    );
-    assert_eq!(slices, vec![0, 1]);
-}
-
-#[test]
-fn test_compute_needed_slices_exact_boundary() {
-    // Range starts exactly at slice boundary
-    let mb: u64 = 1024 * 1024;
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(
-        2 * mb,
-        4 * mb - 1,
-        2 * usize::try_from(mb).expect("megabyte constant must fit in usize"),
-    );
-    assert_eq!(slices, vec![1]);
-}
+//
+// Note: `compute_needed_slices` and `aligned_range_for_slice` were removed as
+// unused public API; the production slice path computes indices inline via
+// `slice_index_for_byte`.
 
 // get_or_fetch_slice integration tests (with wiremock)
 
@@ -1270,45 +1180,8 @@ async fn test_disabled_cache_streams_directly() {
 }
 
 // Slice range alignment tests
-
-#[test]
-fn test_aligned_range_for_slice() {
-    let slice_size = 2 * 1024 * 1024; // 2MB
-    let total_size = 10 * 1024 * 1024; // 10MB
-
-    // Slice 0: bytes 0 to 2097151
-    let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, total_size).unwrap();
-    assert_eq!(start, 0);
-    assert_eq!(end, 2 * 1024 * 1024 - 1);
-
-    // Slice 1: bytes 2097152 to 4194303
-    let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size).unwrap();
-    assert_eq!(start, 2 * 1024 * 1024);
-    assert_eq!(end, 4 * 1024 * 1024 - 1);
-
-    // Last slice (slice 4): bytes 8388608 to 10485759
-    let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(4, slice_size, total_size).unwrap();
-    assert_eq!(start, 8 * 1024 * 1024);
-    assert_eq!(end, 10 * 1024 * 1024 - 1);
-
-    // Zero total_size should return an error.
-    assert!(synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, 0).is_err());
-}
-
-#[test]
-fn test_aligned_range_last_slice_partial() {
-    let slice_size = 2 * 1024 * 1024; // 2MB
-    let total_size: u64 = 3 * 1024 * 1024; // 3MB total
-
-    // Slice 1: bytes 2097152 to 3145727 (only 1MB, not full 2MB)
-    let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size).unwrap();
-    assert_eq!(start, 2 * 1024 * 1024);
-    assert_eq!(end, 3 * 1024 * 1024 - 1);
-}
+//
+// Note: `aligned_range_for_slice` was removed as unused public API.
 
 // Non-range requests use upstream range support and bypass when the origin rejects ranges.
 

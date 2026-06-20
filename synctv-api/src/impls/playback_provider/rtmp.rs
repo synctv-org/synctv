@@ -11,8 +11,9 @@ use synctv_proto::playback_provider::rtmp::{
 use super::common::{
     get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
     playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
-    verify_playback_provider_http_access, LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest,
-    LiveHlsSegmentChunksRequest, LivePlaybackDeps, PlaybackTransportExecutorDeps,
+    verify_playback_provider_access_with_deps, HasLivePlaybackFields,
+    HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest,
+    LiveHlsSegmentChunksRequest, PlaybackProviderAccessRequest, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -177,13 +178,15 @@ async fn resolve_rtmp_flv_stream_action(
 ) -> Result<PlaybackTransportAction, ApiError> {
     let (store, claims) = verify_rtmp_access(
         deps,
-        &req.version,
-        "flv-stream".to_string(),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: "flv-stream".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     deps.playback_provider_service
@@ -198,13 +201,15 @@ async fn resolve_rtmp_hls_playlist_action(
 ) -> Result<PlaybackTransportAction, ApiError> {
     let (store, _) = verify_rtmp_access(
         deps,
-        &req.version,
-        "hls-playlist".to_string(),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: "hls-playlist".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     deps.playback_provider_service
@@ -219,13 +224,15 @@ async fn resolve_rtmp_hls_segment_action(
 ) -> Result<PlaybackTransportAction, ApiError> {
     let (store, _) = verify_rtmp_access(
         deps,
-        &req.version,
-        format!("hls-segments/{}", req.segment_name),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("hls-segments/{}", req.segment_name),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     deps.playback_provider_service
@@ -234,16 +241,9 @@ async fn resolve_rtmp_hls_segment_action(
         .map_err(ApiError::from)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn verify_rtmp_access(
     deps: &RtmpPlaybackProviderDeps<'_>,
-    version: &str,
-    resource: String,
-    signature: &str,
-    user_id: &str,
-    room_id: &str,
-    expires_at: i64,
-    target_url: Option<&str>,
+    request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
         std::sync::Arc<dyn synctv_core::provider::store::ProviderStore>,
@@ -251,23 +251,10 @@ async fn verify_rtmp_access(
     ),
     ApiError,
 > {
-    verify_playback_provider_http_access(
-        deps.proxy_signing_key,
-        deps.public_id_codec,
-        deps.provider_stores,
-        deps.user_service,
-        deps.playback_transport_services,
-        PROVIDER,
-        version,
-        resource,
-        signature,
-        user_id,
-        room_id,
-        expires_at,
-        target_url,
-    )
-    .await
+    verify_playback_provider_access_with_deps(&deps.access_deps(), PROVIDER, request).await
 }
+
+crate::impl_has_playback_provider_access_fields!(RtmpPlaybackProviderDeps<'a>);
 
 impl<'a> RtmpPlaybackProviderDeps<'a> {
     fn chunk_deps(&self) -> PlaybackTransportExecutorDeps<'a> {
@@ -280,14 +267,6 @@ impl<'a> RtmpPlaybackProviderDeps<'a> {
             hls_rewrite: None,
         }
     }
-
-    fn live_deps(&self) -> LivePlaybackDeps<'a> {
-        LivePlaybackDeps {
-            proxy_signing_key: self.proxy_signing_key,
-            live_streaming_infrastructure: self.live_streaming_infrastructure,
-            connection_runtime: self.connection_runtime,
-            livestream_config: self.livestream_config,
-            settings_registry: self.settings_registry,
-        }
-    }
 }
+
+crate::impl_has_live_playback_fields!(RtmpPlaybackProviderDeps<'a>);

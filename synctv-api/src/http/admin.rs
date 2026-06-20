@@ -11,7 +11,7 @@ use axum::{
 use std::sync::Arc;
 
 use super::{
-    admin_execute::{execute_admin_endpoint, execute_root_endpoint, request_metadata},
+    admin_execute::{execute_admin_endpoint, execute_root_endpoint},
     middleware::RequestMetadata,
     validation::ProtoQuery,
     AppError, AppResult, AppState,
@@ -686,7 +686,7 @@ pub(crate) async fn send_test_email(
     State(state): State<AppState>,
     Json(req): Json<admin::SendTestEmailRequest>,
 ) -> AppResult<Json<admin::SendTestEmailResponse>> {
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let api = require_admin_api(&state)?.clone();
     let executor = api.clone();
     let resp = executor

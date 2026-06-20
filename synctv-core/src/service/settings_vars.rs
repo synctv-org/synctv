@@ -425,7 +425,6 @@ where
     validator: Arc<RwLock<Option<ValidatorFn<T>>>>,
     user_writable: Arc<RwLock<bool>>,
     user_visible: Arc<RwLock<bool>>,
-    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> Clone for Setting<T>
@@ -443,7 +442,6 @@ where
             validator: self.validator.clone(),
             user_writable: self.user_writable.clone(),
             user_visible: self.user_visible.clone(),
-            _phantom: std::marker::PhantomData,
         }
     }
 }
@@ -470,7 +468,6 @@ where
             validator: Arc::new(RwLock::new(None)),
             user_writable: Arc::new(RwLock::new(true)),
             user_visible: Arc::new(RwLock::new(true)),
-            _phantom: std::marker::PhantomData,
         };
 
         // Auto-register provider

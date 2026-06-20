@@ -1,4 +1,5 @@
 use chrono::{Duration, Utc};
+use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{Room, RoomAdminPermissionBits, RoomId, RoomMember, RoomRole, UserId},
@@ -13,8 +14,22 @@ use crate::{
 use super::{
     cleanup_member_resources_in_tx, ensure_actor_has_room_permission_now_tx,
     validate_kick_cooldown_seconds, KickMemberOutboxOptions, MemberPermissionPatch,
-    RealtimeOutboxPermissionChangedEventFactory, RoomService, UpdateMemberWithOutboxRequest,
+    PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory, RoomService,
+    UpdateMemberWithOutboxRequest,
 };
+
+/// Helper struct for apply_permission_write_with_fence parameters
+struct PermissionWriteParams<'a> {
+    room_id: &'a RoomId,
+    user_id: &'a UserId,
+    fence: &'a PermissionWriteFence,
+    effective_is_admin: bool,
+    added_permissions: u64,
+    removed_permissions: u64,
+    admin_added_permissions: u64,
+    admin_removed_permissions: u64,
+    current_version: i64,
+}
 
 impl RoomService {
     /// Grant permission to user
@@ -491,13 +506,7 @@ impl RoomService {
         let subscriber_count = self
             .notification_service
             .notify_member_kicked(&room_id, &target_user_id);
-        if subscriber_count == 0 {
-            tracing::debug!(
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Member kick event had no local subscribers"
-            );
-        }
+        super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Member kick");
         Ok(())
     }
 
@@ -701,89 +710,42 @@ impl RoomService {
                     "Permission update missing write fence".to_string(),
                 ));
             };
-            updated = if effective_is_admin {
-                if write_fence.version() > 0 {
-                    match self
-                        .member_repo
-                        .update_admin_permissions_with_exact_version_executor(
-                            MemberPermissionExactVersionUpdate {
-                                room_id: &room_id,
-                                user_id: &target_user_id,
-                                added_permissions: admin_added_permissions,
-                                removed_permissions: admin_removed_permissions,
-                                current_version: updated.version,
-                                new_version: write_fence.version(),
-                            },
-                            &mut *tx,
-                        )
-                        .await
-                    {
-                        Ok(updated) => updated,
-                        Err(error) => {
-                            if let Some(fence) = &fence {
-                                self.abort_permission_write(fence).await;
-                            }
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    self.member_repo
-                        .update_admin_permissions_with_executor(
-                            &room_id,
-                            &target_user_id,
-                            admin_added_permissions,
-                            admin_removed_permissions,
-                            updated.version,
-                            &mut *tx,
-                        )
-                        .await?
-                }
-            } else if write_fence.version() > 0 {
-                match self
-                    .member_repo
-                    .update_permissions_with_exact_version_executor(
-                        MemberPermissionExactVersionUpdate {
-                            room_id: &room_id,
-                            user_id: &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            current_version: updated.version,
-                            new_version: write_fence.version(),
-                        },
-                        &mut *tx,
-                    )
-                    .await
-                {
-                    Ok(updated) => updated,
-                    Err(error) => {
-                        if let Some(fence) = &fence {
-                            self.abort_permission_write(fence).await;
-                        }
-                        return Err(error);
-                    }
-                }
-            } else {
-                self.member_repo
-                    .update_permissions_with_executor(
-                        &room_id,
-                        &target_user_id,
+            updated = match self
+                .apply_permission_write_with_fence(
+                    &mut tx,
+                    PermissionWriteParams {
+                        room_id: &room_id,
+                        user_id: &target_user_id,
+                        fence: write_fence,
+                        effective_is_admin,
                         added_permissions,
                         removed_permissions,
-                        updated.version,
-                        &mut *tx,
-                    )
-                    .await?
+                        admin_added_permissions,
+                        admin_removed_permissions,
+                        current_version: updated.version,
+                    },
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    if let Some(fence) = &fence {
+                        self.abort_permission_write(fence).await;
+                    }
+                    return Err(error);
+                }
             };
         }
 
         let snapshot = match self
-            .permission_changed_snapshot_tx(
+            .prepare_and_insert_member_update_outbox(
                 &mut tx,
                 room_id,
                 target_user_id,
                 actor_id,
                 Some(&updated),
                 role.is_some(),
+                outbox_event_factory.as_ref(),
             )
             .await
         {
@@ -795,38 +757,15 @@ impl RoomService {
                 return Err(error);
             }
         };
-        if let Err(error) = self
-            .insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await
-        {
-            if let Some(fence) = &fence {
-                self.abort_permission_write(fence).await;
-            }
-            return Err(error);
-        }
-        if let Err(error) = tx.commit().await {
-            if let Some(fence) = &fence {
-                self.abort_permission_write(fence).await;
-            }
-            return Err(error.into());
-        }
-        if let Some(fence) = &fence {
-            self.finalize_committed_permission_write_best_effort(
-                fence,
-                &room_id,
-                &target_user_id,
-                updated.version,
-                "admin_update_member_with_outbox",
-            )
-            .await;
-        }
 
-        self.permission_service
-            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
-            .await;
-        if role.is_some() {
-            self.notify_room_settings_invalidation(&room_id).await;
-        }
+        self.commit_member_update_with_outbox(
+            tx,
+            fence.as_ref(),
+            &snapshot,
+            updated.version,
+            "admin_update_member_with_outbox",
+        )
+        .await?;
         Ok(updated)
     }
 
@@ -1052,89 +991,42 @@ impl RoomService {
                     "Permission update missing write fence".to_string(),
                 ));
             };
-            updated = if effective_is_admin {
-                if write_fence.version() > 0 {
-                    match self
-                        .member_repo
-                        .update_admin_permissions_with_exact_version_executor(
-                            MemberPermissionExactVersionUpdate {
-                                room_id: &room_id,
-                                user_id: &target_user_id,
-                                added_permissions: admin_added_permissions,
-                                removed_permissions: admin_removed_permissions,
-                                current_version: updated.version,
-                                new_version: write_fence.version(),
-                            },
-                            &mut *tx,
-                        )
-                        .await
-                    {
-                        Ok(updated) => updated,
-                        Err(error) => {
-                            if let Some(fence) = &fence {
-                                self.abort_permission_write(fence).await;
-                            }
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    self.member_repo
-                        .update_admin_permissions_with_executor(
-                            &room_id,
-                            &target_user_id,
-                            admin_added_permissions,
-                            admin_removed_permissions,
-                            updated.version,
-                            &mut *tx,
-                        )
-                        .await?
-                }
-            } else if write_fence.version() > 0 {
-                match self
-                    .member_repo
-                    .update_permissions_with_exact_version_executor(
-                        MemberPermissionExactVersionUpdate {
-                            room_id: &room_id,
-                            user_id: &target_user_id,
-                            added_permissions,
-                            removed_permissions,
-                            current_version: updated.version,
-                            new_version: write_fence.version(),
-                        },
-                        &mut *tx,
-                    )
-                    .await
-                {
-                    Ok(updated) => updated,
-                    Err(error) => {
-                        if let Some(fence) = &fence {
-                            self.abort_permission_write(fence).await;
-                        }
-                        return Err(error);
-                    }
-                }
-            } else {
-                self.member_repo
-                    .update_permissions_with_executor(
-                        &room_id,
-                        &target_user_id,
+            updated = match self
+                .apply_permission_write_with_fence(
+                    &mut tx,
+                    PermissionWriteParams {
+                        room_id: &room_id,
+                        user_id: &target_user_id,
+                        fence: write_fence,
+                        effective_is_admin,
                         added_permissions,
                         removed_permissions,
-                        updated.version,
-                        &mut *tx,
-                    )
-                    .await?
+                        admin_added_permissions,
+                        admin_removed_permissions,
+                        current_version: updated.version,
+                    },
+                )
+                .await
+            {
+                Ok(updated) => updated,
+                Err(error) => {
+                    if let Some(fence) = &fence {
+                        self.abort_permission_write(fence).await;
+                    }
+                    return Err(error);
+                }
             };
         }
 
         let snapshot = match self
-            .permission_changed_snapshot_tx(
+            .prepare_and_insert_member_update_outbox(
                 &mut tx,
                 room_id,
                 target_user_id,
                 actor_id,
                 Some(&updated),
                 role.is_some(),
+                outbox_event_factory.as_ref(),
             )
             .await
         {
@@ -1146,38 +1038,15 @@ impl RoomService {
                 return Err(error);
             }
         };
-        if let Err(error) = self
-            .insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await
-        {
-            if let Some(fence) = &fence {
-                self.abort_permission_write(fence).await;
-            }
-            return Err(error);
-        }
-        if let Err(error) = tx.commit().await {
-            if let Some(fence) = &fence {
-                self.abort_permission_write(fence).await;
-            }
-            return Err(error.into());
-        }
-        if let Some(fence) = &fence {
-            self.finalize_committed_permission_write_best_effort(
-                fence,
-                &room_id,
-                &target_user_id,
-                updated.version,
-                "admin_set_member_role_with_outbox",
-            )
-            .await;
-        }
 
-        self.permission_service
-            .invalidate_committed_member_write_cache(&room_id, &target_user_id)
-            .await;
-        if role.is_some() {
-            self.notify_room_settings_invalidation(&room_id).await;
-        }
+        self.commit_member_update_with_outbox(
+            tx,
+            fence.as_ref(),
+            &snapshot,
+            updated.version,
+            "update_member_with_outbox",
+        )
+        .await?;
         Ok(updated)
     }
 
@@ -1315,13 +1184,7 @@ impl RoomService {
         let subscriber_count = self
             .notification_service
             .notify_member_kicked(&room_id, &target_user_id);
-        if subscriber_count == 0 {
-            tracing::debug!(
-                room_id = %room_id,
-                user_id = %target_user_id,
-                "Admin member kick event had no local subscribers"
-            );
-        }
+        super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Admin member kick");
         Ok(())
     }
 
@@ -1411,5 +1274,127 @@ impl RoomService {
                 synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
             ))
         }
+    }
+
+    /// Helper: Apply permission write with fence-aware branching (Finding 2)
+    async fn apply_permission_write_with_fence(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        params: PermissionWriteParams<'_>,
+    ) -> Result<RoomMember> {
+        let (added, removed) = if params.effective_is_admin {
+            (params.admin_added_permissions, params.admin_removed_permissions)
+        } else {
+            (params.added_permissions, params.removed_permissions)
+        };
+
+        if params.effective_is_admin {
+            if params.fence.version() > 0 {
+                self.member_repo
+                    .update_admin_permissions_with_exact_version_executor(
+                        MemberPermissionExactVersionUpdate {
+                            room_id: params.room_id,
+                            user_id: params.user_id,
+                            added_permissions: added,
+                            removed_permissions: removed,
+                            current_version: params.current_version,
+                            new_version: params.fence.version(),
+                        },
+                        &mut **tx,
+                    )
+                    .await
+            } else {
+                self.member_repo
+                    .update_admin_permissions_with_executor(
+                        params.room_id,
+                        params.user_id,
+                        added,
+                        removed,
+                        params.current_version,
+                        &mut **tx,
+                    )
+                    .await
+            }
+        } else if params.fence.version() > 0 {
+            self.member_repo
+                .update_permissions_with_exact_version_executor(
+                    MemberPermissionExactVersionUpdate {
+                        room_id: params.room_id,
+                        user_id: params.user_id,
+                        added_permissions: added,
+                        removed_permissions: removed,
+                        current_version: params.current_version,
+                        new_version: params.fence.version(),
+                    },
+                    &mut **tx,
+                )
+                .await
+        } else {
+            self.member_repo
+                .update_permissions_with_executor(
+                    params.room_id,
+                    params.user_id,
+                    added,
+                    removed,
+                    params.current_version,
+                    &mut **tx,
+                )
+                .await
+        }
+    }
+
+    /// Helper: Commit phase for member update (Finding 1)
+    async fn commit_member_update_with_outbox(
+        &self,
+        tx: Transaction<'_, Postgres>,
+        fence: Option<&PermissionWriteFence>,
+        snapshot: &PermissionChangedOutboxSnapshot,
+        updated_version: i64,
+        context: &'static str,
+    ) -> Result<()> {
+        if let Err(error) = tx.commit().await {
+            if let Some(fence) = fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error.into());
+        }
+        if let Some(fence) = fence {
+            self.finalize_committed_permission_write_best_effort(
+                fence,
+                &snapshot.room_id,
+                &snapshot.target_user_id,
+                updated_version,
+                context,
+            )
+            .await;
+        }
+
+        self.permission_service
+            .invalidate_committed_member_write_cache(&snapshot.room_id, &snapshot.target_user_id)
+            .await;
+        if snapshot.role_changed {
+            self.notify_room_settings_invalidation(&snapshot.room_id).await;
+        }
+        Ok(())
+    }
+
+    /// Helper: Snapshot + outbox insertion for member updates (Finding 1)
+    #[allow(clippy::too_many_arguments)] // Inherently complex operation - alternative would be passing a struct
+    async fn prepare_and_insert_member_update_outbox(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: RoomId,
+        target_user_id: UserId,
+        actor_id: UserId,
+        updated: Option<&RoomMember>,
+        role_changed: bool,
+        outbox_event_factory: Option<&RealtimeOutboxPermissionChangedEventFactory>,
+    ) -> Result<PermissionChangedOutboxSnapshot> {
+        let snapshot = self
+            .permission_changed_snapshot_tx(tx, room_id, target_user_id, actor_id, updated, role_changed)
+            .await?;
+        self.insert_permission_changed_outbox_tx(tx, &snapshot, outbox_event_factory)
+            .await?;
+        Ok(snapshot)
     }
 }

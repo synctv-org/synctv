@@ -182,21 +182,6 @@ static REGISTER_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     )
 });
 
-static HEARTBEAT_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r"
-        local val = redis.call('GET', KEYS[1])
-        if not val then return nil end
-        local obj = cjson.decode(val)
-        obj['last_heartbeat'] = ARGV[1]
-        local updated = cjson.encode(obj)
-        redis.call('SETEX', KEYS[1], ARGV[2], updated)
-        redis.call('SADD', KEYS[2], ARGV[3])
-        redis.call('EXPIRE', KEYS[2], ARGV[2])
-        return updated
-        ",
-    )
-});
 
 /// Create a failsafe circuit breaker for Redis operations.
 ///
@@ -233,6 +218,14 @@ fn unix_time_secs_u64() -> u64 {
 #[cfg(any(test, feature = "test-support"))]
 fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Returns `true` if the error message indicates a Redis Sentinel failover is in progress.
+///
+/// During a Sentinel failover, the previous primary transitions to read-only mode
+/// (READONLY error) or the new primary may still be loading data (LOADING error).
+fn is_sentinel_failover_error(error_msg: &str) -> bool {
+    error_msg.contains("READONLY") || error_msg.contains("LOADING")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -959,7 +952,7 @@ impl NodeRegistry {
             }
             Err(ref error) => {
                 let error_str = error.to_string();
-                if error_str.contains("READONLY") || error_str.contains("LOADING") {
+                if is_sentinel_failover_error(&error_str) {
                     tracing::warn!(
                         error = %error_str,
                         "Redis Sentinel failover detected in operation result, will reconnect"
@@ -1397,44 +1390,6 @@ impl NodeRegistry {
         Ok(())
     }
 
-    /// Update heartbeat for a remote node (atomic via Lua script)
-    pub async fn heartbeat_remote(&self, node_id: &str) -> Result<()> {
-        let mut conn = self.get_conn_with_breaker().await?;
-
-        let key = self.node_key(node_id);
-        let index_key = self.node_index_key();
-        let now = Utc::now().to_rfc3339();
-        let ttl = self.heartbeat_timeout_secs * 2;
-
-        let op_result: std::result::Result<Option<String>, Error> = timeout(
-            self.redis_operation_timeout(),
-            HEARTBEAT_REMOTE_NODE_SCRIPT
-                .key(&key)
-                .key(&index_key)
-                .arg(&now)
-                .arg(ttl)
-                .arg(node_id)
-                .invoke_async(&mut conn),
-        )
-        .await
-        .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
-        .and_then(|r| {
-            r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}")))
-        });
-        self.record_operation_result(&op_result);
-        let result = op_result?;
-
-        // Update local cache from the returned value
-        if let Some(updated_json) = result {
-            if let Ok(node_info) = serde_json::from_str::<NodeInfo>(&updated_json) {
-                let mut nodes = self.local_nodes.write().await;
-                nodes.insert(node_id.to_string(), node_info);
-                self.invalidate_node_view_cache().await;
-            }
-        }
-
-        Ok(())
-    }
 
     /// Unregister a remote node with epoch validation
     ///

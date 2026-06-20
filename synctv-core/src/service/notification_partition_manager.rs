@@ -13,7 +13,9 @@ use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
-    add_months, current_database_date, quote_ident, size_centi_mib, start_of_month, table_exists,
+    add_months, current_database_date, len_to_i32, len_to_i64, quote_ident, size_centi_mib,
+    start_of_month, table_exists, wait_for_initial_leader, PartitionNameRow, PartitionSizeRow,
+    STARTUP_RUNS_RETENTION_CLEANUP,
 };
 use crate::{Error, Result};
 
@@ -23,17 +25,6 @@ const DEFAULT_RETENTION_MONTHS: i32 = 6;
 /// Default months to create ahead
 const DEFAULT_MONTHS_AHEAD: i32 = 3;
 
-const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
-const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
-
-fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
-    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
-}
-
-fn len_to_i64(len: usize, field: &'static str) -> Result<i64> {
-    i64::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
-}
-
 /// Health check result for notification partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationPartitionHealth {
@@ -42,16 +33,6 @@ pub struct NotificationPartitionHealth {
     pub missing_partitions: Vec<String>,
     pub missing_count: i32,
     pub health_status: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct PartitionNameRow {
-    tablename: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct PartitionSizeRow {
-    size_bytes: i64,
 }
 
 /// Notification partition manager (fixed monthly granularity)
@@ -321,30 +302,6 @@ async fn run_notification_partition_maintenance(manager: &NotificationPartitionM
     }
 }
 
-async fn wait_for_initial_leader(
-    leader_check: Arc<dyn LeaderCheck>,
-    cancel: CancellationToken,
-    task_name: &'static str,
-) -> bool {
-    let mut logged_wait = false;
-
-    loop {
-        if leader_check.is_leader() {
-            return true;
-        }
-
-        if !logged_wait {
-            info!("Delaying initial {task_name} run until cluster leadership is established");
-            logged_wait = true;
-        }
-
-        tokio::select! {
-            () = cancel.cancelled() => return false,
-            () = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
-        }
-    }
-}
-
 async fn initialize_notification_partitions_on_startup(
     pool: &PgPool,
     run_retention_cleanup: bool,
@@ -393,48 +350,6 @@ mod tests {
             Ok(value) => value,
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
-    }
-
-    const _: () = assert!(
-        !STARTUP_RUNS_RETENTION_CLEANUP,
-        "per-replica startup initialization must avoid retention cleanup DDL"
-    );
-
-    #[tokio::test(start_paused = true)]
-    async fn test_wait_for_initial_leader_completes_before_full_check_interval() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        struct ToggleLeader(AtomicBool);
-        impl LeaderCheck for ToggleLeader {
-            fn is_leader(&self) -> bool {
-                self.0.load(Ordering::SeqCst)
-            }
-        }
-
-        let leader = Arc::new(ToggleLeader(AtomicBool::new(false)));
-        let cancel = CancellationToken::new();
-        let wait_task = tokio::spawn(wait_for_initial_leader(
-            leader.clone(),
-            cancel,
-            "notification partition management",
-        ));
-
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_secs(
-            INITIAL_LEADER_RETRY_INTERVAL_SECS - 1,
-        ))
-        .await;
-        assert!(
-            !wait_task.is_finished(),
-            "initial maintenance should still be waiting for leadership"
-        );
-
-        leader.0.store(true, Ordering::SeqCst);
-        tokio::time::advance(std::time::Duration::from_secs(1)).await;
-        assert!(
-            ok(wait_task.await, "wait task should complete"),
-            "leader election should trigger the initial maintenance wait to finish"
-        );
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use std::future::Future;
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::{AppState, RequestMetadata};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
@@ -9,7 +8,7 @@ use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 pub(in crate::http::room) fn request_metadata(
     request_meta: RequestMetadata,
 ) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+    request_meta.0
 }
 
 pub(in crate::http::room) fn execute_public_endpoint<'a, T, F, Fut>(

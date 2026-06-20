@@ -71,7 +71,8 @@ where
                 crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Http)
                     .with_authorization(authorization)
                     .with_client_ip(client_ip)
-                    .with_user_agent(user_agent),
+                    .with_user_agent(user_agent)
+                    .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT)),
             ))
         })();
 

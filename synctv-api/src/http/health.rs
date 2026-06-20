@@ -713,14 +713,6 @@ mod tests {
             Ok(false)
         }
 
-        async fn consume(
-            &self,
-            _ticket: &str,
-            _expected_room_id: &synctv_core::models::RoomId,
-        ) -> synctv_core::Result<Option<synctv_core::service::WsTicketData>> {
-            Ok(None)
-        }
-
         fn supports_cluster_runtime(&self) -> bool {
             true
         }

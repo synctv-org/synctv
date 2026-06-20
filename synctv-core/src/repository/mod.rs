@@ -11,6 +11,7 @@ pub(crate) mod notification;
 pub(crate) mod playback;
 pub(crate) mod playback_source_metadata;
 pub(crate) mod playlist;
+pub(crate) mod pools;
 pub(crate) mod provider_instance;
 pub(crate) mod query_builder;
 pub mod realtime_outbox;

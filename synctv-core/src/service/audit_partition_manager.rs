@@ -12,8 +12,9 @@ use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
-    add_months, current_database_date, quote_ident, size_centi_gib, size_centi_mib, start_of_month,
-    table_exists,
+    add_months, current_database_date, len_to_i32, quote_ident, size_centi_gib, size_centi_mib,
+    start_of_month, table_exists, wait_for_initial_leader, PartitionNameRow, PartitionSizeRow,
+    STARTUP_RUNS_RETENTION_CLEANUP,
 };
 use crate::{Error, InternalExt, Result};
 
@@ -23,11 +24,6 @@ const MAX_PARTITION_RETRIES: u32 = 3;
 const PARTITION_RETRY_BASE_MS: u64 = 1_000;
 /// Default number of months of audit log partitions to retain
 const DEFAULT_RETENTION_MONTHS: i32 = 12;
-const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
-
-fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
-    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
-}
 
 /// Health check result for audit log partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,16 +70,6 @@ pub struct PartitionCreationDetail {
 }
 
 #[derive(sqlx::FromRow)]
-struct PartitionNameRow {
-    tablename: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct PartitionSizeRow {
-    size_bytes: i64,
-}
-
-#[derive(sqlx::FromRow)]
 struct PartitionStatsRow {
     tablename: String,
     row_count: i64,
@@ -91,6 +77,7 @@ struct PartitionStatsRow {
 }
 
 /// Audit log partition manager
+#[derive(Clone)]
 pub struct AuditPartitionManager {
     pool: PgPool,
     leader_check: Arc<dyn LeaderCheck>,
@@ -487,15 +474,6 @@ impl AuditPartitionManager {
     }
 }
 
-impl Clone for AuditPartitionManager {
-    fn clone(&self) -> Self {
-        Self {
-            pool: self.pool.clone(),
-            leader_check: self.leader_check.clone(),
-        }
-    }
-}
-
 async fn run_audit_partition_maintenance(manager: &AuditPartitionManager) {
     match manager.check_health().await {
         Ok(health) => {
@@ -522,32 +500,6 @@ async fn run_audit_partition_maintenance(manager: &AuditPartitionManager) {
         tracing::error!(error = %e, "Failed to drop old audit log partitions");
     }
 }
-
-async fn wait_for_initial_leader(
-    leader_check: Arc<dyn LeaderCheck>,
-    cancel: CancellationToken,
-    task_name: &'static str,
-) -> bool {
-    let mut logged_wait = false;
-
-    loop {
-        if leader_check.is_leader() {
-            return true;
-        }
-
-        if !logged_wait {
-            info!("Delaying initial {task_name} run until cluster leadership is established");
-            logged_wait = true;
-        }
-
-        tokio::select! {
-            () = cancel.cancelled() => return false,
-            () = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
-        }
-    }
-}
-
-const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
 
 async fn initialize_audit_partitions_on_startup(
     pool: &PgPool,
@@ -605,43 +557,6 @@ mod tests {
         !STARTUP_RUNS_RETENTION_CLEANUP,
         "per-replica startup initialization must avoid retention cleanup DDL"
     );
-
-    #[tokio::test(start_paused = true)]
-    async fn test_wait_for_initial_leader_completes_before_full_check_interval() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        struct ToggleLeader(AtomicBool);
-        impl LeaderCheck for ToggleLeader {
-            fn is_leader(&self) -> bool {
-                self.0.load(Ordering::SeqCst)
-            }
-        }
-
-        let leader = Arc::new(ToggleLeader(AtomicBool::new(false)));
-        let cancel = CancellationToken::new();
-        let wait_task = tokio::spawn(wait_for_initial_leader(
-            leader.clone(),
-            cancel,
-            "audit partition management",
-        ));
-
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_secs(
-            INITIAL_LEADER_RETRY_INTERVAL_SECS - 1,
-        ))
-        .await;
-        assert!(
-            !wait_task.is_finished(),
-            "initial maintenance should still be waiting for leadership"
-        );
-
-        leader.0.store(true, Ordering::SeqCst);
-        tokio::time::advance(std::time::Duration::from_secs(1)).await;
-        assert!(
-            ok(wait_task.await, "wait task should complete"),
-            "leader election should trigger the initial maintenance wait to finish"
-        );
-    }
 
     #[test]
     fn test_partition_health_deserialization() {

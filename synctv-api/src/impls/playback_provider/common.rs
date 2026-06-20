@@ -16,7 +16,89 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::impls::ApiError;
 
-const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
+pub struct PlaybackProviderAccessDeps<'a> {
+    pub proxy_signing_key: &'a ProxySigningKey,
+    pub public_id_codec: &'a synctv_core::PublicIdCodec,
+    pub provider_stores: &'a dyn synctv_core::provider::store::ProviderStoreResolver,
+    pub user_service: &'a UserService,
+    pub playback_transport_services: &'a PlaybackTransportServices,
+}
+
+pub struct PlaybackProviderAccessRequest<'a> {
+    pub version: &'a str,
+    pub resource: String,
+    pub signature: &'a str,
+    pub user_id: &'a str,
+    pub room_id: &'a str,
+    pub expires_at: i64,
+    pub target_url: Option<&'a str>,
+}
+
+/// Macro to implement HasPlaybackProviderAccessFields for provider types
+/// that have matching field names.
+#[macro_export]
+macro_rules! impl_has_playback_provider_access_fields {
+    ($type:ty) => {
+        impl<'a> $crate::impls::playback_provider::common::HasPlaybackProviderAccessFields<'a>
+            for $type
+        {
+            fn proxy_signing_key(&self) -> &'a synctv_core::proxy_signature::ProxySigningKey {
+                self.proxy_signing_key
+            }
+            fn public_id_codec(&self) -> &'a synctv_core::PublicIdCodec {
+                self.public_id_codec
+            }
+            fn provider_stores(
+                &self,
+            ) -> &'a dyn synctv_core::provider::store::ProviderStoreResolver {
+                self.provider_stores
+            }
+            fn user_service(&self) -> &'a synctv_core::service::UserService {
+                self.user_service
+            }
+            fn playback_transport_services(
+                &self,
+            ) -> &'a synctv_core::provider::playback_transport::PlaybackTransportServices {
+                self.playback_transport_services
+            }
+        }
+    };
+}
+
+pub trait HasPlaybackProviderAccessFields<'a> {
+    fn proxy_signing_key(&self) -> &'a ProxySigningKey;
+    fn public_id_codec(&self) -> &'a synctv_core::PublicIdCodec;
+    fn provider_stores(&self) -> &'a dyn synctv_core::provider::store::ProviderStoreResolver;
+    fn user_service(&self) -> &'a UserService;
+    fn playback_transport_services(&self) -> &'a PlaybackTransportServices;
+
+    fn access_deps(&self) -> PlaybackProviderAccessDeps<'a> {
+        PlaybackProviderAccessDeps {
+            proxy_signing_key: self.proxy_signing_key(),
+            public_id_codec: self.public_id_codec(),
+            provider_stores: self.provider_stores(),
+            user_service: self.user_service(),
+            playback_transport_services: self.playback_transport_services(),
+        }
+    }
+}
+
+pub async fn verify_playback_provider_access_with_deps(
+    deps: &PlaybackProviderAccessDeps<'_>,
+    provider_name: &'static str,
+    request: PlaybackProviderAccessRequest<'_>,
+) -> Result<
+    (
+        Arc<dyn synctv_core::provider::store::ProviderStore>,
+        ProxyUrlClaims,
+    ),
+    ApiError,
+> {
+    verify_playback_provider_http_access(deps, provider_name, request).await
+}
+
+const MAX_MANIFEST_CONTENT_LENGTH: u64 = 10 * 1024 * 1024;
+const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 const MAX_CONSECUTIVE_FLV_DROPS: u32 = 100;
 
 pub type PlaybackProviderChunkStream =
@@ -45,6 +127,53 @@ pub struct LivePlaybackDeps<'a> {
     pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
     pub livestream_config: &'a synctv_core::config::LivestreamConfig,
     pub settings_registry: Option<&'a synctv_core::service::SettingsRegistry>,
+}
+
+/// Macro to implement HasLivePlaybackFields for provider types
+/// that have matching field names.
+#[macro_export]
+macro_rules! impl_has_live_playback_fields {
+    ($type:ty) => {
+        impl<'a> $crate::impls::playback_provider::common::HasLivePlaybackFields<'a> for $type {
+            fn proxy_signing_key(&self) -> &'a synctv_core::proxy_signature::ProxySigningKey {
+                self.proxy_signing_key
+            }
+            fn live_streaming_infrastructure(
+                &self,
+            ) -> Option<&'a std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>> {
+                self.live_streaming_infrastructure
+            }
+            fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime {
+                self.connection_runtime
+            }
+            fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig {
+                self.livestream_config
+            }
+            fn settings_registry(&self) -> Option<&'a synctv_core::service::SettingsRegistry> {
+                self.settings_registry
+            }
+        }
+    };
+}
+
+pub trait HasLivePlaybackFields<'a> {
+    fn proxy_signing_key(&self) -> &'a ProxySigningKey;
+    fn live_streaming_infrastructure(
+        &self,
+    ) -> Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>;
+    fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime;
+    fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig;
+    fn settings_registry(&self) -> Option<&'a synctv_core::service::SettingsRegistry>;
+
+    fn live_deps(&self) -> LivePlaybackDeps<'a> {
+        LivePlaybackDeps {
+            proxy_signing_key: self.proxy_signing_key(),
+            live_streaming_infrastructure: self.live_streaming_infrastructure(),
+            connection_runtime: self.connection_runtime(),
+            livestream_config: self.livestream_config(),
+            settings_registry: self.settings_registry(),
+        }
+    }
 }
 
 pub struct LiveFlvChunksRequest {
@@ -347,21 +476,10 @@ pub async fn validate_fresh_playback_provider_access(
         .map_err(map_playback_provider_membership_probe_error)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn verify_playback_provider_http_access(
-    signing_key: &ProxySigningKey,
-    public_id_codec: &synctv_core::PublicIdCodec,
-    provider_stores: &dyn synctv_core::provider::store::ProviderStoreResolver,
-    user_service: &UserService,
-    playback_transport_services: &PlaybackTransportServices,
+    deps: &PlaybackProviderAccessDeps<'_>,
     provider_name: &'static str,
-    version: &str,
-    resource: String,
-    signature: &str,
-    user_id: &str,
-    room_id: &str,
-    expires_at: i64,
-    target_url: Option<&str>,
+    request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
         Arc<dyn synctv_core::provider::store::ProviderStore>,
@@ -369,42 +487,46 @@ pub async fn verify_playback_provider_http_access(
     ),
     ApiError,
 > {
-    if version.trim().is_empty() {
+    if request.version.trim().is_empty() {
         return Err(ApiError::InvalidInput(
             "playback provider path must include a version".to_string(),
         ));
     }
     let claims = ProxyUrlClaims {
         provider: provider_name.to_string(),
-        version: version.to_string(),
-        resource,
-        room_id: room_id.to_string(),
-        user_id: user_id.to_string(),
-        expires_at,
-        target_url: target_url.map(ToString::to_string),
+        version: request.version.to_string(),
+        resource: request.resource,
+        room_id: request.room_id.to_string(),
+        user_id: request.user_id.to_string(),
+        expires_at: request.expires_at,
+        target_url: request.target_url.map(ToString::to_string),
     };
-    signing_key.verify(&claims, signature).map_err(|error| {
-        tracing::warn!(
-            error = %error,
-            message = synctv_common::messages::INVALID_PROXY_SIGNATURE,
-            "Playback provider signature validation failed"
-        );
-        ApiError::Authentication(synctv_common::messages::INVALID_PROXY_SIGNATURE.to_string())
-    })?;
-    let user_id = public_id_codec
+    deps.proxy_signing_key
+        .verify(&claims, request.signature)
+        .map_err(|error| {
+            tracing::warn!(
+                error = %error,
+                message = synctv_common::messages::INVALID_PROXY_SIGNATURE,
+                "Playback provider signature validation failed"
+            );
+            ApiError::Authentication(synctv_common::messages::INVALID_PROXY_SIGNATURE.to_string())
+        })?;
+    let user_id = deps
+        .public_id_codec
         .decode::<UserId>(&claims.user_id)
         .map_err(|error| ApiError::InvalidInput(format!("Invalid {error} in user_id")))?;
-    let room_id = public_id_codec
+    let room_id = deps
+        .public_id_codec
         .decode::<RoomId>(&claims.room_id)
         .map_err(|error| ApiError::InvalidInput(format!("Invalid {error} in room_id")))?;
     validate_fresh_playback_provider_access(
-        user_service,
-        playback_transport_services,
+        deps.user_service,
+        deps.playback_transport_services,
         &room_id,
         &user_id,
     )
     .await?;
-    Ok((provider_stores.load(provider_name), claims))
+    Ok((deps.provider_stores.load(provider_name), claims))
 }
 
 pub async fn playback_transport_action_to_chunk_stream(
@@ -470,24 +592,20 @@ pub async fn playback_transport_action_to_chunk_stream(
 
             // Check Content-Length BEFORE reading body to prevent DoS
             if let Some(size) = response.content_length() {
-                if size > MAX_MANIFEST_SIZE {
+                if size > MAX_MANIFEST_CONTENT_LENGTH {
                     return Err(ApiError::ServiceUnavailable(
                         "M3U8 manifest exceeded size limit".to_string(),
                     ));
                 }
             }
 
-            // Read body with streaming size limit to protect against chunked responses
-            // Use a manual loop to enforce size limits
-            use futures::StreamExt;
             let mut body = bytes::BytesMut::with_capacity(8192);
             let mut stream = response.bytes_stream();
             while let Some(chunk_result) = stream.next().await {
                 let chunk = chunk_result.map_err(|error| map_reqwest_error(&error))?;
 
-                // Use saturating_add to prevent integer overflow on 32-bit platforms
                 let new_len = body.len().saturating_add(chunk.len());
-                if new_len > MAX_MANIFEST_SIZE as usize {
+                if new_len > MAX_MANIFEST_SIZE {
                     return Err(ApiError::ServiceUnavailable(
                         "M3U8 manifest exceeded size limit during streaming read".to_string(),
                     ));
@@ -711,24 +829,9 @@ fn response_to_chunk_stream(
     response: reqwest::Response,
     head: bool,
 ) -> PlaybackProviderChunkStream {
-    let status = response.status().as_u16().into();
+    let status = response.status().as_u16();
     let metadata = stream_metadata_from_headers(response.headers());
-    let first = futures::stream::once(async move {
-        Ok(StreamChunk {
-            data: Vec::new(),
-            status,
-            content_type: metadata.content_type,
-            content_length: metadata.content_length,
-            content_range: metadata.content_range,
-            accept_ranges: metadata.accept_ranges,
-            cache_control: metadata.cache_control,
-            etag: metadata.etag,
-            last_modified: metadata.last_modified,
-            expires: metadata.expires,
-            content_disposition: metadata.content_disposition,
-            location: metadata.location,
-        })
-    });
+    let first = futures::stream::once(async move { Ok(metadata_chunk(status, metadata)) });
     if head {
         return Box::pin(first);
     }
@@ -746,24 +849,9 @@ fn response_to_chunk_stream(
 fn axum_response_to_chunk_stream(
     response: axum::response::Response,
 ) -> PlaybackProviderChunkStream {
-    let status = response.status().as_u16().into();
+    let status = response.status().as_u16();
     let metadata = stream_metadata_from_headers(response.headers());
-    let first = futures::stream::once(async move {
-        Ok(StreamChunk {
-            data: Vec::new(),
-            status,
-            content_type: metadata.content_type,
-            content_length: metadata.content_length,
-            content_range: metadata.content_range,
-            accept_ranges: metadata.accept_ranges,
-            cache_control: metadata.cache_control,
-            etag: metadata.etag,
-            last_modified: metadata.last_modified,
-            expires: metadata.expires,
-            content_disposition: metadata.content_disposition,
-            location: metadata.location,
-        })
-    });
+    let first = futures::stream::once(async move { Ok(metadata_chunk(status, metadata)) });
     let body_stream = response
         .into_body()
         .into_data_stream()
@@ -888,6 +976,29 @@ fn map_proxy_execution_error(err: &anyhow::Error) -> ApiError {
             | synctv_proxy::ProxyErrorKind::Upstream,
         )
         | None => ApiError::ServiceUnavailable(err.to_string()),
+    }
+}
+
+pub fn playback_provider_route_base(route_provider: &str, version: &str, resource: &str) -> String {
+    let encoded_version: String =
+        url::form_urlencoded::byte_serialize(version.as_bytes()).collect();
+    format!("/api/playback-providers/{route_provider}/{encoded_version}/{resource}")
+}
+
+fn metadata_chunk(status: u16, metadata: StreamResponseMetadata) -> StreamChunk {
+    StreamChunk {
+        data: Vec::new(),
+        status: status.into(),
+        content_type: metadata.content_type,
+        content_length: metadata.content_length,
+        content_range: metadata.content_range,
+        accept_ranges: metadata.accept_ranges,
+        cache_control: metadata.cache_control,
+        etag: metadata.etag,
+        last_modified: metadata.last_modified,
+        expires: metadata.expires,
+        content_disposition: metadata.content_disposition,
+        location: metadata.location,
     }
 }
 

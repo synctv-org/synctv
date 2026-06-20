@@ -272,10 +272,6 @@ impl SliceCacheBackend for FileBackend {
         self.remove_entry(key).await;
     }
 
-    async fn contains(&self, key: &str) -> bool {
-        self.index.contains(key)
-    }
-
     fn current_size(&self) -> u64 {
         self.index.total_size()
     }

@@ -10,15 +10,7 @@ impl OAuth2Service {
         user_id: &UserId,
         user_info: &OAuth2UserInfo,
     ) -> Result<()> {
-        let repo_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-            provider: user_info.provider.clone(),
-            provider_instance_name: user_info.provider_instance_name.clone(),
-            provider_issuer: user_info.provider_issuer.clone(),
-            provider_user_id: user_info.provider_user_id.clone(),
-            username: user_info.username.clone(),
-            email: user_info.email.clone(),
-            avatar: user_info.avatar.clone(),
-        };
+        let repo_user_info = user_info.to_repo_user_info();
 
         self.repository()?
             .upsert(
@@ -40,15 +32,7 @@ impl OAuth2Service {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let repo_user_info = crate::models::oauth2_client::OAuth2UserInfo {
-            provider: user_info.provider.clone(),
-            provider_instance_name: user_info.provider_instance_name.clone(),
-            provider_issuer: user_info.provider_issuer.clone(),
-            provider_user_id: user_info.provider_user_id.clone(),
-            username: user_info.username.clone(),
-            email: user_info.email.clone(),
-            avatar: user_info.avatar.clone(),
-        };
+        let repo_user_info = user_info.to_repo_user_info();
 
         self.repository()?
             .upsert_with_executor(

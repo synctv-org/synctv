@@ -7,10 +7,8 @@
 //! 3. **Decoupled**: Factory doesn't need to know about provider-specific configs
 //! 4. **Clone Pattern**: Each provider implements Clone to create instances
 
-pub mod config;
 pub mod providers;
 
-pub use config::ConfigLoader;
 pub use providers::{GitHubConfig, GoogleConfig, LogtoConfig, OidcConfig};
 
 use crate::Error;

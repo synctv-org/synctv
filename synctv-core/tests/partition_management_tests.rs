@@ -12,10 +12,8 @@ use synctv_core::{
         AuditAction, ChatMessage, ChatMessageType, Room, RoomId, RoomStatus, User, UserId,
         UserRole, UserStatus,
     },
-    repository::{ChatRepository, RoomRepository, SettingsRepository, UserRepository},
-    service::{
-        global_settings::SettingsRegistry, AlwaysLeader, ChatPartitionManager, SettingsService,
-    },
+    repository::{ChatRepository, RoomRepository, UserRepository},
+    service::{AlwaysLeader, ChatPartitionManager},
 };
 use synctv_core_testing::{create_test_pool, ok};
 /// Default `PostgreSQL` version for test containers
@@ -37,12 +35,6 @@ fn make_user(username: &str) -> User {
         banned_by: None,
         banned_reason: None,
     }
-}
-
-fn make_settings_registry(pool: sqlx::PgPool) -> Arc<SettingsRegistry> {
-    let repo = SettingsRepository::new(pool.clone());
-    let service = Arc::new(SettingsService::new(repo, pool));
-    Arc::new(SettingsRegistry::new(service))
 }
 
 #[tokio::test]
@@ -128,8 +120,7 @@ async fn test_chat_message_default_partition_routing() {
 #[ignore = "Requires Docker"]
 async fn test_chat_partition_manager_creates_future_partitions() {
     let (_container, pool) = create_test_pool().await;
-    let settings = make_settings_registry(pool.clone());
-    let manager = ChatPartitionManager::new(pool.clone(), settings, Arc::new(AlwaysLeader));
+    let manager = ChatPartitionManager::new(pool.clone(), Arc::new(AlwaysLeader));
 
     let created_count = ok(
         manager.ensure_future_partitions(5).await,
@@ -181,8 +172,7 @@ async fn test_audit_logs_default_partition_routing() {
 #[ignore = "Requires Docker"]
 async fn test_check_chat_message_partitions_health() {
     let (_container, pool) = create_test_pool().await;
-    let settings = make_settings_registry(pool.clone());
-    let manager = ChatPartitionManager::new(pool, settings, Arc::new(AlwaysLeader));
+    let manager = ChatPartitionManager::new(pool, Arc::new(AlwaysLeader));
 
     ok(
         manager.ensure_future_partitions(7).await,

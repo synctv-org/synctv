@@ -1,5 +1,6 @@
 // Shared lifecycle state and pool utilities for managed streams.
 
+use crate::util::unix_now_secs;
 use anyhow::Result;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -23,17 +24,6 @@ pub(crate) struct StreamLifecycle {
     is_running: Arc<AtomicBool>,
     task_handle: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
     abort_handle: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
-}
-
-/// Get current unix timestamp in seconds.
-fn unix_now_secs() -> u64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(%error, "system clock is before Unix epoch");
-            0
-        }
-    }
 }
 
 impl StreamLifecycle {

@@ -133,10 +133,10 @@ async fn test_file_backend_remove() -> TestResult {
     let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
     put_entry(&backend, key, b"data").await?;
-    assert!(backend.contains(key).await);
+    assert!(backend.get(key).await.is_some());
 
     backend.remove(key).await;
-    assert!(!backend.contains(key).await);
+    assert!(backend.get(key).await.is_none());
 
     let result = backend.get(key).await;
     assert!(result.is_none());
@@ -153,13 +153,13 @@ async fn test_file_backend_remove_nonexistent() -> TestResult {
 }
 
 #[tokio::test]
-async fn test_file_backend_contains() -> TestResult {
+async fn test_file_backend_get_presence() -> TestResult {
     let (backend, _tmp) = make_backend().await?;
     let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-    assert!(!backend.contains(key).await);
+    assert!(backend.get(key).await.is_none());
 
     put_entry(&backend, key, b"data").await?;
-    assert!(backend.contains(key).await);
+    assert!(backend.get(key).await.is_some());
     Ok(())
 }
 
@@ -280,8 +280,9 @@ async fn test_file_backend_evict_expired() -> TestResult {
     assert_eq!(backend.entry_count(), 1);
     assert!(
         backend
-            .contains("fresh_key_0000000000000000000000000000000000000000000000000000000000")
+            .get("fresh_key_0000000000000000000000000000000000000000000000000000000000")
             .await
+            .is_some()
     );
     Ok(())
 }
@@ -345,8 +346,9 @@ async fn test_file_backend_evict_to_size() -> TestResult {
 
     assert!(
         backend
-            .contains("newest_key_0000000000000000000000000000000000000000000000000000000")
+            .get("newest_key_0000000000000000000000000000000000000000000000000000000")
             .await
+            .is_some()
     );
     Ok(())
 }

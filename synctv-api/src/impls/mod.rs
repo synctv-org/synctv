@@ -16,6 +16,7 @@ pub(crate) mod email;
 pub mod messaging;
 pub(crate) mod notification;
 pub(crate) mod oauth2;
+pub(crate) mod pagination;
 mod playback;
 pub mod playback_provider;
 mod playlist_items_snapshot;
@@ -639,15 +640,13 @@ pub(crate) fn map_livestream_stream_error(stream_error: &StreamError) -> ApiErro
         | StreamError::InvalidStreamKey(_) => {
             ApiError::NotFound(LIVESTREAM_NOT_AVAILABLE_MESSAGE.to_string())
         }
-        StreamError::PermissionDenied(_) | StreamError::AuthenticationFailed(_) => {
+        StreamError::PermissionDenied(_) => {
             ApiError::Authorization(LIVESTREAM_PERMISSION_DENIED_MESSAGE.to_string())
         }
         StreamError::ResourceExhausted(_) => {
             ApiError::RateLimited(LIVESTREAM_RATE_LIMITED_MESSAGE.to_string())
         }
         StreamError::InvalidAddress(_)
-        | StreamError::ProtocolError(_)
-        | StreamError::HandshakeFailed(_)
         | StreamError::InvalidState(_)
         | StreamError::RedisError(_)
         | StreamError::RegistryError(_)
@@ -657,10 +656,7 @@ pub(crate) fn map_livestream_stream_error(stream_error: &StreamError) -> ApiErro
         | StreamError::StreamHubError(_) => {
             ApiError::ServiceUnavailable(LIVESTREAM_UNAVAILABLE_MESSAGE.to_string())
         }
-        StreamError::IoError(_)
-        | StreamError::Internal(_)
-        | StreamError::AlreadyPublishing(_)
-        | StreamError::PublisherExists(_) => {
+        StreamError::IoError(_) | StreamError::Internal(_) => {
             ApiError::Internal(LIVESTREAM_REQUEST_FAILED_MESSAGE.to_string())
         }
     }

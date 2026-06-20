@@ -23,10 +23,11 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
+use super::{cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
+use crate::service::partitioning::u32_to_i32;
 use crate::{
-    models::{ChatAttachment, FileReferenceTarget},
-    repository::{FileStorageRepository, RoomResourceEventRepository},
+    models::ChatAttachment,
+    repository::FileStorageRepository,
     InternalExt, Result,
 };
 
@@ -116,20 +117,6 @@ pub struct CleanupService {
 }
 
 impl CleanupService {
-    fn u32_to_i32(value: u32, field: &'static str) -> Result<i32> {
-        i32::try_from(value)
-            .map_err(|_| crate::Error::Internal(format!("{field} exceeds i32::MAX")))
-    }
-
-    fn len_to_u64(len: usize, field: &'static str) -> Result<u64> {
-        u64::try_from(len).map_err(|_| crate::Error::Internal(format!("{field} exceeds u64::MAX")))
-    }
-
-    fn retention_seconds_to_i64(value: u64, field: &'static str) -> Result<i64> {
-        i64::try_from(value)
-            .map_err(|_| crate::Error::Internal(format!("{field} exceeds i64::MAX")))
-    }
-
     fn chat_max_messages_per_room_from_config(config: &CleanupConfig) -> i64 {
         config.chat_max_messages_per_room
     }
@@ -365,7 +352,7 @@ impl CleanupService {
 
     /// Permanently delete users that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_users(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        let days = u32_to_i32(
             self.config.soft_delete_retention_days,
             "soft_delete_retention_days",
         )?;
@@ -432,7 +419,7 @@ impl CleanupService {
 
     /// Permanently delete rooms that were soft-deleted beyond the retention period
     async fn purge_soft_deleted_rooms(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        let days = u32_to_i32(
             self.config.room_soft_delete_retention_days,
             "room_soft_delete_retention_days",
         )?;
@@ -471,7 +458,7 @@ impl CleanupService {
 
     /// Delete email auth and registration tokens that expired beyond the retention period.
     async fn delete_expired_tokens(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        let days = u32_to_i32(
             self.config.expired_token_retention_days,
             "expired_token_retention_days",
         )?;
@@ -502,44 +489,20 @@ impl CleanupService {
 
     /// Delete expired media provider credentials with buffer to prevent race conditions.
     async fn delete_expired_credentials(&self) -> Result<u64> {
-        let buffer_hours = Self::u32_to_i32(
+        cleanup_ops::delete_expired_credentials(
+            &self.pool,
             self.config.expired_credential_buffer_hours,
-            "expired_credential_buffer_hours",
-        )?;
-        let result = sqlx::query!(
-            r"
-            DELETE FROM user_media_provider_credentials
-            WHERE expires_at IS NOT NULL
-              AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
-            ",
-            buffer_hours
         )
-        .execute(&self.pool)
         .await
-        .internal_with_err("Failed to delete expired credentials")?;
-
-        Ok(result.rows_affected())
     }
 
     /// Delete read notifications older than the retention period
     async fn delete_old_notifications(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        cleanup_ops::delete_old_read_notifications(
+            &self.pool,
             self.config.notification_retention_days,
-            "notification_retention_days",
-        )?;
-        let result = sqlx::query!(
-            r"
-            DELETE FROM notifications
-            WHERE is_read = TRUE
-              AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-            ",
-            days
         )
-        .execute(&self.pool)
         .await
-        .internal_with_err("Failed to delete old notifications")?;
-
-        Ok(result.rows_affected())
     }
 
     /// Delete all notifications (including unread) older than the max retention period
@@ -547,22 +510,11 @@ impl CleanupService {
     /// This prevents unbounded growth from unread notifications that are never
     /// acknowledged by users.
     async fn delete_expired_notifications(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        cleanup_ops::delete_expired_notifications(
+            &self.pool,
             self.config.notification_max_retention_days,
-            "notification_max_retention_days",
-        )?;
-        let result = sqlx::query!(
-            r"
-            DELETE FROM notifications
-            WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-            ",
-            days
         )
-        .execute(&self.pool)
         .await
-        .internal_with_err("Failed to delete expired notifications")?;
-
-        Ok(result.rows_affected())
     }
 
     /// Remove expired entries from the token blacklist table.
@@ -586,111 +538,41 @@ impl CleanupService {
     }
 
     async fn cleanup_room_resource_events(&self) -> Result<u64> {
-        let retention_seconds = Self::retention_seconds_to_i64(
+        cleanup_ops::delete_old_room_resource_events(
+            &self.pool,
             self.config.room_resource_event_retention_seconds,
-            "room_resource_event_retention_seconds",
-        )?;
-        RoomResourceEventRepository::new(self.pool.clone())
-            .delete_older_than(retention_seconds)
-            .await
+        )
+        .await
     }
 
     async fn cleanup_stale_playback_progress(&self) -> Result<u64> {
-        let days = Self::u32_to_i32(
+        cleanup_ops::delete_stale_playback_progress(
+            &self.pool,
             self.config.playback_progress_retention_days,
-            "playback_progress_retention_days",
-        )?;
-        let result = sqlx::query!(
-            r#"
-            DELETE FROM room_playback_progress progress
-            WHERE progress.updated_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM room_playback_state state
-                  WHERE state.current_progress_id = progress.id
-              )
-            "#,
-            days,
         )
-        .execute(&self.pool)
         .await
-        .internal_with_err("Failed to cleanup stale playback progress")?;
-
-        Ok(result.rows_affected())
     }
 
     async fn cleanup_expired_file_references(&self) -> Result<u64> {
         let Some(storage) = &self.file_storage_service else {
             return Ok(0);
         };
-        let repository = FileStorageRepository::new(self.pool.clone());
-        let references = repository.list_expired_references(100).await?;
-        if references.is_empty() {
-            return Ok(0);
-        }
-
-        match storage
-            .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
+        cleanup_ops::cleanup_expired_file_references(&self.pool, storage)
             .await
-        {
-            Ok(()) => Self::len_to_u64(references.len(), "expired file reference count"),
-            Err(error) => {
-                repository
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::ReferenceExpired.as_str(),
-                        &references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await?;
-                Err(error).internal_with_err("Failed to cleanup expired file references")
-            }
-        }
+            .internal_with_err("Failed to cleanup expired file references")
     }
 
     async fn cleanup_unreferenced_files(&self) -> Result<u64> {
         let Some(storage) = &self.file_storage_service else {
             return Ok(0);
         };
-        let repository = FileStorageRepository::new(self.pool.clone());
-        let older_than_seconds = Self::retention_seconds_to_i64(
+        cleanup_ops::cleanup_unreferenced_file_objects(
+            &self.pool,
+            storage,
             self.config.unreferenced_file_retention_seconds,
-            "unreferenced_file_retention_seconds",
-        )?;
-        let files = repository
-            .list_unreferenced_objects(older_than_seconds, 100)
-            .await?;
-        if files.is_empty() {
-            return Ok(0);
-        }
-
-        let references = files
-            .into_iter()
-            .map(|file| FileReferenceTarget {
-                storage_backend: file.storage_backend,
-                object_key: file.object_key.clone(),
-                reference_kind: "unreferenced_file".to_string(),
-                reference_id: file.object_key,
-            })
-            .collect::<Vec<_>>();
-
-        match storage
-            .delete_files(FileStorageCleanupOrigin::UnreferencedObject, &references)
-            .await
-        {
-            Ok(()) => Self::len_to_u64(references.len(), "unreferenced file count"),
-            Err(error) => {
-                repository
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::UnreferencedObject.as_str(),
-                        &references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await?;
-                Err(error).internal_with_err("Failed to cleanup unreferenced file objects")
-            }
-        }
+        )
+        .await
+        .internal_with_err("Failed to cleanup unreferenced file objects")
     }
 
     /// Cleanup chat messages exceeding per-room cap

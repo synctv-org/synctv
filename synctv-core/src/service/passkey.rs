@@ -340,6 +340,24 @@ impl PasskeyService {
             })
     }
 
+    async fn persist_authentication_update(
+        &self,
+        stored: &mut WebAuthnCredential,
+        auth_result: &AuthenticationResult,
+    ) -> Result<()> {
+        let changed = Self::apply_authentication_result(stored, auth_result)?;
+        if changed || i64::from(auth_result.counter()) != stored.sign_count {
+            self.repository
+                .update_after_authentication(
+                    &stored.credential_id,
+                    &stored.passkey,
+                    i64::from(auth_result.counter()),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
     fn validate_sign_in_method_delete_policy(remaining_sign_in_method_count: usize) -> Result<()> {
         if remaining_sign_in_method_count == 0 {
             return Err(Error::InvalidInput(
@@ -861,16 +879,8 @@ impl PasskeyService {
                 .await?;
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
-        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
-        if changed || i64::from(auth_result.counter()) != stored.sign_count {
-            self.repository
-                .update_after_authentication(
-                    &stored.credential_id,
-                    &stored.passkey,
-                    i64::from(auth_result.counter()),
-                )
-                .await?;
-        }
+        self.persist_authentication_update(&mut stored, &auth_result)
+            .await?;
 
         self.user_service
             .login_with_verified_external_credential_with_control(
@@ -922,16 +932,8 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         };
 
-        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
-        if changed || i64::from(auth_result.counter()) != stored.sign_count {
-            self.repository
-                .update_after_authentication(
-                    &stored.credential_id,
-                    &stored.passkey,
-                    i64::from(auth_result.counter()),
-                )
-                .await?;
-        }
+        self.persist_authentication_update(&mut stored, &auth_result)
+            .await?;
 
         let brute_force_key = format!(
             "passkey:{}",
@@ -995,16 +997,8 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        let changed = Self::apply_authentication_result(&mut stored, &auth_result)?;
-        if changed || i64::from(auth_result.counter()) != stored.sign_count {
-            self.repository
-                .update_after_authentication(
-                    &stored.credential_id,
-                    &stored.passkey,
-                    i64::from(auth_result.counter()),
-                )
-                .await?;
-        }
+        self.persist_authentication_update(&mut stored, &auth_result)
+            .await?;
 
         Ok(())
     }

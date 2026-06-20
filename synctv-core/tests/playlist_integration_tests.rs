@@ -5,10 +5,14 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::{Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
-    repository::{PlaylistRepository, RoomRepository, UserRepository},
+    models::{
+        Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus, User, UserId,
+        UserRole, UserStatus,
+    },
+    repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
+    service::room::DeleteEntriesRequest,
 };
-use synctv_core_testing::create_test_pool;
+use synctv_core_testing::{create_test_pool, create_test_room_service};
 use synctv_core_testing::{TestOptionExt, TestResultExt};
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
@@ -260,6 +264,7 @@ async fn test_cascade_delete_parent_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo
@@ -268,6 +273,10 @@ async fn test_cascade_delete_parent_playlist() {
         .checked("test operation should succeed");
     let room = room_repo
         .create(&make_room("PL Room 6", &owner.id))
+        .await
+        .checked("test operation should succeed");
+    member_repo
+        .add(&RoomMember::new(room.id, owner.id, RoomRole::Creator))
         .await
         .checked("test operation should succeed");
 
@@ -284,12 +293,20 @@ async fn test_cascade_delete_parent_playlist() {
         .await
         .checked("test operation should succeed");
 
-    // Delete the child - the repository should remove the whole subtree too.
-    let deleted = playlist_repo
-        .delete(&child.id)
+    let room_service = create_test_room_service(pool.clone());
+    let deleted = room_service
+        .delete_entries(
+            room.id,
+            owner.id,
+            DeleteEntriesRequest {
+                playlist_ids: vec![child.id],
+                media_ids: Vec::new(),
+                force: false,
+            },
+        )
         .await
         .checked("test operation should succeed");
-    assert!(deleted);
+    assert_eq!(deleted.deleted_playlists, 2);
 
     // Only root should remain
     let all_playlists = playlist_repo

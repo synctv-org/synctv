@@ -68,10 +68,7 @@ pub use filter::{
     proxy_with_cache_with_control_and_timeout,
 };
 pub use lifecycle::CacheLifecycleManager;
-pub use range::{
-    aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,
-    ContentRange,
-};
+pub use range::{parse_content_range, ContentRange};
 pub use status::CacheStatus;
 pub use store::SliceCache;
 pub use types::{SliceCachePurgeResult, SliceCacheStats};

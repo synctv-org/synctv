@@ -60,6 +60,7 @@ pub struct CachedUserSnapshot {
 
 impl CachedUser {
     /// Create a new `CachedUser`
+    #[cfg(test)]
     #[must_use]
     pub fn new(
         id: UserId,

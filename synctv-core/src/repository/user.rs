@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use super::query_builder::escape_ilike;
+use crate::repository::pools::RepoPools;
 use crate::{
     models::{SignupMethod, User, UserId, UserListQuery, UserListSortBy, UserRole, UserStatus},
     Error, Result,
@@ -58,41 +59,38 @@ impl From<UserListRow> for User {
 /// User repository for database operations
 #[derive(Clone)]
 pub struct UserRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 impl UserRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
     }
 
     /// Get the database pool
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
     }
 
     #[must_use]
     pub fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
+        self.pools.read()
     }
 
     /// Create a new user.
     pub async fn create(&self, user: &User) -> Result<User> {
-        self.create_with_executor(user, &self.pool).await
+        self.create_with_executor(user, self.pool()).await
     }
 
     /// Create a new user using a provided executor.
@@ -191,7 +189,7 @@ impl UserRepository {
             "#,
             user_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         Ok(u)
@@ -268,7 +266,7 @@ impl UserRepository {
             "#,
             &ids
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool())
         .await?;
 
         Ok(users)
@@ -276,7 +274,7 @@ impl UserRepository {
 
     /// Get user by username
     pub async fn get_by_username(&self, username: &str) -> Result<Option<User>> {
-        self.get_by_username_with_executor(username, &self.pool)
+        self.get_by_username_with_executor(username, self.pool())
             .await
     }
 
@@ -330,7 +328,7 @@ impl UserRepository {
     /// Returns `Error::OptimisticLockConflict` when another concurrent update
     /// already changed the row, so the caller can retry with a fresh read.
     pub async fn update(&self, user: &User, old_version: i32) -> Result<User> {
-        self.update_with_executor(user, old_version, &self.pool)
+        self.update_with_executor(user, old_version, self.pool())
             .await
     }
 
@@ -391,7 +389,7 @@ impl UserRepository {
             Utc::now(),
             old_version
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         if let Some(updated) = u {
@@ -640,7 +638,7 @@ impl UserRepository {
 
     /// Soft delete user
     pub async fn delete(&self, user_id: &UserId) -> Result<bool> {
-        self.delete_with_executor(user_id, &self.pool).await
+        self.delete_with_executor(user_id, self.pool()).await
     }
 
     /// Soft delete user using a provided executor (pool or transaction)
@@ -670,7 +668,7 @@ impl UserRepository {
         banned_by: Option<&UserId>,
         reason: Option<String>,
     ) -> Result<User> {
-        self.insert_ban_with_executor(user_id, banned_by, reason, &self.pool)
+        self.insert_ban_with_executor(user_id, banned_by, reason, self.pool())
             .await?;
         self.get_by_id(user_id)
             .await?
@@ -740,7 +738,7 @@ impl UserRepository {
             user_id as &UserId,
             Utc::now(),
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         if result.rows_affected() == 0 {
@@ -772,7 +770,7 @@ impl UserRepository {
             "#,
             user_id as &UserId,
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool())
         .await?;
 
         Ok(is_banned)
@@ -906,7 +904,7 @@ impl UserRepository {
 
     /// List users with pagination
     pub async fn list(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        self.list_with_role_scope(query, UserListRoleScope::All, &self.pool)
+        self.list_with_role_scope(query, UserListRoleScope::All, self.pool())
             .await
     }
 
@@ -925,7 +923,7 @@ impl UserRepository {
 
     /// List admin-capable users (root + admin) with pagination.
     pub async fn list_admins(&self, query: &UserListQuery) -> Result<(Vec<User>, i64)> {
-        self.list_with_role_scope(query, UserListRoleScope::Admins, &self.pool)
+        self.list_with_role_scope(query, UserListRoleScope::Admins, self.pool())
             .await
     }
 
@@ -954,7 +952,7 @@ impl UserRepository {
             "#,
             username
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool())
         .await?;
 
         Ok(exists)

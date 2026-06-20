@@ -370,8 +370,6 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                uid,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -451,8 +449,6 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                uid,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -533,8 +529,6 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                uid,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -641,8 +635,6 @@ impl ClientApiImpl {
             let prepared_membership_fanout = self
                 .membership_event_fanout
                 .prepare_permission_changed_outbox_fanout(
-                    target_uid,
-                    uid,
                     target_presence.is_online,
                     target_presence.connection_count,
                 );
@@ -742,8 +734,6 @@ impl ClientApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                uid,
                 target_presence.is_online,
                 target_presence.connection_count,
             );

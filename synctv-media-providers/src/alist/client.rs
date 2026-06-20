@@ -18,6 +18,7 @@ use super::types::{
     LoginData,
 };
 use crate::error::with_retry;
+use serde::de::DeserializeOwned;
 
 /// Validate that a path does not contain traversal components.
 fn validate_path(path: &str) -> Result<(), AlistError> {
@@ -62,6 +63,18 @@ fn header_value<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<
 
 fn effective_user_agent(headers: &HashMap<String, String>) -> &str {
     header_value(headers, USER_AGENT.as_str()).unwrap_or(crate::PROVIDER_USER_AGENT)
+}
+
+/// Return an `AlistError::Api` when the Alist response envelope reports a
+/// non-200 status code.
+fn check_alist_code<T>(resp: &AlistResp<T>) -> Result<(), AlistError> {
+    if resp.code != 200 {
+        return Err(AlistError::Api {
+            code: resp.code,
+            message: resp.message.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Alist HTTP Client
@@ -172,6 +185,68 @@ impl AlistClient {
         Ok(headers)
     }
 
+    /// Perform a retried POST request, decode the `AlistResp<T>` envelope, check
+    /// its status code and return the unwrapped data payload.
+    ///
+    /// `ctx` is used to build the "Missing data in `{ctx}` response" parse error
+    /// when the payload is absent.
+    async fn post_json<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        headers: &HeaderMap,
+        ctx: &'static str,
+    ) -> Result<T, AlistError> {
+        let client = self.client.clone();
+        with_retry(|| {
+            let url = url.to_string();
+            let body = body.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
+                let response = check_response(response).await?;
+                let resp: AlistResp<T> = json_with_limit(response).await?;
+                check_alist_code(&resp)?;
+                resp.data.ok_or_else(|| {
+                    AlistError::Parse(format!("Missing data in {ctx} response"))
+                })
+            }
+        })
+        .await
+    }
+
+    /// Perform a retried GET request, decode the `AlistResp<T>` envelope, check
+    /// its status code and return the unwrapped data payload.
+    async fn get_json<T: DeserializeOwned>(
+        &self,
+        url: &str,
+        headers: &HeaderMap,
+        ctx: &'static str,
+    ) -> Result<T, AlistError> {
+        let client = self.client.clone();
+        with_retry(|| {
+            let url = url.to_string();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client.get(&url).headers(headers).send().await?;
+                let response = check_response(response).await?;
+                let resp: AlistResp<T> = json_with_limit(response).await?;
+                check_alist_code(&resp)?;
+                resp.data.ok_or_else(|| {
+                    AlistError::Parse(format!("Missing data in {ctx} response"))
+                })
+            }
+        })
+        .await
+    }
+
     /// Login to Alist server
     ///
     /// Returns authentication token on success.
@@ -209,37 +284,9 @@ impl AlistClient {
             "otp_code": otp_code.unwrap_or(""),
         });
         let headers = self.build_headers(&HashMap::new())?;
-        let client = self.client.clone();
 
-        let token = with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<LoginData> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data
-                    .ok_or_else(|| AlistError::Parse("Missing login data in response".to_string()))
-                    .map(|d| d.token)
-            }
-        })
-        .await?;
+        let data: LoginData = self.post_json(&url, &body, &headers, "login").await?;
+        let token = data.token;
 
         self.set_token(token.clone());
         Ok(token)
@@ -266,38 +313,8 @@ impl AlistClient {
             "user_agent": user_agent,
         });
         let headers = self.build_headers(request_headers)?;
-        let client = self.client.clone();
 
-        let result = with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<HttpFsGetResp> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data
-                    .ok_or_else(|| AlistError::Parse("Missing data in fs_get response".to_string()))
-            }
-        })
-        .await;
-
-        result
+        self.post_json(&url, &body, &headers, "fs_get").await
     }
 
     /// List directory contents
@@ -338,39 +355,8 @@ impl AlistClient {
             "refresh": refresh,
         });
         let headers = self.build_headers(&HashMap::new())?;
-        let client = self.client.clone();
 
-        let result = with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<HttpFsListResp> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data.ok_or_else(|| {
-                    AlistError::Parse("Missing data in fs_list response".to_string())
-                })
-            }
-        })
-        .await;
-
-        result
+        self.post_json(&url, &body, &headers, "fs_list").await
     }
 
     /// Get video preview information (for instances supporting transcoding)
@@ -402,39 +388,8 @@ impl AlistClient {
             "password": password.unwrap_or(""),
         });
         let headers = self.build_headers(&HashMap::new())?;
-        let client = self.client.clone();
 
-        let result = with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<HttpFsOtherResp> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data.ok_or_else(|| {
-                    AlistError::Parse("Missing data in fs_other response".to_string())
-                })
-            }
-        })
-        .await;
-
-        result
+        self.post_json(&url, &body, &headers, "fs_other").await
     }
 
     /// Get current user information
@@ -443,30 +398,8 @@ impl AlistClient {
     pub async fn me(&self) -> Result<HttpMeResp, AlistError> {
         let url = format!("{}/api/me", self.host);
         let headers = self.build_headers(&HashMap::new())?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<HttpMeResp> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data
-                    .ok_or_else(|| AlistError::Parse("Missing data in me response".to_string()))
-            }
-        })
-        .await
+        self.get_json(&url, &headers, "me").await
     }
 
     /// Get video transcoding/preview information
@@ -517,37 +450,8 @@ impl AlistClient {
             "password": password.unwrap_or(""),
         });
         let headers = self.build_headers(&HashMap::new())?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let resp: AlistResp<HttpFsSearchResp> = json_with_limit(response).await?;
-
-                if resp.code != 200 {
-                    return Err(AlistError::Api {
-                        code: resp.code,
-                        message: resp.message,
-                    });
-                }
-
-                resp.data.ok_or_else(|| {
-                    AlistError::Parse("Missing data in fs_search response".to_string())
-                })
-            }
-        })
-        .await
+        self.post_json(&url, &body, &headers, "fs_search").await
     }
 }
 

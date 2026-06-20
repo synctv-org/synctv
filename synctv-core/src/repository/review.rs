@@ -6,6 +6,7 @@ use crate::models::{
     UserId,
 };
 use crate::repository::query_builder::escape_ilike;
+use crate::repository::pools::RepoPools;
 use crate::{Error, Result};
 
 fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
@@ -102,8 +103,7 @@ pub struct ReviewPage<T> {
 
 #[derive(Clone)]
 pub struct ReviewRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -163,21 +163,15 @@ impl ReviewRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
-    }
-
-    fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn load_user_registration(
@@ -210,7 +204,7 @@ impl ReviewRepository {
             "#,
             request_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await
         .map_err(crate::Error::from)?;
 
@@ -226,7 +220,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)
@@ -290,7 +284,7 @@ impl ReviewRepository {
         reviewed_by: Option<UserId>,
         reason: &str,
     ) -> Result<u64> {
-        Self::reject_user_registration_with_executor(&self.pool, request_id, reviewed_by, reason)
+        Self::reject_user_registration_with_executor(self.pools.primary(), request_id, reviewed_by, reason)
             .await
     }
 
@@ -421,7 +415,7 @@ impl ReviewRepository {
             "#,
             request_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await
         .map_err(Into::into)
     }
@@ -435,7 +429,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)
@@ -510,7 +504,7 @@ impl ReviewRepository {
             "#,
             request_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await
         .map_err(Into::into)
     }
@@ -542,7 +536,7 @@ impl ReviewRepository {
             request_id.as_i64(),
             room_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await
         .map_err(Into::into)
     }
@@ -560,7 +554,7 @@ impl ReviewRepository {
             "#,
             request_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         Ok(row.map(|row| (row.room_id, row.user_id)))
@@ -674,7 +668,7 @@ impl ReviewRepository {
             .as_deref()
             .map(escape_ilike)
             .unwrap_or_default();
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*)

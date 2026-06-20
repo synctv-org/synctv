@@ -21,7 +21,6 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Default max memory: 512 MB
@@ -71,7 +70,9 @@ struct MemoryStorageInner {
     total_bytes: usize,
     /// Monotonic sequence number used as a total ordering for entries.
     /// This avoids ties that would occur with `Instant` on fast inserts.
-    next_seq: AtomicU64,
+    /// Only ever mutated under the exclusive write lock, so a plain `u64`
+    /// suffices.
+    next_seq: u64,
 }
 
 impl MemoryStorageInner {
@@ -80,7 +81,7 @@ impl MemoryStorageInner {
             data: std::collections::HashMap::new(),
             time_index: BTreeMap::new(),
             total_bytes: 0,
-            next_seq: AtomicU64::new(0),
+            next_seq: 0,
         }
     }
 
@@ -240,7 +241,8 @@ impl HlsStorage for MemoryStorage {
         // Evict old entries if needed
         inner.evict_if_needed(size, self.max_keys, self.max_memory_bytes);
 
-        let seq = inner.next_seq.fetch_add(1, Ordering::Relaxed);
+        let seq = inner.next_seq;
+        inner.next_seq += 1;
         let write_time = std::time::Instant::now();
         inner.total_bytes += size;
         inner.time_index.insert(seq, key.clone());

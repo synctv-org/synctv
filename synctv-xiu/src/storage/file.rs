@@ -126,23 +126,37 @@ impl FileStorage {
         }
     }
 
-    async fn collect_stream_dirs(&self) -> Result<Vec<(String, String, PathBuf)>> {
+    /// Yield validated `(bucket_name, bucket_path)` pairs under the segments
+    /// root. Returns an empty vec when the root does not exist. Non-directory
+    /// entries and names with invalid UTF-8 are skipped.
+    async fn collect_bucket_dirs(&self) -> Result<Vec<(String, PathBuf)>> {
         let segments_root = self.segments_root_path();
         if !fs::try_exists(&segments_root).await? {
             return Ok(Vec::new());
         }
 
-        let mut streams = Vec::new();
+        let mut buckets = Vec::new();
         let mut bucket_dirs = fs::read_dir(&segments_root).await?;
         while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
-            let Ok(bucket_file_type) = bucket_entry.file_type().await else {
+            let Ok(file_type) = bucket_entry.file_type().await else {
                 continue;
             };
-            if !bucket_file_type.is_dir() {
+            if !file_type.is_dir() {
                 continue;
             }
+            let Some(bucket_name) = bucket_entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            buckets.push((bucket_name, bucket_entry.path()));
+        }
 
-            let mut app_dirs = fs::read_dir(bucket_entry.path()).await?;
+        Ok(buckets)
+    }
+
+    async fn collect_stream_dirs(&self) -> Result<Vec<(String, String, PathBuf)>> {
+        let mut streams = Vec::new();
+        for (_bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
+            let mut app_dirs = fs::read_dir(bucket_path).await?;
             while let Some(app_entry) = app_dirs.next_entry().await? {
                 let Ok(app_file_type) = app_entry.file_type().await else {
                     continue;
@@ -178,27 +192,9 @@ impl FileStorage {
     }
 
     async fn collect_app_stream_dirs(&self, app: &str) -> Result<Vec<(String, PathBuf)>> {
-        let segments_root = self.segments_root_path();
-        if !fs::try_exists(&segments_root).await? {
-            return Ok(Vec::new());
-        }
-
         let mut streams = Vec::new();
-        let mut bucket_dirs = fs::read_dir(&segments_root).await?;
-        while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
-            let Ok(file_type) = bucket_entry.file_type().await else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let bucket_name = bucket_entry.file_name();
-            let Some(bucket_name) = bucket_name.to_str() else {
-                continue;
-            };
-
-            let app_path = self.bucket_app_path(bucket_name, app);
+        for (bucket_name, _bucket_path) in self.collect_bucket_dirs().await? {
+            let app_path = self.bucket_app_path(&bucket_name, app);
             let mut stream_dirs = match fs::read_dir(app_path).await {
                 Ok(entries) => entries,
                 Err(err) if err.kind() == ErrorKind::NotFound => continue,
@@ -291,28 +287,14 @@ impl HlsStorage for FileStorage {
         validate_component(stream, "stream")?;
         let mut deleted = 0;
 
-        let segments_root = self.segments_root_path();
-        if fs::try_exists(&segments_root).await? {
-            let mut bucket_dirs = fs::read_dir(&segments_root).await?;
-            while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
-                let Ok(file_type) = bucket_entry.file_type().await else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
-                }
-                let bucket_name = bucket_entry.file_name();
-                let Some(bucket_name) = bucket_name.to_str() else {
-                    continue;
-                };
-                let stream_dir = self.bucket_stream_path(bucket_name, app, stream);
-                deleted += Self::remove_dir_all_counting_files(&stream_dir).await?;
-                Self::remove_empty_dir_if_exists(self.bucket_app_path(bucket_name, app)).await?;
-                Self::remove_empty_dir_if_exists(bucket_entry.path()).await?;
-            }
+        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
+            let stream_dir = self.bucket_stream_path(&bucket_name, app, stream);
+            deleted += Self::remove_dir_all_counting_files(&stream_dir).await?;
+            Self::remove_empty_dir_if_exists(self.bucket_app_path(&bucket_name, app)).await?;
+            Self::remove_empty_dir_if_exists(bucket_path).await?;
         }
 
-        Self::remove_empty_dir_if_exists(segments_root).await?;
+        Self::remove_empty_dir_if_exists(self.segments_root_path()).await?;
 
         tracing::debug!(
             "delete_app_stream {}/{}: deleted {} files",
@@ -327,28 +309,14 @@ impl HlsStorage for FileStorage {
         validate_component(app, "app")?;
         let mut deleted = 0;
 
-        let segments_root = self.segments_root_path();
-        if fs::try_exists(&segments_root).await? {
-            let mut bucket_dirs = fs::read_dir(&segments_root).await?;
-            while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
-                let Ok(file_type) = bucket_entry.file_type().await else {
-                    continue;
-                };
-                if !file_type.is_dir() {
-                    continue;
-                }
-                let bucket_name = bucket_entry.file_name();
-                let Some(bucket_name) = bucket_name.to_str() else {
-                    continue;
-                };
-                deleted +=
-                    Self::remove_dir_all_counting_files(&self.bucket_app_path(bucket_name, app))
-                        .await?;
-                Self::remove_empty_dir_if_exists(bucket_entry.path()).await?;
-            }
+        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
+            deleted +=
+                Self::remove_dir_all_counting_files(&self.bucket_app_path(&bucket_name, app))
+                    .await?;
+            Self::remove_empty_dir_if_exists(bucket_path).await?;
         }
 
-        Self::remove_empty_dir_if_exists(segments_root).await?;
+        Self::remove_empty_dir_if_exists(self.segments_root_path()).await?;
 
         tracing::debug!("delete_app {}: deleted {} files", app, deleted);
         Ok(deleted)
@@ -432,23 +400,10 @@ impl HlsStorage for FileStorage {
 
         let mut deleted = 0;
 
-        let mut bucket_dirs = fs::read_dir(&segments_root).await?;
-        while let Some(bucket_entry) = bucket_dirs.next_entry().await? {
-            let Ok(file_type) = bucket_entry.file_type().await else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let bucket_name = bucket_entry.file_name();
-            let Some(bucket_name) = bucket_name.to_str() else {
-                continue;
-            };
-
-            if minute_bucket_is_expired(bucket_name, older_than) {
-                deleted += Self::remove_dir_all_counting_files(&bucket_entry.path()).await?;
-                tracing::trace!("Deleted expired minute bucket: {:?}", bucket_entry.path());
+        for (bucket_name, bucket_path) in self.collect_bucket_dirs().await? {
+            if minute_bucket_is_expired(&bucket_name, older_than) {
+                deleted += Self::remove_dir_all_counting_files(&bucket_path).await?;
+                tracing::trace!("Deleted expired minute bucket: {:?}", bucket_path);
             }
         }
 

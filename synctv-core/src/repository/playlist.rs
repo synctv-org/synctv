@@ -9,10 +9,9 @@ use crate::{
         provider_type_name_from_code, Playlist, PlaylistId, PlaylistListQuery, ProviderTypeName,
         RoomId,
     },
-    Error, Result,
+    Result,
 };
 use sqlx::PgPool;
-use std::collections::BTreeMap;
 
 fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
     value.ok_or_else(|| {
@@ -123,12 +122,6 @@ pub struct PlaylistRepository {
 }
 
 impl PlaylistRepository {
-    fn normalize_provider_instance_name_for_db(
-        provider_instance_name: Option<&str>,
-    ) -> Option<&str> {
-        normalize_provider_instance_name(provider_instance_name)
-    }
-
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -957,9 +950,7 @@ impl PlaylistRepository {
             playlist.position,
             source_provider_code,
             playlist.source_config.as_ref(),
-            Self::normalize_provider_instance_name_for_db(
-                playlist.provider_instance_name.as_deref(),
-            ),
+            normalize_provider_instance_name(playlist.provider_instance_name.as_deref()),
         )
         .fetch_one(executor)
         .await?;
@@ -1229,173 +1220,6 @@ impl PlaylistRepository {
         Err(crate::Error::Internal(
             "Failed to compute a stable playlist order position".to_string(),
         ))
-    }
-
-    /// Delete a playlist subtree and all media attached to that subtree.
-    ///
-    /// Playback-state `RESTRICT` foreign keys are intentionally preserved: if the
-    /// target playlist or any nested media is still referenced by current room
-    /// playback, the delete fails and the transaction rolls back.
-    pub async fn delete(&self, id: &PlaylistId) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
-
-        let room_id = sqlx::query_scalar!(
-            r#"SELECT room_id as "room_id: RoomId" FROM playlists WHERE id = $1"#,
-            id as &PlaylistId,
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(room_id) = room_id else {
-            return Ok(false);
-        };
-
-        let rows = sqlx::query!(
-            r#"WITH RECURSIVE playlist_tree AS (
-                SELECT id, 0 AS depth
-                FROM playlists
-                WHERE id = $1
-                UNION ALL
-                SELECT p.id, pt.depth + 1
-                FROM playlists p
-                JOIN playlist_tree pt ON p.parent_id = pt.id
-                WHERE p.room_id = $2
-            )
-            SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
-            FROM playlist_tree
-            GROUP BY id
-            ORDER BY MAX(depth) DESC, id"#,
-            id.as_i64(),
-            room_id.as_i64()
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
-        let mut playlist_ids = Vec::with_capacity(rows.len());
-        for row in rows {
-            let playlist_id = row.id;
-            let depth = row.depth.ok_or_else(|| {
-                Error::Internal("playlist tree query did not return depth".into())
-            })?;
-            playlist_ids.push(playlist_id);
-            ids_by_depth.entry(depth).or_default().push(playlist_id);
-        }
-
-        if !playlist_ids.is_empty() {
-            let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query!(
-                "DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)",
-                room_id as RoomId,
-                &playlist_ids_raw,
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        for (_depth, ids) in ids_by_depth.into_iter().rev() {
-            let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &ids_raw,)
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        tx.commit().await?;
-        Ok(true)
-    }
-
-    /// Delete a playlist subtree scoped to a room.
-    pub async fn delete_in_room(&self, room_id: &RoomId, id: &PlaylistId) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
-
-        let exists = sqlx::query_scalar!(
-            r#"SELECT EXISTS(SELECT 1 FROM playlists WHERE room_id = $1 AND id = $2) AS "exists!""#,
-            room_id.as_i64(),
-            id.as_i64()
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        if !exists {
-            return Ok(false);
-        }
-
-        let rows = sqlx::query!(
-            r#"WITH RECURSIVE playlist_tree AS (
-                SELECT id, 0 AS depth
-                FROM playlists
-                WHERE room_id = $1 AND id = $2
-                UNION ALL
-                SELECT p.id, pt.depth + 1
-                FROM playlists p
-                JOIN playlist_tree pt ON p.parent_id = pt.id
-                WHERE p.room_id = $1
-            )
-            SELECT id AS "id!: PlaylistId", MAX(depth) AS depth
-            FROM playlist_tree
-            GROUP BY id
-            ORDER BY MAX(depth) DESC, id"#,
-            room_id.as_i64(),
-            id.as_i64()
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut ids_by_depth = BTreeMap::<i32, Vec<PlaylistId>>::new();
-        let mut playlist_ids = Vec::with_capacity(rows.len());
-        for row in rows {
-            let playlist_id = row.id;
-            let depth = row.depth.ok_or_else(|| {
-                Error::Internal("playlist tree query did not return depth".into())
-            })?;
-            playlist_ids.push(playlist_id);
-            ids_by_depth.entry(depth).or_default().push(playlist_id);
-        }
-
-        if !playlist_ids.is_empty() {
-            let playlist_ids_raw: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query!(
-                "DELETE FROM media WHERE room_id = $1 AND playlist_id = ANY($2)",
-                room_id.as_i64(),
-                &playlist_ids_raw
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        for (_depth, ids) in ids_by_depth.into_iter().rev() {
-            let ids_raw: Vec<i64> = ids.iter().map(PlaylistId::as_i64).collect();
-            sqlx::query!(
-                "DELETE FROM playlists WHERE room_id = $1 AND id = ANY($2)",
-                room_id.as_i64(),
-                &ids_raw
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-        Ok(true)
-    }
-
-    /// Delete playlists by IDs using a provided executor (for transaction support)
-    pub async fn delete_batch_with_executor<'e, E>(
-        &self,
-        playlist_ids: &[PlaylistId],
-        executor: E,
-    ) -> Result<usize>
-    where
-        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
-    {
-        if playlist_ids.is_empty() {
-            return Ok(0);
-        }
-
-        let id_strs: Vec<i64> = playlist_ids.iter().map(PlaylistId::as_i64).collect();
-        let result = sqlx::query!("DELETE FROM playlists WHERE id = ANY($1)", &id_strs,)
-            .execute(executor)
-            .await?;
-
-        usize::try_from(result.rows_affected())
-            .map_err(|_| Error::Internal("deleted playlist count exceeds usize::MAX".to_string()))
     }
 
     /// Get playlist path from a given node to root using a recursive CTE (single query)

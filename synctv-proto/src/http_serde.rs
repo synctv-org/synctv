@@ -236,6 +236,24 @@ where
     }
 }
 
+/// Resolves a credential oneof where exactly one of two mutually exclusive
+/// string options must be present, mapping each to its proto variant.
+fn exactly_one_credential<T>(
+    first: Option<String>,
+    second: Option<String>,
+    first_variant: impl FnOnce(String) -> T,
+    second_variant: impl FnOnce(String) -> T,
+    missing_error: &str,
+    conflict_error: &str,
+) -> Result<T, String> {
+    match (first, second) {
+        (Some(first), None) => Ok(first_variant(first)),
+        (None, Some(second)) => Ok(second_variant(second)),
+        (None, None) => Err(missing_error.into()),
+        (Some(_), Some(_)) => Err(conflict_error.into()),
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[cfg_attr(
     feature = "openapi",
@@ -582,17 +600,7 @@ impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::LoginRequest {
     type Error = String;
 
     fn try_from(value: AlistLoginRequestDef) -> Result<Self, Self::Error> {
-        let credential = Some(
-            crate::providers::alist::login_request::Credential::try_from(AlistLoginRequestDef {
-                host: value.host.clone(),
-                username: value.username.clone(),
-                password: value.password,
-                hashed_password: value.hashed_password,
-                otp_code: value.otp_code.clone(),
-                otp_secret: value.otp_secret.clone(),
-                instance_name: value.instance_name.clone(),
-            })?,
-        );
+        let credential = Some(alist_credential(value.password, value.hashed_password)?);
 
         Ok(Self {
             host: value.host,
@@ -609,15 +617,22 @@ impl TryFrom<AlistLoginRequestDef> for crate::providers::alist::login_request::C
     type Error = String;
 
     fn try_from(value: AlistLoginRequestDef) -> Result<Self, Self::Error> {
-        match (value.password, value.hashed_password) {
-            (Some(password), None) => Ok(Self::Password(password)),
-            (None, Some(hashed_password)) => Ok(Self::HashedPassword(hashed_password)),
-            (None, None) => {
-                Err("exactly one of password or hashed_password must be provided".into())
-            }
-            (Some(_), Some(_)) => Err("password and hashed_password are mutually exclusive".into()),
-        }
+        alist_credential(value.password, value.hashed_password)
     }
+}
+
+fn alist_credential(
+    password: Option<String>,
+    hashed_password: Option<String>,
+) -> Result<crate::providers::alist::login_request::Credential, String> {
+    exactly_one_credential(
+        password,
+        hashed_password,
+        crate::providers::alist::login_request::Credential::Password,
+        crate::providers::alist::login_request::Credential::HashedPassword,
+        "exactly one of password or hashed_password must be provided",
+        "password and hashed_password are mutually exclusive",
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -642,15 +657,7 @@ impl TryFrom<EmbyLoginRequestDef> for crate::providers::emby::LoginRequest {
     type Error = String;
 
     fn try_from(value: EmbyLoginRequestDef) -> Result<Self, Self::Error> {
-        let credential = Some(crate::providers::emby::login_request::Credential::try_from(
-            EmbyLoginRequestDef {
-                host: value.host.clone(),
-                username: value.username.clone(),
-                password: value.password,
-                api_key: value.api_key,
-                instance_name: value.instance_name.clone(),
-            },
-        )?);
+        let credential = Some(emby_credential(value.password, value.api_key)?);
 
         Ok(Self {
             host: value.host,
@@ -665,13 +672,22 @@ impl TryFrom<EmbyLoginRequestDef> for crate::providers::emby::login_request::Cre
     type Error = String;
 
     fn try_from(value: EmbyLoginRequestDef) -> Result<Self, Self::Error> {
-        match (value.password, value.api_key) {
-            (Some(password), None) => Ok(Self::Password(password)),
-            (None, Some(api_key)) => Ok(Self::ApiKey(api_key)),
-            (None, None) => Err("exactly one of password or api_key must be provided".into()),
-            (Some(_), Some(_)) => Err("password and api_key are mutually exclusive".into()),
-        }
+        emby_credential(value.password, value.api_key)
     }
+}
+
+fn emby_credential(
+    password: Option<String>,
+    api_key: Option<String>,
+) -> Result<crate::providers::emby::login_request::Credential, String> {
+    exactly_one_credential(
+        password,
+        api_key,
+        crate::providers::emby::login_request::Credential::Password,
+        crate::providers::emby::login_request::Credential::ApiKey,
+        "exactly one of password or api_key must be provided",
+        "password and api_key are mutually exclusive",
+    )
 }
 
 #[cfg(test)]

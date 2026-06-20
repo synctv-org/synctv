@@ -20,12 +20,6 @@ pub enum StreamError {
     #[error("No publisher found for room: {0}")]
     NoPublisher(String),
 
-    #[error("Already publishing: {0}")]
-    AlreadyPublishing(String),
-
-    #[error("Publisher already exists: {0}")]
-    PublisherExists(String),
-
     #[error("Registry error: {0}")]
     RegistryError(String),
 
@@ -37,15 +31,6 @@ pub enum StreamError {
 
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
-
-    #[error("Authentication failed: {0}")]
-    AuthenticationFailed(String),
-
-    #[error("Handshake failed: {0}")]
-    HandshakeFailed(String),
-
-    #[error("Protocol error: {0}")]
-    ProtocolError(String),
 
     #[error("Invalid state: {0}")]
     InvalidState(String),

@@ -61,8 +61,11 @@ impl UserService {
             .await?;
         let available_methods =
             Self::sensitive_available_methods(&auth_factors, &session.completed_methods);
-        let masked_email =
-            Self::sensitive_challenge_masked_email(&available_methods, email.as_deref())?;
+        let masked_email = Self::masked_email_for_challenge(
+            &available_methods,
+            email.as_deref(),
+            "Sensitive verification challenge",
+        )?;
 
         Ok(SensitiveVerificationChallenge {
             session_id: session_id.to_string(),
@@ -73,25 +76,6 @@ impl UserService {
             masked_email,
             expires_at: session.expires_at,
         })
-    }
-
-    fn sensitive_challenge_masked_email(
-        available_methods: &[AuthFactorMethod],
-        email: Option<&str>,
-    ) -> Result<Option<String>> {
-        if available_methods.contains(&AuthFactorMethod::Email) {
-            return email
-                .map(crate::service::mask_email)
-                .map(Some)
-                .ok_or_else(|| {
-                    Error::Internal(
-                        "Sensitive verification challenge includes email verification without a user email"
-                            .to_string(),
-                    )
-                });
-        }
-
-        Ok(None)
     }
 
     pub async fn start_sensitive_operation_verification(
@@ -330,9 +314,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sensitive_challenge_masked_email_requires_email_when_method_available() {
-        let error = UserService::sensitive_challenge_masked_email(&[AuthFactorMethod::Email], None)
-            .expect_err("email sensitive verification method requires a masked email source");
+    fn masked_email_for_challenge_requires_email_when_method_available() {
+        let error = UserService::masked_email_for_challenge(
+            &[AuthFactorMethod::Email],
+            None,
+            "Test challenge",
+        )
+        .expect_err("email verification method requires a masked email source");
 
         assert!(
             matches!(error, Error::Internal(message) if message.contains("email verification"))
@@ -340,12 +328,13 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_challenge_masked_email_omits_email_for_other_methods() {
-        let masked = UserService::sensitive_challenge_masked_email(
+    fn masked_email_for_challenge_omits_email_for_other_methods() {
+        let masked = UserService::masked_email_for_challenge(
             &[AuthFactorMethod::Password],
             Some("user@example.com"),
+            "Test challenge",
         )
-        .expect("non-email sensitive verification challenge should build");
+        .expect("non-email verification challenge should build");
 
         assert_eq!(masked, None);
     }

@@ -25,18 +25,6 @@ static CLAIM_TICKET_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     )
 });
 
-static CONSUME_TICKET_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
-    redis::Script::new(
-        r#"
-        local value = redis.call("GET", KEYS[1])
-        if value then
-            redis.call("DEL", KEYS[1])
-        end
-        return value
-        "#,
-    )
-});
-
 /// Redis-backed ticket store for multi-replica deployments.
 ///
 /// Uses a shared `Arc<RwLock<ConnectionManager>>` so that in Sentinel mode the
@@ -152,31 +140,6 @@ impl TicketStore for RedisTicketStore {
             .await?;
 
         Ok(deleted > 0)
-    }
-
-    async fn consume(
-        &self,
-        ticket: &str,
-        _expected_room_id: &RoomId,
-    ) -> Result<Option<WsTicketData>> {
-        let key = self.redis_key(ticket);
-        let mut conn = self.conn("validate ticket").await?;
-
-        let json: Option<String> = self
-            .run_redis_op(
-                "validate ticket",
-                CONSUME_TICKET_SCRIPT.key(&key).invoke_async(&mut conn),
-            )
-            .await?;
-
-        let Some(json) = json else {
-            return Ok(None);
-        };
-
-        let data: WsTicketData = serde_json::from_str(&json)
-            .map_err(|e| Error::Internal(format!("Failed to deserialize ticket data: {e}")))?;
-
-        Ok(Some(data))
     }
 
     fn supports_cluster_runtime(&self) -> bool {

@@ -284,35 +284,18 @@ async fn list_owned_room_ids(
     api: &ClientApiImpl,
     user_id: &UserId,
 ) -> Result<Vec<RoomId>, ApiError> {
-    let mut page = 1;
-    let mut room_ids = Vec::new();
-
-    loop {
-        let (rooms, total) = api
-            .room_service
+    let rooms = crate::impls::pagination::paginate_all(|page| async move {
+        api.room_service
             .list_rooms_by_creator(
                 user_id,
                 PageParams::new(Some(page), Some(USER_ROOM_DELETION_PAGE_SIZE)),
             )
             .await
-            .map_err(ApiError::from)?;
+    })
+    .await
+    .map_err(ApiError::from)?;
 
-        if rooms.is_empty() {
-            break;
-        }
-
-        room_ids.extend(rooms.into_iter().map(|room| room.id));
-        if i64::try_from(room_ids.len())
-            .map_err(|_| ApiError::Internal("owned room count exceeds i64::MAX".to_string()))?
-            >= total
-        {
-            break;
-        }
-
-        page += 1;
-    }
-
-    Ok(room_ids)
+    Ok(rooms.into_iter().map(|room| room.id).collect())
 }
 
 fn prepare_deleted_room_outbox_fanout(

@@ -100,21 +100,6 @@ impl TicketStore for InMemoryTicketStore {
         Ok(removed.data == *expected_ticket)
     }
 
-    async fn consume(
-        &self,
-        ticket: &str,
-        _expected_room_id: &RoomId,
-    ) -> Result<Option<WsTicketData>> {
-        let Some(entry) = self.cache.remove(ticket).await else {
-            return Ok(None);
-        };
-        let now = now_unix_seconds();
-        if now.saturating_sub(entry.data.created_at) > entry.ttl.as_secs() {
-            return Ok(None);
-        }
-        Ok(Some(entry.data))
-    }
-
     fn supports_cluster_runtime(&self) -> bool {
         false
     }

@@ -154,15 +154,22 @@ impl UserService {
         available_methods: &[AuthFactorMethod],
         email: Option<&str>,
     ) -> Result<Option<String>> {
+        Self::masked_email_for_challenge(available_methods, email, "MFA challenge")
+    }
+
+    fn masked_email_for_challenge(
+        available_methods: &[AuthFactorMethod],
+        email: Option<&str>,
+        context: &str,
+    ) -> Result<Option<String>> {
         if available_methods.contains(&AuthFactorMethod::Email) {
             return email
                 .map(crate::service::mask_email)
                 .map(Some)
                 .ok_or_else(|| {
-                    Error::Internal(
-                        "MFA challenge includes email verification without a user email"
-                            .to_string(),
-                    )
+                    Error::Internal(format!(
+                        "{context} includes email verification without a user email"
+                    ))
                 });
         }
 

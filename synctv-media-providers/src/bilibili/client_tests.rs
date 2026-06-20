@@ -1,4 +1,5 @@
 use super::*;
+use crate::bilibili::Quality;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 

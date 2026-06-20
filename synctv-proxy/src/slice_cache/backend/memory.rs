@@ -152,10 +152,6 @@ impl SliceCacheBackend for MemoryBackend {
         self.cache.run_pending_tasks().await;
     }
 
-    async fn contains(&self, key: &str) -> bool {
-        self.cache.contains_key(key)
-    }
-
     fn current_size(&self) -> u64 {
         self.total_bytes.load(Ordering::Relaxed)
     }

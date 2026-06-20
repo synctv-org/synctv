@@ -197,15 +197,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         media_id: &MediaId,
         media_title: &str,
     ) {
-        let event = RealtimeEvent::MediaAdded {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            user_id: *user_id,
-            username: username.to_string(),
-            media_id: *media_id,
-            media_title: media_title.to_string(),
-            timestamp: chrono::Utc::now(),
-        };
+        let event = media_added_event(room_id, user_id, username, media_id, media_title);
         publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
@@ -216,14 +208,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         username: &str,
         media_id: &MediaId,
     ) {
-        let event = RealtimeEvent::MediaRemoved {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            user_id: *user_id,
-            username: username.to_string(),
-            media_id: *media_id,
-            timestamp: chrono::Utc::now(),
-        };
+        let event = media_removed_event(room_id, user_id, username, media_id);
         publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 
@@ -235,15 +220,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
         media_id: &MediaId,
         media_title: &str,
     ) {
-        let event = RealtimeEvent::MediaUpdated {
-            event_id: synctv_common::snanoid!(16),
-            room_id: *room_id,
-            user_id: *user_id,
-            username: username.to_string(),
-            media_id: *media_id,
-            media_title: media_title.to_string(),
-            timestamp: chrono::Utc::now(),
-        };
+        let event = media_updated_event(room_id, user_id, username, media_id, media_title);
         publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
 

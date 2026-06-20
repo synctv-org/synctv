@@ -139,31 +139,20 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
 }
 
 fn room_settings_event_with_version(event: &RealtimeEvent, version: i64) -> RealtimeEvent {
-    match event {
-        RealtimeEvent::RoomSettingsChanged {
-            event_id,
-            room_id,
-            user_id,
-            username,
-            settings_json,
-            timestamp,
-            ..
-        } => RealtimeEvent::RoomSettingsChanged {
-            event_id: event_id.clone(),
-            room_id: *room_id,
-            user_id: *user_id,
-            username: username.clone(),
-            settings_json: settings_json.clone(),
-            version,
-            timestamp: *timestamp,
-        },
-        _ => event.clone(),
-    }
+    room_settings_event_with_optional_settings(event, None, version)
 }
 
 fn room_settings_event_with_settings_and_version(
     event: &RealtimeEvent,
     settings_json: Vec<u8>,
+    version: i64,
+) -> RealtimeEvent {
+    room_settings_event_with_optional_settings(event, Some(settings_json), version)
+}
+
+fn room_settings_event_with_optional_settings(
+    event: &RealtimeEvent,
+    new_settings: Option<Vec<u8>>,
     version: i64,
 ) -> RealtimeEvent {
     match event {
@@ -172,6 +161,7 @@ fn room_settings_event_with_settings_and_version(
             room_id,
             user_id,
             username,
+            settings_json,
             timestamp,
             ..
         } => RealtimeEvent::RoomSettingsChanged {
@@ -179,7 +169,7 @@ fn room_settings_event_with_settings_and_version(
             room_id: *room_id,
             user_id: *user_id,
             username: username.clone(),
-            settings_json,
+            settings_json: new_settings.unwrap_or_else(|| settings_json.clone()),
             version,
             timestamp: *timestamp,
         },

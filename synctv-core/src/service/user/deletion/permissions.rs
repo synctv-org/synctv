@@ -73,25 +73,8 @@ impl UserService {
             .map(|row| (row.room_id, row.user_id, row.version))
             .collect::<Vec<_>>();
 
-            let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
-            for (room_id, member_user_id, version) in members {
-                let fence = match permission_service
-                    .begin_permission_write(&room_id, &member_user_id, version)
-                    .await
-                {
-                    Ok(fence) => fence,
-                    Err(error) => {
-                        fences.abort_all(permission_service).await;
-                        return Err(error);
-                    }
-                };
-                fences.push(PendingRemovedMemberFence {
-                    room_id,
-                    user_id: member_user_id,
-                    fence,
-                });
-            }
-            fences.into_vec()
+            self.reserve_fences_for_members(permission_service, members)
+                .await?
         } else {
             Vec::new()
         };
@@ -109,6 +92,32 @@ impl UserService {
         };
 
         Ok((removed, pending_permission_fences))
+    }
+
+    async fn reserve_fences_for_members(
+        &self,
+        permission_service: &PermissionService,
+        members: Vec<(RoomId, UserId, i64)>,
+    ) -> Result<Vec<PendingRemovedMemberFence>> {
+        let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
+        for (room_id, member_user_id, version) in members {
+            let fence = match permission_service
+                .begin_permission_write(&room_id, &member_user_id, version)
+                .await
+            {
+                Ok(fence) => fence,
+                Err(error) => {
+                    fences.abort_all(permission_service).await;
+                    return Err(error);
+                }
+            };
+            fences.push(PendingRemovedMemberFence {
+                room_id,
+                user_id: member_user_id,
+                fence,
+            });
+        }
+        Ok(fences.into_vec())
     }
 
     pub(super) async fn reserve_permission_fences_for_rooms(
@@ -139,26 +148,8 @@ impl UserService {
         .map(|row| (row.room_id, row.user_id, row.version))
         .collect::<Vec<_>>();
 
-        let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
-        for (room_id, member_user_id, version) in members {
-            let fence = match permission_service
-                .begin_permission_write(&room_id, &member_user_id, version)
-                .await
-            {
-                Ok(fence) => fence,
-                Err(error) => {
-                    fences.abort_all(permission_service).await;
-                    return Err(error);
-                }
-            };
-            fences.push(PendingRemovedMemberFence {
-                room_id,
-                user_id: member_user_id,
-                fence,
-            });
-        }
-
-        Ok(fences.into_vec())
+        self.reserve_fences_for_members(permission_service, members)
+            .await
     }
 
     pub(super) async fn commit_removed_member_permission_fences(

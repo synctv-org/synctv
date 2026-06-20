@@ -3,7 +3,6 @@ use {
     super::utils,
     crate::bytesio::bits_reader::BitsReader,
     crate::bytesio::bytes_reader::BytesReader,
-    bytes::BytesMut,
     std::vec::Vec,
 };
 
@@ -60,7 +59,6 @@ pub struct Sps {
 }
 
 pub struct SpsParser {
-    pub bytes_reader: BytesReader,
     pub bits_reader: BitsReader,
     pub sps: Sps,
 }
@@ -69,15 +67,9 @@ impl SpsParser {
     #[must_use]
     pub fn new(reader: BytesReader) -> Self {
         Self {
-            bytes_reader: BytesReader::new(BytesMut::new()),
             bits_reader: BitsReader::new(reader),
             sps: Sps::default(),
         }
-    }
-
-    pub fn extend_data(&mut self, data: &BytesMut) -> Result<(), H264Error> {
-        self.bits_reader.extend_data(data)?;
-        Ok(())
     }
 
     pub fn parse(&mut self) -> Result<(u32, u32), H264Error> {

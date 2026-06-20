@@ -1,7 +1,81 @@
 use chrono::{Datelike, NaiveDate};
 use sqlx::PgPool;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+use tracing::info;
 
+use super::LeaderCheck;
 use crate::{Error, InternalExt, Result};
+
+/// Retry interval, in seconds, while a partition manager waits for cluster
+/// leadership before performing its initial maintenance run.
+pub(crate) const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
+
+/// Whether per-replica startup initialization performs retention cleanup.
+///
+/// Startup initialization runs on every node so partitions exist before any
+/// node inserts data. Retention cleanup stays leader-gated in the background
+/// task to avoid duplicate startup DDL, so this is always `false`.
+pub(crate) const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct PartitionNameRow {
+    pub(crate) tablename: String,
+}
+
+#[derive(sqlx::FromRow)]
+pub(crate) struct PartitionSizeRow {
+    pub(crate) size_bytes: i64,
+}
+
+pub(crate) fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+pub(crate) fn len_to_i64(len: usize, field: &'static str) -> Result<i64> {
+    i64::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
+}
+
+pub(crate) fn len_to_u64(len: usize, field: &'static str) -> Result<u64> {
+    u64::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds u64::MAX")))
+}
+
+pub(crate) fn u32_to_i32(value: u32, field: &'static str) -> Result<i32> {
+    i32::try_from(value).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+pub(crate) fn retention_seconds_to_i64(value: u64, field: &'static str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
+}
+
+/// Block until this node becomes the cluster leader, returning `true` once
+/// leadership is established or `false` if `cancel` fires first.
+///
+/// Shared by the partition managers so their initial maintenance run begins as
+/// soon as leadership is acquired rather than after a full check interval.
+pub(crate) async fn wait_for_initial_leader(
+    leader_check: Arc<dyn LeaderCheck>,
+    cancel: CancellationToken,
+    task_name: &'static str,
+) -> bool {
+    let mut logged_wait = false;
+
+    loop {
+        if leader_check.is_leader() {
+            return true;
+        }
+
+        if !logged_wait {
+            info!("Delaying initial {task_name} run until cluster leadership is established");
+            logged_wait = true;
+        }
+
+        tokio::select! {
+            () = cancel.cancelled() => return false,
+            () = tokio::time::sleep(std::time::Duration::from_secs(INITIAL_LEADER_RETRY_INTERVAL_SECS)) => {}
+        }
+    }
+}
 
 pub(crate) fn quote_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
@@ -89,9 +163,22 @@ fn centi_units(size_bytes: i64, unit_bytes: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
-    use super::{add_months, start_of_month};
+    use chrono::NaiveDate;
+    use tokio_util::sync::CancellationToken;
+
+    use super::super::LeaderCheck;
+    use super::{
+        add_months, start_of_month, wait_for_initial_leader, INITIAL_LEADER_RETRY_INTERVAL_SECS,
+        STARTUP_RUNS_RETENTION_CLEANUP,
+    };
+
+    const _: () = assert!(
+        !STARTUP_RUNS_RETENTION_CLEANUP,
+        "per-replica startup initialization must avoid retention cleanup DDL"
+    );
 
     fn some<T>(value: Option<T>, context: &str) -> T {
         match value {
@@ -105,6 +192,41 @@ mod tests {
             Ok(value) => value,
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_initial_leader_completes_before_full_check_interval() {
+        struct ToggleLeader(AtomicBool);
+        impl LeaderCheck for ToggleLeader {
+            fn is_leader(&self) -> bool {
+                self.0.load(Ordering::SeqCst)
+            }
+        }
+
+        let leader = Arc::new(ToggleLeader(AtomicBool::new(false)));
+        let cancel = CancellationToken::new();
+        let wait_task = tokio::spawn(wait_for_initial_leader(
+            leader.clone(),
+            cancel,
+            "partition management",
+        ));
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(
+            INITIAL_LEADER_RETRY_INTERVAL_SECS - 1,
+        ))
+        .await;
+        assert!(
+            !wait_task.is_finished(),
+            "initial maintenance should still be waiting for leadership"
+        );
+
+        leader.0.store(true, Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(
+            ok(wait_task.await, "wait task should complete"),
+            "leader election should trigger the initial maintenance wait to finish"
+        );
     }
 
     #[test]

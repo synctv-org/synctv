@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use std::marker::PhantomData;
 use std::sync::Arc;
 use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
@@ -101,7 +100,6 @@ pub struct PreparedOutboxFanout<T> {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
     event_builder: RealtimeEventBuilder<T>,
     event: Arc<Mutex<Option<RealtimeEvent>>>,
-    _marker: PhantomData<fn(&T)>,
 }
 
 impl<T: 'static> PreparedOutboxFanout<T> {
@@ -114,7 +112,6 @@ impl<T: 'static> PreparedOutboxFanout<T> {
             realtime_fanout,
             event_builder: Arc::new(event_builder),
             event: Arc::new(Mutex::new(None)),
-            _marker: PhantomData,
         }
     }
 

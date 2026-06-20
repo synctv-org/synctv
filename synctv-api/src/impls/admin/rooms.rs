@@ -28,6 +28,27 @@ pub(in crate::impls::admin) fn username_from_loaded_user(
     Ok(user.username)
 }
 
+fn room_member_with_user(
+    member: &synctv_core::models::RoomMember,
+    username: String,
+    presence: &synctv_core::service::OnlineUserRoomStats,
+) -> synctv_core::models::RoomMemberWithUser {
+    synctv_core::models::RoomMemberWithUser {
+        room_id: member.room_id,
+        user_id: member.user_id,
+        username,
+        role: member.role,
+        status: member.status,
+        added_permissions: member.added_permissions,
+        removed_permissions: member.removed_permissions,
+        admin_added_permissions: member.admin_added_permissions,
+        admin_removed_permissions: member.admin_removed_permissions,
+        joined_at: member.joined_at,
+        is_online: presence.is_online,
+        is_active: member.status.is_active(),
+    }
+}
+
 fn creator_user_from_map<'a>(
     users: &'a std::collections::HashMap<UserId, synctv_core::models::User>,
     room: &synctv_core::models::Room,
@@ -359,8 +380,6 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                *admin_user_id,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -380,20 +399,7 @@ impl AdminApiImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self.load_member_response_username(&target_uid).await?;
-        let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
-            username,
-            role: member.role,
-            status: member.status,
-            added_permissions: member.added_permissions,
-            removed_permissions: member.removed_permissions,
-            admin_added_permissions: member.admin_added_permissions,
-            admin_removed_permissions: member.admin_removed_permissions,
-            joined_at: member.joined_at,
-            is_online: target_presence.is_online,
-            is_active: member.status.is_active(),
-        };
+        let member_with_user = room_member_with_user(&member, username, &target_presence);
 
         self.log_admin_action(
             admin_user_id,
@@ -438,8 +444,6 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                *admin_user_id,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -459,20 +463,7 @@ impl AdminApiImpl {
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let username = self.load_member_response_username(&target_uid).await?;
-        let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: member.room_id,
-            user_id: member.user_id,
-            username,
-            role: member.role,
-            status: member.status,
-            added_permissions: member.added_permissions,
-            removed_permissions: member.removed_permissions,
-            admin_added_permissions: member.admin_added_permissions,
-            admin_removed_permissions: member.admin_removed_permissions,
-            joined_at: member.joined_at,
-            is_online: target_presence.is_online,
-            is_active: member.status.is_active(),
-        };
+        let member_with_user = room_member_with_user(&member, username, &target_presence);
 
         self.log_admin_action(
             admin_user_id,
@@ -517,8 +508,6 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                *admin_user_id,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -604,8 +593,6 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                *admin_user_id,
                 target_presence.is_online,
                 target_presence.connection_count,
             );
@@ -631,20 +618,7 @@ impl AdminApiImpl {
 
         let username = self.load_member_response_username(&target_uid).await?;
 
-        let member_with_user = synctv_core::models::RoomMemberWithUser {
-            room_id: updated_member.room_id,
-            user_id: updated_member.user_id,
-            username,
-            role: updated_member.role,
-            status: updated_member.status,
-            added_permissions: updated_member.added_permissions,
-            removed_permissions: updated_member.removed_permissions,
-            admin_added_permissions: updated_member.admin_added_permissions,
-            admin_removed_permissions: updated_member.admin_removed_permissions,
-            joined_at: updated_member.joined_at,
-            is_online: target_presence.is_online,
-            is_active: true,
-        };
+        let member_with_user = room_member_with_user(&updated_member, username, &target_presence);
 
         self.log_admin_action(
             admin_user_id,
@@ -700,8 +674,6 @@ impl AdminApiImpl {
         let prepared_membership_fanout = self
             .membership_event_fanout
             .prepare_permission_changed_outbox_fanout(
-                target_uid,
-                *admin_user_id,
                 target_presence.is_online,
                 target_presence.connection_count,
             );

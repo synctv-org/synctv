@@ -76,6 +76,19 @@ pub(in crate::impls::admin) fn page_offset_usize(
         .ok_or_else(|| ApiError::Internal(format!("{field} exceeds usize::MAX")))
 }
 
+pub(in crate::impls::admin) fn pagination_limit_offset_i64(
+    page: i32,
+    page_size: i32,
+    label: &'static str,
+) -> Result<(i64, i64), ApiError> {
+    let page = page_i32_to_usize(page)?;
+    let page_size = crate::impls::proto_page_size_usize(page_size, 50, 100)?;
+    let offset = page_offset_usize(page, page_size, label)?;
+    let limit = usize_to_i64_api(page_size, label)?;
+    let offset = usize_to_i64_api(offset, label)?;
+    Ok((limit, offset))
+}
+
 pub(in crate::impls::admin) fn proto_review_status_filter(
     value: i32,
 ) -> Result<synctv_core::models::ReviewStatus, ApiError> {

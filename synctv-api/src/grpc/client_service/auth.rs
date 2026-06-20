@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, map_email_flow_error, ClientServiceImpl};
+use super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
     auth_service_server::AuthService, ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest,
@@ -85,7 +85,7 @@ impl AuthService for ClientServiceImpl {
         let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
-        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = self.email_api().map_err(map_api_error)?;
         let email_api = email_api.clone();
         let executor = self.client_api.clone();
         let result = executor
@@ -103,7 +103,7 @@ impl AuthService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(RequestEmailRegistrationResponse {
             message: result.message,
@@ -405,7 +405,7 @@ impl AuthService for ClientServiceImpl {
     ) -> Result<Response<RequestEmailLoginResponse>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
-        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = self.email_api().map_err(map_api_error)?;
         let email_api = email_api.clone();
         let executor = self.client_api.clone();
         let result = executor
@@ -419,7 +419,7 @@ impl AuthService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(RequestEmailLoginResponse {
             message: result.message,
@@ -432,7 +432,7 @@ impl AuthService for ClientServiceImpl {
     ) -> Result<Response<RequestMfaEmailCodeResponse>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
-        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = self.email_api().map_err(map_api_error)?;
         let email_api = email_api.clone();
         let executor = self.client_api.clone();
         let result = executor
@@ -446,7 +446,7 @@ impl AuthService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(result))
     }
@@ -458,7 +458,7 @@ impl AuthService for ClientServiceImpl {
         let metadata = self.request_metadata(&request)?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
-        let email_api = self.email_api().map_err(map_email_flow_error)?;
+        let email_api = self.email_api().map_err(map_api_error)?;
         let email_api = email_api.clone();
         let public_id_codec = self.client_api.public_id_codec.clone();
         let executor = self.client_api.clone();

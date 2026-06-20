@@ -51,10 +51,9 @@ use crate::realtime_bridge::room_event_to_realtime_event;
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
-    AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, HealthMonitorShutdownHook,
-    PermissionServiceShutdownHook, PlaybackServiceShutdownHook, ProviderInvalidationHook,
-    RealtimeManagerShutdownHook, RoomSettingsServiceShutdownHook, SettingsListenHook,
-    ShutdownCoordinator,
+    AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, ProviderInvalidationHook,
+    RoomSettingsServiceShutdownHook, SettingsListenHook, ShutdownCoordinator,
+    SimpleShutdownHook,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
@@ -920,9 +919,11 @@ impl Application {
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to start PermissionService invalidation runtime: {e}")
                 })?;
-            shutdown.register_hook(PermissionServiceShutdownHook {
-                service: synctv_services.room_service.permission_service().clone(),
-            });
+            shutdown.register_hook(SimpleShutdownHook::new(
+                "permission_service",
+                Duration::from_secs(10),
+                synctv_services.room_service.permission_service().clone(),
+            ));
         }
 
         if synctv_services
@@ -938,9 +939,11 @@ impl Application {
                 .map_err(|e| {
                     anyhow::anyhow!("Failed to start PlaybackService invalidation runtime: {e}")
                 })?;
-            shutdown.register_hook(PlaybackServiceShutdownHook {
-                service: synctv_services.room_service.playback_service().clone(),
-            });
+            shutdown.register_hook(SimpleShutdownHook::new(
+                "playback_service",
+                Duration::from_secs(10),
+                synctv_services.room_service.playback_service().clone(),
+            ));
         }
 
         if synctv_services
@@ -1001,14 +1004,11 @@ impl Application {
         });
 
         if should_run_startup_partition_initialization(&infra.config) {
-            // Initialize chat message partitions (needs settings_registry from services)
+            // Initialize chat message partitions
             info!("Initializing chat message partitions during startup...");
-            synctv_core::service::ensure_chat_partitions_on_startup(
-                &infra.pool,
-                synctv_services.settings_registry.clone(),
-            )
-            .await
-            .map_err(|e| partition_startup_error("chat partitions", e))?;
+            synctv_core::service::ensure_chat_partitions_on_startup(&infra.pool)
+                .await
+                .map_err(|e| partition_startup_error("chat partitions", e))?;
 
             // Initialize notification partitions (monthly granularity)
             info!("Initializing notification partitions during startup...");
@@ -1132,7 +1132,6 @@ impl Application {
 
         let chat_partition_manager = synctv_core::service::ChatPartitionManager::new(
             infra.pool.clone(),
-            core.services.settings_registry.clone(),
             leader.leader_runtime.clone(),
         );
         shutdown.register_task(
@@ -1416,9 +1415,11 @@ impl Application {
             }
         };
         let realtime_manager = Arc::new(realtime_manager);
-        shutdown.register_hook(RealtimeManagerShutdownHook {
-            manager: realtime_manager.clone(),
-        });
+        shutdown.register_hook(SimpleShutdownHook::new(
+            "realtime_manager",
+            Duration::from_secs(15),
+            realtime_manager.clone(),
+        ));
 
         // Cluster discovery (NodeRegistry, HealthMonitor) requires Redis.
         // When cluster is explicitly enabled, discovery failures are fatal.
@@ -1434,9 +1435,11 @@ impl Application {
         for task in discovery.background_tasks {
             shutdown.register_task(task.name, task.handle);
         }
-        shutdown.register_hook(HealthMonitorShutdownHook {
-            monitor: discovery.health_monitor.clone(),
-        });
+        shutdown.register_hook(SimpleShutdownHook::new(
+            "health_monitor",
+            Duration::from_secs(5),
+            discovery.health_monitor.clone(),
+        ));
 
         let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
         let outbox = runtime_plan.realtime_outbox();

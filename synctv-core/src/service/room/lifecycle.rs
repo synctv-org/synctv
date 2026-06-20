@@ -202,12 +202,7 @@ impl RoomService {
             .await;
 
         let subscriber_count = self.notification_service.notify_room_deleted(&room_id);
-        if subscriber_count == 0 {
-            tracing::debug!(
-                room_id = %room_id,
-                "Room deleted event had no local subscribers"
-            );
-        }
+        super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Room deleted");
 
         tracing::info!(
             room_id = %room_id,

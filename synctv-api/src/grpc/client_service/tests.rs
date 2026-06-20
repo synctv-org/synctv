@@ -93,7 +93,7 @@ fn test_list_room_streams_grpc_maps_service_unavailable() {
 fn test_request_password_reset_grpc_maps_service_unavailable() {
     let err =
         crate::impls::ApiError::ServiceUnavailable("password reset backend unavailable".into());
-    let status = map_email_flow_error(err);
+    let status = map_api_error(err);
     assert_eq!(status.code(), tonic::Code::Unavailable);
     assert_eq!(status.message(), "password reset backend unavailable");
 }
@@ -113,8 +113,8 @@ fn test_email_api_missing_maps_to_service_unavailable() {
 
 #[test]
 fn test_message_stream_user_lookup_backend_outage_stays_unavailable() {
-    let status = map_message_stream_user_lookup_error(synctv_core::Error::ServiceUnavailable(
-        "user backend unavailable".to_string(),
+    let status = map_api_error(crate::impls::ApiError::from(
+        synctv_core::Error::ServiceUnavailable("user backend unavailable".to_string()),
     ));
     assert_eq!(status.code(), tonic::Code::Unavailable);
     assert_eq!(status.message(), "user backend unavailable");
@@ -123,9 +123,9 @@ fn test_message_stream_user_lookup_backend_outage_stays_unavailable() {
 
 #[test]
 fn test_message_stream_room_lookup_not_found_stays_not_found() {
-    let status = map_message_stream_room_lookup_error(synctv_core::Error::NotFound(
+    let status = map_api_error(crate::impls::ApiError::from(synctv_core::Error::NotFound(
         "Room not found".to_string(),
-    ));
+    )));
     assert_eq!(status.code(), tonic::Code::NotFound);
     assert_eq!(status.message(), "Room not found");
     assert_eq!(metadata_error_code(&status), Some("2000"));

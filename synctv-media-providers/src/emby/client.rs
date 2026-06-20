@@ -316,6 +316,81 @@ impl EmbyClient {
         .map_err(|e| EmbyError::InvalidConfig(format!("Failed to build auth header: {e}")))
     }
 
+    /// Perform a retried GET request and deserialize the JSON response body.
+    async fn send_get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        headers: &HeaderMap,
+    ) -> Result<T, EmbyError> {
+        let client = self.client.clone();
+        with_retry(|| {
+            let url = url.to_string();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client.get(&url).headers(headers).send().await?;
+                let response = check_response(response).await?;
+                json_with_limit(response).await
+            }
+        })
+        .await
+    }
+
+    /// Perform a retried POST request with a JSON body and deserialize the JSON
+    /// response body.
+    async fn send_post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &Value,
+        headers: &HeaderMap,
+    ) -> Result<T, EmbyError> {
+        let client = self.client.clone();
+        with_retry(|| {
+            let url = url.to_string();
+            let body = body.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
+                let response = check_response(response).await?;
+                json_with_limit(response).await
+            }
+        })
+        .await
+    }
+
+    /// Perform a retried POST request with an optional JSON body, discarding the
+    /// response body (status check only).
+    async fn send_post_no_response(
+        &self,
+        url: &str,
+        body: Option<&Value>,
+        headers: &HeaderMap,
+    ) -> Result<(), EmbyError> {
+        let client = self.client.clone();
+        with_retry(|| {
+            let url = url.to_string();
+            let body = body.cloned();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let mut req = client.post(&url).headers(headers);
+                if let Some(ref body) = body {
+                    req = req.json(body);
+                }
+                let resp = req.send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
+    }
+
     /// Login to Emby/Jellyfin server
     pub async fn login(
         &mut self,
@@ -415,42 +490,16 @@ impl EmbyClient {
             _ => self.endpoint_url("Users/Me").await?,
         };
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let user: UserInfo = json_with_limit(response).await?;
-                Ok(user)
-            }
-        })
-        .await
+        self.send_get_json(&url, &headers).await
     }
 
     /// List users visible to the authenticated token.
     pub async fn list_users(&self) -> Result<Vec<UserInfo>, EmbyError> {
         let url = self.endpoint_url("Users").await?;
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let users: Vec<UserInfo> = json_with_limit(response).await?;
-                Ok(users)
-            }
-        })
-        .await
+        self.send_get_json(&url, &headers).await
     }
 
     /// Get items list
@@ -489,42 +538,16 @@ impl EmbyClient {
         }
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let items: ItemsResponse = json_with_limit(response).await?;
-                Ok(items)
-            }
-        })
-        .await
+        self.send_get_json(&url, &headers).await
     }
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
         let url = self.endpoint_url("System/Info").await?;
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let info: SystemInfo = json_with_limit(response).await?;
-                Ok(info)
-            }
-        })
-        .await
+        self.send_get_json(&url, &headers).await
     }
 
     /// Filesystem list
@@ -550,21 +573,8 @@ impl EmbyClient {
                 .endpoint_url(&format!("Users/{}/Views", url_encode(user_id)))
                 .await?;
             let headers = self.build_headers()?;
-            let client = self.client.clone();
 
-            let views: ItemsResponse = with_retry(|| {
-                let url = url.clone();
-                let headers = headers.clone();
-                let client = client.clone();
-                async move {
-                    let response = client.get(&url).headers(headers).send().await?;
-
-                    let response = check_response(response).await?;
-                    let views: ItemsResponse = json_with_limit(response).await?;
-                    Ok(views)
-                }
-            })
-            .await?;
+            let views: ItemsResponse = self.send_get_json(&url, &headers).await?;
 
             return Ok(FsListResponse {
                 items: views.items,
@@ -594,21 +604,8 @@ impl EmbyClient {
         }
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        let items: ItemsResponse = with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let items: ItemsResponse = json_with_limit(response).await?;
-                Ok(items)
-            }
-        })
-        .await?;
+        let items: ItemsResponse = self.send_get_json(&url, &headers).await?;
 
         let mut paths = vec![PathInfo {
             name: "Home".to_string(),
@@ -637,19 +634,8 @@ impl EmbyClient {
         let url = self.endpoint_url("Sessions/Logout").await?;
         let mut headers = self.build_headers()?;
         headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let resp = client.post(&url).headers(headers).send().await?;
-                check_response(resp).await?;
-                Ok(())
-            }
-        })
-        .await
+        self.send_post_no_response(&url, None, &headers).await
     }
 
     /// Get playback information
@@ -702,27 +688,8 @@ impl EmbyClient {
         }
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let body = body.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-
-                let response = check_response(response).await?;
-                let playback_info: PlaybackInfoResponse = json_with_limit(response).await?;
-                Ok(playback_info)
-            }
-        })
-        .await
+        self.send_post_json(&url, &body, &headers).await
     }
 
     /// Delete active encodings
@@ -772,25 +739,8 @@ impl EmbyClient {
         }
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let body = body.clone();
-            let client = client.clone();
-            async move {
-                let resp = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-                check_response(resp).await?;
-                Ok(())
-            }
-        })
-        .await
+        self.send_post_no_response(&url, Some(&body), &headers).await
     }
 
     /// Report playback stop to Emby server
@@ -811,25 +761,8 @@ impl EmbyClient {
         });
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let body = body.clone();
-            let client = client.clone();
-            async move {
-                let resp = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-                check_response(resp).await?;
-                Ok(())
-            }
-        })
-        .await
+        self.send_post_no_response(&url, Some(&body), &headers).await
     }
 
     /// Report playback progress to Emby server
@@ -857,25 +790,8 @@ impl EmbyClient {
         }
 
         let headers = self.build_headers()?;
-        let client = self.client.clone();
 
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let body = body.clone();
-            let client = client.clone();
-            async move {
-                let resp = client
-                    .post(&url)
-                    .headers(headers)
-                    .json(&body)
-                    .send()
-                    .await?;
-                check_response(resp).await?;
-                Ok(())
-            }
-        })
-        .await
+        self.send_post_no_response(&url, Some(&body), &headers).await
     }
 
     /// Get host URL

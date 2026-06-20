@@ -176,6 +176,16 @@ impl LiveStreamingInfrastructure {
             .map_err(|error| anyhow::anyhow!("Failed to load publisher owner: {error}"))
     }
 
+    /// Common error handler for registry queries.
+    fn handle_registry_error<T>(error: &anyhow::Error, context: &str) -> Vec<T> {
+        warn!(
+            error = %error,
+            context = context,
+            "Failed to load publishers from shared registry"
+        );
+        Vec::new()
+    }
+
     async fn local_registry_user_publishers(&self, user_id: &str) -> Vec<(String, String)> {
         match self.registry.get_user_publishers(user_id).await {
             Ok(registry_streams) => {
@@ -190,14 +200,7 @@ impl LiveStreamingInfrastructure {
                 }
                 local_streams
             }
-            Err(error) => {
-                warn!(
-                    user_id = %user_id,
-                    error = %error,
-                    "Failed to load user publishers from shared registry"
-                );
-                Vec::new()
-            }
+            Err(error) => Self::handle_registry_error(&error, &format!("user_id={user_id}")),
         }
     }
 
@@ -223,15 +226,10 @@ impl LiveStreamingInfrastructure {
                 }
                 local_streams
             }
-            Err(error) => {
-                warn!(
-                    user_id = %user_id,
-                    room_id = %room_id,
-                    error = %error,
-                    "Failed to load room-scoped user publishers from shared registry"
-                );
-                Vec::new()
-            }
+            Err(error) => Self::handle_registry_error(
+                &error,
+                &format!("room_id={room_id}, user_id={user_id}"),
+            ),
         }
     }
 
@@ -249,14 +247,7 @@ impl LiveStreamingInfrastructure {
                 }
                 local_media_ids
             }
-            Err(error) => {
-                warn!(
-                    room_id = %room_id,
-                    error = %error,
-                    "Failed to load room publishers from shared registry"
-                );
-                Vec::new()
-            }
+            Err(error) => Self::handle_registry_error(&error, &format!("room_id={room_id}")),
         }
     }
 

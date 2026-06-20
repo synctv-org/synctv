@@ -1,8 +1,8 @@
 use synctv_core::models::{UserId, UserRole};
 
 use super::{
-    check_role_hierarchy, list_owned_room_ids, map_batch_result_error, parse_batch_user_ids,
-    AdminApiImpl, ApiError, RequestContext,
+    check_role_hierarchy, list_owned_room_ids, BatchResultsAccumulator, AdminApiImpl, ApiError,
+    RequestContext,
 };
 
 impl AdminApiImpl {
@@ -14,58 +14,32 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchBanUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let parsed_user_ids = parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
+        let parsed_user_ids = super::parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
         let reason = req.reason.trim();
         let reason = (!reason.is_empty()).then(|| reason.to_string());
 
-        let mut proto_results = Vec::with_capacity(req.user_ids.len());
-        let mut succeeded = 0i32;
-        let mut failed = 0i32;
+        let mut accumulator = BatchResultsAccumulator::new(req.user_ids.len());
 
         for (user_id_str, uid) in req.user_ids.iter().zip(parsed_user_ids.iter()) {
             match self.user_service.get_user(uid).await {
                 Ok(target_user) => {
                     if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "ban") {
-                        proto_results.push(synctv_proto::admin::BatchResultItem {
-                            id: user_id_str.clone(),
-                            success: false,
-                            error: map_batch_result_error(e),
-                        });
-                        failed += 1;
+                        accumulator.record_err(user_id_str.clone(), e);
                         continue;
                     }
                     match self
                         .ban_user_with_cleanup(uid, admin_user_id, caller_role, reason.clone())
                         .await
                     {
-                        Ok(_) => {
-                            proto_results.push(synctv_proto::admin::BatchResultItem {
-                                id: user_id_str.clone(),
-                                success: true,
-                                error: String::new(),
-                            });
-                            succeeded += 1;
-                        }
-                        Err(e) => {
-                            proto_results.push(synctv_proto::admin::BatchResultItem {
-                                id: user_id_str.clone(),
-                                success: false,
-                                error: map_batch_result_error(e),
-                            });
-                            failed += 1;
-                        }
+                        Ok(_) => accumulator.record_ok(user_id_str.clone()),
+                        Err(e) => accumulator.record_err(user_id_str.clone(), e),
                     }
                 }
-                Err(e) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: user_id_str.clone(),
-                        success: false,
-                        error: map_batch_result_error(e),
-                    });
-                    failed += 1;
-                }
+                Err(e) => accumulator.record_err(user_id_str.clone(), e),
             }
         }
+
+        let (results, succeeded, failed) = accumulator.into_parts();
 
         self.log_admin_action(
             admin_user_id,
@@ -84,7 +58,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(synctv_proto::admin::BatchBanUsersResponse {
-            results: proto_results,
+            results,
             succeeded,
             failed,
         })
@@ -98,35 +72,21 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchDeleteUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let parsed_user_ids = parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
+        let parsed_user_ids = super::parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
 
         let mut allowed_ids = Vec::with_capacity(req.user_ids.len());
-        let mut proto_results = Vec::with_capacity(req.user_ids.len());
-        let mut succeeded = 0i32;
-        let mut failed = 0i32;
+        let mut accumulator = BatchResultsAccumulator::new(req.user_ids.len());
 
         for (user_id_str, uid) in req.user_ids.iter().zip(parsed_user_ids) {
             match self.user_service.get_user(&uid).await {
                 Ok(target_user) => {
                     if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "delete") {
-                        proto_results.push(synctv_proto::admin::BatchResultItem {
-                            id: user_id_str.clone(),
-                            success: false,
-                            error: map_batch_result_error(e),
-                        });
-                        failed += 1;
+                        accumulator.record_err(user_id_str.clone(), e);
                         continue;
                     }
                     allowed_ids.push((user_id_str.clone(), uid));
                 }
-                Err(e) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: user_id_str.clone(),
-                        success: false,
-                        error: map_batch_result_error(e),
-                    });
-                    failed += 1;
-                }
+                Err(e) => accumulator.record_err(user_id_str.clone(), e),
             }
         }
 
@@ -134,12 +94,7 @@ impl AdminApiImpl {
             let owned_room_ids = match list_owned_room_ids(&self.room_service, &uid).await {
                 Ok(room_ids) => room_ids,
                 Err(error) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: user_id,
-                        success: false,
-                        error: map_batch_result_error(ApiError::from(error)),
-                    });
-                    failed += 1;
+                    accumulator.record_err(user_id, ApiError::from(error));
                     continue;
                 }
             };
@@ -153,12 +108,7 @@ impl AdminApiImpl {
                 .await
             {
                 Ok(summary) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: user_id.clone(),
-                        success: true,
-                        error: String::new(),
-                    });
-                    succeeded += 1;
+                    accumulator.record_ok(user_id.clone());
 
                     self.realtime_lifecycle
                         .finalize_user_deletion(
@@ -170,16 +120,11 @@ impl AdminApiImpl {
                         )
                         .await;
                 }
-                Err(e) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: user_id,
-                        success: false,
-                        error: map_batch_result_error(ApiError::from(e)),
-                    });
-                    failed += 1;
-                }
+                Err(e) => accumulator.record_err(user_id, ApiError::from(e)),
             }
         }
+
+        let (results, succeeded, failed) = accumulator.into_parts();
 
         self.log_admin_action(
             admin_user_id,
@@ -197,7 +142,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(synctv_proto::admin::BatchDeleteUsersResponse {
-            results: proto_results,
+            results,
             succeeded,
             failed,
         })
@@ -210,9 +155,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchBanRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let mut proto_results = Vec::with_capacity(req.room_ids.len());
-        let mut succeeded = 0i32;
-        let mut failed = 0i32;
+        let mut accumulator = BatchResultsAccumulator::new(req.room_ids.len());
 
         for room_id in &req.room_ids {
             let rid =
@@ -248,24 +191,12 @@ impl AdminApiImpl {
             .await;
 
             match result {
-                Ok(()) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: room_id.clone(),
-                        success: true,
-                        error: String::new(),
-                    });
-                    succeeded += 1;
-                }
-                Err(e) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: room_id.clone(),
-                        success: false,
-                        error: map_batch_result_error(e),
-                    });
-                    failed += 1;
-                }
+                Ok(()) => accumulator.record_ok(room_id.clone()),
+                Err(e) => accumulator.record_err(room_id.clone(), e),
             }
         }
+
+        let (results, succeeded, failed) = accumulator.into_parts();
 
         self.log_admin_action(
             admin_user_id,
@@ -284,7 +215,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(synctv_proto::admin::BatchBanRoomsResponse {
-            results: proto_results,
+            results,
             succeeded,
             failed,
         })
@@ -298,9 +229,7 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::BatchDeleteRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let mut proto_results = Vec::with_capacity(req.room_ids.len());
-        let mut succeeded = 0i32;
-        let mut failed = 0i32;
+        let mut accumulator = BatchResultsAccumulator::new(req.room_ids.len());
 
         for room_id in &req.room_ids {
             let rid =
@@ -328,24 +257,12 @@ impl AdminApiImpl {
             .await;
 
             match result {
-                Ok(()) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: room_id.clone(),
-                        success: true,
-                        error: String::new(),
-                    });
-                    succeeded += 1;
-                }
-                Err(e) => {
-                    proto_results.push(synctv_proto::admin::BatchResultItem {
-                        id: room_id.clone(),
-                        success: false,
-                        error: map_batch_result_error(e),
-                    });
-                    failed += 1;
-                }
+                Ok(()) => accumulator.record_ok(room_id.clone()),
+                Err(e) => accumulator.record_err(room_id.clone(), e),
             }
         }
+
+        let (results, succeeded, failed) = accumulator.into_parts();
 
         self.log_admin_action(
             admin_user_id,
@@ -363,7 +280,7 @@ impl AdminApiImpl {
         .await;
 
         Ok(synctv_proto::admin::BatchDeleteRoomsResponse {
-            results: proto_results,
+            results,
             succeeded,
             failed,
         })

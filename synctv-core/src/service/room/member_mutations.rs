@@ -107,20 +107,25 @@ impl RoomService {
         Ok((target_user_id, created))
     }
 
-    async fn ensure_target_user_can_join(&self, target_user_id: &UserId) -> Result<()> {
-        let target_user = self.user_service.get_user(target_user_id).await?;
-        if target_user.is_banned {
+    /// Helper: Validate that a user can join rooms (Finding 9)
+    pub(super) fn validate_user_can_join(user: &crate::models::User) -> Result<()> {
+        if user.is_banned {
             return Err(Error::Authorization(
                 "Target user cannot be added while banned".to_string(),
             ));
         }
-        if !target_user.status.can_join_room() {
+        if !user.status.can_join_room() {
             return Err(Error::Authorization(format!(
                 "Target user cannot be added while account status is {}",
-                target_user.status
+                user.status
             )));
         }
         Ok(())
+    }
+
+    async fn ensure_target_user_can_join(&self, target_user_id: &UserId) -> Result<()> {
+        let target_user = self.user_service.get_user(target_user_id).await?;
+        Self::validate_user_can_join(&target_user)
     }
 
     fn validate_join_request_role(role: RoomRole) -> Result<RoomRole> {

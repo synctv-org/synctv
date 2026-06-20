@@ -19,7 +19,6 @@
 use axum::{extract::State, response::Json, routing::post, Router};
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::{
     error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState,
@@ -56,10 +55,6 @@ fn require_email_api(state: &AppState) -> Result<&std::sync::Arc<EmailApiImpl>, 
     })
 }
 
-fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
-}
-
 fn execute_email_endpoint<'a, T, F, Fut>(
     state: &'a AppState,
     request_meta: RequestMetadata,
@@ -73,7 +68,7 @@ where
     Fut: std::future::Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
 {
     async move {
-        let request_meta = request_metadata(request_meta);
+        let request_meta = request_meta.0;
         let email_api = require_email_api(state)?.clone();
         let executor = state.shared_api_runtime.request_executor.clone();
         executor

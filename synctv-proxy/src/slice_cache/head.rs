@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::etag::CachedResourceMeta;
-use super::range::{parse_content_range, parse_range_header};
+use super::range::{parse_client_range_plan, parse_content_range, range_bounds_for_total};
 use super::status::CacheStatus;
 use super::types::HeadResourceResult;
 
@@ -194,7 +194,10 @@ pub(super) fn cached_head_headers(
         if !meta.supports_ranges {
             return None;
         }
-        let Ok((start, end)) = parse_range_header(range, total_size) else {
+        let Ok(plan) = parse_client_range_plan(range) else {
+            return None;
+        };
+        let Ok((start, end)) = range_bounds_for_total(plan, total_size) else {
             return None;
         };
         let content_range = format!("bytes {start}-{end}/{total_size}");

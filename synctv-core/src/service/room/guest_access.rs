@@ -29,12 +29,7 @@ impl RoomService {
         self.remove_guest_role_members(room_id).await?;
         self.bump_room_guest_version(room_id).await?;
         let subscriber_count = self.notification_service.kick_all_guests(room_id, reason);
-        if subscriber_count == 0 {
-            tracing::debug!(
-                room_id = %room_id,
-                "Guest kick event had no local subscribers"
-            );
-        }
+        super::outbox::log_if_no_local_subscribers(subscriber_count, room_id, "Guest kick");
         Ok(())
     }
 

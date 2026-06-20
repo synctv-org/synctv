@@ -588,13 +588,7 @@ impl RoomService {
             settings_json.clone(),
             version,
         );
-        if subscriber_count == 0 {
-            tracing::debug!(
-                room_id = %room_id,
-                version,
-                "Room settings updated event had no local subscribers"
-            );
-        }
+        super::outbox::log_if_no_local_subscribers(subscriber_count, room_id, "Room settings updated");
 
         Ok(crate::cache::RoomSettingsSnapshot {
             settings: updated_settings.clone(),

@@ -965,6 +965,37 @@ impl SyncTvServer {
         )
     }
 
+    /// Compute the deadline for startup-failure cleanup operations.
+    ///
+    /// Returns the earlier of (configured shutdown_drain_timeout) or (STARTUP_CLEANUP_TIMEOUT).
+    fn startup_cleanup_deadline(&self) -> tokio::time::Instant {
+        let budget = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
+            .min(STARTUP_CLEANUP_TIMEOUT);
+        tokio::time::Instant::now() + budget
+    }
+
+    /// Abort server startup: shut down already-initialized components, close database, and return error.
+    ///
+    /// Extracts duplication from the four startup-phase error arms in `start_with_coordinator_and_shutdown_signal`.
+    async fn abort_startup(
+        &mut self,
+        context: StartupFailureShutdownContext,
+        coordinator: ShutdownCoordinator,
+        err: anyhow::Error,
+    ) -> anyhow::Error {
+        let deadline = context.deadline;
+        shutdown_after_startup_failure(
+            context,
+            self.shutdown_startup_failure_components(deadline),
+            coordinator,
+        )
+        .await;
+        info!("Closing database connection pools after startup failure...");
+        self.database_pools.close().await;
+        info!("Database pools closed after startup failure");
+        err
+    }
+
     /// Create a new server instance
     pub const fn new(
         config: Config,
@@ -1037,27 +1068,22 @@ impl SyncTvServer {
         {
             Ok(runtime) => runtime,
             Err(err) => {
-                let startup_cleanup_budget =
-                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                        .min(STARTUP_CLEANUP_TIMEOUT);
-                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
-                shutdown_after_startup_failure(
-                    StartupFailureShutdownContext {
-                        shutdown_tx: shutdown_tx.clone(),
-                        cleanup_cancel: cleanup_cancel.clone(),
-                        cleanup_handle: Some(cleanup_handle),
-                        api_handle: None,
-                        metrics_handle: None,
-                        management_handle: None,
-                        deadline: startup_cleanup_deadline,
-                    },
-                    self.shutdown_startup_failure_components(startup_cleanup_deadline),
-                    coordinator,
-                )
-                .await;
-                info!("Closing database connection pools after startup failure...");
-                self.database_pools.close().await;
-                info!("Database pools closed after startup failure");
+                let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                let err = self
+                    .abort_startup(
+                        StartupFailureShutdownContext {
+                            shutdown_tx: shutdown_tx.clone(),
+                            cleanup_cancel: cleanup_cancel.clone(),
+                            cleanup_handle: Some(cleanup_handle),
+                            api_handle: None,
+                            metrics_handle: None,
+                            management_handle: None,
+                            deadline: startup_cleanup_deadline,
+                        },
+                        coordinator,
+                        err,
+                    )
+                    .await;
                 return Err(err);
             }
         };
@@ -1074,27 +1100,22 @@ impl SyncTvServer {
         {
             Ok(handle) => handle,
             Err(err) => {
-                let startup_cleanup_budget =
-                    Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                        .min(STARTUP_CLEANUP_TIMEOUT);
-                let startup_cleanup_deadline = tokio::time::Instant::now() + startup_cleanup_budget;
-                shutdown_after_startup_failure(
-                    StartupFailureShutdownContext {
-                        shutdown_tx: shutdown_tx.clone(),
-                        cleanup_cancel: cleanup_cancel.clone(),
-                        cleanup_handle: Some(cleanup_handle),
-                        api_handle: None,
-                        metrics_handle: None,
-                        management_handle: None,
-                        deadline: startup_cleanup_deadline,
-                    },
-                    self.shutdown_startup_failure_components(startup_cleanup_deadline),
-                    coordinator,
-                )
-                .await;
-                info!("Closing database connection pools after startup failure...");
-                self.database_pools.close().await;
-                info!("Database pools closed after startup failure");
+                let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                let err = self
+                    .abort_startup(
+                        StartupFailureShutdownContext {
+                            shutdown_tx: shutdown_tx.clone(),
+                            cleanup_cancel: cleanup_cancel.clone(),
+                            cleanup_handle: Some(cleanup_handle),
+                            api_handle: None,
+                            metrics_handle: None,
+                            management_handle: None,
+                            deadline: startup_cleanup_deadline,
+                        },
+                        coordinator,
+                        err,
+                    )
+                    .await;
                 return Err(err);
             }
         };
@@ -1108,28 +1129,22 @@ impl SyncTvServer {
                 Ok(handle) => handle,
                 Err(err) => {
                     let api_handle = self.api_handle.take();
-                    let startup_cleanup_budget =
-                        Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                            .min(STARTUP_CLEANUP_TIMEOUT);
-                    let startup_cleanup_deadline =
-                        tokio::time::Instant::now() + startup_cleanup_budget;
-                    shutdown_after_startup_failure(
-                        StartupFailureShutdownContext {
-                            shutdown_tx: shutdown_tx.clone(),
-                            cleanup_cancel: cleanup_cancel.clone(),
-                            cleanup_handle: Some(cleanup_handle),
-                            api_handle,
-                            metrics_handle: None,
-                            management_handle: None,
-                            deadline: startup_cleanup_deadline,
-                        },
-                        self.shutdown_startup_failure_components(startup_cleanup_deadline),
-                        coordinator,
-                    )
-                    .await;
-                    info!("Closing database connection pools after startup failure...");
-                    self.database_pools.close().await;
-                    info!("Database pools closed after startup failure");
+                    let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                    let err = self
+                        .abort_startup(
+                            StartupFailureShutdownContext {
+                                shutdown_tx: shutdown_tx.clone(),
+                                cleanup_cancel: cleanup_cancel.clone(),
+                                cleanup_handle: Some(cleanup_handle),
+                                api_handle,
+                                metrics_handle: None,
+                                management_handle: None,
+                                deadline: startup_cleanup_deadline,
+                            },
+                            coordinator,
+                            err,
+                        )
+                        .await;
                     return Err(err);
                 }
             };
@@ -1145,28 +1160,22 @@ impl SyncTvServer {
                 Err(err) => {
                     let api_handle = self.api_handle.take();
                     let metrics_handle = self.metrics_handle.take();
-                    let startup_cleanup_budget =
-                        Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds)
-                            .min(STARTUP_CLEANUP_TIMEOUT);
-                    let startup_cleanup_deadline =
-                        tokio::time::Instant::now() + startup_cleanup_budget;
-                    shutdown_after_startup_failure(
-                        StartupFailureShutdownContext {
-                            shutdown_tx: shutdown_tx.clone(),
-                            cleanup_cancel: cleanup_cancel.clone(),
-                            cleanup_handle: Some(cleanup_handle),
-                            api_handle,
-                            metrics_handle,
-                            management_handle: None,
-                            deadline: startup_cleanup_deadline,
-                        },
-                        self.shutdown_startup_failure_components(startup_cleanup_deadline),
-                        coordinator,
-                    )
-                    .await;
-                    info!("Closing database connection pools after startup failure...");
-                    self.database_pools.close().await;
-                    info!("Database pools closed after startup failure");
+                    let startup_cleanup_deadline = self.startup_cleanup_deadline();
+                    let err = self
+                        .abort_startup(
+                            StartupFailureShutdownContext {
+                                shutdown_tx: shutdown_tx.clone(),
+                                cleanup_cancel: cleanup_cancel.clone(),
+                                cleanup_handle: Some(cleanup_handle),
+                                api_handle,
+                                metrics_handle,
+                                management_handle: None,
+                                deadline: startup_cleanup_deadline,
+                            },
+                            coordinator,
+                            err,
+                        )
+                        .await;
                     return Err(err);
                 }
             };

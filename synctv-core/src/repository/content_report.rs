@@ -1,5 +1,6 @@
 use sqlx::PgPool;
 
+use crate::repository::pools::RepoPools;
 use crate::{
     models::{
         ContentReport, ContentReportAdminRow, ContentReportId, ContentReportStatus,
@@ -44,29 +45,22 @@ pub struct ContentReportPage {
 
 #[derive(Clone)]
 pub struct ContentReportRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 impl ContentReportRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
-    }
-
-    fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn create(
@@ -144,7 +138,7 @@ impl ContentReportRepository {
             request.metadata,
             i16::from(ContentReportStatus::Open),
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pools.primary())
         .await?;
 
         Ok(report)
@@ -161,7 +155,7 @@ impl ContentReportRepository {
         let target_member_user_id = query.target_member_user_id.map(|id| id.as_i64());
         let scope = i16::from(query.scope);
         let search = normalize_search(&query.search);
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
 
         let total = sqlx::query_scalar!(
             r#"
@@ -382,7 +376,7 @@ impl ContentReportRepository {
             "#,
             id.as_i64(),
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
         Ok(row)
     }
@@ -453,7 +447,7 @@ impl ContentReportRepository {
             reviewed_by.as_i64(),
             resolution_note,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?
         .ok_or_else(|| Error::NotFound("Content report not found".to_string()))?;
         Ok(updated)

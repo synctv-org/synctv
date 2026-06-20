@@ -190,6 +190,32 @@ impl Common {
         false
     }
 
+    fn send_frame_to_channel(
+        &self,
+        channel_data: FrameData,
+        label: &str,
+    ) -> Result<(), SessionError> {
+        if let Some(sender) = &self.data_sender {
+            match sender.try_send(channel_data) {
+                Ok(()) => {}
+                Err(FrameTrySendError::Full(_)) => {
+                    tracing::warn!("{label} frame dropped due to channel full");
+                }
+                Err(FrameTrySendError::Closed(_)) => {
+                    return Err(SessionError {
+                        value: SessionErrorValue::SendFrameDataErr,
+                    });
+                }
+            }
+        } else {
+            return Err(SessionError {
+                value: SessionErrorValue::NoneFrameDataSender,
+            });
+        }
+
+        Ok(())
+    }
+
     pub async fn send_channel_data(&mut self) -> Result<(), SessionError> {
         let mut receiver = self.data_receiver.take().ok_or(SessionError {
             value: SessionErrorValue::NoneFrameDataReceiver,
@@ -323,25 +349,7 @@ impl Common {
             data: data.split().freeze(),
         };
 
-        if let Some(sender) = &self.data_sender {
-            match sender.try_send(channel_data) {
-                Ok(()) => {}
-                Err(FrameTrySendError::Full(_)) => {
-                    tracing::warn!("Video frame dropped due to channel full");
-                }
-                Err(FrameTrySendError::Closed(_)) => {
-                    return Err(SessionError {
-                        value: SessionErrorValue::SendFrameDataErr,
-                    });
-                }
-            }
-        } else {
-            return Err(SessionError {
-                value: SessionErrorValue::NoneFrameDataSender,
-            });
-        }
-
-        Ok(())
+        self.send_frame_to_channel(channel_data, "Video")
     }
 
     pub(crate) fn on_audio_data(
@@ -362,25 +370,7 @@ impl Common {
             data: data.split().freeze(),
         };
 
-        if let Some(sender) = &self.data_sender {
-            match sender.try_send(channel_data) {
-                Ok(()) => {}
-                Err(FrameTrySendError::Full(_)) => {
-                    tracing::warn!("Audio frame dropped due to channel full");
-                }
-                Err(FrameTrySendError::Closed(_)) => {
-                    return Err(SessionError {
-                        value: SessionErrorValue::SendFrameDataErr,
-                    });
-                }
-            }
-        } else {
-            return Err(SessionError {
-                value: SessionErrorValue::NoneFrameDataSender,
-            });
-        }
-
-        Ok(())
+        self.send_frame_to_channel(channel_data, "Audio")
     }
 
     pub(crate) fn on_meta_data(
@@ -400,25 +390,7 @@ impl Common {
             data: data.split().freeze(),
         };
 
-        if let Some(sender) = &self.data_sender {
-            match sender.try_send(channel_data) {
-                Ok(()) => {}
-                Err(FrameTrySendError::Full(_)) => {
-                    tracing::warn!("Metadata frame dropped due to channel full");
-                }
-                Err(FrameTrySendError::Closed(_)) => {
-                    return Err(SessionError {
-                        value: SessionErrorValue::SendFrameDataErr,
-                    });
-                }
-            }
-        } else {
-            return Err(SessionError {
-                value: SessionErrorValue::NoneFrameDataSender,
-            });
-        }
-
-        Ok(())
+        self.send_frame_to_channel(channel_data, "Metadata")
     }
 
     fn get_subscriber_info(&self) -> SubscriberInfo {

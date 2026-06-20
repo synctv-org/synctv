@@ -60,6 +60,23 @@ pub struct OAuth2UserInfo {
     pub email_verified: bool,
 }
 
+impl OAuth2UserInfo {
+    /// Convert service-layer `OAuth2UserInfo` to repository-layer type.
+    /// Note: `email_verified` is intentionally dropped - the repo layer stores only
+    /// the email snapshot, not the verification status.
+    pub fn to_repo_user_info(&self) -> crate::models::oauth2_client::OAuth2UserInfo {
+        crate::models::oauth2_client::OAuth2UserInfo {
+            provider: self.provider.clone(),
+            provider_instance_name: self.provider_instance_name.clone(),
+            provider_issuer: self.provider_issuer.clone(),
+            provider_user_id: self.provider_user_id.clone(),
+            username: self.username.clone(),
+            email: self.email.clone(),
+            avatar: self.avatar.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OAuth2PendingRegistration {
     pub request_id: UserId,

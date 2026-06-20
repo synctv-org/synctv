@@ -457,52 +457,9 @@ impl RoomPlaybackStateRepository {
         Ok(result)
     }
 
-    /// Update playback state with optimistic locking
-    pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
-        let mut tx = self.pool.begin().await?;
-        let result = self
-            .update_with_exact_version_on_conn(state, state.version + 1, None, &mut tx)
-            .await;
-
-        match result {
-            Ok(state) => {
-                tx.commit().await?;
-                Ok(state)
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error)
-            }
-        }
-    }
-
-    /// Update playback state with optimistic locking and an externally allocated version.
-    ///
-    /// Strong-cache write paths reserve the next version from Redis first, then
-    /// store that exact version in Postgres so Redis cannot lag behind the DB.
-    pub async fn update_with_exact_version(
-        &self,
-        state: &RoomPlaybackState,
-        new_version: i64,
-    ) -> Result<RoomPlaybackState> {
-        let mut tx = self.pool.begin().await?;
-        let result = self
-            .update_with_exact_version_on_conn(state, new_version, None, &mut tx)
-            .await;
-
-        match result {
-            Ok(state) => {
-                tx.commit().await?;
-                Ok(state)
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error)
-            }
-        }
-    }
-
-    pub async fn update_with_exact_version_and_previous_progress(
+    /// Run `update_with_exact_version_on_conn` inside a dedicated transaction,
+    /// committing on success and rolling back on error.
+    async fn update_in_tx(
         &self,
         state: &RoomPlaybackState,
         new_version: i64,
@@ -528,6 +485,33 @@ impl RoomPlaybackStateRepository {
                 Err(error)
             }
         }
+    }
+
+    /// Update playback state with optimistic locking
+    pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
+        self.update_in_tx(state, state.version + 1, None).await
+    }
+
+    /// Update playback state with optimistic locking and an externally allocated version.
+    ///
+    /// Strong-cache write paths reserve the next version from Redis first, then
+    /// store that exact version in Postgres so Redis cannot lag behind the DB.
+    pub async fn update_with_exact_version(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+    ) -> Result<RoomPlaybackState> {
+        self.update_in_tx(state, new_version, None).await
+    }
+
+    pub async fn update_with_exact_version_and_previous_progress(
+        &self,
+        state: &RoomPlaybackState,
+        new_version: i64,
+        previous_progress_position: Option<f64>,
+    ) -> Result<RoomPlaybackState> {
+        self.update_in_tx(state, new_version, previous_progress_position)
+            .await
     }
 
     pub async fn update_with_exact_version_executor(

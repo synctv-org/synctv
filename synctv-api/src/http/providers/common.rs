@@ -4,14 +4,11 @@ use axum::{
     Json, Router,
 };
 use futures::future::BoxFuture;
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::super::middleware::RequestMetadata;
 use super::super::validation::ProtoQuery;
 use super::super::{
-    admin_execute::{
-        execute_admin_endpoint, execute_admin_endpoint_with_control, request_metadata,
-    },
+    admin_execute::{execute_admin_endpoint, execute_admin_endpoint_with_control},
     AppState,
 };
 use super::super::{error::map_api_error, AppResult};
@@ -71,7 +68,7 @@ pub(crate) async fn list_instances(
     ProtoQuery(req): ProtoQuery<ListAvailableProviderInstancesRequest>,
     State(state): State<AppState>,
 ) -> Result<Json<ProviderInstancesResponse>, super::super::AppError> {
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
     let response = executor
@@ -391,7 +388,7 @@ pub(crate) async fn list_backends(
     State(state): State<AppState>,
     Path(req): Path<ListProviderBackendsRequest>,
 ) -> Result<Json<ProviderBackendsResponse>, super::super::AppError> {
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
     let response = executor
@@ -423,7 +420,7 @@ pub(crate) fn provider_instance_name_from_body(
 pub(crate) fn provider_request_metadata(
     request_meta: RequestMetadata,
 ) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
+    request_meta.0
 }
 
 pub(crate) async fn execute_provider_user_endpoint<T, E, F>(

@@ -7,6 +7,7 @@ use crate::models::{
     provider_type_name_from_code, ProviderInstance, ProviderInstanceListQuery,
     ProviderInstanceListSortBy, UserId, UserProviderCredential,
 };
+use crate::repository::pools::RepoPools;
 use crate::Result;
 use sqlx::PgPool;
 
@@ -100,16 +101,14 @@ fn provider_type_codes(providers: &[String]) -> Result<Vec<i16>> {
 /// before storage and decrypts after read. Encryption is mandatory.
 #[derive(Clone)]
 pub struct ProviderInstanceRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
     encryption: Option<CredentialEncryption>,
 }
 
 impl std::fmt::Debug for ProviderInstanceRepository {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderInstanceRepository")
-            .field("pool", &"PgPool")
-            .field("read_pool", &self.read_pool.as_ref().map(|_| "PgPool"))
+            .field("pools", &"RepoPools")
             .field("encryption", &self.encryption.is_some())
             .finish()
     }
@@ -252,8 +251,7 @@ impl ProviderInstanceRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
             encryption: None,
         }
     }
@@ -262,8 +260,7 @@ impl ProviderInstanceRepository {
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
             encryption: None,
         }
     }
@@ -272,8 +269,7 @@ impl ProviderInstanceRepository {
     #[must_use]
     pub const fn new_with_encryption(pool: PgPool, encryption: CredentialEncryption) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
             encryption: Some(encryption),
         }
     }
@@ -286,18 +282,17 @@ impl ProviderInstanceRepository {
         encryption: CredentialEncryption,
     ) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
             encryption: Some(encryption),
         }
     }
 
     fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
+        self.pools.read()
     }
 
     fn primary_pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
     }
 
     fn encrypt_field(&self, plaintext: Option<&str>) -> Result<Option<String>> {
@@ -397,7 +392,7 @@ impl ProviderInstanceRepository {
             ",
             name,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.primary_pool())
         .await?;
         match row {
             Some(row) => Ok(Some(self.decrypt_instance_row(row)?)),
@@ -492,7 +487,7 @@ impl ProviderInstanceRepository {
             &provider_codes,
             instance.enabled,
         )
-        .execute(&self.pool)
+        .execute(self.primary_pool())
         .await;
 
         match result {
@@ -533,7 +528,7 @@ impl ProviderInstanceRepository {
             &provider_codes,
             instance.enabled,
         )
-        .execute(&self.pool)
+        .execute(self.primary_pool())
         .await?;
 
         if result.rows_affected() == 0 {
@@ -549,7 +544,7 @@ impl ProviderInstanceRepository {
     /// Delete a provider instance
     pub async fn delete(&self, name: &str) -> Result<()> {
         let result = sqlx::query!("DELETE FROM media_provider_instances WHERE name = $1", name,)
-            .execute(&self.pool)
+            .execute(self.primary_pool())
             .await;
 
         let result = match result {
@@ -579,7 +574,7 @@ impl ProviderInstanceRepository {
             "UPDATE media_provider_instances SET enabled = true, updated_at = NOW() WHERE name = $1",
             name,
         )
-            .execute(&self.pool)
+            .execute(self.primary_pool())
             .await?;
 
         if result.rows_affected() == 0 {
@@ -597,7 +592,7 @@ impl ProviderInstanceRepository {
             "UPDATE media_provider_instances SET enabled = false, updated_at = NOW() WHERE name = $1",
             name,
         )
-            .execute(&self.pool)
+            .execute(self.primary_pool())
             .await?;
 
         if result.rows_affected() == 0 {
@@ -628,12 +623,6 @@ impl std::fmt::Debug for UserProviderCredentialRepository {
 }
 
 impl UserProviderCredentialRepository {
-    fn normalize_provider_instance_name_for_db(
-        provider_instance_name: Option<&str>,
-    ) -> Option<&str> {
-        normalize_provider_instance_name(provider_instance_name)
-    }
-
     fn encrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
         data: &serde_json::Value,
@@ -886,9 +875,7 @@ impl UserProviderCredentialRepository {
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
-            Self::normalize_provider_instance_name_for_db(
-                credential.provider_instance_name.as_deref(),
-            ),
+            normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
             encrypted_data,
             credential.expires_at,
         )
@@ -928,9 +915,7 @@ impl UserProviderCredentialRepository {
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
-            Self::normalize_provider_instance_name_for_db(
-                credential.provider_instance_name.as_deref(),
-            ),
+            normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
             encrypted_data,
             credential.expires_at,
         )
@@ -951,9 +936,7 @@ impl UserProviderCredentialRepository {
             WHERE id = $1
             ",
             credential.id,
-            Self::normalize_provider_instance_name_for_db(
-                credential.provider_instance_name.as_deref(),
-            ),
+            normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
             encrypted_data,
             credential.expires_at,
         )

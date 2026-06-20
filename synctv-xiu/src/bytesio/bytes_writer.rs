@@ -136,9 +136,7 @@ impl BytesWriter {
     }
 
     pub fn pop_bytes(&mut self, size: usize) {
-        for _ in 0..size {
-            self.bytes.pop();
-        }
+        self.bytes.truncate(self.bytes.len().saturating_sub(size));
     }
 
     #[must_use]

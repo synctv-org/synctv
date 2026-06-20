@@ -2,7 +2,6 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::execute::{execute_room_actor_endpoint, execute_user_endpoint};
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
@@ -42,7 +41,7 @@ pub async fn start_room_password_login(
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(mut req): Json<StartRoomPasswordLoginRequest>,
 ) -> AppResult<Json<StartRoomPasswordLoginResponse>> {
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     req.room_id = path.room_id;
     let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
     let executor = state.shared_api_runtime.client_api.clone();
@@ -95,7 +94,7 @@ pub async fn finish_room_password_login(
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<FinishRoomPasswordLoginRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let room_id = path.room_id;
     let client_ip = request_meta.client_ip.map(|ip| ip.to_string());
     let executor = state.shared_api_runtime.client_api.clone();

@@ -8,11 +8,11 @@
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
 use super::{
-    playback_transport::PlaybackTransportAction, store::VersionedPlayback, MediaProvider,
-    PlaybackResult, ProviderContext, ProviderError, SourceConfig,
+    playback_transport::PlaybackTransportAction, MediaProvider, PlaybackResult, ProviderContext,
+    ProviderError, SourceConfig,
 };
 use crate::models::media::{PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
-use crate::models::{MediaId, RoomId, TypedId};
+use crate::models::{MediaId, RoomId};
 use crate::PublicIdCodec;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -191,118 +191,6 @@ impl LiveProxyProvider {
 
         Ok(())
     }
-
-    fn live_ids_from_metadata(
-        versioned: &VersionedPlayback,
-        public_id_codec: &PublicIdCodec,
-    ) -> Result<(RoomId, MediaId), ProviderError> {
-        let room_id = Self::metadata_typed_id(versioned, "room_id", |room_id| {
-            super::playback_transport::parse_playback_room_id(
-                public_id_codec,
-                room_id,
-                "live playback metadata",
-            )
-        })?;
-        let media_id = Self::metadata_typed_id(versioned, "media_id", |media_id| {
-            super::playback_transport::parse_playback_media_id(
-                public_id_codec,
-                media_id,
-                "live playback metadata",
-            )
-        })?;
-        Ok((room_id, media_id))
-    }
-
-    fn build_flv_action(
-        versioned: &VersionedPlayback,
-        claims: &crate::proxy_signature::ProxyUrlClaims,
-        public_id_codec: &PublicIdCodec,
-    ) -> Result<PlaybackTransportAction, ProviderError> {
-        let (room_id, media_id) = Self::live_ids_from_metadata(versioned, public_id_codec)?;
-        Ok(PlaybackTransportAction::LiveFlv {
-            provider_name: Self::NAME.to_string(),
-            room_id,
-            media_id,
-            user_id: super::playback_transport::parse_playback_user_id(
-                public_id_codec,
-                &claims.user_id,
-                "live proxy claims",
-            )?,
-            expires_at: claims.expires_at,
-        })
-    }
-
-    fn build_hls_playlist_action(
-        versioned: &VersionedPlayback,
-        public_id_codec: &PublicIdCodec,
-    ) -> Result<PlaybackTransportAction, ProviderError> {
-        let (room_id, media_id) = Self::live_ids_from_metadata(versioned, public_id_codec)?;
-        Ok(PlaybackTransportAction::LiveHlsPlaylist {
-            provider_name: Self::NAME.to_string(),
-            room_id,
-            media_id,
-            version: versioned.version.clone(),
-        })
-    }
-
-    fn build_hls_segment_action(
-        versioned: &VersionedPlayback,
-        segment_name: &str,
-        public_id_codec: &PublicIdCodec,
-    ) -> Result<PlaybackTransportAction, ProviderError> {
-        let (room_id, media_id) = Self::live_ids_from_metadata(versioned, public_id_codec)?;
-        Ok(PlaybackTransportAction::LiveHlsSegment {
-            provider_name: Self::NAME.to_string(),
-            room_id,
-            media_id,
-            segment_name: segment_name.to_string(),
-            disguised_as_png: segment_name.ends_with(".png"),
-        })
-    }
-
-    fn metadata_typed_id<T>(
-        versioned: &VersionedPlayback,
-        field: &'static str,
-        parse_public_id: impl FnOnce(&str) -> Result<T, ProviderError>,
-    ) -> Result<T, ProviderError>
-    where
-        T: TypedId,
-    {
-        let value = versioned
-            .result
-            .metadata
-            .get(field)
-            .ok_or_else(|| ProviderError::ApiError(format!("Live playback missing {field}")))?;
-
-        if let Some(id) = value.as_i64() {
-            return T::try_from(id).map_err(|error| {
-                ProviderError::InvalidConfig(format!(
-                    "Invalid {field} in live playback metadata: {error}"
-                ))
-            });
-        }
-
-        if let Some(id) = value.as_u64() {
-            let id = i64::try_from(id).map_err(|_| {
-                ProviderError::InvalidConfig(format!(
-                    "Invalid {field} in live playback metadata: exceeds i64"
-                ))
-            })?;
-            return T::try_from(id).map_err(|error| {
-                ProviderError::InvalidConfig(format!(
-                    "Invalid {field} in live playback metadata: {error}"
-                ))
-            });
-        }
-
-        let value = value.as_str().ok_or_else(|| {
-            ProviderError::InvalidConfig(format!(
-                "Invalid {field} in live playback metadata: expected public ID string or numeric ID"
-            ))
-        })?;
-
-        parse_public_id(value)
-    }
 }
 
 fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
@@ -427,7 +315,13 @@ impl LiveProxyProvider {
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        Self::build_flv_action(&versioned, claims, public_id_codec)
+        super::live_helpers::build_flv_action(
+            Self::NAME,
+            &versioned,
+            claims,
+            public_id_codec,
+            "LiveProxy",
+        )
     }
 
     pub async fn get_hls_playlist(
@@ -439,7 +333,12 @@ impl LiveProxyProvider {
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        Self::build_hls_playlist_action(&versioned, public_id_codec)
+        super::live_helpers::build_hls_playlist_action(
+            Self::NAME,
+            &versioned,
+            public_id_codec,
+            "LiveProxy",
+        )
     }
 
     pub async fn get_hls_segment(
@@ -452,6 +351,12 @@ impl LiveProxyProvider {
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        Self::build_hls_segment_action(&versioned, segment_name, public_id_codec)
+        super::live_helpers::build_hls_segment_action(
+            Self::NAME,
+            &versioned,
+            segment_name,
+            public_id_codec,
+            "LiveProxy",
+        )
     }
 }

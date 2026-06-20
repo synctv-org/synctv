@@ -217,29 +217,16 @@ impl AuditService {
                 created_at,
             };
 
-            if let Err(_e) = sender.try_send(record) {
-                // Buffer full: fall back to synchronous DB write instead of dropping
+            if let Err(send_err) = sender.try_send(record) {
+                // Buffer full: fall back to synchronous DB write instead of dropping.
+                // Recover the rejected record from the error instead of rebuilding it.
+                let record = send_err.into_inner();
                 tracing::warn!(
                     actor_id = %actor_id,
                     action = %action_str,
                     "Audit buffer full, falling back to synchronous DB write"
                 );
-                if let Err(db_err) = Self::write_single(
-                    &self.pool,
-                    &AuditRecord {
-                        actor_id: actor_id.clone(),
-                        actor_username: actor_username.clone(),
-                        action,
-                        target_type,
-                        target_id: target_id.clone(),
-                        details: details.clone(),
-                        ip_address: ip_address.clone(),
-                        user_agent: user_agent.clone(),
-                        created_at,
-                    },
-                )
-                .await
-                {
+                if let Err(db_err) = Self::write_single(&self.pool, &record).await {
                     self.dropped_count.fetch_add(1, Ordering::Relaxed);
                     tracing::error!(
                         actor_id = %actor_id,
@@ -673,7 +660,6 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     {
         Ok(_) => {
             tracing::debug!(batch_size = batch_size, "Audit batch flushed successfully");
-            buffer.clear();
         }
         Err(e) => {
             dropped_count.fetch_add(batch_size, Ordering::Relaxed);

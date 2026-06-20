@@ -19,8 +19,8 @@ use crate::{
         CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     repository::{
-        room_resource_event::insert_room_resource_event_with_executor, FileStorageRepository,
-        NewRoomResourceEvent, RoomResourceEventScope,
+        pools::RepoPools, room_resource_event::insert_room_resource_event_with_executor,
+        FileStorageRepository, NewRoomResourceEvent, RoomResourceEventScope,
     },
     Error, Result,
 };
@@ -137,35 +137,32 @@ fn validate_chat_event_for_insert(event: &ChatMessageEvent, event_type: &str) ->
 
 #[derive(Clone)]
 pub struct ChatRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 impl ChatRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
     }
 
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
-        &self.pool
+        self.pools.primary()
     }
 
     #[must_use]
     pub fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
+        self.pools.read()
     }
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
@@ -208,7 +205,7 @@ impl ChatRepository {
             &message.metadata,
             message.created_at
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool())
         .await?;
 
         Ok(inserted)
@@ -237,7 +234,7 @@ impl ChatRepository {
         let sender_id = message.user_id.ok_or_else(|| {
             Error::InvalidInput("Chat message event insert requires a sender".to_string())
         })?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
 
         if let Some(client_message_id) = &message.client_message_id {
             let inserted_idempotency = sqlx::query!(
@@ -343,7 +340,7 @@ impl ChatRepository {
     }
 
     pub async fn insert_event(&self, event: &ChatMessageEvent) -> Result<ChatMessageEventLog> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let logged = self.insert_event_in_tx(&mut tx, event).await?;
         tx.commit().await?;
         Ok(logged)
@@ -400,7 +397,7 @@ impl ChatRepository {
         request: PinChatMessageEventRequest<'_>,
     ) -> Result<IdempotentChatPinEventInsert> {
         validate_optional_text(request.note, "chat pin note", CHAT_PIN_NOTE_MAX_CHARS)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         if let Some(operation) = request.operation {
             if let Some(event) = self
                 .begin_pin_operation_in_tx(&mut tx, request.room_id, request.pinned_by, operation)
@@ -570,7 +567,7 @@ impl ChatRepository {
         &self,
         request: UnpinChatMessageEventRequest<'_>,
     ) -> Result<IdempotentChatPinEventInsert> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         if let Some(operation) = request.operation {
             if let Some(event) = self
                 .begin_pin_operation_in_tx(&mut tx, request.room_id, request.unpinned_by, operation)
@@ -661,7 +658,7 @@ impl ChatRepository {
             CHAT_REACTION_KEY_MAX_CHARS,
         )?;
         validate_required_text(event_id, "chat event_id", CHAT_EVENT_ID_MAX_CHARS)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let message = sqlx::query_as!(
             ChatMessage,
             r#"
@@ -895,7 +892,7 @@ impl ChatRepository {
         room_id: &RoomId,
         event_id: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let event = self
             .get_event_by_id_in_tx(&mut tx, room_id, event_id)
             .await?;
@@ -910,7 +907,7 @@ impl ChatRepository {
         client_message_id: &str,
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let existing = self
             .get_idempotent_message_for_update(&mut tx, room_id, user_id, client_message_id)
             .await?;
@@ -989,7 +986,7 @@ impl ChatRepository {
         operation_kind: ChatMessageOperationKind,
         request_hash: &str,
     ) -> Result<Option<ChatMessageEventLog>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let event = self
             .replay_message_operation_event_in_tx(
                 &mut tx,
@@ -1012,7 +1009,7 @@ impl ChatRepository {
         operation_kind: ChatMessageOperationKind,
         request_hash: &str,
     ) -> Result<Option<ChatPinEventLog>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         let event = self
             .replay_pin_operation_event_in_tx(
                 &mut tx,
@@ -1094,7 +1091,7 @@ impl ChatRepository {
                 sequence,
                 i64::from(limit)
             )
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool())
             .await?
         } else {
             sqlx::query_as!(
@@ -1120,7 +1117,7 @@ impl ChatRepository {
                 room_id.as_i64(),
                 i64::from(limit)
             )
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool())
             .await?
         };
 
@@ -1160,7 +1157,7 @@ impl ChatRepository {
             after_sequence,
             i64::from(limit)
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool())
         .await?;
 
         rows.into_iter().map(ChatEventRow::try_into_log).collect()
@@ -1183,7 +1180,7 @@ impl ChatRepository {
             ",
             room_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         Ok(row.map_or(
@@ -1216,7 +1213,7 @@ impl ChatRepository {
             ",
             room_id.as_i64()
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool())
         .await?;
 
         Ok(row.min_sequence.zip(row.max_sequence))
@@ -1254,7 +1251,7 @@ impl ChatRepository {
             message_id,
             message_created_at
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         row.map(ChatEventRow::try_into_log).transpose()
@@ -1287,7 +1284,7 @@ impl ChatRepository {
             message_id,
             message_created_at
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         row.map(ChatEventRow::try_into_log).transpose()
@@ -1314,7 +1311,7 @@ impl ChatRepository {
             room_id.as_i64(),
             user_id.as_i64()
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         Ok(state)
@@ -1368,7 +1365,7 @@ impl ChatRepository {
             event_id,
             event_sequence
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool())
         .await?;
 
         if let Some(state) = state {
@@ -1880,7 +1877,7 @@ impl ChatRepository {
         let event_cursor = self.latest_event_cursor_for_room(room_id).await?;
         let (messages, next_cursor) = self
             .list_by_room_cursor_for_viewer_from_pool(
-                &self.pool,
+                self.pool(),
                 room_id,
                 cursor,
                 limit,
@@ -2159,7 +2156,7 @@ impl ChatRepository {
         room_id: &RoomId,
         message_id: i64,
     ) -> Result<Option<ChatMessage>> {
-        self.get_by_room_and_id_from_pool(&self.pool, room_id, message_id)
+        self.get_by_room_and_id_from_pool(self.pool(), room_id, message_id)
             .await
     }
 
@@ -2229,7 +2226,7 @@ impl ChatRepository {
         room_id: &RoomId,
         message_id: i64,
     ) -> Result<Option<ChatMessageWithAttachments>> {
-        self.get_with_attachments_by_room_and_id_from_pool(&self.pool, room_id, message_id, None)
+        self.get_with_attachments_by_room_and_id_from_pool(self.pool(), room_id, message_id, None)
             .await
     }
 
@@ -2320,7 +2317,7 @@ impl ChatRepository {
 
         let message = builder
             .build_query_as::<ChatMessage>()
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.pool())
             .await?;
         let Some(message) = message else {
             return Ok(None);
@@ -2346,7 +2343,7 @@ impl ChatRepository {
         &self,
         request: EditChatMessageEventRequest<'_>,
     ) -> Result<Option<IdempotentChatEventInsert>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         if let Some(operation) = request.operation {
             if let Some(event) = self
                 .begin_message_operation_in_tx(
@@ -2510,7 +2507,7 @@ impl ChatRepository {
 
         let message = builder
             .build_query_as::<ChatMessage>()
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.pool())
             .await?;
         let Some(message) = message else {
             return Ok(None);
@@ -2535,7 +2532,7 @@ impl ChatRepository {
         &self,
         request: DeleteChatMessageEventRequest<'_>,
     ) -> Result<Option<IdempotentChatEventInsert>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool().begin().await?;
         if let Some(operation) = request.operation {
             if let Some(event) = self
                 .begin_message_operation_in_tx(
@@ -2671,7 +2668,7 @@ impl ChatRepository {
             message_id,
             created_at
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         Ok(result.rows_affected() > 0)
@@ -2692,7 +2689,7 @@ impl ChatRepository {
             message_id,
             created_at
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         Ok(result.rows_affected() > 0)
@@ -2708,7 +2705,7 @@ impl ChatRepository {
             "#,
             room_id.as_i64()
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool())
         .await?;
 
         Ok(count)
@@ -2738,7 +2735,7 @@ impl ChatRepository {
             room_id.as_i64(),
             i64::from(keep_count)
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         Ok(result.rows_affected())
@@ -2751,7 +2748,7 @@ impl ChatRepository {
             WHERE created_at <= NOW() - INTERVAL '90 days'
             "
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         Ok(result.rows_affected())
@@ -2788,7 +2785,7 @@ impl ChatRepository {
             i64::from(keep_count),
             activity_window_minutes
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
 
         Ok(result.rows_affected())
@@ -4007,7 +4004,7 @@ impl ChatRepository {
             message_id,
             message_created_at
         )
-        .execute(&self.pool)
+        .execute(self.pool())
         .await?;
         Ok(())
     }

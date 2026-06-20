@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use super::{map_api_error, map_email_flow_error, ClientServiceImpl};
+use super::{map_api_error, ClientServiceImpl};
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
     email_service_server::EmailService, ConfirmPasswordResetResponse,
@@ -33,7 +33,7 @@ impl EmailService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(result))
     }
@@ -61,7 +61,7 @@ impl EmailService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(result))
     }
@@ -89,7 +89,7 @@ impl EmailService for ClientServiceImpl {
                 },
             )
             .await
-            .map_err(map_email_flow_error)?;
+            .map_err(map_api_error)?;
 
         Ok(Response::new(result))
     }

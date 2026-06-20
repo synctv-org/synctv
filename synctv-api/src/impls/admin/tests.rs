@@ -311,16 +311,12 @@ async fn recv_matching_realtime_event(
 impl MembershipEventFanoutService for RecordingMembershipEventFanout {
     fn prepare_permission_changed_outbox_fanout(
         &self,
-        target_user_id: UserId,
-        changed_by: UserId,
         target_is_online: bool,
         target_connection_count: usize,
     ) -> crate::membership_event_fanout::PreparedPermissionChangedFanout {
         crate::membership_event_fanout::PreparedPermissionChangedFanout::new(
             Arc::new(self.clone()),
             Arc::new(LocalNoopRealtimeEventService::new()),
-            target_user_id,
-            changed_by,
             target_is_online,
             target_connection_count,
         )

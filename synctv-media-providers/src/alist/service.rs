@@ -16,6 +16,11 @@ fn non_empty_otp_code(otp_code: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+/// Map an empty string to `None`, otherwise borrow it as `Some(&str)`.
+fn opt_str(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
+}
+
 /// Unified Alist service interface
 ///
 /// This trait defines all Alist operations using proto request/response types.
@@ -64,11 +69,7 @@ impl AlistInterface for AlistService {
             &request.token,
             self.client.clone(),
         )?;
-        let password = if request.password.is_empty() {
-            None
-        } else {
-            Some(request.password.as_str())
-        };
+        let password = opt_str(&request.password);
         let http_resp = client
             .fs_get(&request.path, password, &request.headers)
             .await?;
@@ -82,11 +83,7 @@ impl AlistInterface for AlistService {
             &request.token,
             self.client.clone(),
         )?;
-        let password = if request.password.is_empty() {
-            None
-        } else {
-            Some(request.password.as_str())
-        };
+        let password = opt_str(&request.password);
         let http_resp = client
             .fs_list_with_refresh(
                 &request.path,
@@ -106,11 +103,7 @@ impl AlistInterface for AlistService {
             &request.token,
             self.client.clone(),
         )?;
-        let password = if request.password.is_empty() {
-            None
-        } else {
-            Some(request.password.as_str())
-        };
+        let password = opt_str(&request.password);
         let http_resp = client
             .fs_other(&request.path, &request.method, password)
             .await?;
@@ -124,11 +117,7 @@ impl AlistInterface for AlistService {
             &request.token,
             self.client.clone(),
         )?;
-        let password = if request.password.is_empty() {
-            None
-        } else {
-            Some(request.password.as_str())
-        };
+        let password = opt_str(&request.password);
         let http_resp = client
             .fs_search(
                 &request.parent,

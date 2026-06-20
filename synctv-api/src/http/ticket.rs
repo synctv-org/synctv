@@ -15,7 +15,6 @@
 //! - Does not expose the actual JWT token
 
 use axum::{extract::State, Json};
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::middleware::RequestMetadata;
 use super::{AppResult, AppState};
@@ -73,7 +72,7 @@ pub async fn create_ticket(
     Json(req): Json<CreateWebSocketTicketRequest>,
 ) -> AppResult<Json<CreateWebSocketTicketResponse>> {
     super::websocket::validate_websocket_runtime_dependencies(&state)?;
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let public_room_id = req.room_id.clone();
 

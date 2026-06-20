@@ -244,8 +244,8 @@ impl HttpFlvSession {
         Ok(())
     }
 
-    async fn subscribe_from_stream_hub(&mut self) -> anyhow::Result<()> {
-        let sub_info = SubscriberInfo {
+    fn subscriber_info(&self) -> SubscriberInfo {
+        SubscriberInfo {
             id: self.subscriber_id,
             sub_type: SubscribeType::RtmpRemux2HttpFlv,
             sub_data_type: SubDataType::Frame,
@@ -253,12 +253,20 @@ impl HttpFlvSession {
                 request_url: format!("/live/{}.flv", self.stream_name),
                 remote_addr: String::new(),
             },
-        };
+        }
+    }
 
-        let identifier = StreamIdentifier::Rtmp {
+    fn stream_identifier(&self) -> StreamIdentifier {
+        StreamIdentifier::Rtmp {
             app_name: self.app_name.clone(),
             stream_name: self.stream_name.clone(),
-        };
+        }
+    }
+
+    async fn subscribe_from_stream_hub(&mut self) -> anyhow::Result<()> {
+        let sub_info = self.subscriber_info();
+
+        let identifier = self.stream_identifier();
 
         let result = subscribe_with_rollback_on_timeout(
             &self.event_producer,
@@ -295,20 +303,9 @@ impl HttpFlvSession {
     }
 
     async fn unsubscribe_from_stream_hub(&self) -> anyhow::Result<()> {
-        let sub_info = SubscriberInfo {
-            id: self.subscriber_id,
-            sub_type: SubscribeType::RtmpRemux2HttpFlv,
-            sub_data_type: SubDataType::Frame,
-            notify_info: NotifyInfo {
-                request_url: format!("/live/{}.flv", self.stream_name),
-                remote_addr: String::new(),
-            },
-        };
+        let sub_info = self.subscriber_info();
 
-        let identifier = StreamIdentifier::Rtmp {
-            app_name: self.app_name.clone(),
-            stream_name: self.stream_name.clone(),
-        };
+        let identifier = self.stream_identifier();
 
         let unsubscribe_event = StreamHubEvent::UnSubscribe {
             identifier,

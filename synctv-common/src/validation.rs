@@ -25,13 +25,12 @@ impl std::error::Error for PathTraversalError {}
 /// Validate a path for directory-traversal attacks.
 ///
 /// Rejects paths containing:
-/// - Literal `..`
+/// - Literal `..` (covers backslash variants like `..\\` and `..` followed by
+///   an encoded separator, since both contain a literal `..`)
 /// - Null bytes (literal or `%00`)
-/// - Backslash traversal (`..\\`, `\\..`)
 /// - Mixed dot sequences (`./.`)
 /// - URL-encoded dot (`%2e` / `%2E`)
 /// - Double-encoded dot (`%252e` / `%252E`)
-/// - Encoded separator (`%2f`, `%5c`) after literal `..`
 ///
 /// # Examples
 ///
@@ -58,21 +57,18 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
         });
     }
 
-    // Check 3: Backslash traversal (Windows-style)
-    if path.contains("..\\") || path.contains("\\..") {
-        return Err(PathTraversalError {
-            reason: "must not contain backslash path traversal".to_string(),
-        });
-    }
+    // Backslash traversal (`..\`, `\..`) and `..` followed by an encoded
+    // separator are intentionally not checked here: any path containing a
+    // literal `..` is already rejected by Check 1 above.
 
-    // Check 4: Mixed traversal (e.g., "./../")
+    // Check 3: Mixed traversal (e.g., "./../")
     if path.contains("./.") {
         return Err(PathTraversalError {
             reason: "must not contain mixed dot sequences".to_string(),
         });
     }
 
-    // Check 5: URL-encoded variants and complex attacks
+    // Check 4: URL-encoded variants and complex attacks
     let bytes = path.as_bytes();
     let mut i = 0;
 
@@ -111,17 +107,6 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
                             }
                         }
                     }
-                }
-
-                // Reject encoded separator (/ or \) after literal ..
-                if (byte_val == 0x2F || byte_val == 0x5C)
-                    && i >= 2
-                    && bytes[i - 2] == b'.'
-                    && bytes[i - 1] == b'.'
-                {
-                    return Err(PathTraversalError {
-                        reason: "must not contain '..' followed by encoded separator".to_string(),
-                    });
                 }
             }
         }

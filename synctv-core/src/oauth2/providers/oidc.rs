@@ -451,6 +451,17 @@ impl OidcProvider {
             .internal_with_err("Failed to parse OIDC JWKS")
     }
 
+    async fn fetch_and_store_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
+        let jwks = self.fetch_jwks(jwks_uri).await?;
+        let mut cache = self.jwks_cache.write().await;
+        *cache = Some(CachedJwks {
+            jwks_uri: jwks_uri.to_string(),
+            jwks: jwks.clone(),
+            fetched_at: Instant::now(),
+        });
+        Ok(jwks)
+    }
+
     async fn cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
         let now = Instant::now();
         {
@@ -462,25 +473,11 @@ impl OidcProvider {
             }
         }
 
-        let jwks = self.fetch_jwks(jwks_uri).await?;
-        let mut cache = self.jwks_cache.write().await;
-        *cache = Some(CachedJwks {
-            jwks_uri: jwks_uri.to_string(),
-            jwks: jwks.clone(),
-            fetched_at: Instant::now(),
-        });
-        Ok(jwks)
+        self.fetch_and_store_jwks(jwks_uri).await
     }
 
     async fn refresh_cached_jwks(&self, jwks_uri: &str) -> Result<JwkSet, Error> {
-        let jwks = self.fetch_jwks(jwks_uri).await?;
-        let mut cache = self.jwks_cache.write().await;
-        *cache = Some(CachedJwks {
-            jwks_uri: jwks_uri.to_string(),
-            jwks: jwks.clone(),
-            fetched_at: Instant::now(),
-        });
-        Ok(jwks)
+        self.fetch_and_store_jwks(jwks_uri).await
     }
 
     async fn validate_id_token(

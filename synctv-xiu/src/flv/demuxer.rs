@@ -54,13 +54,7 @@ pub struct FlvDemuxerAudioData {
 impl FlvDemuxerAudioData {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            has_data: false,
-            sound_format: 0,
-            dts: 0,
-            pts: 0,
-            data: BytesMut::new(),
-        }
+        Self::default()
     }
 }
 #[derive(Debug, Default)]
@@ -75,13 +69,7 @@ pub struct FlvDemuxerVideoData {
 impl FlvDemuxerVideoData {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            codec_id: 0,
-            dts: 0,
-            pts: 0,
-            frame_type: 0,
-            data: BytesMut::new(),
-        }
+        Self::default()
     }
 }
 

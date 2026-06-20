@@ -17,6 +17,17 @@ use crate::{
     Error, Result,
 };
 
+/// Helper: Log if a notification had no local subscribers (Finding 10)
+pub(super) fn log_if_no_local_subscribers(subscriber_count: usize, room_id: &RoomId, event_label: &str) {
+    if subscriber_count == 0 {
+        tracing::debug!(
+            room_id = %room_id,
+            "{} event had no local subscribers",
+            event_label
+        );
+    }
+}
+
 impl RoomService {
     pub(super) const fn role_member_event_scope() -> bool {
         true

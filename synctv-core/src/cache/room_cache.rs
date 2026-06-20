@@ -91,31 +91,6 @@ impl CachedRoom {
         }
     }
 
-    /// Create a new `CachedRoom` with explicit `updated_at` timestamp
-    ///
-    /// Uses default status (Active), not banned, not deleted.
-    #[must_use]
-    pub const fn with_updated_at(
-        id: String,
-        name: String,
-        owner_id: String,
-        is_public: bool,
-        created_at: chrono::DateTime<chrono::Utc>,
-        updated_at: chrono::DateTime<chrono::Utc>,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            owner_id,
-            is_public,
-            status: RoomStatus::Active,
-            is_banned: false,
-            deleted_at: None,
-            created_at,
-            updated_at,
-        }
-    }
-
     #[must_use]
     pub fn from_snapshot(snapshot: CachedRoomSnapshot) -> Self {
         Self {

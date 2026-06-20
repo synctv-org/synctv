@@ -112,6 +112,54 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     request_control: Option<&'a ExecutionControl>,
 }
 
+struct ProviderPlaybackResultBuildRequest {
+    provider_result: synctv_core::provider::PlaybackResult,
+    playlist_id: Option<synctv_core::models::PlaylistId>,
+    room_id: synctv_core::models::RoomId,
+    name: String,
+    position: f64,
+    media_id: Option<synctv_core::models::MediaId>,
+    duration_seconds: Option<f64>,
+}
+
+fn build_playback_result_from_provider(
+    request: ProviderPlaybackResultBuildRequest,
+) -> Result<synctv_core::models::media::PlaybackResult, ApiError> {
+    let ProviderPlaybackResultBuildRequest {
+        provider_result,
+        playlist_id,
+        room_id,
+        name,
+        position,
+        media_id,
+        duration_seconds,
+    } = request;
+    let mut builder =
+        synctv_core::models::media::PlaybackResult::builder(playlist_id, room_id, name, position)
+            .provider(provider_result.provider.clone())
+            .provider_instance_name(provider_result.provider_instance_name.clone())
+            .default_mode(provider_result.default_mode.clone())
+            .duration_seconds(duration_seconds);
+
+    if let Some(id) = media_id {
+        builder = builder.id(id);
+    }
+
+    for (mode_name, provider_info) in provider_result.playback_infos {
+        let info = provider_playback_info_to_model(&provider_info);
+        builder = builder.add_mode(mode_name, info);
+    }
+    for (key, value) in provider_result.metadata {
+        if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
+            builder = builder.add_metadata(key, value);
+        }
+    }
+
+    builder
+        .build()
+        .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))
+}
+
 pub(crate) fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
     public_id_codec: &synctv_core::PublicIdCodec,
@@ -435,34 +483,26 @@ impl ClientApiImpl {
         )
         .await?;
 
-        let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            media.playlist_id,
-            media.room_id,
-            media.name.clone(),
-            media.position,
-        )
-        .id(media.id)
-        .provider(provider_result.provider.clone())
-        .provider_instance_name(provider_result.provider_instance_name.clone())
-        .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds);
+        let full_result =
+            build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
+                provider_result,
+                playlist_id: media.playlist_id,
+                room_id: media.room_id,
+                name: media.name.clone(),
+                position: media.position,
+                media_id: Some(media.id),
+                duration_seconds,
+            })?;
 
-        for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
-            builder = builder.add_mode(mode_name, info);
-        }
-        for (key, value) in provider_result.metadata {
-            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
-                builder = builder.add_metadata(key, value);
-            }
-        }
+        self.sign_and_finalize_playback(&full_result, &ctx)
+    }
 
-        let full_result = builder
-            .build()
-            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-
-        // public_room_id and public_user_id must be present for signing
-        // If they're None, it indicates a logic error in context building
+    /// Helper to extract public IDs from provider context, sign playback URLs, and set expiration.
+    fn sign_and_finalize_playback(
+        &self,
+        full_result: &synctv_core::models::media::PlaybackResult,
+        ctx: &synctv_core::provider::ProviderContext<'_>,
+    ) -> Result<synctv_proto::client::Playback, ApiError> {
         let room_id = ctx.public_room_id.as_deref().ok_or_else(|| {
             ApiError::Internal(
                 "Missing public_room_id in provider context for playback signing".to_string(),
@@ -480,7 +520,7 @@ impl ClientApiImpl {
             user_id,
         };
         let mut playback =
-            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
+            try_playback_to_proto(full_result, &self.public_id_codec, Some(&signing))?;
         playback.expires_at = playback_expires_at(&playback);
         Ok(playback)
     }
@@ -567,58 +607,24 @@ impl ClientApiImpl {
         )
         .await?;
 
-        let mut builder = synctv_core::models::media::PlaybackResult::builder(
-            Some(*playlist_id),
-            *room_id,
-            item.name.clone(),
-            0.0,
-        )
-        .provider(provider_result.provider.clone())
-        .provider_instance_name(provider_result.provider_instance_name.clone())
-        .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds);
+        let mut full_result =
+            build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
+                provider_result,
+                playlist_id: Some(*playlist_id),
+                room_id: *room_id,
+                name: item.name.clone(),
+                position: 0.0,
+                media_id: None,
+                duration_seconds,
+            })?;
 
-        for (mode_name, provider_info) in provider_result.playback_infos {
-            let info = provider_playback_info_to_model(&provider_info);
-            builder = builder.add_mode(mode_name, info);
-        }
-        for (key, value) in provider_result.metadata {
-            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
-                builder = builder.add_metadata(key, value);
-            }
-        }
+        // Add dynamic playlist target metadata
+        full_result.metadata.insert(
+            "target".to_string(),
+            serde_json::Value::String(BASE64_STANDARD.encode(target)),
+        );
 
-        let full_result = builder
-            .add_metadata(
-                "target".to_string(),
-                serde_json::Value::String(BASE64_STANDARD.encode(target)),
-            )
-            .build()
-            .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
-
-        // public_room_id and public_user_id must be present for signing
-        let room_id = ctx.public_room_id.as_deref().ok_or_else(|| {
-            ApiError::Internal(
-                "Missing public_room_id in provider context for dynamic playlist playback signing"
-                    .to_string(),
-            )
-        })?;
-        let user_id = ctx.public_user_id.as_deref().ok_or_else(|| {
-            ApiError::Internal(
-                "Missing public_user_id in provider context for dynamic playlist playback signing"
-                    .to_string(),
-            )
-        })?;
-
-        let signing = PlaybackHttpSigningContext {
-            signing_key: &self.signing_key,
-            room_id,
-            user_id,
-        };
-        let mut playback =
-            try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
-        playback.expires_at = playback_expires_at(&playback);
-        Ok(playback)
+        self.sign_and_finalize_playback(&full_result, &ctx)
     }
 
     async fn build_playback_from_state(

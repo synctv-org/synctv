@@ -18,16 +18,6 @@ pub fn generate_default() -> String {
     generate(DEFAULT_LENGTH)
 }
 
-#[must_use]
-pub fn is_valid(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric())
-}
-
-#[must_use]
-pub fn is_valid_with_len(value: &str, len: usize) -> bool {
-    value.len() == len && is_valid(value)
-}
-
 #[macro_export]
 macro_rules! snanoid {
     () => {
@@ -40,7 +30,7 @@ macro_rules! snanoid {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate, is_valid, is_valid_with_len, BASE62_ALPHABET, DEFAULT_LENGTH};
+    use super::{generate, BASE62_ALPHABET, DEFAULT_LENGTH};
 
     #[test]
     fn generated_ids_only_use_base62() {
@@ -54,33 +44,17 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_non_base62_characters() {
-        assert!(is_valid("AbC123"));
-        assert!(!is_valid("abc-123"));
-        assert!(!is_valid("abc_123"));
-        assert!(!is_valid(""));
-    }
-
-    #[test]
     fn snanoid_macro_uses_shared_base62_generator() {
         let short = crate::snanoid!(12);
         let default = crate::snanoid!();
 
         assert_eq!(short.len(), 12);
         assert_eq!(default.len(), DEFAULT_LENGTH);
-        assert!(is_valid(&short));
-        assert!(is_valid(&default));
+        assert!(short.chars().all(|c| BASE62_ALPHABET.contains(&c)));
+        assert!(default.chars().all(|c| BASE62_ALPHABET.contains(&c)));
         assert!(!short.contains('-'));
         assert!(!short.contains('_'));
         assert!(!default.contains('-'));
         assert!(!default.contains('_'));
-    }
-
-    #[test]
-    fn validation_can_require_specific_length() {
-        assert!(is_valid_with_len("AbC123", 6));
-        assert!(!is_valid_with_len("AbC123", 7));
-        assert!(!is_valid_with_len("AbC_23", 6));
-        assert!(!is_valid_with_len("", 0));
     }
 }

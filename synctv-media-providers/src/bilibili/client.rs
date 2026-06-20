@@ -24,10 +24,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use super::error::{check_response, json_with_limit, BilibiliError};
-use super::types::{
-    self as types, AnimeInfo, AnimeInfoResp, DurlItem, PlayUrlInfo, PlayUrlResp, Quality,
-    VideoInfo, VideoInfoResp,
-};
+use super::types;
 use crate::error::with_retry;
 
 static RE_BVID: LazyLock<Result<Regex, regex::Error>> =
@@ -50,10 +47,6 @@ fn shared_client() -> Result<Client, BilibiliError> {
         .user_agent(USER_AGENT)
         .build()
         .map_err(|err| BilibiliError::Network(err.to_string()))
-}
-
-fn required_payload<T>(payload: Option<T>, endpoint: &'static str) -> Result<T, BilibiliError> {
-    payload.ok_or_else(|| BilibiliError::Parse(format!("{endpoint} response missing payload")))
 }
 
 fn required_first_segment_url(
@@ -713,15 +706,9 @@ impl BilibiliClient {
     /// Add cookies to request.
     /// Cookie values are sanitized to prevent header injection via \r\n.
     fn add_cookies(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(cookies) = &self.cookies {
-            let cookie_str = cookies
-                .iter()
-                .map(|(k, v)| sanitize_cookie_pair(k, v))
-                .collect::<Vec<_>>()
-                .join("; ");
-            req.header("Cookie", cookie_str)
-        } else {
-            req
+        match self.build_cookie_header() {
+            Some(cookie_str) => req.header("Cookie", cookie_str),
+            None => req,
         }
     }
 
@@ -1177,147 +1164,6 @@ impl BilibiliClient {
         Err(BilibiliError::Parse(format!(
             "Short link exceeded {BILIBILI_SHORT_LINK_MAX_REDIRECTS} redirects"
         )))
-    }
-
-    /// Get video information by BVID
-    pub async fn get_video_info(&self, bvid: &str) -> Result<VideoInfo, BilibiliError> {
-        let client = self.client.clone();
-        let bvid = bvid.to_string();
-        let cookie_header = self.build_cookie_header();
-
-        with_retry(|| {
-            let client = client.clone();
-            let bvid = bvid.clone();
-            let cookie_header = cookie_header.clone();
-            async move {
-                let mut req = client
-                    .get("https://api.bilibili.com/x/web-interface/view")
-                    .query(&[("bvid", &bvid)]);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let response = check_response(req.send().await?).await?;
-
-                let json: VideoInfoResp = json_with_limit(response).await?;
-
-                if json.code != 0 {
-                    return Err(bilibili_api_error(json.code, "video info"));
-                }
-
-                let data = required_payload(json.data, "video info")?;
-                let cid = data
-                    .pages
-                    .first()
-                    .ok_or_else(|| BilibiliError::Parse("video info has no pages".to_string()))?
-                    .cid;
-                Ok(VideoInfo {
-                    bvid: data.bvid,
-                    aid: data.aid,
-                    cid,
-                    title: data.title,
-                    desc: data.desc,
-                    pic: data.pic,
-                    duration: data.duration,
-                })
-            }
-        })
-        .await
-    }
-
-    /// Get playback URL
-    pub async fn get_play_url(
-        &self,
-        bvid: &str,
-        cid: u64,
-        quality: Quality,
-    ) -> Result<PlayUrlInfo, BilibiliError> {
-        let client = self.client.clone();
-        let cookie_header = self.build_cookie_header();
-        let bvid = bvid.to_string();
-        let cid_str = cid.to_string();
-        let qn_str = quality.to_qn().to_string();
-
-        with_retry(|| {
-            let client = client.clone();
-            let cookie_header = cookie_header.clone();
-            let bvid = bvid.clone();
-            let cid_str = cid_str.clone();
-            let qn_str = qn_str.clone();
-            async move {
-                let mut req = client
-                    .get("https://api.bilibili.com/x/player/playurl")
-                    .query(&[("bvid", bvid.as_str()), ("cid", &cid_str), ("qn", &qn_str)]);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let response = check_response(req.send().await?).await?;
-                let json: PlayUrlResp = json_with_limit(response).await?;
-
-                if json.code != 0 {
-                    return Err(bilibili_api_error(json.code, "play URL"));
-                }
-
-                let data = required_payload(json.data, "play URL")?;
-                let durl = data
-                    .durl
-                    .into_iter()
-                    .map(|item| DurlItem {
-                        url: item.url,
-                        size: 0,
-                    })
-                    .collect();
-
-                Ok(PlayUrlInfo { durl })
-            }
-        })
-        .await
-    }
-
-    /// Get anime information by EPID
-    pub async fn get_anime_info(&self, epid: &str) -> Result<AnimeInfo, BilibiliError> {
-        let client = self.client.clone();
-        let cookie_header = self.build_cookie_header();
-        let epid = epid.to_string();
-
-        with_retry(|| {
-            let client = client.clone();
-            let cookie_header = cookie_header.clone();
-            let epid = epid.clone();
-            async move {
-                let mut req = client
-                    .get("https://api.bilibili.com/pgc/view/web/season")
-                    .query(&[("ep_id", epid.as_str())]);
-                if let Some(ref cookies) = cookie_header {
-                    req = req.header("Cookie", cookies.as_str());
-                }
-                let response = check_response(req.send().await?).await?;
-                let json: AnimeInfoResp = json_with_limit(response).await?;
-
-                if json.code != 0 {
-                    return Err(bilibili_api_error(json.code, "anime info"));
-                }
-
-                let result = required_payload(json.result, "anime info")?;
-                let first_episode = result.episodes.first().ok_or_else(|| {
-                    BilibiliError::Parse("No episodes found in anime info".to_string())
-                })?;
-
-                if first_episode.ep_id == 0 || first_episode.cid == 0 {
-                    return Err(BilibiliError::Parse(
-                        "Episode has zero ep_id or cid".to_string(),
-                    ));
-                }
-
-                Ok(AnimeInfo {
-                    season_id: 0,
-                    ep_id: first_episode.ep_id,
-                    cid: first_episode.cid,
-                    title: first_episode.title.clone(),
-                    cover: String::new(),
-                })
-            }
-        })
-        .await
     }
 
     /// Parse video page to get video information

@@ -322,9 +322,7 @@ fn select_probe_target(playback: &PlaybackResult) -> Option<ProbeTarget> {
 }
 
 fn is_http_url(url: &str) -> bool {
-    Url::parse(url)
-        .ok()
-        .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
+    Url::parse(url).is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
 }
 
 async fn probe_duration(

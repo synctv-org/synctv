@@ -343,34 +343,37 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> Result<reqwest::RequestBuilder,
     build_proxy_request_with_method(cfg, reqwest::Method::GET)
 }
 
-fn build_head_response(proxy_response: &reqwest::Response) -> Result<Response, anyhow::Error> {
-    let status = proxy_response.status();
-    let response_headers = proxy_response.headers().clone();
+/// Returns `true` for hop-by-hop headers that must not be forwarded to the
+/// client per RFC 2616 Section 13.5.1.
+///
+/// Note: `content-length` is intentionally *not* listed here. The forwarding
+/// proxy path strips it conditionally (axum normally recomputes it from the
+/// body, but 206 range responses preserve it so players can seek), so callers
+/// that need that behavior handle `content-length` separately.
+pub(crate) fn is_hop_by_hop_header(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "transfer-encoding"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "upgrade"
+    )
+}
 
-    let mut builder = Response::builder().status(status);
-    for (name, value) in &response_headers {
-        if matches!(
-            name.as_str(),
-            "connection"
-                | "transfer-encoding"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "upgrade"
-        ) {
-            continue;
-        }
-        if let Ok(v) = value.to_str() {
-            builder = builder.header(name.as_str(), v);
-        }
-    }
-
-    let cache_control = match response_headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-    {
+/// Apply the media-aware `Cache-Control` policy plus `X-Content-Type-Options`.
+///
+/// Segment/media payloads (`video/*`, `audio/*`, `application/octet-stream`)
+/// are immutable and cached aggressively; everything else (manifests, unknown
+/// types) is marked `no-cache` with a matching `Pragma`.
+fn apply_media_cache_headers(
+    builder: axum::http::response::Builder,
+    content_type: Option<&str>,
+) -> axum::http::response::Builder {
+    let cache_control = match content_type {
         Some(ct)
             if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") =>
         {
@@ -378,11 +381,31 @@ fn build_head_response(proxy_response: &reqwest::Response) -> Result<Response, a
         }
         _ => "no-cache",
     };
-    builder = builder.header("Cache-Control", cache_control);
+    let mut builder = builder.header("Cache-Control", cache_control);
     if cache_control == "no-cache" {
         builder = builder.header("Pragma", "no-cache");
     }
-    builder = builder.header("X-Content-Type-Options", "nosniff");
+    builder.header("X-Content-Type-Options", "nosniff")
+}
+
+fn build_head_response(proxy_response: &reqwest::Response) -> Result<Response, anyhow::Error> {
+    let status = proxy_response.status();
+    let response_headers = proxy_response.headers().clone();
+
+    let mut builder = Response::builder().status(status);
+    for (name, value) in &response_headers {
+        if is_hop_by_hop_header(name.as_str()) {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            builder = builder.header(name.as_str(), v);
+        }
+    }
+
+    let content_type = response_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok());
+    builder = apply_media_cache_headers(builder, content_type);
 
     builder
         .body(Body::empty())
@@ -468,20 +491,12 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         // Filter hop-by-hop headers per RFC 2616 Section 13.5.1.
         // Content-Length is normally stripped (axum sets it from the body),
         // but for range (206) responses we preserve it so players can seek.
-        if name.as_str() == "content-length" && is_range_response {
-            // Fall through to forward the header.
-        } else if matches!(
-            name.as_str(),
-            "connection"
-                | "transfer-encoding"
-                | "content-length"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "upgrade"
-        ) {
+        if name.as_str() == "content-length" {
+            if !is_range_response {
+                continue;
+            }
+            // Fall through to forward the header for 206 responses.
+        } else if is_hop_by_hop_header(name.as_str()) {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -492,22 +507,10 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // Set Cache-Control based on content type:
     // - Segment files (.m4s, .ts) are immutable and can be cached aggressively
     // - Manifests (.m3u8, .mpd) and unknown types must not be cached
-    let cache_control = match response_headers
+    let content_type = response_headers
         .get("content-type")
-        .and_then(|v| v.to_str().ok())
-    {
-        Some(ct)
-            if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") =>
-        {
-            "public, max-age=86400, immutable"
-        }
-        _ => "no-cache",
-    };
-    builder = builder.header("Cache-Control", cache_control);
-    if cache_control == "no-cache" {
-        builder = builder.header("Pragma", "no-cache");
-    }
-    builder = builder.header("X-Content-Type-Options", "nosniff");
+        .and_then(|v| v.to_str().ok());
+    builder = apply_media_cache_headers(builder, content_type);
 
     // After headers arrive the body is intentionally cancellation-only. We do
     // not apply a timeout to the remainder of the proxy lifecycle because

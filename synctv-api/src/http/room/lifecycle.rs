@@ -2,7 +2,6 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use super::execute::{execute_public_endpoint, execute_room_actor_endpoint, execute_user_endpoint};
 use crate::http::validation::ProtoQuery;
@@ -128,7 +127,7 @@ pub async fn join_room(
     Path(path): Path<RoomPathRequest>,
     Json(mut req): Json<JoinRoomRequest>,
 ) -> AppResult<Json<JoinRoomResponse>> {
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let room_id = path.room_id;
     req.room_id = room_id.clone();
     let client_ip = request_meta.client_ip.map(|ip| ip.to_string());

@@ -12,11 +12,18 @@ pub(crate) fn metadata_content_range(
     metadata.range.map(super::media::file_byte_range_to_proto)
 }
 
-pub(crate) fn avatar_chunk_stream(
+/// Generic helper to convert FileObjectDownload into a proto chunk stream.
+/// `build_proto` receives (mime_type, sha256, data, content_range, total_size).
+fn generic_chunk_stream<T, F>(
     download: synctv_core::models::FileObjectDownload,
-) -> impl futures::Stream<Item = Result<synctv_proto::client::UserAvatarObjectResponse, ApiError>>
-       + Send
-       + 'static {
+    build_proto: F,
+) -> impl futures::Stream<Item = Result<T, ApiError>> + Send + 'static
+where
+    T: Send + 'static,
+    F: Fn(String, String, Vec<u8>, Option<synctv_proto::client::FileByteRange>, i64) -> T
+        + Send
+        + 'static,
+{
     let metadata = download.metadata;
     let content_range = metadata_content_range(&metadata);
     let mime_type = metadata.mime_type;
@@ -24,14 +31,32 @@ pub(crate) fn avatar_chunk_stream(
     let total_size_bytes = metadata.total_size_bytes;
     download.stream.map(move |chunk| {
         chunk
-            .map(|chunk| synctv_proto::client::UserAvatarObjectResponse {
-                mime_type: mime_type.clone(),
-                content_manifest_sha256: content_manifest_sha256.clone(),
-                data: chunk.to_vec(),
-                content_range,
-                total_size_bytes,
+            .map(|chunk| {
+                build_proto(
+                    mime_type.clone(),
+                    content_manifest_sha256.clone(),
+                    chunk.to_vec(),
+                    content_range,
+                    total_size_bytes,
+                )
             })
             .map_err(ApiError::from)
+    })
+}
+
+pub(crate) fn avatar_chunk_stream(
+    download: synctv_core::models::FileObjectDownload,
+) -> impl futures::Stream<Item = Result<synctv_proto::client::UserAvatarObjectResponse, ApiError>>
+       + Send
+       + 'static {
+    generic_chunk_stream(download, |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+        synctv_proto::client::UserAvatarObjectResponse {
+            mime_type,
+            content_manifest_sha256,
+            data,
+            content_range,
+            total_size_bytes,
+        }
     })
 }
 
@@ -41,22 +66,15 @@ pub(crate) fn chat_attachment_chunk_stream(
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::ChatAttachmentObjectResponse, ApiError>>
        + Send
        + 'static {
-    let metadata = download.metadata;
-    let content_range = metadata_content_range(&metadata);
-    let mime_type = metadata.mime_type;
-    let content_manifest_sha256 = metadata.content_manifest_sha256;
-    let total_size_bytes = metadata.total_size_bytes;
-    download.stream.map(move |chunk| {
-        chunk
-            .map(|chunk| synctv_proto::client::ChatAttachmentObjectResponse {
-                room_id: room_id.clone(),
-                mime_type: mime_type.clone(),
-                content_manifest_sha256: content_manifest_sha256.clone(),
-                data: chunk.to_vec(),
-                content_range,
-                total_size_bytes,
-            })
-            .map_err(ApiError::from)
+    generic_chunk_stream(download, move |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+        synctv_proto::client::ChatAttachmentObjectResponse {
+            room_id: room_id.clone(),
+            mime_type,
+            content_manifest_sha256,
+            data,
+            content_range,
+            total_size_bytes,
+        }
     })
 }
 
@@ -65,21 +83,14 @@ pub(crate) fn media_cover_chunk_stream(
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::MediaCoverObjectResponse, ApiError>>
        + Send
        + 'static {
-    let metadata = download.metadata;
-    let content_range = metadata_content_range(&metadata);
-    let mime_type = metadata.mime_type;
-    let content_manifest_sha256 = metadata.content_manifest_sha256;
-    let total_size_bytes = metadata.total_size_bytes;
-    download.stream.map(move |chunk| {
-        chunk
-            .map(|chunk| synctv_proto::client::MediaCoverObjectResponse {
-                mime_type: mime_type.clone(),
-                content_manifest_sha256: content_manifest_sha256.clone(),
-                data: chunk.to_vec(),
-                content_range,
-                total_size_bytes,
-            })
-            .map_err(ApiError::from)
+    generic_chunk_stream(download, |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+        synctv_proto::client::MediaCoverObjectResponse {
+            mime_type,
+            content_manifest_sha256,
+            data,
+            content_range,
+            total_size_bytes,
+        }
     })
 }
 
@@ -88,21 +99,14 @@ pub(crate) fn room_cover_chunk_stream(
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::RoomCoverObjectResponse, ApiError>>
        + Send
        + 'static {
-    let metadata = download.metadata;
-    let content_range = metadata_content_range(&metadata);
-    let mime_type = metadata.mime_type;
-    let content_manifest_sha256 = metadata.content_manifest_sha256;
-    let total_size_bytes = metadata.total_size_bytes;
-    download.stream.map(move |chunk| {
-        chunk
-            .map(|chunk| synctv_proto::client::RoomCoverObjectResponse {
-                mime_type: mime_type.clone(),
-                content_manifest_sha256: content_manifest_sha256.clone(),
-                data: chunk.to_vec(),
-                content_range,
-                total_size_bytes,
-            })
-            .map_err(ApiError::from)
+    generic_chunk_stream(download, |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+        synctv_proto::client::RoomCoverObjectResponse {
+            mime_type,
+            content_manifest_sha256,
+            data,
+            content_range,
+            total_size_bytes,
+        }
     })
 }
 
@@ -111,21 +115,14 @@ pub(crate) fn playlist_cover_chunk_stream(
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::PlaylistCoverObjectResponse, ApiError>>
        + Send
        + 'static {
-    let metadata = download.metadata;
-    let content_range = metadata_content_range(&metadata);
-    let mime_type = metadata.mime_type;
-    let content_manifest_sha256 = metadata.content_manifest_sha256;
-    let total_size_bytes = metadata.total_size_bytes;
-    download.stream.map(move |chunk| {
-        chunk
-            .map(|chunk| synctv_proto::client::PlaylistCoverObjectResponse {
-                mime_type: mime_type.clone(),
-                content_manifest_sha256: content_manifest_sha256.clone(),
-                data: chunk.to_vec(),
-                content_range,
-                total_size_bytes,
-            })
-            .map_err(ApiError::from)
+    generic_chunk_stream(download, |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+        synctv_proto::client::PlaylistCoverObjectResponse {
+            mime_type,
+            content_manifest_sha256,
+            data,
+            content_range,
+            total_size_bytes,
+        }
     })
 }
 

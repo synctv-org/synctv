@@ -36,14 +36,6 @@ pub trait TicketStore: Send + Sync {
         expected_ticket: &WsTicketData,
     ) -> Result<bool>;
 
-    /// Atomically get and delete a ticket scoped to the expected room.
-    /// Returns `None` if the ticket does not exist or has expired.
-    async fn consume(
-        &self,
-        ticket: &str,
-        expected_room_id: &RoomId,
-    ) -> Result<Option<WsTicketData>>;
-
     /// Whether this store can safely validate and consume tickets across nodes.
     ///
     /// Clustered WebSocket authentication requires a shared backend because the

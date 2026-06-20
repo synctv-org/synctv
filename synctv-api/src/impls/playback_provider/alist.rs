@@ -9,8 +9,9 @@ use synctv_proto::playback_provider::alist::{
 };
 
 use super::common::{
-    playback_transport_action_to_chunk_stream, verify_playback_provider_http_access,
-    HlsRewriteSigning, PlaybackTransportExecutorDeps,
+    playback_provider_route_base, playback_transport_action_to_chunk_stream,
+    verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
+    PlaybackProviderAccessRequest, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -62,13 +63,15 @@ pub async fn get_alist_file_stream(
     let head = req.head;
     let (store, _) = verify_alist_access(
         &deps,
-        &req.version,
-        format!("files/{}/{}", req.mode_name, req.url_index),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("files/{}/{}", req.mode_name, req.url_index),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     let action = deps
@@ -96,16 +99,18 @@ pub async fn get_alist_transcoded_hls_manifest(
     crate::impls::validate_proto_request(&req)?;
     let (store, claims) = verify_alist_access(
         &deps,
-        &req.version,
-        format!(
-            "transcoded-hls-manifests/{}/{}",
-            req.mode_name, req.url_index
-        ),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!(
+                "transcoded-hls-manifests/{}/{}",
+                req.mode_name, req.url_index
+            ),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     let action = deps
@@ -140,13 +145,15 @@ pub async fn get_alist_transcoded_hls_segment(
     let head = req.head;
     let (store, claims) = verify_alist_access(
         &deps,
-        &req.version,
-        "transcoded-hls-segments".to_string(),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        Some(&req.target_url),
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: "transcoded-hls-segments".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: Some(&req.target_url),
+        },
     )
     .await?;
     let action = deps
@@ -180,13 +187,15 @@ pub async fn get_alist_subtitle(
     crate::impls::validate_proto_request(&req)?;
     let (store, _) = verify_alist_access(
         &deps,
-        &req.version,
-        format!("subtitles/{}/{}", req.mode_name, req.subtitle_index),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: format!("subtitles/{}/{}", req.mode_name, req.subtitle_index),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     let action = deps
@@ -214,13 +223,15 @@ pub async fn get_alist_thumbnail(
     crate::impls::validate_proto_request(&req)?;
     let (store, _) = verify_alist_access(
         &deps,
-        &req.version,
-        "thumbnail".to_string(),
-        &req.sig,
-        &req.uid,
-        &req.rid,
-        req.exp,
-        None,
+        PlaybackProviderAccessRequest {
+            version: &req.version,
+            resource: "thumbnail".to_string(),
+            signature: &req.sig,
+            user_id: &req.uid,
+            room_id: &req.rid,
+            expires_at: req.exp,
+            target_url: None,
+        },
     )
     .await?;
     let action = deps
@@ -235,16 +246,9 @@ pub async fn get_alist_thumbnail(
     })))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn verify_alist_access(
     deps: &AlistPlaybackProviderDeps<'_>,
-    version: &str,
-    resource: String,
-    signature: &str,
-    user_id: &str,
-    room_id: &str,
-    expires_at: i64,
-    target_url: Option<&str>,
+    request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
         std::sync::Arc<dyn synctv_core::provider::store::ProviderStore>,
@@ -252,29 +256,10 @@ async fn verify_alist_access(
     ),
     ApiError,
 > {
-    verify_playback_provider_http_access(
-        deps.proxy_signing_key,
-        deps.public_id_codec,
-        deps.provider_stores,
-        deps.user_service,
-        deps.playback_transport_services,
-        PROVIDER,
-        version,
-        resource,
-        signature,
-        user_id,
-        room_id,
-        expires_at,
-        target_url,
-    )
-    .await
+    verify_playback_provider_access_with_deps(&deps.access_deps(), PROVIDER, request).await
 }
 
-fn playback_provider_route_base(route_provider: &str, version: &str, resource: &str) -> String {
-    let encoded_version: String =
-        url::form_urlencoded::byte_serialize(version.as_bytes()).collect();
-    format!("/api/playback-providers/{route_provider}/{encoded_version}/{resource}")
-}
+crate::impl_has_playback_provider_access_fields!(AlistPlaybackProviderDeps<'a>);
 
 impl<'a> AlistPlaybackProviderDeps<'a> {
     fn chunk_deps(&self) -> PlaybackTransportExecutorDeps<'a> {

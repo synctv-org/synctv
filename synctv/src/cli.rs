@@ -6643,9 +6643,7 @@ fn build_get_playback_cli_output(
         for (mode, info) in modes {
             for (index, playback_media) in info.medias.iter().enumerate() {
                 let is_default = mode == &playback.default_mode
-                    && i32::try_from(index)
-                        .ok()
-                        .is_some_and(|index| info.default_media_index == Some(index));
+                    && i32::try_from(index).is_ok_and(|index| info.default_media_index == Some(index));
                 let absolute_url = absolutize_cli_url(&playback_media.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
                     mode: mode.clone(),
@@ -6921,29 +6919,59 @@ fn print_database_migrate_output(
 }
 
 fn database_status_summary(output: &DatabaseStatusCliOutput) -> String {
+    database_cli_output_summary("Database connection: OK", output)
+}
+
+fn database_migrate_summary(output: &DatabaseMigrateCliOutput) -> String {
+    database_cli_output_summary("Database migration: completed", output)
+}
+
+/// Shared helper for formatting database CLI outputs.
+fn database_cli_output_summary(
+    header: &str,
+    output: &impl DatabaseCliOutputFields,
+) -> String {
     let mut lines = vec![
-        "Database connection: OK".to_string(),
-        format!("Migration status: {}", output.migration_status),
+        header.to_string(),
+        format!("Migration status: {}", output.migration_status()),
     ];
-    if let Some(detail) = &output.migration_detail {
+    if let Some(detail) = output.migration_detail() {
         lines.push(format!("Migration detail: {detail}"));
     }
-    lines.push(format!("Database URL: {}", output.database_url));
+    lines.push(format!("Database URL: {}", output.database_url()));
     lines.push(String::new());
     lines.join("\n")
 }
 
-fn database_migrate_summary(output: &DatabaseMigrateCliOutput) -> String {
-    let mut lines = vec![
-        "Database migration: completed".to_string(),
-        format!("Migration status: {}", output.migration_status),
-    ];
-    if let Some(detail) = &output.migration_detail {
-        lines.push(format!("Migration detail: {detail}"));
+/// Trait for shared database output fields (status + migrate).
+trait DatabaseCliOutputFields {
+    fn migration_status(&self) -> &str;
+    fn migration_detail(&self) -> Option<&str>;
+    fn database_url(&self) -> &str;
+}
+
+impl DatabaseCliOutputFields for DatabaseStatusCliOutput {
+    fn migration_status(&self) -> &str {
+        self.migration_status
     }
-    lines.push(format!("Database URL: {}", output.database_url));
-    lines.push(String::new());
-    lines.join("\n")
+    fn migration_detail(&self) -> Option<&str> {
+        self.migration_detail.as_deref()
+    }
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
+}
+
+impl DatabaseCliOutputFields for DatabaseMigrateCliOutput {
+    fn migration_status(&self) -> &str {
+        self.migration_status
+    }
+    fn migration_detail(&self) -> Option<&str> {
+        self.migration_detail.as_deref()
+    }
+    fn database_url(&self) -> &str {
+        &self.database_url
+    }
 }
 
 fn render_config_for_display(config: &synctv_core::Config) -> Result<Value> {

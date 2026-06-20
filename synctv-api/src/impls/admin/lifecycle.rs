@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use synctv_core::models::{RoomId, UserId, UserRole};
 use synctv_core::service::RoomService;
 
+use crate::impls::pagination::paginate_all;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
 
-use super::{AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID};
+use super::{check_role_hierarchy, AdminApiImpl, ApiError, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 
 const USER_ROOM_CLEANUP_PAGE_SIZE: u32 = 100;
 
@@ -70,17 +71,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if user.role == UserRole::Root && caller_role != UserRole::Root {
-            return Err(ApiError::Authorization(
-                "Only root users can ban other root users".to_string(),
-            ));
-        }
-
-        if user.role == UserRole::Admin && caller_role != UserRole::Root {
-            return Err(ApiError::Authorization(
-                "Only root users can ban admin users".to_string(),
-            ));
-        }
+        check_role_hierarchy(caller_role, user.role, "ban")?;
 
         if user.is_banned {
             return Err(ApiError::InvalidInput("User is already banned".to_string()));
@@ -143,10 +134,7 @@ async fn list_active_user_room_ids(
     room_service: &RoomService,
     user_id: &UserId,
 ) -> synctv_core::Result<Vec<RoomId>> {
-    let mut page = 1;
-    let mut room_ids = Vec::new();
-
-    loop {
+    paginate_all(|page| async move {
         let (page_room_ids, total) = room_service
             .member_service()
             .list_user_rooms(
@@ -154,56 +142,26 @@ async fn list_active_user_room_ids(
                 synctv_core::models::PageParams::new(Some(page), Some(USER_ROOM_CLEANUP_PAGE_SIZE)),
             )
             .await?;
-
-        if page_room_ids.is_empty() {
-            break;
-        }
-
-        room_ids.extend(page_room_ids);
-        let loaded = i64::try_from(room_ids.len()).map_err(|_| {
-            synctv_core::Error::Internal("listed room id count exceeds i64::MAX".to_string())
-        })?;
-        if loaded >= total {
-            break;
-        }
-
-        page += 1;
-    }
-
-    Ok(room_ids)
+        Ok((page_room_ids, total))
+    })
+    .await
 }
 
 pub(in crate::impls::admin) async fn list_owned_room_ids(
     room_service: &RoomService,
     user_id: &UserId,
 ) -> synctv_core::Result<Vec<RoomId>> {
-    let mut page = 1;
-    let mut room_ids = Vec::new();
-
-    loop {
+    paginate_all(|page| async move {
         let (rooms, total) = room_service
             .list_rooms_by_creator(
                 user_id,
                 synctv_core::models::PageParams::new(Some(page), Some(USER_ROOM_CLEANUP_PAGE_SIZE)),
             )
             .await?;
-
-        if rooms.is_empty() {
-            break;
-        }
-
-        room_ids.extend(rooms.into_iter().map(|room| room.id));
-        let loaded = i64::try_from(room_ids.len()).map_err(|_| {
-            synctv_core::Error::Internal("owned room id count exceeds i64::MAX".to_string())
-        })?;
-        if loaded >= total {
-            break;
-        }
-
-        page += 1;
-    }
-
-    Ok(room_ids)
+        let room_ids = rooms.into_iter().map(|room| room.id).collect();
+        Ok((room_ids, total))
+    })
+    .await
 }
 
 async fn invalidate_user_room_permission_caches(

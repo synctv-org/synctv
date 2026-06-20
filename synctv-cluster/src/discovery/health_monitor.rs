@@ -163,15 +163,6 @@ impl HealthMonitor {
     where
         N: ClusterNodeDirectory + 'static,
     {
-        Self::with_runtime_cancellation_token(node_registry, check_interval_secs, parent_token)
-    }
-
-    #[must_use]
-    pub fn with_runtime_cancellation_token(
-        node_registry: Arc<dyn ClusterNodeDirectory>,
-        check_interval_secs: u64,
-        parent_token: &CancellationToken,
-    ) -> Self {
         Self {
             node_registry,
             check_interval_secs,
@@ -199,15 +190,6 @@ impl HealthMonitor {
     where
         N: ClusterNodeDirectory + 'static,
     {
-        Self::with_runtime_probe_config(node_registry, check_interval_secs, probe_config)
-    }
-
-    #[must_use]
-    pub fn with_runtime_probe_config(
-        node_registry: Arc<dyn ClusterNodeDirectory>,
-        check_interval_secs: u64,
-        probe_config: HealthProbeConfig,
-    ) -> Self {
         Self {
             node_registry,
             check_interval_secs,

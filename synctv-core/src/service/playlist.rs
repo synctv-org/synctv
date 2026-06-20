@@ -139,6 +139,11 @@ async fn validate_dynamic_playlist_source_with_dependencies(
     }
     ensure_provider_credential_repo_available(&trimmed_provider, deps.credential_repo)?;
 
+    // NOTE: ProviderContext building is repeated twice below due to lifetime constraints.
+    // The first context validates against trimmed_instance, the second against bound_instance.
+    // Extracting to a helper causes lifetime conflicts because ProviderContext borrows
+    // the instance name reference.
+
     let mut ctx = ProviderContext::new("synctv")
         .with_user_id(*user_id)
         .with_room_id(*room_id)

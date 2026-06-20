@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use crate::models::{AuditAction, AuditTargetType, PageParams, UserId};
+use crate::repository::pools::RepoPools;
 use crate::{Error, Result};
 
 /// Audit log entry as read from the database
@@ -71,29 +72,22 @@ pub struct AuditLogQuery {
 /// Audit log repository for reading audit log entries
 #[derive(Clone)]
 pub struct AuditLogRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 impl AuditLogRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
-    }
-
-    fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     /// Append the shared WHERE clause filters to a `QueryBuilder`.
@@ -143,7 +137,7 @@ impl AuditLogRepository {
     pub async fn list(&self, query: &AuditLogQuery) -> Result<(Vec<AuditLogRow>, i64)> {
         let default_from = Utc::now() - chrono::Duration::days(90);
         let effective_from = query.from.unwrap_or(default_from);
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
 
         // ── Count query ───────────────────────────────────────────────────────
         let mut count_builder: QueryBuilder<Postgres> =
@@ -200,7 +194,7 @@ impl AuditLogRepository {
             "#,
             id,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pools.primary())
         .await?;
 
         row.map(TryInto::try_into).transpose()

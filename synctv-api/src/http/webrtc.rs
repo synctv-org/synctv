@@ -7,7 +7,6 @@ use axum::{
     extract::{Path, State},
     response::Json,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::middleware::RequestMetadata;
 use crate::http::{error::map_api_error, AppResult, AppState};
@@ -55,7 +54,6 @@ pub async fn get_ice_servers(
         &state.shared_api_runtime.public_id_codec,
     )
     .map_err(map_api_error)?;
-    let request_meta = RequestMetadata(request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT)));
 
     let response = super::room::execute_room_actor_endpoint(
         &state,

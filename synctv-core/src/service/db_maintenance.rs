@@ -15,28 +15,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::{
-    cleanup::CleanupConfig, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
+    cleanup::CleanupConfig, cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
     SettingsRegistry,
 };
-use crate::models::{ChatAttachment, FileReferenceTarget};
-use crate::repository::{FileStorageRepository, RoomResourceEventRepository};
+use crate::models::ChatAttachment;
+use crate::repository::FileStorageRepository;
+use crate::service::partitioning::u32_to_i32;
 use crate::Result as CoreResult;
 
 /// Default chat message retention in days (used when settings are unavailable).
 const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
 const FILE_CLEANUP_RETRY_LIMIT: i64 = 100;
-
-fn u32_to_i32(value: u32, field: &'static str) -> CoreResult<i32> {
-    i32::try_from(value).map_err(|_| crate::Error::Internal(format!("{field} exceeds i32::MAX")))
-}
-
-fn len_to_u64(len: usize, field: &'static str) -> CoreResult<u64> {
-    u64::try_from(len).map_err(|_| crate::Error::Internal(format!("{field} exceeds u64::MAX")))
-}
-
-fn retention_seconds_to_i64(value: u64, field: &'static str) -> CoreResult<i64> {
-    i64::try_from(value).map_err(|_| crate::Error::Internal(format!("{field} exceeds i64::MAX")))
-}
 
 /// Unified database maintenance service.
 ///
@@ -58,6 +47,7 @@ pub struct DatabaseMaintenanceService {
 }
 
 impl DatabaseMaintenanceService {
+    #[cfg(test)]
     fn notification_retention_days_from_config(config: &CleanupConfig) -> CoreResult<i32> {
         u32_to_i32(
             config.notification_retention_days,
@@ -65,6 +55,7 @@ impl DatabaseMaintenanceService {
         )
     }
 
+    #[cfg(test)]
     fn notification_max_retention_days_from_config(config: &CleanupConfig) -> CoreResult<i32> {
         u32_to_i32(
             config.notification_max_retention_days,
@@ -72,6 +63,7 @@ impl DatabaseMaintenanceService {
         )
     }
 
+    #[cfg(test)]
     fn expired_credential_buffer_hours_from_config(config: &CleanupConfig) -> CoreResult<i32> {
         u32_to_i32(
             config.expired_credential_buffer_hours,
@@ -109,43 +101,10 @@ impl DatabaseMaintenanceService {
         }
     }
 
-    fn notification_retention_days(&self) -> CoreResult<i32> {
-        Self::notification_retention_days_from_config(&self.config)
-    }
-
-    fn notification_max_retention_days(&self) -> CoreResult<i32> {
-        Self::notification_max_retention_days_from_config(&self.config)
-    }
-
     fn expired_token_retention_days(&self) -> CoreResult<i32> {
         u32_to_i32(
             self.config.expired_token_retention_days,
             "expired_token_retention_days",
-        )
-    }
-
-    fn expired_credential_buffer_hours(&self) -> CoreResult<i32> {
-        Self::expired_credential_buffer_hours_from_config(&self.config)
-    }
-
-    fn unreferenced_file_retention_seconds(&self) -> CoreResult<i64> {
-        retention_seconds_to_i64(
-            self.config.unreferenced_file_retention_seconds,
-            "unreferenced_file_retention_seconds",
-        )
-    }
-
-    fn room_resource_event_retention_seconds(&self) -> CoreResult<i64> {
-        retention_seconds_to_i64(
-            self.config.room_resource_event_retention_seconds,
-            "room_resource_event_retention_seconds",
-        )
-    }
-
-    fn playback_progress_retention_days(&self) -> CoreResult<i32> {
-        u32_to_i32(
-            self.config.playback_progress_retention_days,
-            "playback_progress_retention_days",
         )
     }
 
@@ -174,36 +133,14 @@ impl DatabaseMaintenanceService {
 
     /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> crate::Result<()> {
-        let read_deleted = if self.config.notification_retention_days > 0 {
-            sqlx::query!(
-                r"
-                DELETE FROM notifications
-                WHERE is_read = TRUE
-                  AND created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                ",
-                self.notification_retention_days()?
-            )
-            .execute(&self.pool)
-            .await?
-            .rows_affected()
-        } else {
-            0
-        };
-
-        let expired_deleted = if self.config.notification_max_retention_days > 0 {
-            sqlx::query!(
-                r"
-                DELETE FROM notifications
-                WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                ",
-                self.notification_max_retention_days()?
-            )
-            .execute(&self.pool)
-            .await?
-            .rows_affected()
-        } else {
-            0
-        };
+        let read_deleted =
+            cleanup_ops::delete_old_read_notifications(&self.pool, self.config.notification_retention_days)
+                .await?;
+        let expired_deleted = cleanup_ops::delete_expired_notifications(
+            &self.pool,
+            self.config.notification_max_retention_days,
+        )
+        .await?;
 
         if read_deleted > 0 || expired_deleted > 0 {
             info!(
@@ -318,13 +255,11 @@ impl DatabaseMaintenanceService {
     }
 
     pub async fn run_cleanup_room_resource_events(&self) -> crate::Result<()> {
-        if self.config.room_resource_event_retention_seconds == 0 {
-            return Ok(());
-        }
-
-        let deleted = RoomResourceEventRepository::new(self.pool.clone())
-            .delete_older_than(self.room_resource_event_retention_seconds()?)
-            .await?;
+        let deleted = cleanup_ops::delete_old_room_resource_events(
+            &self.pool,
+            self.config.room_resource_event_retention_seconds,
+        )
+        .await?;
         if deleted > 0 {
             info!(deleted, "Expired room resource event cleanup completed");
         }
@@ -332,25 +267,11 @@ impl DatabaseMaintenanceService {
     }
 
     pub async fn run_cleanup_playback_progress(&self) -> crate::Result<()> {
-        if self.config.playback_progress_retention_days == 0 {
-            return Ok(());
-        }
-
-        let deleted = sqlx::query!(
-            r#"
-            DELETE FROM room_playback_progress progress
-            WHERE progress.updated_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM room_playback_state state
-                  WHERE state.current_progress_id = progress.id
-              )
-            "#,
-            self.playback_progress_retention_days()?,
+        let deleted = cleanup_ops::delete_stale_playback_progress(
+            &self.pool,
+            self.config.playback_progress_retention_days,
         )
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        .await?;
 
         if deleted > 0 {
             info!(deleted, "Stale playback progress cleanup completed");
@@ -427,52 +348,19 @@ impl DatabaseMaintenanceService {
     /// This handles interrupted direct uploads where bytes were stored but the
     /// product mutation that would attach the file never completed.
     pub async fn run_cleanup_unreferenced_file_objects(&self) -> crate::Result<u64> {
-        if self.config.unreferenced_file_retention_seconds == 0 {
-            return Ok(0);
-        }
         let Some(storage) = &self.file_storage_service else {
             return Ok(0);
         };
-        let repository = FileStorageRepository::new(self.pool.clone());
-        let files = repository
-            .list_unreferenced_objects(self.unreferenced_file_retention_seconds()?, 100)
-            .await?;
-        if files.is_empty() {
-            return Ok(0);
+        let deleted = cleanup_ops::cleanup_unreferenced_file_objects(
+            &self.pool,
+            storage,
+            self.config.unreferenced_file_retention_seconds,
+        )
+        .await?;
+        if deleted > 0 {
+            info!(deleted, "Unreferenced file object cleanup completed");
         }
-
-        let references = files
-            .into_iter()
-            .map(|file| FileReferenceTarget {
-                storage_backend: file.storage_backend,
-                object_key: file.object_key.clone(),
-                reference_kind: "unreferenced_file".to_string(),
-                reference_id: file.object_key,
-            })
-            .collect::<Vec<_>>();
-        match storage
-            .delete_files(FileStorageCleanupOrigin::UnreferencedObject, &references)
-            .await
-        {
-            Ok(()) => {
-                let deleted = len_to_u64(references.len(), "unreferenced file count")?;
-                if deleted > 0 {
-                    info!(deleted, "Unreferenced file object cleanup completed");
-                }
-                Ok(deleted)
-            }
-            Err(error) => {
-                repository
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::UnreferencedObject.as_str(),
-                        &references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await?;
-                Err(error)
-            }
-        }
+        Ok(deleted)
     }
 
     /// Release file references whose reference-level lifetime has expired.
@@ -480,49 +368,16 @@ impl DatabaseMaintenanceService {
         let Some(storage) = &self.file_storage_service else {
             return Ok(0);
         };
-        let repository = FileStorageRepository::new(self.pool.clone());
-        let references = repository.list_expired_references(100).await?;
-        if references.is_empty() {
-            return Ok(0);
-        }
-
-        match storage
-            .delete_files(FileStorageCleanupOrigin::ReferenceExpired, &references)
-            .await
-        {
-            Ok(()) => len_to_u64(references.len(), "expired file reference count"),
-            Err(error) => {
-                repository
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::ReferenceExpired.as_str(),
-                        &references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await?;
-                Err(error)
-            }
-        }
+        cleanup_ops::cleanup_expired_file_references(&self.pool, storage).await
     }
 
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> crate::Result<()> {
-        if self.config.expired_credential_buffer_hours == 0 {
-            return Ok(());
-        }
-
-        let result = sqlx::query!(
-            r"
-            DELETE FROM user_media_provider_credentials
-            WHERE expires_at IS NOT NULL
-              AND expires_at < CURRENT_TIMESTAMP - make_interval(hours => $1)
-            ",
-            self.expired_credential_buffer_hours()?
+        let deleted = cleanup_ops::delete_expired_credentials(
+            &self.pool,
+            self.config.expired_credential_buffer_hours,
         )
-        .execute(&self.pool)
         .await?;
-
-        let deleted = result.rows_affected();
         if deleted > 0 {
             info!(deleted, "Expired credential cleanup completed");
         }

@@ -77,11 +77,6 @@ impl StoredEntry {
         elapsed > self.ttl && elapsed <= self.ttl + stale_max_age
     }
 
-    /// Update `last_accessed` to the current time.
-    pub fn touch(&mut self) {
-        self.last_accessed = SystemTime::now();
-    }
-
     /// Returns the size of the stored data in bytes.
     #[must_use]
     pub const fn data_size(&self) -> u64 {
@@ -174,21 +169,6 @@ mod tests {
         let entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_mins(5));
         assert!(!entry.is_expired());
         assert!(!entry.is_stale(Duration::from_mins(1)));
-    }
-
-    #[test]
-    fn touch_updates_last_accessed() {
-        let mut entry = StoredEntry {
-            data: Bytes::from("data"),
-            inserted_at: SystemTime::now() - Duration::from_secs(100),
-            ttl: Duration::from_mins(5),
-            last_accessed: SystemTime::now() - Duration::from_secs(100),
-        };
-        let before_touch = entry.last_accessed;
-        // Small sleep to ensure time difference (SystemTime granularity).
-        std::thread::sleep(Duration::from_millis(2));
-        entry.touch();
-        assert!(entry.last_accessed > before_touch);
     }
 
     #[test]

@@ -26,7 +26,6 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 use tracing::{debug, error, info};
 
 use synctv_proto::client::{
@@ -84,7 +83,7 @@ pub async fn get_authorize_url(
     req.provider = path.provider;
     let provider_for_log = req.provider.clone();
 
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let response = state
         .shared_api_runtime
         .request_executor
@@ -153,7 +152,7 @@ pub async fn exchange_authorization_code(
         &headers,
     )
     .map_err(|error| AppError::bad_request(error.to_string()))?;
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
 
     let response = state
         .shared_api_runtime
@@ -223,7 +222,7 @@ pub async fn get_bind_authorize_url(
     req.provider = path.provider;
     let provider_for_log = req.provider.clone();
 
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let response = state
         .shared_api_runtime
         .request_executor
@@ -288,7 +287,7 @@ pub async fn unlink_provider(
     req.provider = path.provider;
     let provider_for_log = req.provider.clone();
 
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
     let response = state
         .shared_api_runtime
         .request_executor
@@ -335,7 +334,7 @@ pub async fn list_available_providers(
     State(state): State<AppState>,
 ) -> AppResult<Json<ListAvailableProvidersResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
 
     let response = state
         .shared_api_runtime
@@ -379,7 +378,7 @@ pub async fn get_linked_providers(
     State(state): State<AppState>,
 ) -> AppResult<Json<GetLinkedProvidersResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    let request_meta = request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT));
+    let request_meta = request_meta.0;
 
     let response = state
         .shared_api_runtime

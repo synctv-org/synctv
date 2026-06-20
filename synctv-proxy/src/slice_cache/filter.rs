@@ -449,34 +449,20 @@ pub async fn proxy_with_cache_enabled_with_control_and_timeout(
         range_bounds_for_total(plan, total_size).map_err(proxy_error_from_client_range_error)?;
     }
 
-    match plan {
-        ClientRangePlan::Explicit { .. } | ClientRangePlan::OpenEnded { .. } => {}
-        ClientRangePlan::Suffix { .. } => {
-            if known_total_size.is_none() {
-                return stream_original_range_with_learned_meta(
-                    cache,
-                    url,
-                    provider_headers,
-                    range_str,
-                    request_control,
-                    upstream_header_timeout,
-                )
-                .await;
-            }
-        }
-        ClientRangePlan::MultiRange => {
-            return stream_through_with_status(StreamThroughRequest {
-                client: cache.client(),
-                ssrf_guard: cache.ssrf_guard(),
-                url,
-                provider_headers,
-                range_header: Some(range_str),
-                cache_status: CacheStatus::Bypass,
-                request_control,
-                upstream_header_timeout,
-            })
-            .await;
-        }
+    // A suffix range (`bytes=-N`) cannot be mapped onto slice indices until the
+    // total size is known, so stream it through while learning the metadata.
+    // Explicit/open-ended ranges proceed straight to the slice path. MultiRange
+    // was already handled by the bypass above.
+    if matches!(plan, ClientRangePlan::Suffix { .. }) && known_total_size.is_none() {
+        return stream_original_range_with_learned_meta(
+            cache,
+            url,
+            provider_headers,
+            range_str,
+            request_control,
+            upstream_header_timeout,
+        )
+        .await;
     }
 
     range_slice_cache_path(RangeSliceRequest {
@@ -558,17 +544,7 @@ pub(super) fn build_head_cache_response(
         .header("X-Cache-Status", result.cache_status.as_str());
 
     for (name, value) in &result.headers {
-        if matches!(
-            name.as_str(),
-            "connection"
-                | "transfer-encoding"
-                | "keep-alive"
-                | "proxy-authenticate"
-                | "proxy-authorization"
-                | "te"
-                | "trailer"
-                | "upgrade"
-        ) {
+        if crate::is_hop_by_hop_header(name.as_str()) {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -611,18 +587,10 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
                 .map_err(proxy_error_from_client_range_error)?;
             start
         }
+        // MultiRange is bypassed in `proxy_with_cache_*` before this function
+        // is ever reached, so it can never appear here.
         ClientRangePlan::MultiRange => {
-            return stream_through_with_status(StreamThroughRequest {
-                client: cache.client(),
-                ssrf_guard: cache.ssrf_guard(),
-                url,
-                provider_headers,
-                range_header: Some(range_str),
-                cache_status: CacheStatus::Bypass,
-                request_control,
-                upstream_header_timeout,
-            })
-            .await;
+            unreachable!("MultiRange is bypassed before reaching the slice path")
         }
     };
     let first_slice_index = slice_index_for_byte(first_byte, cache.config().slice_size);

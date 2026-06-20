@@ -79,6 +79,19 @@ fn send_subscribe_result(
     }
 }
 
+/// Drop the given subscribers from the shared statistics after they were found
+/// closed during fan-out. Identical for frame and packet subscribers.
+async fn evict_subscriber_stats(
+    statistics_data: &Arc<Mutex<StatisticsStream>>,
+    closed_ids: &[Uuid],
+) {
+    let mut stats = statistics_data.lock().await;
+    for id in closed_ids {
+        stats.subscribers.remove(id);
+    }
+    stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_ids.len());
+}
+
 /// Fans publisher data out to subscribers and maintains stream statistics.
 pub(crate) struct StreamDataTransceiver {
     data_receiver: DataReceiver,
@@ -194,19 +207,16 @@ impl StreamDataTransceiver {
             let closed_ids = Self::fan_out_frame(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
-                let closed_count = closed_ids.len();
                 for id in &closed_ids {
                     frame_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed frame subscriber: {}", id);
                 }
                 generation.fetch_add(1, Ordering::Release);
-                *cached_gen = cached_gen.wrapping_add(u64::MAX);
+                // Force a snapshot rebuild on the next frame by making the
+                // cached generation differ from the bumped global generation.
+                *cached_gen = cached_gen.wrapping_sub(1);
 
-                let mut stats = statistics_data.lock().await;
-                for id in &closed_ids {
-                    stats.subscribers.remove(id);
-                }
-                stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
+                evict_subscriber_stats(statistics_data, &closed_ids).await;
             }
         }
     }
@@ -275,19 +285,16 @@ impl StreamDataTransceiver {
             let closed_ids = Self::fan_out_packet(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
-                let closed_count = closed_ids.len();
                 for id in &closed_ids {
                     packet_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed packet subscriber: {}", id);
                 }
                 generation.fetch_add(1, Ordering::Release);
-                *cached_gen = cached_gen.wrapping_add(u64::MAX);
+                // Force a snapshot rebuild on the next packet by making the
+                // cached generation differ from the bumped global generation.
+                *cached_gen = cached_gen.wrapping_sub(1);
 
-                let mut stats = statistics_data.lock().await;
-                for id in &closed_ids {
-                    stats.subscribers.remove(id);
-                }
-                stats.subscriber_count = stats.subscriber_count.saturating_sub(closed_count);
+                evict_subscriber_stats(statistics_data, &closed_ids).await;
             }
         }
     }

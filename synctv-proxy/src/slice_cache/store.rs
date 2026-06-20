@@ -202,6 +202,34 @@ impl SliceCache {
         })
     }
 
+    /// Drain the (empty) body of a `304 Not Modified` response so the
+    /// underlying connection can be reused, logging any drain failure.
+    async fn drain_not_modified_body(
+        resp: reqwest::Response,
+        request_control: Option<&ExecutionControl>,
+    ) {
+        if let Err(error) =
+            run_with_proxy_cancellation("slice cache 304 drain", request_control, resp.bytes())
+                .await
+        {
+            tracing::debug!(%error, "failed to drain slice cache 304 response body");
+        }
+    }
+
+    /// Re-insert the still-cached slice data under a fresh segment TTL after a
+    /// `304 Not Modified`, returning the data on success.
+    async fn refresh_cached_slice_ttl(
+        &self,
+        key: &str,
+        data: Bytes,
+    ) -> Result<(), anyhow::Error> {
+        let refreshed = StoredEntry::new(data, self.config.segment_ttl);
+        self.backend
+            .put(key, refreshed)
+            .await
+            .with_context(|| format!("failed to refresh cached slice TTL for {key}"))
+    }
+
     fn aligned_slice_request_range(
         slice_index: u64,
         slice_size: usize,
@@ -310,16 +338,11 @@ impl SliceCache {
         };
 
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-            if let Err(error) = resp.bytes().await {
-                tracing::debug!(%error, "failed to drain slice cache 304 response body");
-            }
+            Self::drain_not_modified_body(resp, None).await;
 
             if let Some(existing) = self.backend.get(&key).await {
-                let refreshed = StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
-                self.backend
-                    .put(&key, refreshed)
-                    .await
-                    .with_context(|| format!("failed to refresh cached slice TTL for {key}"))?;
+                self.refresh_cached_slice_ttl(&key, existing.data.clone())
+                    .await?;
                 return Ok(());
             }
 
@@ -921,22 +944,13 @@ impl SliceCache {
         // Handle 304 Not Modified: refresh the TTL and return Revalidated.
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
             // Consume the (empty) body to release the connection.
-            if let Err(error) =
-                run_with_proxy_cancellation("slice cache 304 drain", request_control, resp.bytes())
-                    .await
-            {
-                tracing::debug!(%error, "failed to drain slice cache 304 response body");
-            }
+            Self::drain_not_modified_body(resp, request_control).await;
 
             // Refresh the entry's TTL by re-inserting it.
             if let Some(existing) = self.backend.get(&key).await {
                 if let Some(total_size) = effective_total_size {
-                    let refreshed =
-                        StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
-                    self.backend
-                        .put(&key, refreshed)
-                        .await
-                        .with_context(|| format!("failed to refresh cached slice TTL for {key}"))?;
+                    self.refresh_cached_slice_ttl(&key, existing.data.clone())
+                        .await?;
                     self.updating_keys.remove(&key);
                     return Ok(SliceFetchResult::Slice(Self::fetched_slice_from_meta(
                         total_size,

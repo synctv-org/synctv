@@ -133,74 +133,6 @@ pub fn slice_index_for_byte(byte: u64, slice_size: usize) -> u64 {
     byte / slice_size as u64
 }
 
-// Request Range header parsing
-
-/// Parse a single HTTP Range header value.
-///
-/// Only supports a single byte range (multi-range is rejected, following
-/// nginx's pattern of passing multi-range through without slicing).
-/// Returns `(start, end)` where both are inclusive.
-pub fn parse_range_header(range: &str, total_size: u64) -> Result<(u64, u64), anyhow::Error> {
-    let range = range.trim();
-    if !range.starts_with("bytes=") {
-        return Err(anyhow::anyhow!(
-            "Invalid range format: must start with 'bytes='"
-        ));
-    }
-
-    let spec = &range["bytes=".len()..];
-
-    // Reject multi-range (nginx: comma in Range -> passthrough).
-    if spec.contains(',') {
-        return Err(anyhow::anyhow!("Multi-range requests are not supported"));
-    }
-
-    let parts: Vec<&str> = spec.splitn(2, '-').collect();
-    if parts.len() != 2 {
-        return Err(anyhow::anyhow!("Invalid range format"));
-    }
-
-    let (start, end) = if parts[0].is_empty() {
-        // Suffix range: bytes=-N (last N bytes)
-        let suffix_len: u64 = parts[1]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid suffix range"))?;
-        if suffix_len == 0 {
-            return Err(anyhow::anyhow!("Suffix range out of bounds"));
-        }
-        (total_size.saturating_sub(suffix_len), total_size - 1)
-    } else if parts[1].is_empty() {
-        // Open-ended: bytes=N-
-        let start: u64 = parts[0]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid range start"))?;
-        if start >= total_size {
-            return Err(anyhow::anyhow!("Range start beyond total size"));
-        }
-        (start, total_size - 1)
-    } else {
-        // Explicit range: bytes=N-M
-        let start: u64 = parts[0]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid range start"))?;
-        let mut end: u64 = parts[1]
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid range end"))?;
-        if start >= total_size {
-            return Err(anyhow::anyhow!("Range start beyond total size"));
-        }
-        if start > end {
-            return Err(anyhow::anyhow!("Range start beyond range end"));
-        }
-        if end >= total_size {
-            end = total_size - 1;
-        }
-        (start, end)
-    };
-
-    Ok((start, end))
-}
-
 // Response Content-Range parsing (modeled after nginx)
 
 /// Parsed Content-Range response header: `bytes START-END/TOTAL`
@@ -314,36 +246,6 @@ fn parse_u64_prefix(s: &str) -> Option<(u64, &str)> {
 }
 
 // Slice alignment helpers
-
-/// Compute which slice indices are needed to serve the given byte range.
-#[must_use]
-pub fn compute_needed_slices(range_start: u64, range_end: u64, slice_size: usize) -> Vec<u64> {
-    let ss = slice_size as u64;
-    let first = range_start / ss;
-    let last = range_end / ss;
-    (first..=last).collect()
-}
-
-/// Compute the aligned byte range `(start, end)` for a given slice index.
-/// Both `start` and `end` are inclusive.
-///
-/// Returns an error if `total_size` is zero, since there are no valid byte
-/// ranges for an empty resource.
-pub fn aligned_range_for_slice(
-    slice_index: u64,
-    slice_size: usize,
-    total_size: u64,
-) -> Result<(u64, u64), anyhow::Error> {
-    if total_size == 0 {
-        return Err(anyhow::anyhow!(
-            "Cannot compute slice range for zero-size resource"
-        ));
-    }
-    let ss = slice_size as u64;
-    let start = slice_index * ss;
-    let end = std::cmp::min(start + ss, total_size) - 1;
-    Ok((start, end))
-}
 
 // Unit tests
 

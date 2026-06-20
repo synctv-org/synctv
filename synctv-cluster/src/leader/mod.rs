@@ -237,6 +237,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use std::sync::Arc;
+
+/// Returns `true` if the error message indicates a Redis Sentinel failover is in progress.
+///
+/// During a Sentinel failover, the previous primary transitions to read-only mode
+/// (READONLY error) or the new primary may still be loading data (LOADING error).
+fn is_sentinel_failover_error(error_msg: &str) -> bool {
+    error_msg.contains("READONLY") || error_msg.contains("LOADING")
+}
 use std::time::Duration;
 
 use tokio::sync::{broadcast, Mutex as TokioMutex};
@@ -820,8 +828,7 @@ impl LeaderElector {
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    let is_failover =
-                        error_str.contains("READONLY") || error_str.contains("LOADING");
+                    let is_failover = is_sentinel_failover_error(&error_str);
 
                     if is_failover {
                         warn!(
@@ -1028,7 +1035,7 @@ impl LeaderElector {
             }
             Err(e) => {
                 let error_str = e.to_string();
-                let is_failover = error_str.contains("READONLY") || error_str.contains("LOADING");
+                let is_failover = is_sentinel_failover_error(&error_str);
 
                 if is_failover {
                     warn!(

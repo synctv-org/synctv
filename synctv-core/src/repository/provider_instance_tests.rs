@@ -159,31 +159,3 @@ async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
         "unexpected error: {err}"
     );
 }
-
-#[test]
-fn test_normalize_provider_instance_name_for_db() {
-    assert_eq!(
-        UserProviderCredentialRepository::normalize_provider_instance_name_for_db(None),
-        None
-    );
-    assert_eq!(
-        UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some("")),
-        None
-    );
-    assert_eq!(
-        UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some("   ")),
-        None
-    );
-    assert_eq!(
-        UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some(
-            "alist-main"
-        )),
-        Some("alist-main")
-    );
-    assert_eq!(
-        UserProviderCredentialRepository::normalize_provider_instance_name_for_db(Some(
-            "  alist-main  "
-        )),
-        Some("alist-main")
-    );
-}

@@ -67,27 +67,29 @@ pub(crate) fn room_member_event_to_proto(
         } => {
             let room_id = encode_room(*room_id)?;
             let user_id = encode_user(*user_id)?;
+            let validated_username = required_realtime_text(username, "user username", 50)?;
+            let member = synctv_proto::common::RoomMember {
+                room_id: room_id.clone(),
+                user_id: user_id.clone(),
+                username: validated_username,
+                role: validated_room_member_role(*role)?,
+                permissions: permissions.0,
+                added_permissions: added_permissions.0,
+                removed_permissions: removed_permissions.0,
+                admin_added_permissions: admin_added_permissions.0,
+                admin_removed_permissions: admin_removed_permissions.0,
+                joined_at: joined_at.timestamp(),
+                is_online: true,
+                connection_count: 1,
+            };
             synctv_proto::client::RoomMemberEvent {
                 event_id: event_id.clone(),
-                room_id: room_id.clone(),
+                room_id,
                 kind: RoomMemberEventKind::Joined as i32,
-                member: Some(synctv_proto::common::RoomMember {
-                    room_id,
-                    user_id: user_id.clone(),
-                    username: required_realtime_text(username, "user username", 50)?,
-                    role: validated_room_member_role(*role)?,
-                    permissions: permissions.0,
-                    added_permissions: added_permissions.0,
-                    removed_permissions: removed_permissions.0,
-                    admin_added_permissions: admin_added_permissions.0,
-                    admin_removed_permissions: admin_removed_permissions.0,
-                    joined_at: joined_at.timestamp(),
-                    is_online: true,
-                    connection_count: 1,
-                }),
+                username: member.username.clone(),
                 user_id,
                 guest_id: String::new(),
-                username: required_realtime_text(username, "user username", 50)?,
+                member: Some(member),
                 actor_user_id: String::new(),
                 reason: String::new(),
                 occurred_at: timestamp.timestamp(),
@@ -107,27 +109,29 @@ pub(crate) fn room_member_event_to_proto(
         } => {
             let room_id = encode_room(*room_id)?;
             let guest_id = required_realtime_text(guest_id, "guest id", 128)?;
+            let validated_username = required_realtime_text(username, "guest username", 64)?;
+            let member = synctv_proto::common::RoomMember {
+                room_id: room_id.clone(),
+                user_id: guest_id.clone(),
+                username: validated_username,
+                role: validated_room_member_role(*role)?,
+                permissions: permissions.0,
+                added_permissions: 0,
+                removed_permissions: 0,
+                admin_added_permissions: 0,
+                admin_removed_permissions: 0,
+                joined_at: joined_at.timestamp(),
+                is_online: true,
+                connection_count: 1,
+            };
             synctv_proto::client::RoomMemberEvent {
                 event_id: event_id.clone(),
-                room_id: room_id.clone(),
+                room_id,
                 kind: RoomMemberEventKind::Joined as i32,
-                member: Some(synctv_proto::common::RoomMember {
-                    room_id,
-                    user_id: guest_id.clone(),
-                    username: required_realtime_text(username, "guest username", 64)?,
-                    role: validated_room_member_role(*role)?,
-                    permissions: permissions.0,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
-                    joined_at: joined_at.timestamp(),
-                    is_online: true,
-                    connection_count: 1,
-                }),
+                username: member.username.clone(),
                 user_id: String::new(),
                 guest_id,
-                username: required_realtime_text(username, "guest username", 64)?,
+                member: Some(member),
                 actor_user_id: String::new(),
                 reason: String::new(),
                 occurred_at: timestamp.timestamp(),
@@ -192,27 +196,29 @@ pub(crate) fn room_member_event_to_proto(
         } => {
             let room_id = encode_room(*room_id)?;
             let user_id = encode_user(*target_user_id)?;
+            let validated_username = required_realtime_text(target_username, "target username", 50)?;
+            let member = synctv_proto::common::RoomMember {
+                room_id: room_id.clone(),
+                user_id: user_id.clone(),
+                username: validated_username,
+                role: validated_room_member_role(*role)?,
+                permissions: new_permissions.0,
+                added_permissions: added_permissions.0,
+                removed_permissions: removed_permissions.0,
+                admin_added_permissions: admin_added_permissions.0,
+                admin_removed_permissions: admin_removed_permissions.0,
+                joined_at: 0,
+                is_online: *target_is_online,
+                connection_count: i32::try_from(*target_connection_count).unwrap_or(i32::MAX),
+            };
             synctv_proto::client::RoomMemberEvent {
                 event_id: event_id.clone(),
-                room_id: room_id.clone(),
+                room_id,
                 kind: RoomMemberEventKind::PermissionChanged as i32,
-                member: Some(synctv_proto::common::RoomMember {
-                    room_id,
-                    user_id: user_id.clone(),
-                    username: required_realtime_text(target_username, "target username", 50)?,
-                    role: validated_room_member_role(*role)?,
-                    permissions: new_permissions.0,
-                    added_permissions: added_permissions.0,
-                    removed_permissions: removed_permissions.0,
-                    admin_added_permissions: admin_added_permissions.0,
-                    admin_removed_permissions: admin_removed_permissions.0,
-                    joined_at: 0,
-                    is_online: *target_is_online,
-                    connection_count: i32::try_from(*target_connection_count).unwrap_or(i32::MAX),
-                }),
+                username: member.username.clone(),
                 user_id,
                 guest_id: String::new(),
-                username: required_realtime_text(target_username, "target username", 50)?,
+                member: Some(member),
                 actor_user_id: encode_user(*changed_by)?,
                 reason: String::new(),
                 occurred_at: timestamp.timestamp(),

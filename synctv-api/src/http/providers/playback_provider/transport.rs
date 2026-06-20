@@ -1,9 +1,13 @@
 use axum::{
     body::Body,
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
-    response::Response,
+    response::{
+        sse::Event,
+        Response,
+    },
 };
 use futures::{Stream, StreamExt};
+use std::convert::Infallible;
 use synctv_proto::playback_provider::common::StreamChunk;
 
 use crate::http::{
@@ -14,6 +18,29 @@ use crate::impls::{ApiError, EndpointRateLimitCategory};
 
 pub trait PlaybackProviderHttpResponse {
     fn chunk(self) -> Option<StreamChunk>;
+}
+
+/// Map Bilibili live danmaku events to SSE format.
+///
+/// Extracted to eliminate duplication between provider and room danmaku endpoints.
+pub fn bilibili_danmaku_sse_event(
+    event: Result<synctv_proto::playback_provider::bilibili::BilibiliLiveDanmakuEvent, ApiError>,
+) -> Result<Event, Infallible> {
+    let event = match event {
+        Ok(event) => match serde_json::to_string(&event) {
+            Ok(data) => Event::default().event("danmaku").data(data),
+            Err(error) => {
+                tracing::warn!(error = %error, "Failed to serialize Bilibili live danmaku SSE event");
+                Event::default()
+                    .event("error")
+                    .data(r#"{"message":"Failed to serialize danmaku event"}"#)
+            }
+        },
+        Err(error) => Event::default()
+            .event("error")
+            .data(serde_json::json!({ "message": error.to_string() }).to_string()),
+    };
+    Ok(event)
 }
 
 pub fn query(raw_query: axum::extract::RawQuery) -> String {

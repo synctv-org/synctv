@@ -18,13 +18,11 @@ fn marked_timestamp_low_byte(value: i64) -> u8 {
 
 #[derive(Debug, Clone)]
 pub struct Pes {
-    pub program_number: u16,
     pub pid: u16,
     pub stream_id: u8,
     pub codec_id: u8,
     pub continuity_counter: u8,
     pub esinfo: BytesMut,
-    pub esinfo_length: usize,
 
     pub data_alignment_indicator: u8,
 
@@ -42,13 +40,11 @@ impl Pes {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            program_number: 0,
             pid: 0,
             stream_id: 0,
             codec_id: 0,
             continuity_counter: 0,
             esinfo: BytesMut::new(),
-            esinfo_length: 0,
 
             data_alignment_indicator: 0,
 

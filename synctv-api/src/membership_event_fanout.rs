@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use synctv_core::models::UserId;
 use synctv_core::service::{
     PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory,
     RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
@@ -12,8 +11,6 @@ use crate::runtime::RealtimeEventService;
 pub trait MembershipEventFanoutService: Send + Sync {
     fn prepare_permission_changed_outbox_fanout(
         &self,
-        target_user_id: UserId,
-        changed_by: UserId,
         target_is_online: bool,
         target_connection_count: usize,
     ) -> PreparedPermissionChangedFanout;
@@ -36,8 +33,6 @@ impl PreparedPermissionChangedFanout {
     pub fn new(
         realtime_fanout: Arc<dyn RealtimeFanoutService>,
         event_service: Arc<dyn RealtimeEventService>,
-        _target_user_id: UserId,
-        _changed_by: UserId,
         target_is_online: bool,
         target_connection_count: usize,
     ) -> Self {
@@ -167,16 +162,12 @@ impl std::fmt::Debug for DefaultMembershipEventFanoutService {
 impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
     fn prepare_permission_changed_outbox_fanout(
         &self,
-        target_user_id: UserId,
-        changed_by: UserId,
         target_is_online: bool,
         target_connection_count: usize,
     ) -> PreparedPermissionChangedFanout {
         PreparedPermissionChangedFanout::new(
             self.realtime_fanout.clone(),
             self.event_service.clone(),
-            target_user_id,
-            changed_by,
             target_is_online,
             target_connection_count,
         )
@@ -256,7 +247,7 @@ mod tests {
             event_service.clone(),
         );
         let user = user_id("self-joiner");
-        let prepared = service.prepare_permission_changed_outbox_fanout(user, user, true, 2);
+        let prepared = service.prepare_permission_changed_outbox_fanout(true, 2);
         let factory = prepared.outbox_factory();
 
         let event = factory(&permission_snapshot(user, user))?;
@@ -273,8 +264,6 @@ mod tests {
         let prepared = PreparedPermissionChangedFanout::new(
             channel_realtime_fanout_service(tx),
             Arc::new(RecordingRealtimeEventService::default()),
-            user_id("target"),
-            user_id("actor"),
             false,
             0,
         );

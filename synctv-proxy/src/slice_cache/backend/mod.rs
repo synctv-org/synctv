@@ -29,9 +29,6 @@ pub trait SliceCacheBackend: Send + Sync {
     /// Remove an entry by key.
     async fn remove(&self, key: &str);
 
-    /// Check if the key exists without reading data.
-    async fn contains(&self, key: &str) -> bool;
-
     /// Total bytes currently stored across all entries.
     fn current_size(&self) -> u64;
 
@@ -78,13 +75,6 @@ impl SliceCacheBackend for CacheBackend {
         match self {
             Self::Memory(b) => b.remove(key).await,
             Self::File(b) => b.remove(key).await,
-        }
-    }
-
-    async fn contains(&self, key: &str) -> bool {
-        match self {
-            Self::Memory(b) => b.contains(key).await,
-            Self::File(b) => b.contains(key).await,
         }
     }
 

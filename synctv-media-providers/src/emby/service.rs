@@ -13,6 +13,11 @@ use crate::grpc::emby::{
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode};
 
+/// Map an empty string to `None`, otherwise borrow it as `Some(&str)`.
+fn opt_str(s: &str) -> Option<&str> {
+    (!s.is_empty()).then_some(s)
+}
+
 fn current_user_unavailable_for_token(error: &EmbyError) -> bool {
     matches!(
         error,
@@ -221,17 +226,9 @@ impl EmbyInterface for EmbyService {
             self.client.clone(),
         )?;
 
-        let parent_id = if request.parent_id.is_empty() {
-            None
-        } else {
-            Some(request.parent_id.as_str())
-        };
+        let parent_id = opt_str(&request.parent_id);
 
-        let search_term = if request.search_term.is_empty() {
-            None
-        } else {
-            Some(request.search_term.as_str())
-        };
+        let search_term = opt_str(&request.search_term);
 
         let items_response = client.get_items(parent_id, search_term).await?;
 
@@ -258,17 +255,9 @@ impl EmbyInterface for EmbyService {
             self.client.clone(),
         )?;
 
-        let path = if request.path.is_empty() {
-            None
-        } else {
-            Some(request.path.as_str())
-        };
+        let path = opt_str(&request.path);
 
-        let search_term = if request.search_term.is_empty() {
-            None
-        } else {
-            Some(request.search_term.as_str())
-        };
+        let search_term = opt_str(&request.search_term);
 
         let fs_response = client
             .fs_list(path, request.start_index, request.limit, search_term)
@@ -308,11 +297,7 @@ impl EmbyInterface for EmbyService {
             self.client.clone(),
         )?;
 
-        let media_source_id = if request.media_source_id.is_empty() {
-            None
-        } else {
-            Some(request.media_source_id.as_str())
-        };
+        let media_source_id = opt_str(&request.media_source_id);
 
         let audio_idx = if request.audio_stream_index < 0 {
             None
@@ -376,11 +361,7 @@ impl EmbyInterface for EmbyService {
             String::new(),
             self.client.clone(),
         )?;
-        let media_source_id = if request.media_source_id.is_empty() {
-            None
-        } else {
-            Some(request.media_source_id.as_str())
-        };
+        let media_source_id = opt_str(&request.media_source_id);
         client
             .report_playback_start(
                 &request.item_id,
@@ -422,11 +403,7 @@ impl EmbyInterface for EmbyService {
             String::new(),
             self.client.clone(),
         )?;
-        let media_source_id = if request.media_source_id.is_empty() {
-            None
-        } else {
-            Some(request.media_source_id.as_str())
-        };
+        let media_source_id = opt_str(&request.media_source_id);
         client
             .report_playback_progress(
                 &request.item_id,

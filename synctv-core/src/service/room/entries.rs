@@ -256,13 +256,7 @@ impl RoomService {
                     &actor_username,
                     *media_id,
                 );
-                if subscriber_count == 0 {
-                    tracing::debug!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        "Media removed event had no local subscribers"
-                    );
-                }
+                super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Media removed");
             }
             for playlist_id in &impact.deleted_playlist_ids {
                 let subscriber_count = self.notification_service.notify_playlist_deleted(
@@ -271,13 +265,7 @@ impl RoomService {
                     &actor_username,
                     *playlist_id,
                 );
-                if subscriber_count == 0 {
-                    tracing::debug!(
-                        room_id = %room_id,
-                        playlist_id = %playlist_id,
-                        "Playlist deleted event had no local subscribers"
-                    );
-                }
+                super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Playlist deleted");
             }
         }
 
@@ -579,13 +567,7 @@ impl RoomService {
                 &actor_username,
                 *playlist_id,
             );
-            if subscriber_count == 0 {
-                tracing::debug!(
-                    room_id = %room_id,
-                    playlist_id = %playlist_id,
-                    "Playlist deleted event after clear_playlist had no local subscribers"
-                );
-            }
+            super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Playlist deleted after clear_playlist");
         }
 
         clear_playlist_result_from_impact(impact)

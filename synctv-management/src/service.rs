@@ -183,11 +183,6 @@ impl ManagementServiceImpl {
         self.management_actor(request)
     }
 
-    fn check_root(&self, request: &Request<impl std::fmt::Debug>) -> Result<(), Status> {
-        self.management_actor(request)?;
-        Ok(())
-    }
-
     async fn resolve_required_user_ref(
         &self,
         user: Option<UserRef>,
@@ -589,10 +584,6 @@ impl ManagementServiceImpl {
         }
     }
 
-    fn proto_response<T>(value: T) -> Response<T> {
-        Response::new(value)
-    }
-
     fn required_nested_request<T>(
         request: Option<T>,
         request_name: &'static str,
@@ -660,6 +651,47 @@ impl ManagementServiceImpl {
 
     fn cluster_failure(node_id: String, error: String) -> SliceCacheNodeFailure {
         SliceCacheNodeFailure { node_id, error }
+    }
+
+    async fn cluster_fan_out_all<T, F, Fut>(
+        &self,
+        local_result: T,
+        remote_call: F,
+    ) -> Result<(Vec<T>, Vec<SliceCacheNodeFailure>), Status>
+    where
+        F: Fn(Arc<Self>, synctv_cluster::discovery::NodeInfo) -> Fut + Clone,
+        Fut: std::future::Future<Output = Result<T, Status>>,
+    {
+        let mut results = vec![local_result];
+        let mut failures = Vec::new();
+
+        if let Some(cluster_client) = &self.cluster_client {
+            let remote_nodes = cluster_client
+                .remote_routable_nodes()
+                .await
+                .map_err(|error| Status::unavailable(error.to_string()))?;
+            let mut futures = futures::stream::FuturesUnordered::new();
+            for node in remote_nodes {
+                let service = Arc::new(self.clone());
+                let call = remote_call.clone();
+                futures.push(async move {
+                    let node_id = node.node_id.clone();
+                    call(service, node)
+                        .await
+                        .map_err(|error| (node_id, error.to_string()))
+                });
+            }
+            while let Some(result) = futures.next().await {
+                match result {
+                    Ok(response) => results.push(response),
+                    Err((node_id, error)) => {
+                        failures.push(Self::cluster_failure(node_id, error));
+                    }
+                }
+            }
+        }
+
+        Ok((results, failures))
     }
 
     fn proxy_slice_cache_stats_to_management(
@@ -776,33 +808,12 @@ impl ManagementServiceImpl {
         all_nodes: bool,
     ) -> Result<GetSliceCacheStatsResponse, Status> {
         if all_nodes {
-            let mut nodes = vec![self.slice_cache_stats_response()];
-            let mut failures = Vec::new();
-            if let Some(cluster_client) = &self.cluster_client {
-                let remote_nodes = cluster_client
-                    .remote_routable_nodes()
-                    .await
-                    .map_err(|error| Status::unavailable(error.to_string()))?;
-                let mut futures = futures::stream::FuturesUnordered::new();
-                for node in remote_nodes {
-                    let service = self.clone();
-                    futures.push(async move {
-                        let node_id = node.node_id.clone();
-                        service
-                            .remote_slice_cache_stats(&node)
-                            .await
-                            .map_err(|error| (node_id, error.to_string()))
-                    });
-                }
-                while let Some(result) = futures.next().await {
-                    match result {
-                        Ok(response) => nodes.push(response),
-                        Err((node_id, error)) => {
-                            failures.push(Self::cluster_failure(node_id, error));
-                        }
-                    }
-                }
-            }
+            let local = self.slice_cache_stats_response();
+            let (nodes, failures) = self
+                .cluster_fan_out_all(local, |service, node| async move {
+                    service.remote_slice_cache_stats(&node).await
+                })
+                .await?;
             return Ok(GetSliceCacheStatsResponse { nodes, failures });
         }
 
@@ -883,33 +894,12 @@ impl ManagementServiceImpl {
         all_nodes: bool,
     ) -> Result<PurgeSliceCacheResponse, Status> {
         if all_nodes {
-            let mut nodes = vec![self.purge_local_slice_cache().await?];
-            let mut failures = Vec::new();
-            if let Some(cluster_client) = &self.cluster_client {
-                let remote_nodes = cluster_client
-                    .remote_routable_nodes()
-                    .await
-                    .map_err(|error| Status::unavailable(error.to_string()))?;
-                let mut futures = futures::stream::FuturesUnordered::new();
-                for node in remote_nodes {
-                    let service = self.clone();
-                    futures.push(async move {
-                        let node_id = node.node_id.clone();
-                        service
-                            .remote_purge_slice_cache(&node)
-                            .await
-                            .map_err(|error| (node_id, error.to_string()))
-                    });
-                }
-                while let Some(result) = futures.next().await {
-                    match result {
-                        Ok(response) => nodes.push(response),
-                        Err((node_id, error)) => {
-                            failures.push(Self::cluster_failure(node_id, error));
-                        }
-                    }
-                }
-            }
+            let local = self.purge_local_slice_cache().await?;
+            let (nodes, failures) = self
+                .cluster_fan_out_all(local, |service, node| async move {
+                    service.remote_purge_slice_cache(&node).await
+                })
+                .await?;
             return Ok(Self::purge_response_from_nodes(nodes, failures));
         }
 
@@ -992,33 +982,12 @@ impl ManagementServiceImpl {
         all_nodes: bool,
     ) -> Result<EvictExpiredSliceCacheResponse, Status> {
         if all_nodes {
-            let mut nodes = vec![self.evict_expired_local_slice_cache().await?];
-            let mut failures = Vec::new();
-            if let Some(cluster_client) = &self.cluster_client {
-                let remote_nodes = cluster_client
-                    .remote_routable_nodes()
-                    .await
-                    .map_err(|error| Status::unavailable(error.to_string()))?;
-                let mut futures = futures::stream::FuturesUnordered::new();
-                for node in remote_nodes {
-                    let service = self.clone();
-                    futures.push(async move {
-                        let node_id = node.node_id.clone();
-                        service
-                            .remote_evict_expired_slice_cache(&node)
-                            .await
-                            .map_err(|error| (node_id, error.to_string()))
-                    });
-                }
-                while let Some(result) = futures.next().await {
-                    match result {
-                        Ok(response) => nodes.push(response),
-                        Err((node_id, error)) => {
-                            failures.push(Self::cluster_failure(node_id, error));
-                        }
-                    }
-                }
-            }
+            let local = self.evict_expired_local_slice_cache().await?;
+            let (nodes, failures) = self
+                .cluster_fan_out_all(local, |service, node| async move {
+                    service.remote_evict_expired_slice_cache(&node).await
+                })
+                .await?;
             return Ok(Self::evict_expired_response_from_nodes(nodes, failures));
         }
 
@@ -1079,7 +1048,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_user(
@@ -1094,7 +1063,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_user(admin_proto::GetUserRequest { user_id })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_user_preferences(
@@ -1109,7 +1078,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_user_preferences(admin_proto::GetUserPreferencesRequest { user_id })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_user_preferences(
@@ -1133,14 +1102,13 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_admin(
         &self,
         request: Request<AddAdminRequest>,
     ) -> Result<Response<admin_proto::AddAdminResponse>, Status> {
-        self.check_root(&request)?;
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1154,14 +1122,13 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn remove_admin(
         &self,
         request: Request<RemoveAdminRequest>,
     ) -> Result<Response<admin_proto::RemoveAdminResponse>, Status> {
-        self.check_root(&request)?;
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1175,7 +1142,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_admins(
@@ -1195,7 +1162,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_user(
@@ -1221,7 +1188,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn delete_user(
@@ -1241,7 +1208,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn ban_user(
@@ -1265,7 +1232,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn unban_user(
@@ -1285,7 +1252,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_user_registration_reviews(
@@ -1307,7 +1274,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn approve_user_registration_review(
@@ -1328,7 +1295,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn reject_user_registration_review(
@@ -1348,7 +1315,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_room_creation_reviews(
@@ -1371,7 +1338,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn approve_room_creation_review(
@@ -1392,7 +1359,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn reject_room_creation_review(
@@ -1412,7 +1379,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_room_join_reviews(
@@ -1435,7 +1402,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn approve_room_join_review(
@@ -1456,7 +1423,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn reject_room_join_review(
@@ -1478,7 +1445,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_ban_records(
@@ -1502,7 +1469,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_user_role(
@@ -1526,7 +1493,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn set_user_password(
@@ -1551,7 +1518,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_user_username(
@@ -1574,7 +1541,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_user_rooms(
@@ -1601,7 +1568,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn batch_ban_users(
@@ -1636,7 +1603,7 @@ impl ManagementService for ManagementServiceImpl {
             response
         };
         response.failed = response.failed.max(0);
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn batch_delete_users(
@@ -1670,7 +1637,7 @@ impl ManagementService for ManagementServiceImpl {
             response
         };
         response.failed = response.failed.max(0);
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_room(
@@ -1710,7 +1677,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_rooms(
@@ -1739,7 +1706,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_room(
@@ -1755,7 +1722,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_room_members(
@@ -1780,7 +1747,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_member(
@@ -1805,7 +1772,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::AddMemberResponse {
+        Ok(Response::new(client_proto::AddMemberResponse {
             member: response.member,
         }))
     }
@@ -1835,7 +1802,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(
+        Ok(Response::new(
             client_proto::UpdateMemberPermissionsResponse {
                 member: response.member,
             },
@@ -1863,7 +1830,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(client_proto::KickMemberResponse {
+        Ok(Response::new(client_proto::KickMemberResponse {
             success: response.success,
         }))
     }
@@ -1881,7 +1848,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_room_settings(
@@ -1922,7 +1889,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn reset_room_settings(
@@ -1941,7 +1908,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn transfer_room_ownership(
@@ -1963,7 +1930,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_room_password(
@@ -1999,7 +1966,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn ban_room(
@@ -2021,7 +1988,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn unban_room(
@@ -2042,7 +2009,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn delete_room(
@@ -2063,7 +2030,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn batch_ban_rooms(
@@ -2085,7 +2052,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn batch_delete_rooms(
@@ -2106,7 +2073,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn start_playback(
@@ -2130,7 +2097,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn stop_playback(
@@ -2145,7 +2112,7 @@ impl ManagementService for ManagementServiceImpl {
             .stop_playback(&req.room_id, &validated.user_id, &ctx)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_playback(
@@ -2163,7 +2130,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_playback_state(
@@ -2185,7 +2152,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_publish_key(
@@ -2207,7 +2174,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_stream_info(
@@ -2221,7 +2188,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_stream_info(&req.room_id, &req.media_id)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_room_streams(
@@ -2258,7 +2225,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn kick_room_stream(
@@ -2280,7 +2247,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(
+        Ok(Response::new(
             client_proto::KickRoomStreamResponse {},
         ))
     }
@@ -2311,7 +2278,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_playlist(
@@ -2325,7 +2292,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_playlist(&req.room_id, &req.playlist_id, &validated.user_id)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_playlist(
@@ -2351,7 +2318,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_alist_playlist(
@@ -2381,7 +2348,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn create_emby_playlist(
@@ -2407,7 +2374,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_playlist(
@@ -2432,7 +2399,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn move_playlist(
@@ -2460,7 +2427,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn delete_playlist(
@@ -2481,7 +2448,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_media(
@@ -2511,7 +2478,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_media(
@@ -2537,7 +2504,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_direct_url_media(
@@ -2567,7 +2534,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_alist_media(
@@ -2597,7 +2564,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_emby_media(
@@ -2623,7 +2590,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_bilibili_video_media(
@@ -2651,7 +2618,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_bilibili_pgc_media(
@@ -2677,7 +2644,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_bilibili_live_media(
@@ -2703,7 +2670,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn edit_media(
@@ -2725,7 +2692,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn delete_media(
@@ -2746,7 +2713,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn move_media(
@@ -2779,7 +2746,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_login(
@@ -2802,7 +2769,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_list(
@@ -2825,7 +2792,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_search(
@@ -2848,7 +2815,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_get_me(
@@ -2871,7 +2838,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_logout(
@@ -2888,7 +2855,7 @@ impl ManagementService for ManagementServiceImpl {
                 .logout(&actor_user_id, provider_request)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn alist_get_binds(
@@ -2906,7 +2873,7 @@ impl ManagementService for ManagementServiceImpl {
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn emby_login(
@@ -2929,7 +2896,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn emby_list(
@@ -2952,7 +2919,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn emby_get_me(
@@ -2975,7 +2942,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn emby_logout(
@@ -2990,7 +2957,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = Self::map_into_api_result(
             self.emby_api.logout(&actor_user_id, provider_request).await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn emby_get_binds(
@@ -3008,7 +2975,7 @@ impl ManagementService for ManagementServiceImpl {
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_parse(
@@ -3031,7 +2998,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_login_qr(
@@ -3049,7 +3016,7 @@ impl ManagementService for ManagementServiceImpl {
                 .login_qr_with_context(provider_request, instance_name.as_deref(), None)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_check_qr(
@@ -3072,7 +3039,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_start_sms_login(
@@ -3090,7 +3057,7 @@ impl ManagementService for ManagementServiceImpl {
                 .start_sms_login_with_context(provider_request, instance_name.as_deref(), None)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_send_sms(
@@ -3107,7 +3074,7 @@ impl ManagementService for ManagementServiceImpl {
                 .send_sms_with_context(provider_request, None, None)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_login_sms(
@@ -3124,7 +3091,7 @@ impl ManagementService for ManagementServiceImpl {
                 .login_sms_with_context(&actor_user_id, provider_request, None, None)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_get_user_info(
@@ -3147,7 +3114,7 @@ impl ManagementService for ManagementServiceImpl {
                 )
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_logout(
@@ -3164,7 +3131,7 @@ impl ManagementService for ManagementServiceImpl {
                 .logout(&actor_user_id, provider_request)
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn bilibili_get_binds(
@@ -3182,7 +3149,7 @@ impl ManagementService for ManagementServiceImpl {
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
         )?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_available_provider_instances(
@@ -3196,7 +3163,7 @@ impl ManagementService for ManagementServiceImpl {
             .list_available_provider_instances(req)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_provider_backends(
@@ -3210,7 +3177,7 @@ impl ManagementService for ManagementServiceImpl {
             .list_provider_backends(req)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn list_provider_instances(
@@ -3224,7 +3191,7 @@ impl ManagementService for ManagementServiceImpl {
             .list_provider_instances(req)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn add_provider_instance(
@@ -3239,7 +3206,7 @@ impl ManagementService for ManagementServiceImpl {
             .add_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_provider_instance(
@@ -3254,7 +3221,7 @@ impl ManagementService for ManagementServiceImpl {
             .update_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn delete_provider_instance(
@@ -3269,7 +3236,7 @@ impl ManagementService for ManagementServiceImpl {
             .delete_provider_instance(req, &validated.user_id, &ctx)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn reconnect_provider_instance(
@@ -3284,7 +3251,7 @@ impl ManagementService for ManagementServiceImpl {
             .reconnect_provider_instance(req, &validated.user_id, &ctx, None)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn enable_provider_instance(
@@ -3298,7 +3265,7 @@ impl ManagementService for ManagementServiceImpl {
             .enable_provider_instance(req, None)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn disable_provider_instance(
@@ -3312,7 +3279,7 @@ impl ManagementService for ManagementServiceImpl {
             .disable_provider_instance(req, None)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_settings(
@@ -3326,7 +3293,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_settings(admin_proto::GetSettingsRequest {}, &validated.user_id, &ctx)
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_settings_group(
@@ -3345,7 +3312,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn update_settings(
@@ -3367,7 +3334,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn send_test_email(
@@ -3381,7 +3348,7 @@ impl ManagementService for ManagementServiceImpl {
             .send_test_email(admin_proto::SendTestEmailRequest { to: req.to })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_system_stats(
@@ -3394,7 +3361,7 @@ impl ManagementService for ManagementServiceImpl {
             .get_system_stats(admin_proto::GetSystemStatsRequest {})
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn get_slice_cache_stats(
@@ -3404,7 +3371,7 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
-        Ok(Self::proto_response(
+        Ok(Response::new(
             self.collect_slice_cache_stats(target_node_id, req.all_nodes)
                 .await?,
         ))
@@ -3417,7 +3384,7 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
-        Ok(Self::proto_response(
+        Ok(Response::new(
             self.purge_slice_cache_for_selection(target_node_id, req.all_nodes)
                 .await?,
         ))
@@ -3430,7 +3397,7 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
-        Ok(Self::proto_response(
+        Ok(Response::new(
             self.evict_expired_slice_cache_for_selection(target_node_id, req.all_nodes)
                 .await?,
         ))
@@ -3457,7 +3424,7 @@ impl ManagementService for ManagementServiceImpl {
             })
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(response))
+        Ok(Response::new(response))
     }
 
     async fn kick_stream(
@@ -3479,7 +3446,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Self::proto_response(admin_proto::KickStreamResponse {}))
+        Ok(Response::new(admin_proto::KickStreamResponse {}))
     }
 
     async fn stop_server(

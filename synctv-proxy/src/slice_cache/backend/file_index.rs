@@ -67,10 +67,6 @@ impl FileIndex {
         }
     }
 
-    pub(super) fn contains(&self, key: &str) -> bool {
-        self.entries.contains_key(key)
-    }
-
     pub(super) fn total_size(&self) -> u64 {
         self.total_size.load(Ordering::Relaxed)
     }

@@ -67,18 +67,6 @@ fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
     map_api_error(crate::impls::ClientApiImpl::map_room_access_error(err))
 }
 
-fn map_email_flow_error(err: crate::impls::ApiError) -> Status {
-    map_api_error(err)
-}
-
-fn map_message_stream_user_lookup_error(err: synctv_core::Error) -> Status {
-    map_api_error(ApiError::from(err))
-}
-
-fn map_message_stream_room_lookup_error(err: synctv_core::Error) -> Status {
-    map_api_error(ApiError::from(err))
-}
-
 /// Configuration for `ClientService`
 #[derive(Clone)]
 pub struct ClientServiceConfig {
@@ -338,7 +326,7 @@ impl ClientServiceImpl {
             .user_service
             .get_user(&user_id)
             .await
-            .map_err(map_message_stream_user_lookup_error)?;
+            .map_err(|err| map_api_error(ApiError::from(err)))?;
         Ok(RealtimePrincipal::user(user_id, user.username))
     }
 
@@ -366,7 +354,7 @@ impl ClientServiceImpl {
             .room_service
             .get_room(&room_id)
             .await
-            .map_err(map_message_stream_room_lookup_error)?;
+            .map_err(|err| map_api_error(ApiError::from(err)))?;
         if let Some(status) = realtime_room_access_error(&room) {
             return Err(status);
         }

@@ -285,42 +285,15 @@ impl EmbyApiImpl {
             ));
         }
 
-        if let Some(existing) = self
-            .credential_repo
-            .get_by_provider_and_server(
-                *caller_user_id,
-                synctv_core::provider::EmbyProvider::NAME,
-                &req.server_id,
-            )
-            .await
-            .map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to query credential: {e}"
-                ))
-            })?
-        {
-            self.credential_repo
-                .delete(existing.id)
-                .await
-                .map_err(|e| {
-                    synctv_core::provider::ProviderError::Internal(format!(
-                        "Failed to delete credential: {e}"
-                    ))
-                })?;
-            self.access_service
-                .invalidate(
-                    *caller_user_id,
-                    synctv_core::provider::EmbyProvider::NAME,
-                    &req.server_id,
-                )
-                .await?;
-            publish_provider_credential_changed(
-                &self.event_service,
-                *caller_user_id,
-                synctv_core::provider::EmbyProvider::NAME,
-                &req.server_id,
-            );
-        }
+        super::common::delete_credential_and_notify(
+            &self.credential_repo,
+            &self.access_service,
+            &self.event_service,
+            caller_user_id,
+            synctv_core::provider::EmbyProvider::NAME,
+            &req.server_id,
+        )
+        .await?;
 
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),

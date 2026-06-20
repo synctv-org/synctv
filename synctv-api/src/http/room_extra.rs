@@ -4,15 +4,10 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT;
 
 use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
-
-fn request_metadata(request_meta: RequestMetadata) -> crate::impls::RequestMetadata {
-    request_meta.0.with_timeout(Some(HTTP_REQUEST_TIMEOUT))
-}
 
 /// Add a member to a room.
 #[cfg_attr(
@@ -43,7 +38,7 @@ pub async fn add_member(
     Json(req): Json<synctv_proto::client::AddMemberRequest>,
 ) -> AppResult<Json<synctv_proto::client::AddMemberResponse>> {
     let room_id = path.room_id;
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -84,7 +79,7 @@ pub async fn list_room_join_reviews(
     ProtoQuery(req): ProtoQuery<synctv_proto::client::ListRoomJoinReviewsRequest>,
 ) -> AppResult<Json<synctv_proto::client::ListRoomJoinReviewsResponse>> {
     let synctv_proto::client::RoomPathRequest { room_id } = path;
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -133,7 +128,7 @@ pub async fn approve_room_join_review(
         request_id,
     } = path;
     let req = synctv_proto::client::ApproveRoomJoinReviewRequest { request_id };
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -185,7 +180,7 @@ pub async fn reject_room_join_review(
         request_id,
     } = path;
     req.request_id = request_id;
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -235,7 +230,7 @@ pub async fn kick_member(
 ) -> AppResult<Json<synctv_proto::client::KickMemberResponse>> {
     let synctv_proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     req.user_id = user_id;
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime
@@ -284,7 +279,7 @@ pub async fn set_member_permissions(
 ) -> AppResult<Json<synctv_proto::client::UpdateMemberPermissionsResponse>> {
     let synctv_proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     req.user_id = user_id;
-    let request_meta = request_metadata(request_meta);
+    let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
     let resp = state
         .shared_api_runtime

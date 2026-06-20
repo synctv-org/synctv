@@ -68,10 +68,6 @@ fn encode_optional_room_id(
     .map(std::option::Option::unwrap_or_default)
 }
 
-fn optional_i64_timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
-    value.map_or(0, |timestamp| timestamp.timestamp())
-}
-
 fn content_report_target_type_to_proto(value: ContentReportTargetType) -> i32 {
     match value {
         ContentReportTargetType::Room => synctv_proto::admin::ContentReportTargetType::Room as i32,
@@ -122,7 +118,7 @@ pub(crate) fn content_report_row_to_proto(
         target_member_user_id: encode_optional_user_id(public_id_codec, row.target_member_user_id)?,
         target_member_username: row.target_member_username.clone(),
         target_chat_message_id: row.target_chat_message_id.unwrap_or_default(),
-        target_chat_message_created_at: optional_i64_timestamp(row.target_chat_message_created_at),
+        target_chat_message_created_at: optional_timestamp(row.target_chat_message_created_at),
         target_chat_message_preview: row.target_chat_message_preview.clone(),
         reason_code: row.reason_code.clone(),
         reason: row.reason.clone(),

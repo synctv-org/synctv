@@ -27,14 +27,7 @@ use tokio_util::sync::CancellationToken;
 use super::backend::CacheBackend;
 use super::backend::SliceCacheBackend;
 use super::config::SliceCacheConfig;
-
-const U32_RANGE_AS_F64: f64 = 4_294_967_296.0;
-
-fn u64_to_f64(value: u64) -> f64 {
-    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
-    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    f64::from(high).mul_add(U32_RANGE_AS_F64, f64::from(low))
-}
+use super::maintenance::u64_to_f64;
 
 fn watermark_bytes(max_cache_size: u64, ratio: f64) -> u64 {
     if !ratio.is_finite() {

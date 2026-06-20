@@ -83,90 +83,58 @@ where
     Some(wrap(event))
 }
 
-pub(super) fn watch_playback_state_event(
-    message: ServerMessage,
-) -> Option<WatchPlaybackStateEvent> {
-    use synctv_proto::client::watch_playback_state_event::Event;
-    watch_event_from_server_message(message, |event| WatchPlaybackStateEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
+macro_rules! impl_watch_event_converter {
+    ($fn_name:ident, $event_type:ty, $event_enum:path) => {
+        pub(super) fn $fn_name(message: ServerMessage) -> Option<$event_type> {
+            use $event_enum as Event;
+            watch_event_from_server_message(message, |event| {
+                let mut response = <$event_type>::default();
+                response.event = Some(match event {
+                    GrpcWatchEvent::Observed(value) => Event::Observed(value),
+                    GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
+                    GrpcWatchEvent::Error(value) => Event::Error(value),
+                });
+                response
+            })
+        }
+    };
 }
 
-pub(super) fn watch_playback_event(message: ServerMessage) -> Option<WatchPlaybackEvent> {
-    use synctv_proto::client::watch_playback_event::Event;
-    watch_event_from_server_message(message, |event| WatchPlaybackEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
-
-pub(super) fn watch_room_settings_event(message: ServerMessage) -> Option<WatchRoomSettingsEvent> {
-    use synctv_proto::client::watch_room_settings_event::Event;
-    watch_event_from_server_message(message, |event| WatchRoomSettingsEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
-
-pub(super) fn watch_playlist_items_event(
-    message: ServerMessage,
-) -> Option<WatchPlaylistItemsEvent> {
-    use synctv_proto::client::watch_playlist_items_event::Event;
-    watch_event_from_server_message(message, |event| WatchPlaylistItemsEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
-
-pub(super) fn watch_room_member_events_event(
-    message: ServerMessage,
-) -> Option<WatchRoomMemberEventsEvent> {
-    use synctv_proto::client::watch_room_member_events_event::Event;
-    watch_event_from_server_message(message, |event| WatchRoomMemberEventsEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
-
-pub(super) fn watch_chat_events_event(message: ServerMessage) -> Option<WatchChatEventsEvent> {
-    use synctv_proto::client::watch_chat_events_event::Event;
-    watch_event_from_server_message(message, |event| WatchChatEventsEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
-
-pub(super) fn watch_chat_pin_events_event(
-    message: ServerMessage,
-) -> Option<WatchChatPinEventsEvent> {
-    use synctv_proto::client::watch_chat_pin_events_event::Event;
-    watch_event_from_server_message(message, |event| WatchChatPinEventsEvent {
-        event: Some(match event {
-            GrpcWatchEvent::Observed(value) => Event::Observed(value),
-            GrpcWatchEvent::Changed(value) => Event::ResourceEvent(*value),
-            GrpcWatchEvent::Error(value) => Event::Error(value),
-        }),
-    })
-}
+impl_watch_event_converter!(
+    watch_playback_state_event,
+    WatchPlaybackStateEvent,
+    synctv_proto::client::watch_playback_state_event::Event
+);
+impl_watch_event_converter!(
+    watch_playback_event,
+    WatchPlaybackEvent,
+    synctv_proto::client::watch_playback_event::Event
+);
+impl_watch_event_converter!(
+    watch_room_settings_event,
+    WatchRoomSettingsEvent,
+    synctv_proto::client::watch_room_settings_event::Event
+);
+impl_watch_event_converter!(
+    watch_playlist_items_event,
+    WatchPlaylistItemsEvent,
+    synctv_proto::client::watch_playlist_items_event::Event
+);
+impl_watch_event_converter!(
+    watch_room_member_events_event,
+    WatchRoomMemberEventsEvent,
+    synctv_proto::client::watch_room_member_events_event::Event
+);
+impl_watch_event_converter!(
+    watch_chat_events_event,
+    WatchChatEventsEvent,
+    synctv_proto::client::watch_chat_events_event::Event
+);
+impl_watch_event_converter!(
+    watch_chat_pin_events_event,
+    WatchChatPinEventsEvent,
+    synctv_proto::client::watch_chat_pin_events_event::Event
+);
 
 /// gRPC stream implementation of `StreamMessage` trait
 ///

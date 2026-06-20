@@ -5,9 +5,9 @@ use tonic::{Request, Response, Status};
 
 use super::super::{
     invalid_argument_status, map_api_error, map_message_stream_join_error,
-    map_message_stream_membership_error, map_message_stream_room_lookup_error,
-    map_message_stream_user_lookup_error, realtime_room_access_error, ClientServiceImpl,
+    map_message_stream_membership_error, realtime_room_access_error, ClientServiceImpl,
 };
+use crate::impls::ApiError;
 use super::RoomService;
 use crate::grpc::client_service::streaming::{
     watch_chat_events_event, watch_chat_pin_events_event, watch_playback_event,
@@ -93,7 +93,7 @@ pub(super) async fn message_stream(
             .user_service
             .get_user(&user_id)
             .await
-            .map_err(map_message_stream_user_lookup_error)?;
+            .map_err(|err| map_api_error(ApiError::from(err)))?;
         let username = user.username;
 
         // Check room membership before establishing stream
@@ -114,7 +114,7 @@ pub(super) async fn message_stream(
         .room_service
         .get_room(&room_id)
         .await
-        .map_err(map_message_stream_room_lookup_error)?;
+        .map_err(|err| map_api_error(ApiError::from(err)))?;
     if let Some(status) = realtime_room_access_error(&room) {
         return Err(status);
     }

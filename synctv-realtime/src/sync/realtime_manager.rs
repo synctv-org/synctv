@@ -218,29 +218,6 @@ struct HeartbeatState {
     api_address: String,
 }
 
-fn publish_admin_event(admin_event_tx: &broadcast::Sender<RealtimeEvent>, event: RealtimeEvent) {
-    let event_type = event.event_type();
-    let room_id = event.room_id().map(ToString::to_string);
-    match admin_event_tx.send(event) {
-        Ok(receiver_count) => {
-            debug!(
-                event_type = %event_type,
-                room_id = room_id.as_deref().unwrap_or("n/a"),
-                receiver_count,
-                "Published realtime admin event"
-            );
-        }
-        Err(error) => {
-            warn!(
-                event_type = %event_type,
-                room_id = room_id.as_deref().unwrap_or("n/a"),
-                error = %error,
-                "Failed to publish realtime admin event"
-            );
-        }
-    }
-}
-
 async fn await_shutdown_handle(
     name: &'static str,
     mut handle: tokio::task::JoinHandle<()>,
@@ -702,7 +679,7 @@ impl RealtimeManager {
             }
         }
         if event.delivers_to_admin_channel() {
-            publish_admin_event(&self.admin_event_tx, event);
+            super::events::publish_admin_event(&self.admin_event_tx, event, "local");
         }
 
         local_sent
@@ -1141,7 +1118,7 @@ impl RealtimeManager {
 
         // Admin-routed events reach app-level handlers and user-targeted WebSocket handlers.
         if event.delivers_to_admin_channel() {
-            publish_admin_event(&self.admin_event_tx, event.clone());
+            super::events::publish_admin_event(&self.admin_event_tx, event.clone(), "outbound");
         }
 
         let redis_sent = self.enqueue_redis_publish(event, is_critical);

@@ -6,6 +6,7 @@ use tokio::fs;
 
 use super::file_format::{cache_entry_deadline_millis, millis_since_epoch, read_cache_file_header};
 use super::file_index::{FileIndex, FileIndexEntry, LoadResult};
+use super::file_ops::cache_path;
 
 pub(super) async fn load_index(
     cache_dir: &Path,
@@ -175,9 +176,3 @@ async fn load_cache_file(
     }
 }
 
-fn cache_path(cache_dir: &Path, dir_levels: (usize, usize), key: &str) -> PathBuf {
-    let (level1_len, level2_len) = dir_levels;
-    let level1 = &key[..level1_len.min(key.len())];
-    let level2 = &key[level1_len..((level1_len + level2_len).min(key.len()))];
-    cache_dir.join(level1).join(level2).join(key)
-}

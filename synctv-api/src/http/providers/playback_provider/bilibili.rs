@@ -619,23 +619,7 @@ pub async fn watch_bilibili_live_danmaku(
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    let stream = stream.map(|event| {
-        let event = match event {
-            Ok(event) => match serde_json::to_string(&event) {
-                Ok(data) => Event::default().event("danmaku").data(data),
-                Err(error) => {
-                    tracing::warn!(error = %error, "Failed to serialize Bilibili live danmaku SSE event");
-                    Event::default()
-                        .event("error")
-                        .data(r#"{"message":"Failed to serialize danmaku event"}"#)
-                }
-            },
-            Err(error) => Event::default()
-                .event("error")
-                .data(serde_json::json!({ "message": error.to_string() }).to_string()),
-        };
-        Ok(event)
-    });
+    let stream = stream.map(super::transport::bilibili_danmaku_sse_event);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 

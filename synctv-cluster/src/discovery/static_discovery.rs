@@ -106,8 +106,7 @@ impl StaticDiscovery {
 
     fn discovered_node_info(
         discovered: &ProbedNodeIdentity,
-        api_address: &str,
-        default_api_port: u16,
+        normalized_api_address: String,
     ) -> Option<NodeInfo> {
         if discovered.node_id.is_empty() {
             return None;
@@ -116,7 +115,7 @@ impl StaticDiscovery {
         Some(
             NodeInfo::new(
                 discovered.node_id.clone(),
-                Self::derive_api_address(api_address, default_api_port),
+                normalized_api_address,
             )
             .with_epoch(discovered.epoch),
         )
@@ -161,19 +160,19 @@ impl StaticDiscovery {
                             let timeout = connect_timeout;
                             let secret = cluster_secret.clone();
                             join_set.spawn(async move {
+                                let normalized_api_address = Self::derive_api_address(&peer.api_address, default_api_port);
                                 let discovered = Self::probe_peer(
-                                    &peer.api_address,
+                                    &normalized_api_address,
                                     timeout,
                                     &secret,
-                                    default_api_port,
                                 ).await;
-                                (peer, discovered)
+                                (peer, normalized_api_address, discovered)
                             });
                         }
 
                         // Collect results
                         while let Some(result) = join_set.join_next().await {
-                            let (peer, discovered) = match result {
+                            let (peer, normalized_api_address, discovered) = match result {
                                 Ok(r) => r,
                                 Err(e) => {
                                     warn!(error = %e, "Static peer probe task panicked");
@@ -187,8 +186,7 @@ impl StaticDiscovery {
 
                                 let Some(node_info) = Self::discovered_node_info(
                                     &discovered,
-                                    &peer.api_address,
-                                    default_api_port,
+                                    normalized_api_address,
                                 ) else {
                                     warn!(
                                         peer = %peer.api_address,
@@ -262,13 +260,11 @@ impl StaticDiscovery {
     /// Returns `true` if the peer responds, `false` on timeout or error.
     /// Delegates to the shared discovery probe and returns the remote node identity.
     async fn probe_peer(
-        address: &str,
+        normalized_api_address: &str,
         connect_timeout: Duration,
         cluster_secret: &str,
-        default_api_port: u16,
     ) -> Option<ProbedNodeIdentity> {
-        let api_address = Self::derive_api_address(address, default_api_port);
-        super::probe_node_identity(&api_address, connect_timeout.as_secs(), cluster_secret).await
+        super::probe_node_identity(normalized_api_address, connect_timeout.as_secs(), cluster_secret).await
     }
 }
 
@@ -284,7 +280,8 @@ mod tests {
             epoch: 7,
         };
 
-        let info = StaticDiscovery::discovered_node_info(&discovered, "10.0.0.5:50051", 8080)
+        let normalized_address = StaticDiscovery::derive_api_address("10.0.0.5:50051", 8080);
+        let info = StaticDiscovery::discovered_node_info(&discovered, normalized_address)
             .ok_or_else(|| {
                 crate::Error::Configuration("peer should map to discovered node info".to_string())
             })?;

@@ -5,6 +5,7 @@ pub(crate) mod ban_record;
 pub mod chat;
 pub(crate) mod chat_partition_manager;
 pub mod cleanup;
+pub(crate) mod cleanup_ops;
 pub(crate) mod content_filter;
 pub mod content_report;
 pub mod db_maintenance;

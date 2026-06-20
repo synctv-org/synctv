@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use redis::AsyncCommands;
 use tracing::{debug, info, warn};
 
 use super::model::{
@@ -49,31 +48,15 @@ impl ConnectionManager {
 
         for entry in self.user_connections.iter() {
             if !entry.value().is_empty() {
-                counter_keys.insert(format!(
-                    "{}connections:user:{}",
-                    self.redis_key_prefix,
-                    entry.key()
-                ));
-                metadata_keys.insert(format!(
-                    "{}conn_mgr:user:{}",
-                    self.redis_key_prefix,
-                    entry.key()
-                ));
+                counter_keys.insert(self.user_counter_key(entry.key()));
+                metadata_keys.insert(self.user_index_key(entry.key()));
                 has_user_metadata = true;
             }
         }
         for entry in self.room_connections.iter() {
             if !entry.value().is_empty() {
-                counter_keys.insert(format!(
-                    "{}connections:room:{}",
-                    self.redis_key_prefix,
-                    entry.key()
-                ));
-                metadata_keys.insert(format!(
-                    "{}conn_mgr:room:{}",
-                    self.redis_key_prefix,
-                    entry.key()
-                ));
+                counter_keys.insert(self.room_counter_key(entry.key()));
+                metadata_keys.insert(self.room_index_key(entry.key()));
                 has_room_metadata = true;
             }
         }
@@ -87,16 +70,12 @@ impl ConnectionManager {
 
         // Refresh per-connection metadata TTLs alongside aggregate counters.
         for entry in self.connections.iter() {
-            metadata_keys.insert(format!(
-                "{}conn_mgr:conn:{}",
-                self.redis_key_prefix,
-                entry.key()
-            ));
+            metadata_keys.insert(self.conn_metadata_key(entry.key()));
         }
 
         // Also refresh the total connections counter TTL
         if self.connection_count() > 0 {
-            let total_key = format!("{}connections:total", self.redis_key_prefix);
+            let total_key = self.total_counter_key();
             counter_keys.insert(total_key);
         }
 
@@ -269,7 +248,7 @@ impl ConnectionManager {
         for entry in self.user_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!("{}connections:user:{}", self.redis_key_prefix, entry.key());
+                let key = self.user_counter_key(entry.key());
                 user_counts.insert(key, count);
             }
         }
@@ -279,13 +258,13 @@ impl ConnectionManager {
         for entry in self.room_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!("{}connections:room:{}", self.redis_key_prefix, entry.key());
+                let key = self.room_counter_key(entry.key());
                 room_counts.insert(key, count);
             }
         }
 
         let local_total = self.connection_count();
-        let total_key = format!("{}connections:total", self.redis_key_prefix);
+        let total_key = self.total_counter_key();
 
         // Lua script to atomically repair counters that are missing or lower than
         // this node's observed minimum contribution. It never decreases the
@@ -1142,33 +1121,16 @@ impl ConnectionManager {
             )
             .await?
         {
-            let conn_ids = self.get_user_connections_distributed(user_id).await?;
-            if conn_ids.is_empty() {
-                return Ok(0);
-            }
-
-            let metadata_keys: Vec<String> = conn_ids
-                .iter()
-                .map(|conn_id| format!("{}conn_mgr:conn:{conn_id}", self.redis_key_prefix))
-                .collect();
-
-            let metadata: Vec<Option<String>> = self
-                .redis_op(
-                    "fetch distributed connection metadata",
-                    conn.mget(metadata_keys),
+            let user_index_key = self.user_index_key(user_id);
+            let conn_ids = self
+                .load_valid_connection_ids_from_index(
+                    &mut conn,
+                    &user_index_key,
+                    Some(user_id),
+                    Some(room_id),
                 )
                 .await?;
-
-            let mut count = 0usize;
-            for entry in metadata.into_iter().flatten() {
-                let info: ConnectionInfoPersistent = serde_json::from_str(&entry).map_err(|e| {
-                    format!("Failed to deserialize distributed connection metadata: {e}")
-                })?;
-                if info.user_id == *user_id && info.room_id.as_ref() == Some(room_id) {
-                    count += 1;
-                }
-            }
-            return Ok(count);
+            return Ok(conn_ids.len());
         }
 
         Ok(self

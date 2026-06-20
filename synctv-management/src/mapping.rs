@@ -8,34 +8,20 @@ pub(crate) fn invalid_enum_value(field: &'static str, value: i32) -> Status {
 }
 
 pub(crate) fn map_user_role(role: i32) -> Result<i32, Status> {
-    let role =
-        common_proto::UserRole::try_from(role).map_err(|_| invalid_enum_value("role", role))?;
-    Ok(match role {
-        common_proto::UserRole::User => common_proto::UserRole::User as i32,
-        common_proto::UserRole::Admin => common_proto::UserRole::Admin as i32,
-        common_proto::UserRole::Root => common_proto::UserRole::Root as i32,
-        common_proto::UserRole::Unspecified => common_proto::UserRole::Unspecified as i32,
-    })
+    common_proto::UserRole::try_from(role).map_err(|_| invalid_enum_value("role", role))?;
+    Ok(role)
 }
 
 pub(crate) fn map_user_status(status: i32) -> Result<i32, Status> {
-    let status = common_proto::UserStatus::try_from(status)
+    common_proto::UserStatus::try_from(status)
         .map_err(|_| invalid_enum_value("status", status))?;
-    Ok(match status {
-        common_proto::UserStatus::Active => common_proto::UserStatus::Active as i32,
-        common_proto::UserStatus::Banned => common_proto::UserStatus::Banned as i32,
-        common_proto::UserStatus::Unspecified => common_proto::UserStatus::Unspecified as i32,
-    })
+    Ok(status)
 }
 
 pub(crate) fn map_room_status(status: i32) -> Result<i32, Status> {
-    let status = common_proto::RoomStatus::try_from(status)
+    common_proto::RoomStatus::try_from(status)
         .map_err(|_| invalid_enum_value("status", status))?;
-    Ok(match status {
-        common_proto::RoomStatus::Active => common_proto::RoomStatus::Active as i32,
-        common_proto::RoomStatus::Closed => common_proto::RoomStatus::Closed as i32,
-        common_proto::RoomStatus::Unspecified => common_proto::RoomStatus::Unspecified as i32,
-    })
+    Ok(status)
 }
 
 pub(crate) fn map_user_list_sort_by(sort_by: i32) -> Result<i32, Status> {

@@ -7,10 +7,10 @@ use synctv_core::{
 };
 
 use super::{
-    ban_row_to_proto, i64_to_i32_api, normalize_non_empty_filter, page_i32_to_usize,
-    page_offset_usize, proto_review_status_filter, room_creation_review_row_to_proto,
-    room_join_review_row_to_proto, user_registration_review_row_to_proto, usize_to_i64_api,
-    AdminApiImpl, ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    ban_row_to_proto, i64_to_i32_api, normalize_non_empty_filter, pagination_limit_offset_i64,
+    proto_review_status_filter, room_creation_review_row_to_proto,
+    room_join_review_row_to_proto, user_registration_review_row_to_proto, AdminApiImpl, ApiError,
+    RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 
 impl AdminApiImpl {
@@ -67,11 +67,8 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListUserRegistrationReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page)?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let offset = page_offset_usize(page, page_size, "user registration review offset")?;
-        let limit = usize_to_i64_api(page_size, "user registration review page size")?;
-        let offset = usize_to_i64_api(offset, "user registration review offset")?;
+        let (limit, offset) =
+            pagination_limit_offset_i64(req.page, req.page_size, "user registration review")?;
         let page = self
             .review_service
             .list_user_registrations(&UserRegistrationReviewListQuery {
@@ -139,20 +136,13 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListRoomCreationReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page)?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let offset = page_offset_usize(page, page_size, "room creation review offset")?;
-        let limit = usize_to_i64_api(page_size, "room creation review page size")?;
-        let offset = usize_to_i64_api(offset, "room creation review offset")?;
-        let requested_by_filter = if req.requested_by.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.requested_by,
-                "requested_by",
-                &self.public_id_codec,
-            )?)
-        };
+        let (limit, offset) =
+            pagination_limit_offset_i64(req.page, req.page_size, "room creation review")?;
+        let requested_by_filter = crate::impls::parse_optional_id_param(
+            &req.requested_by,
+            "requested_by",
+            &self.public_id_codec,
+        )?;
 
         let page = self
             .review_service
@@ -225,29 +215,18 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListRoomJoinReviewsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page)?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let offset = page_offset_usize(page, page_size, "room join review offset")?;
-        let limit = usize_to_i64_api(page_size, "room join review page size")?;
-        let offset = usize_to_i64_api(offset, "room join review offset")?;
-        let room_id_filter = if req.room_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_room_id_param(
-                &req.room_id,
-                "room_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let user_id_filter = if req.user_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.user_id,
-                "user_id",
-                &self.public_id_codec,
-            )?)
-        };
+        let (limit, offset) =
+            pagination_limit_offset_i64(req.page, req.page_size, "room join review")?;
+        let room_id_filter = crate::impls::parse_optional_id_param(
+            &req.room_id,
+            "room_id",
+            &self.public_id_codec,
+        )?;
+        let user_id_filter = crate::impls::parse_optional_id_param(
+            &req.user_id,
+            "user_id",
+            &self.public_id_codec,
+        )?;
 
         let page = self
             .review_service
@@ -335,30 +314,18 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListBanRecordsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let page = page_i32_to_usize(req.page)?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let offset = page_offset_usize(page, page_size, "ban record offset")?;
-        let limit = usize_to_i64_api(page_size, "ban record page size")?;
-        let offset = usize_to_i64_api(offset, "ban record offset")?;
+        let (limit, offset) = pagination_limit_offset_i64(req.page, req.page_size, "ban record")?;
 
-        let user_id_filter = if req.user_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_user_id_param(
-                &req.user_id,
-                "user_id",
-                &self.public_id_codec,
-            )?)
-        };
-        let room_id_filter = if req.room_id.trim().is_empty() {
-            None
-        } else {
-            Some(crate::impls::parse_room_id_param(
-                &req.room_id,
-                "room_id",
-                &self.public_id_codec,
-            )?)
-        };
+        let user_id_filter = crate::impls::parse_optional_id_param(
+            &req.user_id,
+            "user_id",
+            &self.public_id_codec,
+        )?;
+        let room_id_filter = crate::impls::parse_optional_id_param(
+            &req.room_id,
+            "room_id",
+            &self.public_id_codec,
+        )?;
 
         let page = self
             .ban_record_service

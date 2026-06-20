@@ -10,6 +10,7 @@
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::{PublisherRefreshOutcome, StreamRegistryTrait};
+use crate::util::{unix_now_secs, validate_stream_ids};
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -19,8 +20,6 @@ use synctv_xiu::streamhub::{
 };
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, trace, warn};
-
-use crate::util::validate_stream_ids;
 
 /// Number of consecutive heartbeat cycles that can fail before the local
 /// publisher is cleaned up.
@@ -62,7 +61,7 @@ impl PublisherEntry {
     #[cfg(test)]
     fn new() -> Self {
         Self {
-            last_active_secs: AtomicU64::new(Self::now_secs()),
+            last_active_secs: AtomicU64::new(unix_now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id: String::new(),
             epoch: 0,
@@ -71,7 +70,7 @@ impl PublisherEntry {
 
     fn with_registration(user_id: String, epoch: u64) -> Self {
         Self {
-            last_active_secs: AtomicU64::new(Self::now_secs()),
+            last_active_secs: AtomicU64::new(unix_now_secs()),
             consecutive_heartbeat_failures: std::sync::atomic::AtomicU32::new(0),
             user_id,
             epoch,
@@ -89,23 +88,13 @@ impl PublisherEntry {
         }
     }
 
-    fn now_secs() -> u64 {
-        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(duration) => duration.as_secs(),
-            Err(error) => {
-                tracing::warn!(%error, "system clock is before Unix epoch");
-                0
-            }
-        }
-    }
-
     fn touch(&self) {
         self.last_active_secs
-            .store(Self::now_secs(), Ordering::Release);
+            .store(unix_now_secs(), Ordering::Release);
     }
 
     fn idle_secs(&self) -> u64 {
-        Self::now_secs().saturating_sub(self.last_active_secs.load(Ordering::Acquire))
+        unix_now_secs().saturating_sub(self.last_active_secs.load(Ordering::Acquire))
     }
 }
 

@@ -6,12 +6,17 @@ use serde_json::json;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId, RoomStatus, User, UserId,
-        UserRole, UserStatus,
+        Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId, RoomMember, RoomRole,
+        RoomStatus, User, UserId, UserRole, UserStatus,
     },
-    repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
+    repository::{
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
+    },
+    service::room::DeleteEntriesRequest,
 };
-use synctv_core_testing::{create_test_pool, TestContainer, TestOptionExt, TestResultExt};
+use synctv_core_testing::{
+    create_test_pool, create_test_room_service, TestContainer, TestOptionExt, TestResultExt,
+};
 
 fn assert_f64_eq(actual: f64, expected: f64) {
     assert!(
@@ -47,7 +52,7 @@ fn make_user(username: &str) -> User {
 struct TestContext {
     _container: TestContainer,
     pool: PgPool,
-    _owner: User,
+    owner: User,
     room: Room,
     root_playlist: Playlist,
 }
@@ -56,6 +61,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let (container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo
@@ -83,6 +89,10 @@ async fn setup_test_context(suffix: &str) -> TestContext {
         })
         .await
         .checked("test operation should succeed");
+    member_repo
+        .add(&RoomMember::new(room.id, owner.id, RoomRole::Creator))
+        .await
+        .checked("test operation should succeed");
 
     let root_playlist = playlist_repo
         .create(&Playlist {
@@ -107,7 +117,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     TestContext {
         _container: container,
         pool,
-        _owner: owner,
+        owner,
         room,
         root_playlist,
     }
@@ -435,9 +445,17 @@ async fn test_media_cascade_delete_with_playlist() {
         .await
         .checked("test operation should succeed");
 
-    // Delete the child playlist - nested media should be explicitly deleted too.
-    playlist_repo
-        .delete(&child_playlist.id)
+    let room_service = create_test_room_service(ctx.pool.clone());
+    room_service
+        .delete_entries(
+            ctx.room.id,
+            ctx.owner.id,
+            DeleteEntriesRequest {
+                playlist_ids: vec![child_playlist.id],
+                media_ids: Vec::new(),
+                force: false,
+            },
+        )
         .await
         .checked("test operation should succeed");
 

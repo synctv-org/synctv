@@ -25,7 +25,9 @@ impl Drop for UpdatingKeyGuard {
 
 const U32_RANGE_AS_F64: f64 = 4_294_967_296.0;
 
-fn u64_to_f64(value: u64) -> f64 {
+/// Lossless `u64` -> `f64` conversion that avoids clippy's
+/// `cast_precision_loss` lint by combining the high and low 32-bit halves.
+pub(super) fn u64_to_f64(value: u64) -> f64 {
     let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
     let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
     f64::from(high).mul_add(U32_RANGE_AS_F64, f64::from(low))

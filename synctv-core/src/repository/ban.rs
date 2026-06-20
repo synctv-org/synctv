@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
 use crate::models::{BanRecordId, RoomId, UserId};
+use crate::repository::pools::RepoPools;
 use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,36 +57,29 @@ pub struct BanRecordPage {
 
 #[derive(Clone)]
 pub struct BanRecordRepository {
-    pool: PgPool,
-    read_pool: Option<PgPool>,
+    pools: RepoPools,
 }
 
 impl BanRecordRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: None,
+            pools: RepoPools::new(pool),
         }
     }
 
     #[must_use]
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
-            pool,
-            read_pool: Some(read_pool),
+            pools: RepoPools::with_read(pool, read_pool),
         }
-    }
-
-    fn eventually_consistent_pool(&self) -> &PgPool {
-        self.read_pool.as_ref().unwrap_or(&self.pool)
     }
 
     pub async fn list(&self, query: &BanRecordListQuery) -> Result<BanRecordPage> {
         let target_type = query.target_type.map(BanRecordTargetType::discriminator);
         let user_id = query.user_id.map(|id| id.as_i64());
         let room_id = query.room_id.map(|id| id.as_i64());
-        let pool = self.eventually_consistent_pool();
+        let pool = self.pools.read();
         let total = sqlx::query_scalar!(
             r#"
             SELECT COUNT(*) AS "total!" FROM (

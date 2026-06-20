@@ -3,16 +3,19 @@
 //! Tests `create_or_get` idempotency and update optimistic locking.
 
 use chrono::Utc;
-use synctv_core::models::{FromProviderParams, Media, MediaId, Playlist, PlaylistId};
+use synctv_core::models::{
+    FromProviderParams, Media, MediaId, Playlist, PlaylistId, RoomMember, RoomRole,
+};
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
     repository::{
-        MediaRepository, PlaylistRepository, RoomPlaybackStateRepository, RoomRepository,
-        UserRepository,
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository,
+        RoomRepository, UserRepository,
     },
+    service::room::DeleteEntriesRequest,
     Error,
 };
-use synctv_core_testing::{create_test_pool, err, ok, some};
+use synctv_core_testing::{create_test_pool, create_test_room_service, err, ok, some};
 
 fn assert_f64_eq(actual: f64, expected: f64) {
     assert!(
@@ -554,6 +557,7 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
     let media_repo = MediaRepository::new(pool.clone());
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
@@ -569,6 +573,12 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
             .create(&make_room("Room PB Delete Playlist FK", &owner.id))
             .await,
         "room should be created",
+    );
+    ok(
+        member_repo
+            .add(&RoomMember::new(room.id, owner.id, RoomRole::Creator))
+            .await,
+        "owner membership should be created",
     );
 
     let playlist = ok(
@@ -627,7 +637,18 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
         "playback state should update",
     );
 
-    let delete_result = playlist_repo.delete(&playlist.id).await;
+    let room_service = create_test_room_service(pool.clone());
+    let delete_result = room_service
+        .delete_entries(
+            room.id,
+            owner.id,
+            DeleteEntriesRequest {
+                playlist_ids: vec![playlist.id],
+                media_ids: Vec::new(),
+                force: false,
+            },
+        )
+        .await;
     assert!(
         delete_result.is_err(),
         "deleting current playlist must be rejected until playback state is explicitly cleared"

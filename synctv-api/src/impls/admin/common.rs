@@ -3,6 +3,44 @@ use synctv_core::service::UserService;
 
 use super::{user_notification_preferences_to_proto, usize_to_i32_api, ApiError};
 
+pub(in crate::impls::admin) struct BatchResultsAccumulator {
+    results: Vec<synctv_proto::admin::BatchResultItem>,
+    succeeded: i32,
+    failed: i32,
+}
+
+impl BatchResultsAccumulator {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            results: Vec::with_capacity(capacity),
+            succeeded: 0,
+            failed: 0,
+        }
+    }
+
+    pub fn record_ok(&mut self, id: String) {
+        self.results.push(synctv_proto::admin::BatchResultItem {
+            id,
+            success: true,
+            error: String::new(),
+        });
+        self.succeeded += 1;
+    }
+
+    pub fn record_err(&mut self, id: String, error: impl Into<ApiError>) {
+        self.results.push(synctv_proto::admin::BatchResultItem {
+            id,
+            success: false,
+            error: map_batch_result_error(error),
+        });
+        self.failed += 1;
+    }
+
+    pub fn into_parts(self) -> (Vec<synctv_proto::admin::BatchResultItem>, i32, i32) {
+        (self.results, self.succeeded, self.failed)
+    }
+}
+
 pub(in crate::impls::admin) fn map_batch_result_error(error: impl Into<ApiError>) -> String {
     let error = error.into();
     match error.classify() {

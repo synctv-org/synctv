@@ -196,6 +196,18 @@ impl ConnectionManager {
         format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix)
     }
 
+    fn total_counter_key(&self) -> String {
+        format!("{}connections:total", self.redis_key_prefix)
+    }
+
+    fn user_counter_key(&self, user_id: impl std::fmt::Display) -> String {
+        format!("{}connections:user:{user_id}", self.redis_key_prefix)
+    }
+
+    fn room_counter_key(&self, room_id: impl std::fmt::Display) -> String {
+        format!("{}connections:room:{room_id}", self.redis_key_prefix)
+    }
+
     fn user_index_directory_key(&self) -> String {
         format!(
             "{}{}",
@@ -562,16 +574,16 @@ impl ConnectionManager {
                 "{}conn_mgr:cleanup:{connection_id}:{registration_token}",
                 self.redis_key_prefix
             ),
-            total_key: format!("{}connections:total", self.redis_key_prefix),
-            user_key: format!("{}connections:user:{user_id}", self.redis_key_prefix),
+            total_key: self.total_counter_key(),
+            user_key: self.user_counter_key(user_id),
             room_key: room_id.map_or_else(
                 || no_room_key.clone(),
-                |room_id| format!("{}connections:room:{room_id}", self.redis_key_prefix),
+                |room_id| self.room_counter_key(room_id),
             ),
-            conn_key: format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix),
-            user_index_key: format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix),
+            conn_key: self.conn_metadata_key(connection_id),
+            user_index_key: self.user_index_key(user_id),
             room_index_key: room_id
-                .map(|room_id| format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix))
+                .map(|room_id| self.room_index_key(room_id))
                 .unwrap_or(no_room_key),
             connection_id: connection_id.to_string(),
             registration_token: registration_token.to_string(),
@@ -1009,7 +1021,7 @@ impl ConnectionManager {
             });
         }
 
-        let total_key = format!("{}connections:total", self.redis_key_prefix);
+        let total_key = self.total_counter_key();
 
         // Enforce the total connection limit across replicas when Redis is
         // configured. This must fail closed: in distributed mode, a best-effort
@@ -1049,7 +1061,7 @@ impl ConnectionManager {
         // so a Redis error here means distributed state is unavailable and we
         // must fail closed instead of weakening enforcement.
         if self.redis_enabled() {
-            let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id);
+            let redis_key = self.user_counter_key(user_id);
             match self
                 .redis_incr_and_check(&redis_key, self.limits.max_per_user)
                 .await
@@ -1190,7 +1202,7 @@ impl ConnectionManager {
             hook().await;
         }
         let redis_room_incremented = if self.redis_enabled() {
-            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+            let redis_key = self.room_counter_key(room_id);
             match self
                 .redis_incr_and_check(&redis_key, self.limits.max_per_room)
                 .await
@@ -1224,8 +1236,7 @@ impl ConnectionManager {
             if current_room_id.as_ref() == Some(&room_id) {
                 drop(lifecycle_guard);
                 if redis_room_incremented {
-                    let redis_key =
-                        format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+                    let redis_key = self.room_counter_key(room_id);
                     self.rollback_distributed_counter(redis_key).await;
                 }
                 return Ok(());
@@ -1239,8 +1250,7 @@ impl ConnectionManager {
                 if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
                     drop(lifecycle_guard);
                     if redis_room_incremented {
-                        let redis_key =
-                            format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+                        let redis_key = self.room_counter_key(room_id);
                         self.rollback_distributed_counter(redis_key).await;
                     }
                     return Err(format!(
@@ -1273,7 +1283,7 @@ impl ConnectionManager {
         } else {
             drop(lifecycle_guard);
             if redis_room_incremented {
-                let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+                let redis_key = self.room_counter_key(room_id);
                 self.rollback_distributed_counter(redis_key).await;
             }
             return Err("Connection not found".to_string());
@@ -1290,7 +1300,7 @@ impl ConnectionManager {
             .as_ref()
             .and_then(|transition| transition.previous_room_id.as_ref())
         {
-            let old_key = format!("{}connections:room:{}", self.redis_key_prefix, old_room);
+            let old_key = self.room_counter_key(old_room);
             self.rollback_distributed_counter(old_key).await;
         }
 
@@ -1549,7 +1559,7 @@ impl ConnectionManager {
             )
             .await?
         {
-            let redis_key = format!("{}connections:total", self.redis_key_prefix);
+            let redis_key = self.total_counter_key();
             match self
                 .redis_op(
                     "read distributed total connection count",
@@ -1619,7 +1629,7 @@ impl ConnectionManager {
             )
             .await?
         {
-            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id);
+            let redis_key = self.room_counter_key(room_id);
             match self
                 .redis_op(
                     "read distributed room connection count",
@@ -1662,7 +1672,7 @@ impl ConnectionManager {
         {
             let keys: Vec<String> = room_ids
                 .iter()
-                .map(|rid| format!("{}connections:room:{}", self.redis_key_prefix, rid))
+                .map(|rid| self.room_counter_key(rid))
                 .collect();
 
             match self

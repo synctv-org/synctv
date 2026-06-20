@@ -207,9 +207,6 @@ where
             // changed, an invalidation arrived mid-flight and the result is stale.
             let key_epoch_before = self.key_epochs.get(key).map_or(0, |v| *v);
             let global_epoch_before = self.global_epoch.load(Ordering::Acquire);
-            let key_epochs_arc = self.key_epochs.clone();
-            let global_epoch_arc = self.global_epoch.clone();
-            let epoch_key = key.clone();
 
             let result = self
                 .singleflight
@@ -251,25 +248,14 @@ where
                     "Cache hit (L2)"
                 );
 
-                // Only populate L1 if no invalidation arrived while
-                // this fetch was in-flight. Check both the per-key epoch and the
-                // global epoch; if either changed, the data may be stale.
-                let key_epoch_after = key_epochs_arc.get(&epoch_key).map_or(0, |v| *v);
-                let global_epoch_after = global_epoch_arc.load(Ordering::Acquire);
-                if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before
-                {
-                    self.l1_cache.insert(key.clone(), value.clone()).await;
-                } else {
-                    tracing::debug!(
-                        key = %key,
-                        cache_type = %self.cache_type,
-                        key_epoch_before,
-                        key_epoch_after,
-                        global_epoch_before,
-                        global_epoch_after,
-                        "Skipping L1 write: invalidation arrived mid-flight (epoch changed)"
-                    );
-                }
+                self.maybe_insert_l1_after_fetch(
+                    key,
+                    value.clone(),
+                    key_epoch_before,
+                    global_epoch_before,
+                    "singleflight_l2_path",
+                )
+                .await;
 
                 crate::metrics::cache::CACHE_OPERATION_DURATION
                     .with_label_values(&["get"])
@@ -314,21 +300,14 @@ where
 
         let value = self.deserialize_l2_value(&json)?;
 
-        let key_epoch_after = self.key_epochs.get(key).map_or(0, |v| *v);
-        let global_epoch_after = self.global_epoch.load(Ordering::Acquire);
-        if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before {
-            self.l1_cache.insert(key.clone(), value.clone()).await;
-        } else {
-            tracing::debug!(
-                key = %key,
-                cache_type = %self.cache_type,
-                key_epoch_before,
-                key_epoch_after,
-                global_epoch_before,
-                global_epoch_after,
-                "Skipping L1 write after L2-only fetch: invalidation arrived mid-flight"
-            );
-        }
+        self.maybe_insert_l1_after_fetch(
+            key,
+            value.clone(),
+            key_epoch_before,
+            global_epoch_before,
+            "get_l2",
+        )
+        .await;
 
         Ok(Some(value))
     }

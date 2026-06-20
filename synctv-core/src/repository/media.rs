@@ -185,12 +185,6 @@ impl MediaRepository {
         builder.push(order_by);
     }
 
-    fn normalize_provider_instance_name_for_db(
-        provider_instance_name: Option<&str>,
-    ) -> Option<&str> {
-        normalize_provider_instance_name(provider_instance_name)
-    }
-
     fn provider_type_code(provider: &str) -> Result<i16> {
         provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
     }
@@ -349,7 +343,7 @@ impl MediaRepository {
             media.position,
             Self::provider_type_code(&media.source_provider)?,
             source_config_json,
-            Self::normalize_provider_instance_name_for_db(media.provider_instance_name.as_deref(),),
+            normalize_provider_instance_name(media.provider_instance_name.as_deref()),
             media.added_at
         )
         .fetch_one(executor)
@@ -423,7 +417,7 @@ impl MediaRepository {
                     .push_bind(item.position)
                     .push_bind(provider_code)
                     .push_bind(&item.source_config)
-                    .push_bind(Self::normalize_provider_instance_name_for_db(
+                    .push_bind(normalize_provider_instance_name(
                         item.provider_instance_name.as_deref(),
                     ))
                     .push_bind(item.added_at)

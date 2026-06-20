@@ -209,9 +209,4 @@ impl UserService {
 
         Ok(email)
     }
-
-    pub async fn cleanup_oauth_providers(&self, user_id: &UserId) -> Result<u64> {
-        let repo = UserOAuthProviderRepository::new(self.repository.pool().clone());
-        repo.delete_all_for_user(user_id).await
-    }
 }

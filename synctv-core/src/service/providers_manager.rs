@@ -202,79 +202,65 @@ impl ProvidersManager {
     fn register_builtin_providers(&mut self) {
         let default_client_manager = Arc::clone(&self.default_client_manager);
         let ssrf_guard = self.ssrf_guard.clone();
-        // Alist factory - reads local Alist config.
+
+        // Helper to select client manager based on config
+        let select_client_manager = |config: &Value, ssrf_guard: &synctv_common::ssrf::SsrfGuard| {
+            provider_http_client_from_config(config, ssrf_guard)
+                .map(|client_opt| {
+                    client_opt.map(|client| {
+                        Arc::new(ProviderClientManager::new_with_provider_http_client(client))
+                    })
+                })
+        };
+
+        // Alist factory
+        let default_client_manager_alist = Arc::clone(&default_client_manager);
+        let ssrf_guard_alist = ssrf_guard.clone();
         self.register_factory(
             AlistProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider =
-                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
-                        AlistProvider::with_client_manager(
-                        instance_manager,
-                        Arc::new(
-                            crate::provider::ProviderClientManager::new_with_provider_http_client(
-                                client,
-                            ),
-                        ),
-                    )
-                    } else {
-                        AlistProvider::with_client_manager(
-                            instance_manager,
-                            Arc::clone(&default_client_manager),
-                        )
-                    };
-                Ok(Arc::new(provider))
+                let client_manager = match select_client_manager(config, &ssrf_guard_alist)? {
+                    Some(manager) => manager,
+                    None => Arc::clone(&default_client_manager_alist),
+                };
+                Ok(Arc::new(AlistProvider::with_client_manager(
+                    instance_manager,
+                    client_manager,
+                )))
             }),
         );
 
-        // Bilibili factory - reads local Bilibili config.
-        let default_client_manager = Arc::clone(&self.default_client_manager);
-        let ssrf_guard = self.ssrf_guard.clone();
+        // Bilibili factory
+        let default_client_manager_bilibili = Arc::clone(&default_client_manager);
+        let ssrf_guard_bilibili = ssrf_guard.clone();
         self.register_factory(
             BilibiliProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider =
-                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
-                        BilibiliProvider::with_client_manager(
-                        instance_manager,
-                        Arc::new(
-                            crate::provider::ProviderClientManager::new_with_provider_http_client(
-                                client,
-                            ),
-                        ),
-                    )
-                    } else {
-                        BilibiliProvider::with_client_manager(
-                            instance_manager,
-                            Arc::clone(&default_client_manager),
-                        )
-                    };
-                Ok(Arc::new(provider))
+                let client_manager = match select_client_manager(config, &ssrf_guard_bilibili)? {
+                    Some(manager) => manager,
+                    None => Arc::clone(&default_client_manager_bilibili),
+                };
+                Ok(Arc::new(BilibiliProvider::with_client_manager(
+                    instance_manager,
+                    client_manager,
+                )))
             }),
         );
 
-        // Emby factory - reads local Emby config.
-        let default_client_manager = Arc::clone(&self.default_client_manager);
-        let ssrf_guard = self.ssrf_guard.clone();
+        // Emby factory
+        let default_client_manager_emby = Arc::clone(&default_client_manager);
+        let ssrf_guard_emby = ssrf_guard.clone();
         self.register_factory(
             EmbyProvider::NAME,
             Box::new(move |_instance_id, config, instance_manager| {
-                let provider =
-                    if let Some(client) = provider_http_client_from_config(config, &ssrf_guard)? {
-                        EmbyProvider::with_client_manager(
-                        instance_manager,
-                        Arc::new(
-                            crate::provider::ProviderClientManager::new_with_provider_http_client(
-                                client,
-                            ),
-                        ),
-                    )
-                    } else {
-                        EmbyProvider::with_client_manager(
-                            instance_manager,
-                            Arc::clone(&default_client_manager),
-                        )
-                    };
-                Ok(Arc::new(provider))
+                let client_manager = match select_client_manager(config, &ssrf_guard_emby)? {
+                    Some(manager) => manager,
+                    None => Arc::clone(&default_client_manager_emby),
+                };
+                Ok(Arc::new(EmbyProvider::with_client_manager(
+                    instance_manager,
+                    client_manager,
+                )))
             }),
         );
 

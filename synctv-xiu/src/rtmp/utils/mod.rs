@@ -1,17 +1,7 @@
 pub mod errors;
 
-/// Parse a string by a separator into a tuple of typed values.
-/// Returns a tuple of `Option<T>` for each requested type.
-macro_rules! scanf {
-    ($string:expr, $sep:expr, $($x:ty),+) => ({
-        let mut iter = $string.split($sep);
-        ($(iter.next().and_then(|word| word.parse::<$x>().ok()),)*)
-    })
-}
-
 use errors::RtmpUrlParseError;
 use errors::RtmpUrlParseErrorValue;
-use indexmap::IndexMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct RtmpUrlParser {
@@ -73,16 +63,6 @@ impl RtmpUrlParser {
         let data: Vec<&str> = stream_name_with_query.split('?').collect();
         let stream_name = data[0].to_string();
         let query = if data.len() > 1 {
-            let query_val = data[1].to_string();
-
-            let mut query_pairs = IndexMap::new();
-            let pars_array: Vec<&str> = query_val.split('&').collect();
-            for ele in pars_array {
-                let (k, v) = scanf!(ele, '=', String, String);
-                if let (Some(key), Some(val)) = (k, v) {
-                    query_pairs.insert(key, val);
-                }
-            }
             Some(data[1].to_string())
         } else {
             None

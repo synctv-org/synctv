@@ -247,55 +247,73 @@ async fn grpc_transport_only_middleware(
     }
 }
 
-async fn set_registered_grpc_services_serving(
+async fn set_registered_grpc_services_with_status(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
+    serving: bool,
 ) {
     use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
 
-    health_reporter
-        .set_service_status("", tonic_health::ServingStatus::Serving)
-        .await;
-    if state.auth_registered {
-        health_reporter
-            .set_serving::<AuthServiceServer<ClientServiceImpl>>()
-            .await;
+    let status = if serving {
+        tonic_health::ServingStatus::Serving
+    } else {
+        tonic_health::ServingStatus::NotServing
+    };
+    health_reporter.set_service_status("", status).await;
+
+    macro_rules! set_service_status {
+        ($health_reporter:expr, $condition:expr, $service_type:ty) => {
+            if $condition {
+                if serving {
+                    $health_reporter.set_serving::<$service_type>().await;
+                } else {
+                    $health_reporter.set_not_serving::<$service_type>().await;
+                }
+            }
+        };
     }
-    if state.user_registered {
-        health_reporter
-            .set_serving::<UserServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.room_registered {
-        health_reporter
-            .set_serving::<RoomServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.public_registered {
-        health_reporter
-            .set_serving::<PublicServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.email_registered {
-        health_reporter
-            .set_serving::<EmailServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.admin_registered {
-        health_reporter
-            .set_serving::<AdminServiceServer<AdminServiceImpl>>()
-            .await;
-    }
-    if state.notification_registered {
-        health_reporter
-            .set_serving::<NotificationServiceServer<NotificationServiceImpl>>()
-            .await;
-    }
-    if state.oauth2_registered {
-        health_reporter
-            .set_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
-            .await;
-    }
+
+    set_service_status!(
+        health_reporter,
+        state.auth_registered,
+        AuthServiceServer<ClientServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.user_registered,
+        UserServiceServer<ClientServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.room_registered,
+        RoomServiceServer<ClientServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.public_registered,
+        PublicServiceServer<ClientServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.email_registered,
+        EmailServiceServer<ClientServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.admin_registered,
+        AdminServiceServer<AdminServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.notification_registered,
+        NotificationServiceServer<NotificationServiceImpl>
+    );
+    set_service_status!(
+        health_reporter,
+        state.oauth2_registered,
+        OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>
+    );
+
     if state.provider_services_registered {
         use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
         use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
@@ -303,218 +321,113 @@ async fn set_registered_grpc_services_serving(
         use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
         use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
 
-        health_reporter
-            .set_serving::<ProviderCommonServiceServer<providers::common::ProviderCommonGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>()
-            .await;
-        health_reporter
-            .set_serving::<DirectUrlPlaybackProviderServiceServer<
+        set_service_status!(
+            health_reporter,
+            true,
+            ProviderCommonServiceServer<providers::common::ProviderCommonGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            AlistProviderServiceServer<providers::alist::AlistProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            DirectUrlPlaybackProviderServiceServer<
                 playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_serving::<AlistPlaybackProviderServiceServer<
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            AlistPlaybackProviderServiceServer<
                 playback_provider::alist::AlistPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_serving::<EmbyPlaybackProviderServiceServer<
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            EmbyPlaybackProviderServiceServer<
                 playback_provider::emby::EmbyPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_serving::<BilibiliPlaybackProviderServiceServer<
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            BilibiliPlaybackProviderServiceServer<
                 playback_provider::bilibili::BilibiliPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_serving::<RtmpPlaybackProviderServiceServer<
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            RtmpPlaybackProviderServiceServer<
                 playback_provider::rtmp::RtmpPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_serving::<LiveProxyPlaybackProviderServiceServer<
+            >
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            LiveProxyPlaybackProviderServiceServer<
                 playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService,
-            >>()
-            .await;
+            >
+        );
     }
-    if state.cluster_service_registered {
-        health_reporter
-            .set_serving::<synctv_cluster::grpc::ClusterServiceServer<
-                synctv_cluster::grpc::ClusterServer,
-            >>()
-            .await;
-    }
-    if state.realtime_presence_registered {
-        health_reporter
-            .set_serving::<synctv_realtime::grpc::RealtimePresenceServiceServer<
-                synctv_realtime::grpc::RealtimePresenceServiceImpl,
-            >>()
-            .await;
-    }
-    if state.proxy_slice_cache_registered {
-        health_reporter
-            .set_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
-                synctv_proxy::grpc::ProxySliceCacheServiceImpl,
-            >>()
-            .await;
-    }
-    if state.livestream_relay_registered {
-        health_reporter
-            .set_serving::<synctv_livestream::StreamRelayServiceServer<
-                synctv_livestream::StreamRelayServiceImpl,
-            >>()
-            .await;
-    }
+
+    set_service_status!(
+        health_reporter,
+        state.cluster_service_registered,
+        synctv_cluster::grpc::ClusterServiceServer<synctv_cluster::grpc::ClusterServer>
+    );
+    set_service_status!(
+        health_reporter,
+        state.realtime_presence_registered,
+        synctv_realtime::grpc::RealtimePresenceServiceServer<
+            synctv_realtime::grpc::RealtimePresenceServiceImpl,
+        >
+    );
+    set_service_status!(
+        health_reporter,
+        state.proxy_slice_cache_registered,
+        synctv_proxy::grpc::ProxySliceCacheServiceServer<
+            synctv_proxy::grpc::ProxySliceCacheServiceImpl,
+        >
+    );
+    set_service_status!(
+        health_reporter,
+        state.livestream_relay_registered,
+        synctv_livestream::StreamRelayServiceServer<synctv_livestream::StreamRelayServiceImpl>
+    );
+}
+
+async fn set_registered_grpc_services_serving(
+    health_reporter: &tonic_health::server::HealthReporter,
+    state: GrpcHealthRegistrationState,
+) {
+    set_registered_grpc_services_with_status(health_reporter, state, true).await;
 }
 
 async fn set_registered_grpc_services_not_serving(
     health_reporter: &tonic_health::server::HealthReporter,
     state: GrpcHealthRegistrationState,
 ) {
-    use synctv_proto::client::o_auth2_service_server::OAuth2ServiceServer;
-
-    health_reporter
-        .set_service_status("", tonic_health::ServingStatus::NotServing)
-        .await;
-    if state.auth_registered {
-        health_reporter
-            .set_not_serving::<AuthServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.user_registered {
-        health_reporter
-            .set_not_serving::<UserServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.room_registered {
-        health_reporter
-            .set_not_serving::<RoomServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.public_registered {
-        health_reporter
-            .set_not_serving::<PublicServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.email_registered {
-        health_reporter
-            .set_not_serving::<EmailServiceServer<ClientServiceImpl>>()
-            .await;
-    }
-    if state.admin_registered {
-        health_reporter
-            .set_not_serving::<AdminServiceServer<AdminServiceImpl>>()
-            .await;
-    }
-    if state.notification_registered {
-        health_reporter
-            .set_not_serving::<NotificationServiceServer<NotificationServiceImpl>>()
-            .await;
-    }
-    if state.oauth2_registered {
-        health_reporter
-            .set_not_serving::<OAuth2ServiceServer<oauth2_service::OAuth2GrpcService>>()
-            .await;
-    }
-    if state.provider_services_registered {
-        use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
-        use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
-        use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
-        use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
-        use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
-
-        health_reporter
-            .set_not_serving::<ProviderCommonServiceServer<providers::common::ProviderCommonGrpcService>>()
-            .await;
-        health_reporter
-            .set_not_serving::<AlistProviderServiceServer<
-                providers::alist::AlistProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<BilibiliProviderServiceServer<
-                providers::bilibili::BilibiliProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<EmbyProviderServiceServer<providers::emby::EmbyProviderGrpcService>>(
-            )
-            .await;
-        health_reporter
-            .set_not_serving::<RtmpProviderServiceServer<providers::rtmp::RtmpProviderGrpcService>>(
-            )
-            .await;
-        health_reporter
-            .set_not_serving::<DirectUrlPlaybackProviderServiceServer<
-                playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<AlistPlaybackProviderServiceServer<
-                playback_provider::alist::AlistPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<EmbyPlaybackProviderServiceServer<
-                playback_provider::emby::EmbyPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<BilibiliPlaybackProviderServiceServer<
-                playback_provider::bilibili::BilibiliPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<RtmpPlaybackProviderServiceServer<
-                playback_provider::rtmp::RtmpPlaybackProviderGrpcService,
-            >>()
-            .await;
-        health_reporter
-            .set_not_serving::<LiveProxyPlaybackProviderServiceServer<
-                playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService,
-            >>()
-            .await;
-    }
-    if state.cluster_service_registered {
-        health_reporter
-            .set_not_serving::<synctv_cluster::grpc::ClusterServiceServer<
-                synctv_cluster::grpc::ClusterServer,
-            >>()
-            .await;
-    }
-    if state.realtime_presence_registered {
-        health_reporter
-            .set_not_serving::<synctv_realtime::grpc::RealtimePresenceServiceServer<
-                synctv_realtime::grpc::RealtimePresenceServiceImpl,
-            >>()
-            .await;
-    }
-    if state.proxy_slice_cache_registered {
-        health_reporter
-            .set_not_serving::<synctv_proxy::grpc::ProxySliceCacheServiceServer<
-                synctv_proxy::grpc::ProxySliceCacheServiceImpl,
-            >>()
-            .await;
-    }
-    if state.livestream_relay_registered {
-        health_reporter
-            .set_not_serving::<synctv_livestream::StreamRelayServiceServer<
-                synctv_livestream::StreamRelayServiceImpl,
-            >>()
-            .await;
-    }
+    set_registered_grpc_services_with_status(health_reporter, state, false).await;
 }
 
 struct BuiltGrpcRouter {

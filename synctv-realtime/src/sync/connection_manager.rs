@@ -1229,65 +1229,64 @@ impl ConnectionManager {
 
         let lifecycle_lock = self.connection_lifecycle_lock(connection_id);
         let lifecycle_guard = lifecycle_lock.lock().await;
-        let (transition, last_activity) = if let Some(mut conn) =
-            self.connections.get_mut(connection_id)
-        {
-            let current_room_id = conn.room_id;
-            if current_room_id.as_ref() == Some(&room_id) {
-                drop(lifecycle_guard);
-                if redis_room_incremented {
-                    let redis_key = self.room_counter_key(room_id);
-                    self.rollback_distributed_counter(redis_key).await;
-                }
-                return Ok(());
-            }
-
-            // Step 3: Commit the room move locally after all checks have passed.
-            // Without Redis, enforce the room limit under the same shard lock as
-            // the insert so concurrent local joins cannot oversubscribe the room.
-            {
-                let mut room_entry = self.room_connections.entry(room_id).or_default();
-                if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+        let (transition, last_activity) =
+            if let Some(mut conn) = self.connections.get_mut(connection_id) {
+                let current_room_id = conn.room_id;
+                if current_room_id.as_ref() == Some(&room_id) {
                     drop(lifecycle_guard);
                     if redis_room_incremented {
                         let redis_key = self.room_counter_key(room_id);
                         self.rollback_distributed_counter(redis_key).await;
                     }
-                    return Err(format!(
-                        "Room at capacity ({} connections)",
-                        self.limits.max_per_room
-                    ));
+                    return Ok(());
                 }
-                room_entry.push(connection_id.to_string());
-            }
 
-            if let Some(ref old_room) = current_room_id {
-                if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
-                    old_room_conns.retain(|id| id != connection_id);
-                    if old_room_conns.is_empty() {
-                        drop(old_room_conns);
-                        self.room_connections.remove(old_room);
+                // Step 3: Commit the room move locally after all checks have passed.
+                // Without Redis, enforce the room limit under the same shard lock as
+                // the insert so concurrent local joins cannot oversubscribe the room.
+                {
+                    let mut room_entry = self.room_connections.entry(room_id).or_default();
+                    if !self.redis_enabled() && room_entry.len() >= self.limits.max_per_room {
+                        drop(lifecycle_guard);
+                        if redis_room_incremented {
+                            let redis_key = self.room_counter_key(room_id);
+                            self.rollback_distributed_counter(redis_key).await;
+                        }
+                        return Err(format!(
+                            "Room at capacity ({} connections)",
+                            self.limits.max_per_room
+                        ));
+                    }
+                    room_entry.push(connection_id.to_string());
+                }
+
+                if let Some(ref old_room) = current_room_id {
+                    if let Some(mut old_room_conns) = self.room_connections.get_mut(old_room) {
+                        old_room_conns.retain(|id| id != connection_id);
+                        if old_room_conns.is_empty() {
+                            drop(old_room_conns);
+                            self.room_connections.remove(old_room);
+                        }
                     }
                 }
-            }
 
-            conn.room_id = Some(room_id);
-            conn.last_activity = Instant::now();
-            (
-                Some(RoomTransition {
-                    previous_room_id: current_room_id,
-                    room_id,
-                }),
-                Some(conn.last_activity),
-            )
-        } else {
-            drop(lifecycle_guard);
-            if redis_room_incremented {
-                let redis_key = self.room_counter_key(room_id);
-                self.rollback_distributed_counter(redis_key).await;
-            }
-            return Err("Connection not found".to_string());
-        };
+                conn.room_id = Some(room_id);
+                conn.last_activity = Instant::now();
+                (
+                    Some(RoomTransition {
+                        previous_room_id: current_room_id,
+                        room_id,
+                    }),
+                    Some(conn.last_activity),
+                )
+            } else {
+                drop(lifecycle_guard);
+                if redis_room_incremented {
+                    let redis_key = self.room_counter_key(room_id);
+                    self.rollback_distributed_counter(redis_key).await;
+                }
+                return Err("Connection not found".to_string());
+            };
         drop(lifecycle_guard);
         if let Some(last_activity) = last_activity {
             self.schedule_idle_timeout(connection_id, last_activity);

@@ -1,10 +1,7 @@
 use axum::{
     body::Body,
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
-    response::{
-        sse::Event,
-        Response,
-    },
+    response::{sse::Event, Response},
 };
 use futures::{Stream, StreamExt};
 use std::convert::Infallible;

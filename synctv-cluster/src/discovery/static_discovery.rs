@@ -113,11 +113,8 @@ impl StaticDiscovery {
         }
 
         Some(
-            NodeInfo::new(
-                discovered.node_id.clone(),
-                normalized_api_address,
-            )
-            .with_epoch(discovered.epoch),
+            NodeInfo::new(discovered.node_id.clone(), normalized_api_address)
+                .with_epoch(discovered.epoch),
         )
     }
 
@@ -264,7 +261,12 @@ impl StaticDiscovery {
         connect_timeout: Duration,
         cluster_secret: &str,
     ) -> Option<ProbedNodeIdentity> {
-        super::probe_node_identity(normalized_api_address, connect_timeout.as_secs(), cluster_secret).await
+        super::probe_node_identity(
+            normalized_api_address,
+            connect_timeout.as_secs(),
+            cluster_secret,
+        )
+        .await
     }
 }
 

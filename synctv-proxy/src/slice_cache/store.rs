@@ -218,11 +218,7 @@ impl SliceCache {
 
     /// Re-insert the still-cached slice data under a fresh segment TTL after a
     /// `304 Not Modified`, returning the data on success.
-    async fn refresh_cached_slice_ttl(
-        &self,
-        key: &str,
-        data: Bytes,
-    ) -> Result<(), anyhow::Error> {
+    async fn refresh_cached_slice_ttl(&self, key: &str, data: Bytes) -> Result<(), anyhow::Error> {
         let refreshed = StoredEntry::new(data, self.config.segment_ttl);
         self.backend
             .put(key, refreshed)

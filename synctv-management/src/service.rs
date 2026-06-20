@@ -2247,9 +2247,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(|e| map_api_error(&e))?;
-        Ok(Response::new(
-            client_proto::KickRoomStreamResponse {},
-        ))
+        Ok(Response::new(client_proto::KickRoomStreamResponse {}))
     }
 
     async fn list_playlists(

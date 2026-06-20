@@ -740,7 +740,8 @@ impl EmbyClient {
 
         let headers = self.build_headers()?;
 
-        self.send_post_no_response(&url, Some(&body), &headers).await
+        self.send_post_no_response(&url, Some(&body), &headers)
+            .await
     }
 
     /// Report playback stop to Emby server
@@ -762,7 +763,8 @@ impl EmbyClient {
 
         let headers = self.build_headers()?;
 
-        self.send_post_no_response(&url, Some(&body), &headers).await
+        self.send_post_no_response(&url, Some(&body), &headers)
+            .await
     }
 
     /// Report playback progress to Emby server
@@ -791,7 +793,8 @@ impl EmbyClient {
 
         let headers = self.build_headers()?;
 
-        self.send_post_no_response(&url, Some(&body), &headers).await
+        self.send_post_no_response(&url, Some(&body), &headers)
+            .await
     }
 
     /// Get host URL

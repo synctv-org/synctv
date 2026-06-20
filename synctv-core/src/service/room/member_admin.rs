@@ -1283,7 +1283,10 @@ impl RoomService {
         params: PermissionWriteParams<'_>,
     ) -> Result<RoomMember> {
         let (added, removed) = if params.effective_is_admin {
-            (params.admin_added_permissions, params.admin_removed_permissions)
+            (
+                params.admin_added_permissions,
+                params.admin_removed_permissions,
+            )
         } else {
             (params.added_permissions, params.removed_permissions)
         };
@@ -1373,7 +1376,8 @@ impl RoomService {
             .invalidate_committed_member_write_cache(&snapshot.room_id, &snapshot.target_user_id)
             .await;
         if snapshot.role_changed {
-            self.notify_room_settings_invalidation(&snapshot.room_id).await;
+            self.notify_room_settings_invalidation(&snapshot.room_id)
+                .await;
         }
         Ok(())
     }
@@ -1391,7 +1395,14 @@ impl RoomService {
         outbox_event_factory: Option<&RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<PermissionChangedOutboxSnapshot> {
         let snapshot = self
-            .permission_changed_snapshot_tx(tx, room_id, target_user_id, actor_id, updated, role_changed)
+            .permission_changed_snapshot_tx(
+                tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                updated,
+                role_changed,
+            )
             .await?;
         self.insert_permission_changed_outbox_tx(tx, &snapshot, outbox_event_factory)
             .await?;

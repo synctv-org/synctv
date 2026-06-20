@@ -61,18 +61,10 @@ pub(super) fn live_ids_from_metadata(
     context_label: &str,
 ) -> Result<(RoomId, MediaId), ProviderError> {
     let room_id = metadata_typed_id(versioned, "room_id", |room_id| {
-        super::playback_transport::parse_playback_room_id(
-            public_id_codec,
-            room_id,
-            context_label,
-        )
+        super::playback_transport::parse_playback_room_id(public_id_codec, room_id, context_label)
     })?;
     let media_id = metadata_typed_id(versioned, "media_id", |media_id| {
-        super::playback_transport::parse_playback_media_id(
-            public_id_codec,
-            media_id,
-            context_label,
-        )
+        super::playback_transport::parse_playback_media_id(public_id_codec, media_id, context_label)
     })?;
     Ok((room_id, media_id))
 }

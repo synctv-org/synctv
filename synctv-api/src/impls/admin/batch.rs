@@ -1,7 +1,7 @@
 use synctv_core::models::{UserId, UserRole};
 
 use super::{
-    check_role_hierarchy, list_owned_room_ids, BatchResultsAccumulator, AdminApiImpl, ApiError,
+    check_role_hierarchy, list_owned_room_ids, AdminApiImpl, ApiError, BatchResultsAccumulator,
     RequestContext,
 };
 

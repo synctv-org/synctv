@@ -722,9 +722,9 @@ impl RedisPubSub {
                                 // database outbox, so fail them back to that retry loop instead
                                 // of also retaining them in the in-memory Redis retry buffer.
                                 if req.expects_ack() {
-                                    req.acknowledge_failure(
-                                        format!("Failed to publish event to Redis: {e}"),
-                                    );
+                                    req.acknowledge_failure(format!(
+                                        "Failed to publish event to Redis: {e}"
+                                    ));
                                 } else if req.event.is_critical() {
                                     if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
                                         let mut dropped = critical_retry_buffer.remove(0);
@@ -788,9 +788,7 @@ impl RedisPubSub {
                                             synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
                                                 .with_label_values(&["retry_buffer_full"])
                                                 .inc();
-                                            req.acknowledge_failure(
-                                                "Redis retry buffer full",
-                                            );
+                                            req.acknowledge_failure("Redis retry buffer full");
                                             continue; // Continue draining, don't break - critical events still need to be collected
                                         }
                                         retry_buffer.push(req);
@@ -1183,7 +1181,14 @@ impl RedisPubSub {
             let total_skipped = 0usize;
 
             for stream_key in &streams_to_catchup {
-                match process_stream_catchup(self, stream_key, &catchup_start_id, &mut *stream_cursors).await {
+                match process_stream_catchup(
+                    self,
+                    stream_key,
+                    &catchup_start_id,
+                    &mut *stream_cursors,
+                )
+                .await
+                {
                     Ok(caught_up) => {
                         total_caught_up += caught_up;
                     }
@@ -1200,7 +1205,14 @@ impl RedisPubSub {
                                 "Failed to catch up on historical events, retrying"
                             );
                             tokio::time::sleep(Duration::from_millis(500_u64 * retry)).await;
-                            match process_stream_catchup(self, stream_key, &catchup_start_id, &mut *stream_cursors).await {
+                            match process_stream_catchup(
+                                self,
+                                stream_key,
+                                &catchup_start_id,
+                                &mut *stream_cursors,
+                            )
+                            .await
+                            {
                                 Ok(caught_up) => {
                                     total_caught_up += caught_up;
                                     retry_ok = true;
@@ -1772,7 +1784,11 @@ impl RedisPubSub {
                     | RealtimeEvent::RoomOwnerInactive { .. }
                     | RealtimeEvent::UserLeft { .. }
             ) {
-                super::events::publish_admin_event(&self.admin_event_tx, event.clone(), "Redis room");
+                super::events::publish_admin_event(
+                    &self.admin_event_tx,
+                    event.clone(),
+                    "Redis room",
+                );
             }
 
             // Handle terminal room-wide admin events before dropping local room state.

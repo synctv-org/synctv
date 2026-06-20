@@ -220,8 +220,8 @@ pub async fn watch_bilibili_live_danmaku(
         },
     )
     .await?;
-    let stream =
-        stream.map(crate::http::providers::playback_provider::transport::bilibili_danmaku_sse_event);
+    let stream = stream
+        .map(crate::http::providers::playback_provider::transport::bilibili_danmaku_sse_event);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 

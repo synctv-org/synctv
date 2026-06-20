@@ -13,14 +13,12 @@ pub(crate) fn map_user_role(role: i32) -> Result<i32, Status> {
 }
 
 pub(crate) fn map_user_status(status: i32) -> Result<i32, Status> {
-    common_proto::UserStatus::try_from(status)
-        .map_err(|_| invalid_enum_value("status", status))?;
+    common_proto::UserStatus::try_from(status).map_err(|_| invalid_enum_value("status", status))?;
     Ok(status)
 }
 
 pub(crate) fn map_room_status(status: i32) -> Result<i32, Status> {
-    common_proto::RoomStatus::try_from(status)
-        .map_err(|_| invalid_enum_value("status", status))?;
+    common_proto::RoomStatus::try_from(status).map_err(|_| invalid_enum_value("status", status))?;
     Ok(status)
 }
 

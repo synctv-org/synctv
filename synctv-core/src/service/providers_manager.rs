@@ -204,14 +204,14 @@ impl ProvidersManager {
         let ssrf_guard = self.ssrf_guard.clone();
 
         // Helper to select client manager based on config
-        let select_client_manager = |config: &Value, ssrf_guard: &synctv_common::ssrf::SsrfGuard| {
-            provider_http_client_from_config(config, ssrf_guard)
-                .map(|client_opt| {
+        let select_client_manager =
+            |config: &Value, ssrf_guard: &synctv_common::ssrf::SsrfGuard| {
+                provider_http_client_from_config(config, ssrf_guard).map(|client_opt| {
                     client_opt.map(|client| {
                         Arc::new(ProviderClientManager::new_with_provider_http_client(client))
                     })
                 })
-        };
+            };
 
         // Alist factory
         let default_client_manager_alist = Arc::clone(&default_client_manager);

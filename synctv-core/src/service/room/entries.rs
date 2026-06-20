@@ -256,7 +256,11 @@ impl RoomService {
                     &actor_username,
                     *media_id,
                 );
-                super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Media removed");
+                super::outbox::log_if_no_local_subscribers(
+                    subscriber_count,
+                    &room_id,
+                    "Media removed",
+                );
             }
             for playlist_id in &impact.deleted_playlist_ids {
                 let subscriber_count = self.notification_service.notify_playlist_deleted(
@@ -265,7 +269,11 @@ impl RoomService {
                     &actor_username,
                     *playlist_id,
                 );
-                super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Playlist deleted");
+                super::outbox::log_if_no_local_subscribers(
+                    subscriber_count,
+                    &room_id,
+                    "Playlist deleted",
+                );
             }
         }
 
@@ -567,7 +575,11 @@ impl RoomService {
                 &actor_username,
                 *playlist_id,
             );
-            super::outbox::log_if_no_local_subscribers(subscriber_count, &room_id, "Playlist deleted after clear_playlist");
+            super::outbox::log_if_no_local_subscribers(
+                subscriber_count,
+                &room_id,
+                "Playlist deleted after clear_playlist",
+            );
         }
 
         clear_playlist_result_from_impact(impact)

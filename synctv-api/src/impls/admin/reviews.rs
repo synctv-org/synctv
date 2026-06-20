@@ -8,9 +8,9 @@ use synctv_core::{
 
 use super::{
     ban_row_to_proto, i64_to_i32_api, normalize_non_empty_filter, pagination_limit_offset_i64,
-    proto_review_status_filter, room_creation_review_row_to_proto,
-    room_join_review_row_to_proto, user_registration_review_row_to_proto, AdminApiImpl, ApiError,
-    RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    proto_review_status_filter, room_creation_review_row_to_proto, room_join_review_row_to_proto,
+    user_registration_review_row_to_proto, AdminApiImpl, ApiError, RequestContext,
+    LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 
 impl AdminApiImpl {
@@ -217,16 +217,10 @@ impl AdminApiImpl {
         self.require_admin_actor(admin_user_id).await?;
         let (limit, offset) =
             pagination_limit_offset_i64(req.page, req.page_size, "room join review")?;
-        let room_id_filter = crate::impls::parse_optional_id_param(
-            &req.room_id,
-            "room_id",
-            &self.public_id_codec,
-        )?;
-        let user_id_filter = crate::impls::parse_optional_id_param(
-            &req.user_id,
-            "user_id",
-            &self.public_id_codec,
-        )?;
+        let room_id_filter =
+            crate::impls::parse_optional_id_param(&req.room_id, "room_id", &self.public_id_codec)?;
+        let user_id_filter =
+            crate::impls::parse_optional_id_param(&req.user_id, "user_id", &self.public_id_codec)?;
 
         let page = self
             .review_service
@@ -316,16 +310,10 @@ impl AdminApiImpl {
         self.require_admin_actor(admin_user_id).await?;
         let (limit, offset) = pagination_limit_offset_i64(req.page, req.page_size, "ban record")?;
 
-        let user_id_filter = crate::impls::parse_optional_id_param(
-            &req.user_id,
-            "user_id",
-            &self.public_id_codec,
-        )?;
-        let room_id_filter = crate::impls::parse_optional_id_param(
-            &req.room_id,
-            "room_id",
-            &self.public_id_codec,
-        )?;
+        let user_id_filter =
+            crate::impls::parse_optional_id_param(&req.user_id, "user_id", &self.public_id_codec)?;
+        let room_id_filter =
+            crate::impls::parse_optional_id_param(&req.room_id, "room_id", &self.public_id_codec)?;
 
         let page = self
             .ban_record_service

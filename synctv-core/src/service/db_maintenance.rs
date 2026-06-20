@@ -133,9 +133,11 @@ impl DatabaseMaintenanceService {
 
     /// Delete old notifications using the shared cleanup retention settings.
     pub async fn run_cleanup_notifications(&self) -> crate::Result<()> {
-        let read_deleted =
-            cleanup_ops::delete_old_read_notifications(&self.pool, self.config.notification_retention_days)
-                .await?;
+        let read_deleted = cleanup_ops::delete_old_read_notifications(
+            &self.pool,
+            self.config.notification_retention_days,
+        )
+        .await?;
         let expired_deleted = cleanup_ops::delete_expired_notifications(
             &self.pool,
             self.config.notification_max_retention_days,

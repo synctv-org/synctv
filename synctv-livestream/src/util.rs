@@ -9,11 +9,7 @@ const MAX_HLS_SEGMENT_NAME_LEN: usize = 256;
 const MAX_HLS_SEGMENT_URL_PART_LEN: usize = 2048;
 
 /// Shared validation logic for stream identifiers and segment names.
-fn validate_identifier_common(
-    value: &str,
-    field: &str,
-    max_len: usize,
-) -> anyhow::Result<()> {
+fn validate_identifier_common(value: &str, field: &str, max_len: usize) -> anyhow::Result<()> {
     if value.is_empty() {
         return Err(anyhow::anyhow!("{field} must not be empty"));
     }
@@ -41,13 +37,7 @@ fn validate_identifier_common(
 /// Validate a stream identifier component before it is used in internal
 /// registry/cache keys.
 pub(crate) fn validate_stream_id_component(component: &str, field: &str) -> anyhow::Result<()> {
-    validate_identifier_common(component, field, MAX_STREAM_ID_COMPONENT_LEN)?;
-    if component.contains(':') {
-        return Err(anyhow::anyhow!(
-            "{field} must not contain ':' because stream keys use ':' as an internal delimiter"
-        ));
-    }
-    Ok(())
+    validate_identifier_common(component, field, MAX_STREAM_ID_COMPONENT_LEN)
 }
 
 /// Validate canonical room/media identifiers used by livestream internals.

@@ -182,7 +182,6 @@ static REGISTER_REMOTE_NODE_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
     )
 });
 
-
 /// Create a failsafe circuit breaker for Redis operations.
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
@@ -1389,7 +1388,6 @@ impl NodeRegistry {
 
         Ok(())
     }
-
 
     /// Unregister a remote node with epoch validation
     ///

@@ -278,12 +278,10 @@ async fn test_file_backend_evict_expired() -> TestResult {
     let evicted = backend.evict_expired().await;
     assert_eq!(evicted, 1);
     assert_eq!(backend.entry_count(), 1);
-    assert!(
-        backend
-            .get("fresh_key_0000000000000000000000000000000000000000000000000000000000")
-            .await
-            .is_some()
-    );
+    assert!(backend
+        .get("fresh_key_0000000000000000000000000000000000000000000000000000000000")
+        .await
+        .is_some());
     Ok(())
 }
 
@@ -344,12 +342,10 @@ async fn test_file_backend_evict_to_size() -> TestResult {
         backend.current_size()
     );
 
-    assert!(
-        backend
-            .get("newest_key_0000000000000000000000000000000000000000000000000000000")
-            .await
-            .is_some()
-    );
+    assert!(backend
+        .get("newest_key_0000000000000000000000000000000000000000000000000000000")
+        .await
+        .is_some());
     Ok(())
 }
 

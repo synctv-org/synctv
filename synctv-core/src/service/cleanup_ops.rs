@@ -17,10 +17,7 @@ use crate::{InternalExt, Result};
 
 /// Delete expired media provider credentials with a buffer that prevents races
 /// with in-flight refreshes. Returns the number of rows deleted.
-pub(super) async fn delete_expired_credentials(
-    pool: &PgPool,
-    buffer_hours: u32,
-) -> Result<u64> {
+pub(super) async fn delete_expired_credentials(pool: &PgPool, buffer_hours: u32) -> Result<u64> {
     if buffer_hours == 0 {
         return Ok(0);
     }

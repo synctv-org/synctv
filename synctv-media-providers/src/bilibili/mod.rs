@@ -20,15 +20,13 @@ pub use client::{
 pub use error::BilibiliError;
 pub use service::{BilibiliInterface, BilibiliLiveDanmakuStream, BilibiliService};
 pub use types::{
-    CodecEntry, DashAudio, DashInfo,
-    DashPgcResp, DashPgcResult, DashVideo, DashVideoData, DashVideoResp, Dimension, DurlInfo,
-    Episode, EpisodeId, EpisodeInfo, EpisodePage, FormatEntry, GetLiveDanmuInfoResp,
-    GetLiveMasterInfoResp, GetLiveStreamResp, LiveDanmuData, LiveDanmuHost, LiveDurl,
-    LiveMasterData, LiveMasterInfo, LivePageData, LiveStreamData, NavData, NavResp, Owner, Page,
-    ParseLivePageResp, PgcUrlResp, PgcUrlResult, PlayUrlContainer,
-    PlayUrlInfoWrapper, PlayerV2Data, PlayerV2InfoResp, QrcodeData,
-    QrcodeResp, Quality, QualityDesc, RoomPlayInfoData, RoomPlayInfoResp, SeasonInfoResp,
-    SeasonResult, Section, SegmentBase, StreamEntry, SubtitleInfo, SubtitleItem, SupportFormat,
-    UgcSeason, UrlInfoEntry, VideoId,
-    VideoPageData, VideoPageInfoResp, VideoUrlData, VideoUrlResp, WbiImg,
+    CodecEntry, DashAudio, DashInfo, DashPgcResp, DashPgcResult, DashVideo, DashVideoData,
+    DashVideoResp, Dimension, DurlInfo, Episode, EpisodeId, EpisodeInfo, EpisodePage, FormatEntry,
+    GetLiveDanmuInfoResp, GetLiveMasterInfoResp, GetLiveStreamResp, LiveDanmuData, LiveDanmuHost,
+    LiveDurl, LiveMasterData, LiveMasterInfo, LivePageData, LiveStreamData, NavData, NavResp,
+    Owner, Page, ParseLivePageResp, PgcUrlResp, PgcUrlResult, PlayUrlContainer, PlayUrlInfoWrapper,
+    PlayerV2Data, PlayerV2InfoResp, QrcodeData, QrcodeResp, Quality, QualityDesc, RoomPlayInfoData,
+    RoomPlayInfoResp, SeasonInfoResp, SeasonResult, Section, SegmentBase, StreamEntry,
+    SubtitleInfo, SubtitleItem, SupportFormat, UgcSeason, UrlInfoEntry, VideoId, VideoPageData,
+    VideoPageInfoResp, VideoUrlData, VideoUrlResp, WbiImg,
 };

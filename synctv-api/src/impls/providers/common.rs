@@ -4,8 +4,8 @@ use synctv_core::models::{
     ProviderInstance, UserProviderCredential,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
-use synctv_core::provider::{ExecutionControl, ProviderAccessService};
 use synctv_core::provider::ProviderError;
+use synctv_core::provider::{ExecutionControl, ProviderAccessService};
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{
     AuditEventParams, AuditService, ProvidersManager, RemoteProviderManager, UserService,

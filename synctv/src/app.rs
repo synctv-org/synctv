@@ -52,8 +52,7 @@ use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, ProviderInvalidationHook,
-    RoomSettingsServiceShutdownHook, SettingsListenHook, ShutdownCoordinator,
-    SimpleShutdownHook,
+    RoomSettingsServiceShutdownHook, SettingsListenHook, ShutdownCoordinator, SimpleShutdownHook,
 };
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.

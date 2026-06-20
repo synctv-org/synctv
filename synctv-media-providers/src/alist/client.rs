@@ -213,9 +213,8 @@ impl AlistClient {
                 let response = check_response(response).await?;
                 let resp: AlistResp<T> = json_with_limit(response).await?;
                 check_alist_code(&resp)?;
-                resp.data.ok_or_else(|| {
-                    AlistError::Parse(format!("Missing data in {ctx} response"))
-                })
+                resp.data
+                    .ok_or_else(|| AlistError::Parse(format!("Missing data in {ctx} response")))
             }
         })
         .await
@@ -239,9 +238,8 @@ impl AlistClient {
                 let response = check_response(response).await?;
                 let resp: AlistResp<T> = json_with_limit(response).await?;
                 check_alist_code(&resp)?;
-                resp.data.ok_or_else(|| {
-                    AlistError::Parse(format!("Missing data in {ctx} response"))
-                })
+                resp.data
+                    .ok_or_else(|| AlistError::Parse(format!("Missing data in {ctx} response")))
             }
         })
         .await

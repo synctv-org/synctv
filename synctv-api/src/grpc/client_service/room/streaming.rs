@@ -7,7 +7,6 @@ use super::super::{
     invalid_argument_status, map_api_error, map_message_stream_join_error,
     map_message_stream_membership_error, realtime_room_access_error, ClientServiceImpl,
 };
-use crate::impls::ApiError;
 use super::RoomService;
 use crate::grpc::client_service::streaming::{
     watch_chat_events_event, watch_chat_pin_events_event, watch_playback_event,
@@ -18,6 +17,7 @@ use crate::impls::messaging::{
     GuestRealtimeIdentity, MessageConcurrencyConfig, MessageSender, RealtimePrincipal,
     StreamMessage, StreamMessageHandler, StreamMessageHandlerConfig, StreamMessageHandlerRuntime,
 };
+use crate::impls::ApiError;
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::*;
 

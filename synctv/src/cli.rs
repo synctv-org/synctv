@@ -6643,7 +6643,8 @@ fn build_get_playback_cli_output(
         for (mode, info) in modes {
             for (index, playback_media) in info.medias.iter().enumerate() {
                 let is_default = mode == &playback.default_mode
-                    && i32::try_from(index).is_ok_and(|index| info.default_media_index == Some(index));
+                    && i32::try_from(index)
+                        .is_ok_and(|index| info.default_media_index == Some(index));
                 let absolute_url = absolutize_cli_url(&playback_media.url, api_base_url.as_deref());
                 let output = PlaybackPullUrlCliOutput {
                     mode: mode.clone(),
@@ -6927,10 +6928,7 @@ fn database_migrate_summary(output: &DatabaseMigrateCliOutput) -> String {
 }
 
 /// Shared helper for formatting database CLI outputs.
-fn database_cli_output_summary(
-    header: &str,
-    output: &impl DatabaseCliOutputFields,
-) -> String {
+fn database_cli_output_summary(header: &str, output: &impl DatabaseCliOutputFields) -> String {
     let mut lines = vec![
         header.to_string(),
         format!("Migration status: {}", output.migration_status()),

@@ -5,8 +5,8 @@ use crate::models::{
     oauth2_provider_type_name_from_code, ReviewRequestId, ReviewStatus, RoomId, SignupMethod,
     UserId,
 };
-use crate::repository::query_builder::escape_ilike;
 use crate::repository::pools::RepoPools;
+use crate::repository::query_builder::escape_ilike;
 use crate::{Error, Result};
 
 fn count_value(value: Option<i64>, query_description: &str) -> Result<i64> {
@@ -284,8 +284,13 @@ impl ReviewRepository {
         reviewed_by: Option<UserId>,
         reason: &str,
     ) -> Result<u64> {
-        Self::reject_user_registration_with_executor(self.pools.primary(), request_id, reviewed_by, reason)
-            .await
+        Self::reject_user_registration_with_executor(
+            self.pools.primary(),
+            request_id,
+            reviewed_by,
+            reason,
+        )
+        .await
     }
 
     pub async fn approve_user_registration_with_executor<'e, E>(

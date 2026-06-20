@@ -23,13 +23,11 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry};
-use crate::service::partitioning::u32_to_i32;
-use crate::{
-    models::ChatAttachment,
-    repository::FileStorageRepository,
-    InternalExt, Result,
+use super::{
+    cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry,
 };
+use crate::service::partitioning::u32_to_i32;
+use crate::{models::ChatAttachment, repository::FileStorageRepository, InternalExt, Result};
 
 const DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
 

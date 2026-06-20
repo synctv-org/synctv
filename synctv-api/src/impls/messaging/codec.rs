@@ -196,7 +196,8 @@ pub(crate) fn room_member_event_to_proto(
         } => {
             let room_id = encode_room(*room_id)?;
             let user_id = encode_user(*target_user_id)?;
-            let validated_username = required_realtime_text(target_username, "target username", 50)?;
+            let validated_username =
+                required_realtime_text(target_username, "target username", 50)?;
             let member = synctv_proto::common::RoomMember {
                 room_id: room_id.clone(),
                 user_id: user_id.clone(),

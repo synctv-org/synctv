@@ -588,7 +588,11 @@ impl RoomService {
             settings_json.clone(),
             version,
         );
-        super::outbox::log_if_no_local_subscribers(subscriber_count, room_id, "Room settings updated");
+        super::outbox::log_if_no_local_subscribers(
+            subscriber_count,
+            room_id,
+            "Room settings updated",
+        );
 
         Ok(crate::cache::RoomSettingsSnapshot {
             settings: updated_settings.clone(),

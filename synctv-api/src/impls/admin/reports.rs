@@ -24,11 +24,8 @@ impl AdminApiImpl {
             "reporter_user_id",
             &self.public_id_codec,
         )?;
-        let room_id = crate::impls::parse_optional_id_param(
-            &req.room_id,
-            "room_id",
-            &self.public_id_codec,
-        )?;
+        let room_id =
+            crate::impls::parse_optional_id_param(&req.room_id, "room_id", &self.public_id_codec)?;
         let target_room_id = crate::impls::parse_optional_id_param(
             &req.target_room_id,
             "target_room_id",

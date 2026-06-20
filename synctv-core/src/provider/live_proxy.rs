@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use serde_json::{json, Value};
 use std::time::Duration;
+use synctv_common::ssrf::SsrfTargetError;
 
 /// `LiveProxy` `MediaProvider`
 ///
@@ -70,20 +71,30 @@ impl LiveProxyProvider {
         let host = parsed_url.host_str().ok_or_else(|| {
             ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
         })?;
-        if guard.is_host_blocked(host) {
-            return Err(ProviderError::InvalidConfig(format!(
-                "LiveProxy source host '{host}' is blocked by SSRF policy"
-            )));
-        }
+        let default_port = if is_rtmp {
+            1935
+        } else if parsed_url.scheme() == "https" {
+            443
+        } else {
+            80
+        };
+        let port = parsed_url.port().unwrap_or(default_port);
 
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if guard.is_ip_blocked(&ip) {
-                return Err(ProviderError::InvalidConfig(format!(
+        guard
+            .validate_url_target_with_default_port(host, port, default_port)
+            .map_err(|error| match error {
+                SsrfTargetError::BlockedHost(host) => ProviderError::InvalidConfig(format!(
+                    "LiveProxy source host '{host}' is blocked by SSRF policy"
+                )),
+                SsrfTargetError::BlockedIp(ip) => ProviderError::InvalidConfig(format!(
                     "LiveProxy source IP '{ip}' is blocked by SSRF policy"
-                )));
-            }
-        } else if is_rtmp && guard.dns_resolver().is_some() {
-            let port = parsed_url.port().unwrap_or(1935);
+                )),
+                SsrfTargetError::BlockedPort { port } => ProviderError::InvalidConfig(format!(
+                    "LiveProxy source port '{port}' is blocked by SSRF policy"
+                )),
+            })?;
+
+        if host.parse::<std::net::IpAddr>().is_err() && is_rtmp && guard.dns_resolver().is_some() {
             let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
                 .await
                 .map_err(|error| {
@@ -99,7 +110,10 @@ impl LiveProxyProvider {
                 )));
             }
 
-            if let Some(blocked_addr) = addrs.iter().find(|addr| guard.is_ip_blocked(&addr.ip())) {
+            if let Some(blocked_addr) = addrs
+                .iter()
+                .find(|addr| guard.is_ip_blocked_for_host(host, &addr.ip()))
+            {
                 return Err(ProviderError::InvalidConfig(format!(
                     "LiveProxy RTMP source host '{host}' resolved to blocked IP '{}'",
                     blocked_addr.ip()
@@ -358,5 +372,38 @@ impl LiveProxyProvider {
             public_id_codec,
             "LiveProxy",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn validate_live_source_url_allows_custom_port_for_allowed_host() {
+        let guard = synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("media.internal".to_string())
+            .build();
+
+        LiveProxyProvider::validate_live_source_url("http://media.internal:18000/live.flv", &guard)
+            .await
+            .expect("allowed host custom port should pass LiveProxy validation");
+    }
+
+    #[tokio::test]
+    async fn validate_live_source_url_blocks_custom_port_for_regular_host() {
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+
+        let error = LiveProxyProvider::validate_live_source_url(
+            "http://public.example:18000/live.flv",
+            &guard,
+        )
+        .await
+        .expect_err("regular host custom port should fail LiveProxy validation");
+
+        assert!(
+            matches!(error, ProviderError::InvalidConfig(ref message) if message.contains("port '18000'")),
+            "unexpected error: {error}"
+        );
     }
 }

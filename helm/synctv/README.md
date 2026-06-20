@@ -249,6 +249,34 @@ Important transport defaults:
 - `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
 - `config.fileStorage.backends.<name>.database.compression=zstd` controls PostgreSQL `file_blob_parts` compression for database file-storage backends; `compressionMinSizeBytes` gates small payloads and `compressionMinSavingsPercent=10` stores raw bytes when compression saves less than 10%. Database file storage uses permanent segments and serves HTTP Range from those segments.
 - `config.fileStorage.backends.<name>.s3.publicBaseUrl` is required for S3 file-storage backends because clients receive readable file URLs after upload or ownership proof validation. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
+- For S3 file-storage credentials, mount a Kubernetes Secret and set `accessKeyIdFile` / `secretAccessKeyFile` so the generated ConfigMap stores file paths:
+
+```yaml
+config:
+  fileStorage:
+    defaultBackend: s3_public
+    backends:
+      s3_public:
+        type: s3
+        s3:
+          endpoint: https://s3.example.com
+          bucket: synctv-files
+          region: auto
+          basePath: files/
+          publicBaseUrl: https://cdn.example.com/files
+          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+
+extraVolumes:
+  - name: file-storage-s3
+    secret:
+      secretName: synctv-file-storage-s3
+extraVolumeMounts:
+  - name: file-storage-s3
+    mountPath: /run/secrets/file-storage-s3
+    readOnly: true
+```
+
 - To expose the built-in STUN server, set `stunService.enabled=true`, use `stunService.type=LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to the public client-reachable address.
 - `config.redis.responseTimeoutSeconds=5` bounds how long a Redis command can wait for a response.
 - `config.redis.pipelineBufferSize=512` controls the Redis connection manager pipeline buffer for bursty short-command workloads.

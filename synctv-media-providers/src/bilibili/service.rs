@@ -686,7 +686,7 @@ mod tests {
     async fn test_service_reuses_shared_wbi_state(
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let service = BilibiliService::new()?;
-        service.wbi_state.reset_for_tests().await;
+        service.wbi_state.reset_for_tests();
         service.wbi_state.set_wbi_key("shared-key".to_string());
 
         let client_a = super::client_from_cookies_and_state(

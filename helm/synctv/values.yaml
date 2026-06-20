@@ -475,8 +475,9 @@ config:
   ## object bytes as permanent PostgreSQL file_blob_parts segments and support
   ## HTTP Range reads; compression accepts none, lz4, zstd. S3 backends use
   ## native multipart upload URLs for resumable direct uploads.
-  ## S3 backend accessKeyId / secretAccessKey are rendered into the generated
-  ## config file, so prefer existingConfigMap for externally managed S3 secrets.
+  ## S3 backend credentials can be read from Secret-mounted files with
+  ## accessKeyIdFile / secretAccessKeyFile. Inline accessKeyId / secretAccessKey
+  ## are still supported and render into the generated config file.
   fileStorage:
     defaultBackend: "disabled"
     chatAttachmentsBackend: ""
@@ -497,8 +498,8 @@ config:
     #     type: "s3"
     #     s3:
     #       endpoint: "https://s3.example.com"
-    #       accessKeyId: "access-key"
-    #       secretAccessKey: "secret-key"
+    #       accessKeyIdFile: "/run/secrets/file-storage-s3/access_key_id"
+    #       secretAccessKeyFile: "/run/secrets/file-storage-s3/secret_access_key"
     #       bucket: "synctv-files"
     #       region: "auto"
     #       basePath: "files/"
@@ -854,8 +855,19 @@ networkPolicy:
 
 ## Extra Environment Variables
 extraEnvVars: []
-  # - name: AWS_ACCESS_KEY_ID
-  #   value: "your-access-key"
+  # - name: RUST_LOG
+  #   value: "info"
+
+## Extra volumes and mounts for externally managed files, such as Secret-backed
+## file-storage S3 credentials referenced by accessKeyIdFile/secretAccessKeyFile.
+extraVolumes: []
+  # - name: file-storage-s3
+  #   secret:
+  #     secretName: synctv-file-storage-s3
+extraVolumeMounts: []
+  # - name: file-storage-s3
+  #   mountPath: /run/secrets/file-storage-s3
+  #   readOnly: true
 
 ## Existing Secret/ConfigMap (if you manage secrets externally)
 existingSecret: ""

@@ -13,7 +13,9 @@ use tokio::sync::Mutex;
 
 use super::registry::PublisherInfo;
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
-use crate::util::{validate_stream_id_component, validate_stream_ids};
+use crate::util::{
+    validate_publisher_api_address, validate_stream_id_component, validate_stream_ids,
+};
 
 /// In-memory stream registry for standalone mode without Redis.
 ///
@@ -72,6 +74,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
     ) -> Result<bool> {
         use std::collections::hash_map::Entry;
         validate_stream_ids(room_id, media_id)?;
+        validate_publisher_api_address(api_address, node_id, room_id, media_id)?;
         let mut state = self.state.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
@@ -351,5 +354,16 @@ mod tests {
             .await
             .expect_err("path-like media id must be rejected");
         assert!(error.to_string().contains("media_id"));
+    }
+
+    #[tokio::test]
+    async fn in_memory_registry_rejects_empty_api_address() {
+        let registry = InMemoryStreamRegistry::new();
+        let error = registry
+            .try_register_publisher("room1", "media1", "node1", "user1", " ")
+            .await
+            .expect_err("empty api_address must be rejected");
+
+        assert!(error.to_string().contains("api_address"));
     }
 }

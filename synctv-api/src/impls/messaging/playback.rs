@@ -142,13 +142,12 @@ impl StreamMessageHandler {
                 | synctv_proto::client::PlaybackUpdateType::Seek)
         ) && position.is_some()
             && speed.is_none();
-        if is_progress_update {
+        if let (true, Some(position)) = (is_progress_update, position) {
             let current_state = playback_service
                 .get_state(&self.room_id)
                 .await
                 .map_err(|e| e.to_string())?;
             if current_state.is_playing && playing.unwrap_or(true) {
-                let position = position.expect("checked by is_progress_update");
                 let elapsed_ms = chrono::Utc::now()
                     .signed_duration_since(current_state.updated_at)
                     .num_milliseconds();
@@ -215,11 +214,9 @@ impl StreamMessageHandler {
             Err(error) => return Err(error.to_string()),
         };
         prepared_fanout.publish_after_outbox_commit();
-        if is_progress_update {
-            if let Some(position) = position {
-                let mut guard = self.last_progress_write.lock().await;
-                *guard = Some((position, tokio::time::Instant::now()));
-            }
+        if let (true, Some(position)) = (is_progress_update, position) {
+            let mut guard = self.last_progress_write.lock().await;
+            *guard = Some((position, tokio::time::Instant::now()));
         }
         self.playback_service
             .handle_provider_lifecycle_transition(Some(&previous_state), &state)

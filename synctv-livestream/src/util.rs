@@ -47,6 +47,20 @@ pub(crate) fn validate_stream_ids(room_id: &str, media_id: &str) -> anyhow::Resu
     Ok(())
 }
 
+pub(crate) fn validate_publisher_api_address(
+    api_address: &str,
+    node_id: &str,
+    room_id: &str,
+    media_id: &str,
+) -> anyhow::Result<()> {
+    if api_address.trim().is_empty() {
+        return Err(anyhow::anyhow!(
+            "Cannot register publisher for node={node_id} with empty api_address (room={room_id}, media={media_id})"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a HLS segment name before it is sent over gRPC or used in cache/storage keys.
 pub fn validate_hls_segment_name(segment_name: &str) -> anyhow::Result<()> {
     validate_identifier_common(segment_name, "segment_name", MAX_HLS_SEGMENT_NAME_LEN)
@@ -154,6 +168,17 @@ mod tests {
         assert!(validate_stream_ids("room", "media:1").is_err());
         assert!(validate_stream_ids("room/1", "media").is_err());
         assert!(validate_stream_ids("room", "../media").is_err());
+    }
+
+    #[test]
+    fn validate_publisher_api_address_rejects_empty_values() {
+        assert!(
+            validate_publisher_api_address("127.0.0.1:50051", "node1", "room1", "media1").is_ok()
+        );
+
+        let error = validate_publisher_api_address("  ", "node1", "room1", "media1")
+            .expect_err("empty api_address must be rejected");
+        assert!(error.to_string().contains("api_address"));
     }
 
     #[test]

@@ -67,6 +67,24 @@ pub(crate) fn validate_required(field_name: &str, value: &str) -> Result<(), Sta
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
+pub(crate) fn validate_provider_auth(host: &str, token: &str) -> Result<(), Status> {
+    validate_provider_grpc_host(host)?;
+    validate_required("token", token)?;
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+pub(crate) fn validate_provider_user_auth(
+    host: &str,
+    token: &str,
+    user_id: &str,
+) -> Result<(), Status> {
+    validate_provider_auth(host, token)?;
+    validate_required("user_id", user_id)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,6 +182,21 @@ mod tests {
     fn required_non_empty() {
         assert!(validate_required("username", "alice").is_ok());
         assert!(validate_required("token", "abc123").is_ok());
+    }
+
+    #[test]
+    fn provider_auth_helpers_validate_common_fields() {
+        assert!(validate_provider_auth("https://example.com", "token").is_ok());
+        assert!(validate_provider_user_auth("https://example.com", "token", "user").is_ok());
+
+        let status = validate_provider_auth("https://example.com", "").expect_err("token required");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("token"));
+
+        let status = validate_provider_user_auth("https://example.com", "token", "")
+            .expect_err("user_id required");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("user_id"));
     }
 
     #[test]

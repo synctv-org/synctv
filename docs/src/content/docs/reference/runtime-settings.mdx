@@ -96,7 +96,7 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 | `user.enable_email_signup` | bool | `false` | 是否允许邮箱注册，注册确认时设置本地密码凭据 |
 | `user.email_signup_need_review` | bool | `false` | 邮件注册是否需要审核 |
 | `user.enable_webauthn_signup` | bool | `false` | 是否允许 WebAuthn/passkey 作为初始账号注册方式；登录后绑定 passkey 不属于注册 |
-| `user.webauthn_signup_need_review` | bool | `false` | WebAuthn 注册是否需要审核。当前审核表不存 WebAuthn 临时凭据，启用后会拒绝新的 WebAuthn 注册 |
+| `user.webauthn_signup_need_review` | bool | `false` | WebAuthn 注册是否需要审核；审核队列会保存待审批 passkey，审批通过后创建账号及其 WebAuthn 凭据 |
 | `user.enable_guest` | bool | `true` | 是否允许游客能力 |
 
 注册相关开关默认全部关闭。生产环境应只打开明确需要的注册入口，并分别决定是否需要审核。

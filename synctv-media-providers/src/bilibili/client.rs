@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::{RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
@@ -218,12 +219,32 @@ const WBI_MAX_CONSECUTIVE_FAILURES: usize = 3;
 const WBI_KEY_TTL: Duration = Duration::from_mins(30);
 
 impl WbiState {
+    fn read_key_cache(&self) -> RwLockReadGuard<'_, Option<WbiKeys>> {
+        match self.key_cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("WBI key cache read lock was poisoned; recovering cached value");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn write_key_cache(&self) -> RwLockWriteGuard<'_, Option<WbiKeys>> {
+        match self.key_cache.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("WBI key cache write lock was poisoned; recovering cached value");
+                poisoned.into_inner()
+            }
+        }
+    }
+
     pub(crate) fn get_valid_wbi_key(&self) -> Option<String> {
         self.get_valid_wbi_key_newer_than(0)
     }
 
     fn get_valid_wbi_key_newer_than(&self, min_generation: u64) -> Option<String> {
-        let guard = self.key_cache.read().expect("WBI key cache lock poisoned");
+        let guard = self.read_key_cache();
         guard
             .as_ref()
             .filter(|k| k.is_valid() && k.generation > min_generation)
@@ -231,7 +252,7 @@ impl WbiState {
     }
 
     pub(crate) fn set_wbi_key(&self, mixin_key: String) {
-        let mut guard = self.key_cache.write().expect("WBI key cache lock poisoned");
+        let mut guard = self.write_key_cache();
         let generation = self.key_generation.fetch_add(1, Ordering::AcqRel) + 1;
         *guard = Some(WbiKeys {
             mixin_key,
@@ -241,7 +262,7 @@ impl WbiState {
     }
 
     fn current_key_generation(&self) -> u64 {
-        let guard = self.key_cache.read().expect("WBI key cache lock poisoned");
+        let guard = self.read_key_cache();
         guard.as_ref().map_or(0, |key| key.generation)
     }
 
@@ -258,8 +279,8 @@ impl WbiState {
     }
 
     #[cfg(test)]
-    pub(crate) async fn reset_for_tests(&self) {
-        *self.key_cache.write().expect("WBI key cache lock poisoned") = None;
+    pub(crate) fn reset_for_tests(&self) {
+        *self.write_key_cache() = None;
         self.key_generation.store(0, Ordering::Release);
         self.consecutive_failures.store(0, Ordering::Release);
         self.api_call_count.store(0, Ordering::Relaxed);

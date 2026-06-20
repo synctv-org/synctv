@@ -133,6 +133,34 @@ Why split them:
 
 `config.fileStorage.backends.<name>.database.compression` controls PostgreSQL `file_blob_parts` compression for database file-storage backends. It defaults to `zstd`; `compressionMinSizeBytes` defaults to `4096`, and `compressionMinSavingsPercent` defaults to `10`, so low-value compression stores raw bytes. Database file storage uses permanent segments and serves HTTP Range from those segments. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
 
+For S3 file-storage credentials, mount a Kubernetes Secret and set Helm camelCase values `accessKeyIdFile` / `secretAccessKeyFile`. The generated SyncTV YAML stores snake_case `access_key_id_file` / `secret_access_key_file` paths and reads the secret files at startup.
+
+```yaml
+config:
+  fileStorage:
+    defaultBackend: s3_public
+    backends:
+      s3_public:
+        type: s3
+        s3:
+          endpoint: https://s3.example.com
+          bucket: synctv-files
+          region: auto
+          basePath: files/
+          publicBaseUrl: https://cdn.example.com/files
+          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+
+extraVolumes:
+  - name: file-storage-s3
+    secret:
+      secretName: synctv-file-storage-s3
+extraVolumeMounts:
+  - name: file-storage-s3
+    mountPath: /run/secrets/file-storage-s3
+    readOnly: true
+```
+
 `stunService.enabled` defaults to `false`. Enable it only when you expose the built-in STUN listener through a client-reachable `LoadBalancer` or `NodePort`, and set `config.webrtc.stunExternalAddr` to that public address. A `ClusterIP` STUN Service is only reachable inside the cluster and should not be advertised to public WebRTC clients.
 
 ## Ingress
@@ -273,7 +301,7 @@ redis:
 
 External PostgreSQL requires `SYNCTV_DATABASE_PASSWORD` through `existingSecret` or `secrets.database.password`. External Redis password injection is optional; provide `SYNCTV_REDIS_PASSWORD` only when the external Redis requires authentication.
 
-When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth/media-provider HTTP requires `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
+When `networkPolicy.enabled=true`, external PostgreSQL/Redis and outbound HTTP/HTTPS egress use `ipBlock` CIDRs instead of chart-managed Pod labels. These rules are fail-closed by default: external PostgreSQL or Redis mode requires `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`, or `networkPolicy.allowAnyExternalDatabaseEgress=true`; outbound OAuth, media-provider HTTP, HLS OSS, and S3-compatible object storage endpoints require `networkPolicy.externalHttpCIDRs` or `networkPolicy.allowAnyExternalHttpEgress=true`.
 
 Application Services, the PDB, and the app NetworkPolicy select only pods with `app.kubernetes.io/component=app`. Chart-managed PostgreSQL and Redis keep their own component labels and receive dependency-specific ingress policies when NetworkPolicy ingress isolation is enabled, so enabling NetworkPolicy does not route API traffic to dependency pods or isolate the dependencies from SyncTV itself.
 

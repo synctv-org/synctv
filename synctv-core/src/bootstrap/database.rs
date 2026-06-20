@@ -7,7 +7,7 @@ use sqlx::{Executor, PgPool, Postgres};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::Level;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
@@ -335,39 +335,7 @@ pub async fn acquire_unbounded_ddl_connection(pool: &PgPool) -> Result<PoolConne
 /// 2. Manual fallback for malformed URLs
 /// 3. Safe placeholders for completely invalid URLs
 fn mask_database_url(url: &str) -> String {
-    // Early validation: check for URL scheme
-    if !url.contains("://") {
-        return "<url-missing-scheme>".to_string();
-    }
-
-    if let Ok(mut parsed) = url::Url::parse(url) {
-        if !parsed.username().is_empty() {
-            if let Err(()) = parsed.set_username("***") {
-                debug!("Database URL username could not be masked with URL parser");
-                return mask_database_url_manually(url);
-            }
-        }
-        if parsed.password().is_some() {
-            if let Err(()) = parsed.set_password(Some("***")) {
-                debug!("Database URL password could not be masked with URL parser");
-                return mask_database_url_manually(url);
-            }
-        }
-        parsed.to_string()
-    } else {
-        mask_database_url_manually(url)
-    }
-}
-
-fn mask_database_url_manually(url: &str) -> String {
-    if let Some(at_pos) = url.rfind('@') {
-        if let Some(scheme_end) = url.find("://") {
-            let scheme = &url[..scheme_end + 3];
-            let host_part = &url[at_pos..];
-            return format!("{scheme}***:***{host_part}");
-        }
-    }
-    "<invalid-url>".to_string()
+    synctv_common::redaction::mask_url_credentials(url, "<url-missing-scheme>", "<invalid-url>")
 }
 
 #[cfg(test)]

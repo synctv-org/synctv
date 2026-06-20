@@ -982,38 +982,19 @@ impl MediaService {
                 Ok(Some(result))
             }
             (None, Some(playlist_id)) => {
-                let playlist = self
-                    .playlist_repo
-                    .get_by_room_and_id(&request.room_id, &playlist_id)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-                if !playlist.is_dynamic() {
-                    return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-                }
-
-                let (provider_name, provider) =
-                    self.get_dynamic_playlist_provider(&playlist).await?;
-                self.ensure_provider_credential_repo(&provider_name)?;
-                let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-                    Error::InvalidInput(format!(
-                        "Provider {provider_name} does not support dynamic folders"
-                    ))
-                })?;
-                let ctx = self.build_provider_context(
-                    provider_name.as_str(),
-                    None,
-                    &request.room_id,
-                    playlist.creator_id.as_ref(),
-                    None,
-                    playlist.provider_instance_name.as_deref(),
-                );
-                let Some(item) = dynamic_folder
-                    .resolve_item(&ctx, &playlist, request.target)
+                let prepared = self
+                    .prepare_dynamic_playlist(&request.room_id, &playlist_id)
+                    .await?;
+                let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
+                let Some(item) = prepared
+                    .dynamic_folder()?
+                    .resolve_item(&ctx, &prepared.playlist, request.target)
                     .await?
                 else {
                     return Ok(None);
                 };
-                let result = provider
+                let result = prepared
+                    .provider
                     .generate_playback(&ctx, &item.source_config)
                     .await?;
                 Ok(Some(result))

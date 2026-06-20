@@ -5,6 +5,7 @@ use synctv_xiu::streamhub::{
         FrameData, FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
         StreamHubEventSender,
     },
+    send_event_with_backpressure_timeout_for,
     stream::StreamIdentifier,
     utils::Uuid,
 };
@@ -18,8 +19,8 @@ use super::connection_pool::GrpcConnectionPool;
 use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
 
 const STREAM_MESSAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const STREAM_HUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn timeout_stream_message<T, E>(
     timeout: std::time::Duration,
@@ -332,18 +333,13 @@ impl GrpcStreamPuller {
             result_sender: event_result_sender,
         };
 
-        tokio::time::timeout(
-            STREAM_HUB_EVENT_SEND_TIMEOUT,
-            self.stream_hub_event_sender.send(publish_event),
+        send_event_with_backpressure_timeout_for(
+            &self.stream_hub_event_sender,
+            publish_event,
+            STREAMHUB_EVENT_SEND_TIMEOUT,
         )
         .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Timed out waiting {}s to publish relay stream into StreamHub",
-                STREAM_HUB_EVENT_SEND_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|_| anyhow::anyhow!("Failed to send publish event"))?;
+        .map_err(|error| anyhow::anyhow!("Failed to send publish event: {error}"))?;
 
         let result = event_result_receiver
             .await
@@ -367,11 +363,17 @@ impl GrpcStreamPuller {
 
         let unpublish_event = StreamHubEvent::UnPublish { identifier };
 
-        if let Err(e) = self.stream_hub_event_sender.send(unpublish_event).await {
+        if let Err(e) = send_event_with_backpressure_timeout_for(
+            &self.stream_hub_event_sender,
+            unpublish_event,
+            STREAMHUB_EVENT_SEND_TIMEOUT,
+        )
+        .await
+        {
             warn!(
                 room_id = %self.room_id,
                 media_id = %self.media_id,
-                "Failed to send unpublish event to StreamHub (channel closed): {}",
+                "Failed to send unpublish event to StreamHub: {}",
                 e
             );
         }
@@ -608,11 +610,9 @@ mod tests {
             GrpcConnectionPool::with_defaults(),
         );
 
-        let result = tokio::time::timeout(
-            STREAM_HUB_EVENT_SEND_TIMEOUT,
-            puller.publish_to_local_stream_hub(),
-        )
-        .await?;
+        let result =
+            tokio::time::timeout(Duration::from_secs(2), puller.publish_to_local_stream_hub())
+                .await?;
 
         assert!(
             result.is_ok(),

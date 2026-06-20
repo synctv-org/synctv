@@ -8,8 +8,10 @@ mod transceiver;
 pub mod utils;
 
 pub use reliability::{
-    send_event_with_backpressure_timeout, spawn_event_delivery_with_backpressure_timeout,
-    subscribe_with_rollback_on_timeout, SubscribeWithRollbackError,
+    send_event_with_backpressure_timeout, send_event_with_backpressure_timeout_for,
+    spawn_event_delivery_with_backpressure_timeout,
+    spawn_event_delivery_with_backpressure_timeout_for, subscribe_with_rollback_on_timeout,
+    SubscribeWithRollbackError,
 };
 #[cfg(test)]
 use transceiver::ReceiveEventLoopContext;

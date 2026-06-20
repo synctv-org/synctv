@@ -1,17 +1,62 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, UserId},
-    provider::{DirectoryItem, DynamicListQuery},
+    models::{MediaId, Playlist, PlaylistId, RoomId, UserId},
+    provider::{
+        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, MediaProvider,
+        NextPlayItem, ProviderContext,
+    },
     service::media::MediaService,
     Error, Result,
 };
 
+pub(super) struct PreparedDynamicPlaylist {
+    pub(super) playlist: Playlist,
+    pub(super) provider_name: String,
+    pub(super) provider: Arc<dyn MediaProvider>,
+}
+
+impl PreparedDynamicPlaylist {
+    pub(super) fn dynamic_folder(&self) -> Result<&dyn DynamicFolder> {
+        self.provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {} does not support dynamic folders",
+                self.provider_name
+            ))
+        })
+    }
+}
+
 impl MediaService {
+    pub(super) async fn prepare_dynamic_playlist(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+    ) -> Result<PreparedDynamicPlaylist> {
+        let playlist = self
+            .playlist_repo
+            .get_by_room_and_id(room_id, playlist_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+
+        if !playlist.is_dynamic() {
+            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
+        }
+
+        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
+        self.ensure_provider_credential_repo(&provider_name)?;
+
+        Ok(PreparedDynamicPlaylist {
+            playlist,
+            provider_name,
+            provider,
+        })
+    }
+
     pub(super) async fn get_dynamic_playlist_provider(
         &self,
-        playlist: &crate::models::Playlist,
-    ) -> Result<(String, Arc<dyn crate::provider::MediaProvider>)> {
+        playlist: &Playlist,
+    ) -> Result<(String, Arc<dyn MediaProvider>)> {
         let provider_name = dynamic_playlist_source_provider(playlist)?.to_string();
 
         let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
@@ -31,6 +76,28 @@ impl MediaService {
         Ok((provider_name, provider))
     }
 
+    pub(super) fn dynamic_playlist_context<'a>(
+        &'a self,
+        prepared: &'a PreparedDynamicPlaylist,
+        user_id: Option<&'a UserId>,
+        fallback_credential_owner_id: Option<&'a UserId>,
+        public_credential_owner_id: Option<&'a str>,
+    ) -> ProviderContext<'a> {
+        let credential_owner_id = prepared
+            .playlist
+            .creator_id
+            .as_ref()
+            .or(fallback_credential_owner_id);
+        self.build_provider_context(
+            prepared.provider_name.as_str(),
+            user_id,
+            &prepared.playlist.room_id,
+            credential_owner_id,
+            public_credential_owner_id,
+            prepared.playlist.provider_instance_name.as_deref(),
+        )
+    }
+
     pub async fn admin_list_dynamic_playlist_items(
         &self,
         room_id: RoomId,
@@ -40,35 +107,17 @@ impl MediaService {
         query: DynamicListQuery,
         public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
+        let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
+        let ctx = self.dynamic_playlist_context(
+            &prepared,
             Some(&admin_user_id),
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
+            Some(&admin_user_id),
             public_credential_owner_id,
-            playlist.provider_instance_name.as_deref(),
         );
 
-        dynamic_folder
-            .list_playlist(&ctx, &playlist, target, query)
+        prepared
+            .dynamic_folder()?
+            .list_playlist(&ctx, &prepared.playlist, target, query)
             .await
             .map_err(Error::from)
     }
@@ -79,36 +128,18 @@ impl MediaService {
         admin_user_id: UserId,
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
-    ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
+    ) -> Result<Vec<DynamicBrowsePathSegment>> {
+        let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
+        let ctx = self.dynamic_playlist_context(
+            &prepared,
             Some(&admin_user_id),
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&admin_user_id)),
+            Some(&admin_user_id),
             None,
-            playlist.provider_instance_name.as_deref(),
         );
 
-        dynamic_folder
-            .browse_path(&ctx, &playlist, target)
+        prepared
+            .dynamic_folder()?
+            .browse_path(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
     }
@@ -130,36 +161,17 @@ impl MediaService {
             )
             .await?;
 
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
+        let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
+        let ctx = self.dynamic_playlist_context(
+            &prepared,
             Some(&user_id),
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
+            Some(&user_id),
             public_credential_owner_id,
-            playlist.provider_instance_name.as_deref(),
         );
 
-        dynamic_folder
-            .list_playlist(&ctx, &playlist, target, query)
+        prepared
+            .dynamic_folder()?
+            .list_playlist(&ctx, &prepared.playlist, target, query)
             .await
             .map_err(Error::from)
     }
@@ -170,37 +182,13 @@ impl MediaService {
         user_id: UserId,
         playlist_id: &PlaylistId,
         target: Option<&[u8]>,
-    ) -> Result<Vec<crate::provider::DynamicBrowsePathSegment>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+    ) -> Result<Vec<DynamicBrowsePathSegment>> {
+        let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
 
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
-            Some(&user_id),
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
-            None,
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .browse_path(&ctx, &playlist, target)
+        prepared
+            .dynamic_folder()?
+            .browse_path(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
     }
@@ -211,37 +199,13 @@ impl MediaService {
         user_id: UserId,
         playlist_id: &PlaylistId,
         target: &[u8],
-    ) -> Result<Option<crate::provider::NextPlayItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(&room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+    ) -> Result<Option<NextPlayItem>> {
+        let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
 
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
-
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
-            Some(&user_id),
-            &room_id,
-            playlist.creator_id.as_ref().or(Some(&user_id)),
-            None,
-            playlist.provider_instance_name.as_deref(),
-        );
-
-        dynamic_folder
-            .resolve_item(&ctx, &playlist, target)
+        prepared
+            .dynamic_folder()?
+            .resolve_item(&ctx, &prepared.playlist, target)
             .await
             .map_err(Error::from)
     }
@@ -252,59 +216,42 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: &[u8],
         play_mode: crate::models::PlayMode,
-    ) -> Result<Option<crate::provider::NextPlayItem>> {
-        let playlist = self
-            .playlist_repo
-            .get_by_room_and_id(room_id, playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
-
-        if !playlist.is_dynamic() {
-            return Err(Error::InvalidInput("Playlist is not dynamic".to_string()));
-        }
-
-        let (provider_name, provider) = self.get_dynamic_playlist_provider(&playlist).await?;
-        self.ensure_provider_credential_repo(&provider_name)?;
-
-        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "Provider {provider_name} does not support dynamic folders"
-            ))
-        })?;
+    ) -> Result<Option<NextPlayItem>> {
+        let prepared = self.prepare_dynamic_playlist(room_id, playlist_id).await?;
         let current_dynamic_media = crate::models::Media {
             id: MediaId::new(),
-            playlist_id: Some(playlist.id),
+            playlist_id: Some(prepared.playlist.id),
             room_id: *room_id,
-            creator_id: playlist.creator_id,
+            creator_id: prepared.playlist.creator_id,
             name: format!("dynamic:{playlist_id}"),
             description: String::new(),
             position: 0.0,
-            source_provider: provider_name.clone(),
+            source_provider: prepared.provider_name.clone(),
             source_config: serde_json::Value::Null,
-            provider_instance_name: playlist.provider_instance_name.clone(),
+            provider_instance_name: prepared.playlist.provider_instance_name.clone(),
             cover_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
         };
 
-        let ctx = self.build_provider_context(
-            provider_name.as_str(),
-            None,
-            room_id,
-            playlist.creator_id.as_ref(),
-            None,
-            current_dynamic_media.provider_instance_name.as_deref(),
-        );
+        let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
 
-        dynamic_folder
-            .next(&ctx, &playlist, &current_dynamic_media, target, play_mode)
+        prepared
+            .dynamic_folder()?
+            .next(
+                &ctx,
+                &prepared.playlist,
+                &current_dynamic_media,
+                target,
+                play_mode,
+            )
             .await
             .map_err(Error::from)
     }
 }
 
-fn dynamic_playlist_source_provider(playlist: &crate::models::Playlist) -> Result<&str> {
+fn dynamic_playlist_source_provider(playlist: &Playlist) -> Result<&str> {
     let provider = playlist
         .source_provider
         .as_deref()

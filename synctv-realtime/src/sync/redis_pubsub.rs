@@ -128,6 +128,15 @@ enum SelectResult {
     StreamEnded,
 }
 
+fn remove_successfully_unsubscribed_rooms(
+    subscribed_rooms: &mut HashSet<RoomId>,
+    successfully_unsubscribed: &[RoomId],
+) {
+    for room_id in successfully_unsubscribed {
+        subscribed_rooms.remove(room_id);
+    }
+}
+
 /// Redis Pub/Sub service for cross-node event synchronization
 ///
 /// This service enables multi-replica deployments by:
@@ -1657,8 +1666,15 @@ impl RedisPubSub {
             }
         }
 
-        // Unsubscribe from deactivated rooms
-        for room_id in subscribed_rooms.difference(&active_rooms) {
+        // Unsubscribe from deactivated rooms. Keep failed unsubscribes tracked
+        // locally so the next resync can retry instead of forgetting the live
+        // Redis subscription.
+        let stale_rooms: Vec<RoomId> = subscribed_rooms
+            .difference(&active_rooms)
+            .copied()
+            .collect();
+        let mut successfully_unsubscribed = Vec::new();
+        for room_id in stale_rooms {
             let channel = self.room_pubsub_channel(room_id);
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -1669,15 +1685,14 @@ impl RedisPubSub {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
                     stream_cursors.remove(&self.room_stream_key(room_id));
+                    successfully_unsubscribed.push(room_id);
                 }
                 _ => {
                     warn!(room_id = %room_id, "Re-sync: failed to unsubscribe from room channel");
                 }
             }
         }
-
-        // Update subscribed set to match active rooms
-        *subscribed_rooms = active_rooms;
+        remove_successfully_unsubscribed_rooms(subscribed_rooms, &successfully_unsubscribed);
 
         info!(
             subscribed_rooms = subscribed_rooms.len(),

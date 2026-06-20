@@ -495,11 +495,12 @@ impl StreamRelayServiceImpl {
             info: sub_info,
         };
 
-        if let Err(e) = event_sender.send(unsubscribe_event).await {
+        if let Err(e) = send_event_with_backpressure_timeout(&event_sender, unsubscribe_event).await
+        {
             warn!(
                 room_id = %room_id,
                 media_id = %media_id,
-                "Failed to send unsubscribe event to StreamHub (channel closed): {}",
+                "Failed to send unsubscribe event to StreamHub: {}",
                 e
             );
         }

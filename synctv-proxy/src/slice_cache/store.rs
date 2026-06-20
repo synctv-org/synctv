@@ -50,7 +50,7 @@ pub(super) fn cleanup_stale_resource_meta(
     }
 
     let mut oldest_candidates = BinaryHeap::with_capacity(target_removals);
-    for entry in meta.iter() {
+    for entry in meta {
         let candidate = MetaEvictionCandidate {
             key: entry.key().clone(),
             last_accessed: entry.value().last_accessed,
@@ -526,6 +526,7 @@ impl SliceCache {
             } => {
                 let fb =
                     super::backend::file::FileBackend::new(cache_dir.clone(), *dir_levels).await?;
+                fb.load_index(config.stale_max_age).await?;
                 CacheBackend::File(fb)
             }
         };

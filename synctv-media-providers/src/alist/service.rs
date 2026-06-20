@@ -59,16 +59,20 @@ impl AlistService {
     pub const fn with_client(client: Client) -> Self {
         Self { client }
     }
+
+    fn authenticated_client(&self, host: &str, token: &str) -> Result<AlistClient, AlistError> {
+        AlistClient::with_token_and_http_client(host, token, self.client.clone())
+    }
+
+    fn anonymous_client(&self, host: &str) -> Result<AlistClient, AlistError> {
+        AlistClient::with_http_client(host, self.client.clone())
+    }
 }
 
 #[async_trait]
 impl AlistInterface for AlistService {
     async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError> {
-        let client = AlistClient::with_token_and_http_client(
-            &request.host,
-            &request.token,
-            self.client.clone(),
-        )?;
+        let client = self.authenticated_client(&request.host, &request.token)?;
         let password = opt_str(&request.password);
         let http_resp = client
             .fs_get(&request.path, password, &request.headers)
@@ -78,11 +82,7 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_list(&self, request: FsListReq) -> Result<FsListResp, AlistError> {
-        let client = AlistClient::with_token_and_http_client(
-            &request.host,
-            &request.token,
-            self.client.clone(),
-        )?;
+        let client = self.authenticated_client(&request.host, &request.token)?;
         let password = opt_str(&request.password);
         let http_resp = client
             .fs_list_with_refresh(
@@ -98,11 +98,7 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_other(&self, request: FsOtherReq) -> Result<FsOtherResp, AlistError> {
-        let client = AlistClient::with_token_and_http_client(
-            &request.host,
-            &request.token,
-            self.client.clone(),
-        )?;
+        let client = self.authenticated_client(&request.host, &request.token)?;
         let password = opt_str(&request.password);
         let http_resp = client
             .fs_other(&request.path, &request.method, password)
@@ -112,11 +108,7 @@ impl AlistInterface for AlistService {
     }
 
     async fn fs_search(&self, request: FsSearchReq) -> Result<FsSearchResp, AlistError> {
-        let client = AlistClient::with_token_and_http_client(
-            &request.host,
-            &request.token,
-            self.client.clone(),
-        )?;
+        let client = self.authenticated_client(&request.host, &request.token)?;
         let password = opt_str(&request.password);
         let http_resp = client
             .fs_search(
@@ -133,18 +125,14 @@ impl AlistInterface for AlistService {
     }
 
     async fn me(&self, request: MeReq) -> Result<MeResp, AlistError> {
-        let client = AlistClient::with_token_and_http_client(
-            &request.host,
-            &request.token,
-            self.client.clone(),
-        )?;
+        let client = self.authenticated_client(&request.host, &request.token)?;
         let http_resp = client.me().await?;
 
         Ok(http_resp.into())
     }
 
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
-        let mut client = AlistClient::with_http_client(&request.host, self.client.clone())?;
+        let mut client = self.anonymous_client(&request.host)?;
         match request.credential {
             Some(crate::grpc::alist::login_req::Credential::Password(password)) => {
                 client

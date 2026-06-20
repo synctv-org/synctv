@@ -64,6 +64,30 @@ impl fmt::Display for SsrfResolutionBlocked {
 
 impl Error for SsrfResolutionBlocked {}
 
+/// Full URL target rejected by the configured SSRF policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SsrfTargetError {
+    BlockedHost(String),
+    BlockedIp(IpAddr),
+    BlockedPort { port: u16 },
+}
+
+impl fmt::Display for SsrfTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BlockedHost(host) => {
+                write!(f, "target host `{host}` is blocked by SSRF policy")
+            }
+            Self::BlockedIp(ip) => write!(f, "target IP `{ip}` is blocked by SSRF policy"),
+            Self::BlockedPort { port } => {
+                write!(f, "target port `{port}` is blocked by SSRF policy")
+            }
+        }
+    }
+}
+
+impl Error for SsrfTargetError {}
+
 /// Default extra denied IP ranges (beyond what `http-acl` blocks via `is_global`).
 const DEFAULT_EXTRA_DENIED_RANGES: &[&str] = &[
     "224.0.0.0/4", // IPv4 multicast
@@ -391,6 +415,58 @@ impl SsrfGuard {
             !inner.policy.allowed_hosts.contains(&normalize_host(host))
                 && inner.acl.is_port_allowed(port).is_denied()
         })
+    }
+
+    /// Validate a URL host and port against host/IP/port SSRF policy.
+    ///
+    /// Callers that already parsed a URL can use this to keep port policy
+    /// consistent across HTTP proxying and provider source validation.
+    pub fn validate_url_target(&self, host: &str, port: u16) -> Result<(), SsrfTargetError> {
+        self.validate_url_target_with_optional_default_port(host, port, None)
+    }
+
+    /// Validate a URL host and port while allowing the scheme's default port.
+    ///
+    /// Non-HTTP callers such as RTMP validators can pass their protocol default
+    /// port while retaining the same host/IP and custom-port policy.
+    pub fn validate_url_target_with_default_port(
+        &self,
+        host: &str,
+        port: u16,
+        default_port: u16,
+    ) -> Result<(), SsrfTargetError> {
+        self.validate_url_target_with_optional_default_port(host, port, Some(default_port))
+    }
+
+    fn validate_url_target_with_optional_default_port(
+        &self,
+        host: &str,
+        port: u16,
+        default_port: Option<u16>,
+    ) -> Result<(), SsrfTargetError> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if self.is_ip_blocked(&ip) {
+                return Err(SsrfTargetError::BlockedIp(ip));
+            }
+            if default_port == Some(port) {
+                return Ok(());
+            }
+            if self.is_port_blocked_for_ip(port, &ip) {
+                return Err(SsrfTargetError::BlockedPort { port });
+            }
+            return Ok(());
+        }
+
+        if self.is_host_blocked(host) {
+            return Err(SsrfTargetError::BlockedHost(host.to_string()));
+        }
+        if default_port == Some(port) {
+            return Ok(());
+        }
+        if self.is_port_blocked_for_host(port, host) {
+            return Err(SsrfTargetError::BlockedPort { port });
+        }
+        Ok(())
     }
 
     /// Access the underlying ACL for advanced use.
@@ -954,6 +1030,44 @@ mod tests {
 
         assert!(!guard.is_port_blocked_for_host(18000, "media.internal"));
         assert!(guard.is_port_blocked_for_host(18000, "public.example"));
+    }
+
+    #[test]
+    fn test_validate_url_target_uses_host_aware_port_policy() {
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("media.internal".to_string())
+            .build();
+
+        assert_eq!(guard.validate_url_target("media.internal", 18000), Ok(()));
+        assert_eq!(
+            guard.validate_url_target("public.example", 18000),
+            Err(SsrfTargetError::BlockedPort { port: 18000 })
+        );
+        assert_eq!(guard.validate_url_target("public.example", 443), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_url_target_with_default_port_allows_protocol_default() {
+        let guard = SsrfGuard::strict_policy();
+
+        assert_eq!(
+            guard.validate_url_target_with_default_port("public.example", 1935, 1935),
+            Ok(())
+        );
+        assert_eq!(
+            guard.validate_url_target_with_default_port("public.example", 18000, 1935),
+            Err(SsrfTargetError::BlockedPort { port: 18000 })
+        );
+    }
+
+    #[test]
+    fn test_validate_url_target_reports_blocked_literal_ip() {
+        let guard = SsrfGuard::strict_policy();
+
+        assert_eq!(
+            guard.validate_url_target("127.0.0.1", 80),
+            Err(SsrfTargetError::BlockedIp(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+        );
     }
 
     #[tokio::test]

@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
-use url::{Host, Url};
+use synctv_common::ssrf::SsrfTargetError;
+use url::Url;
 
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {
@@ -123,46 +124,26 @@ impl DirectUrlProvider {
             ));
         }
 
-        match parsed.host() {
-            Some(Host::Domain(host)) if guard.is_host_blocked(host) => {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl host '{host}' is blocked by SSRF policy"
-                )));
-            }
-            Some(Host::Ipv4(ip)) if guard.is_ip_blocked(&ip.into()) => {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl IP '{ip}' is blocked by SSRF policy"
-                )));
-            }
-            Some(Host::Ipv6(ip)) if guard.is_ip_blocked(&ip.into()) => {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl IP '{ip}' is blocked by SSRF policy"
-                )));
-            }
-            Some(_) => {}
-            None => {
-                return Err(ProviderError::InvalidConfig(
-                    "DirectUrl URL must include a host".to_string(),
-                ));
-            }
-        }
+        let host = parsed.host_str().ok_or_else(|| {
+            ProviderError::InvalidConfig("DirectUrl URL must include a host".to_string())
+        })?;
 
-        if let Some(port) = parsed.port_or_known_default() {
-            if let Some(acl) = guard.acl() {
-                if acl.is_port_allowed(port).is_denied() {
-                    let port_allowed_for_ip = match parsed.host() {
-                        Some(Host::Ipv4(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
-                        Some(Host::Ipv6(ip)) => !guard.is_port_blocked_for_ip(port, &ip.into()),
-                        _ => false,
-                    };
-                    if !port_allowed_for_ip {
-                        return Err(ProviderError::InvalidConfig(format!(
-                            "DirectUrl port '{port}' is not allowed"
-                        )));
-                    }
+        let port = parsed.port_or_known_default().ok_or_else(|| {
+            ProviderError::InvalidConfig("DirectUrl URL port could not be determined".to_string())
+        })?;
+        guard
+            .validate_url_target(host, port)
+            .map_err(|error| match error {
+                SsrfTargetError::BlockedHost(host) => ProviderError::InvalidConfig(format!(
+                    "DirectUrl host '{host}' is blocked by SSRF policy"
+                )),
+                SsrfTargetError::BlockedIp(ip) => ProviderError::InvalidConfig(format!(
+                    "DirectUrl IP '{ip}' is blocked by SSRF policy"
+                )),
+                SsrfTargetError::BlockedPort { port } => {
+                    ProviderError::InvalidConfig(format!("DirectUrl port '{port}' is not allowed"))
                 }
-            }
-        }
+            })?;
 
         Ok(parsed)
     }
@@ -539,5 +520,34 @@ impl MediaProvider for DirectUrlProvider {
             mark_direct_url_playback_resources,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_source_url_allows_custom_port_for_allowed_host() {
+        let guard = synctv_common::ssrf::SsrfGuard::builder()
+            .extra_allowed_host("media.internal".to_string())
+            .build();
+
+        DirectUrlProvider::validate_source_url("http://media.internal:18000/video.mp4", &guard)
+            .expect("allowed host custom port should pass DirectUrl validation");
+    }
+
+    #[test]
+    fn validate_source_url_blocks_custom_port_for_regular_host() {
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
+
+        let error =
+            DirectUrlProvider::validate_source_url("http://public.example:18000/video.mp4", &guard)
+                .expect_err("regular host custom port should fail DirectUrl validation");
+
+        assert!(
+            matches!(error, ProviderError::InvalidConfig(ref message) if message.contains("port '18000'")),
+            "unexpected error: {error}"
+        );
     }
 }

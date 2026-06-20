@@ -8,7 +8,7 @@ use super::alist::{
 };
 use super::error_mapper::map_provider_error;
 use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
-use crate::validation::{validate_provider_grpc_host, validate_required};
+use crate::validation::{validate_provider_auth, validate_provider_grpc_host, validate_required};
 use tonic::{Request, Response, Status};
 
 /// Alist gRPC server
@@ -57,8 +57,7 @@ impl Alist for AlistService {
 
     async fn me(&self, request: Request<MeReq>) -> Result<Response<MeResp>, Status> {
         let req = request.into_inner();
-        validate_provider_grpc_host(&req.host)?;
-        validate_required("token", &req.token)?;
+        validate_provider_auth(&req.host, &req.token)?;
 
         let resp = self
             .service
@@ -71,8 +70,7 @@ impl Alist for AlistService {
 
     async fn fs_get(&self, request: Request<FsGetReq>) -> Result<Response<FsGetResp>, Status> {
         let req = request.into_inner();
-        validate_provider_grpc_host(&req.host)?;
-        validate_required("token", &req.token)?;
+        validate_provider_auth(&req.host, &req.token)?;
 
         let resp = self
             .service
@@ -85,8 +83,7 @@ impl Alist for AlistService {
 
     async fn fs_list(&self, request: Request<FsListReq>) -> Result<Response<FsListResp>, Status> {
         let req = request.into_inner();
-        validate_provider_grpc_host(&req.host)?;
-        validate_required("token", &req.token)?;
+        validate_provider_auth(&req.host, &req.token)?;
 
         let resp = self
             .service
@@ -102,8 +99,7 @@ impl Alist for AlistService {
         request: Request<FsOtherReq>,
     ) -> Result<Response<FsOtherResp>, Status> {
         let req = request.into_inner();
-        validate_provider_grpc_host(&req.host)?;
-        validate_required("token", &req.token)?;
+        validate_provider_auth(&req.host, &req.token)?;
         validate_required("method", &req.method)?;
 
         let resp = self
@@ -120,8 +116,7 @@ impl Alist for AlistService {
         request: Request<FsSearchReq>,
     ) -> Result<Response<FsSearchResp>, Status> {
         let req = request.into_inner();
-        validate_provider_grpc_host(&req.host)?;
-        validate_required("token", &req.token)?;
+        validate_provider_auth(&req.host, &req.token)?;
 
         let resp = self
             .service

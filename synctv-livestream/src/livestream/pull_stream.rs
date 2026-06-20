@@ -11,10 +11,15 @@ use crate::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
+use synctv_xiu::streamhub::{
+    define::{StreamHubEvent, StreamHubEventSender},
+    send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout_for,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Pull stream instance (pulls RTMP from publisher via gRPC, serves FLV to local clients)
 ///
@@ -394,23 +399,18 @@ impl PullStream {
         };
         let room_id = self.room_id.clone();
         let media_id = self.media_id.clone();
-        match self
-            .stream_hub_event_sender
-            .try_send(StreamHubEvent::UnPublish { identifier })
+        if let Err(error) = send_event_with_backpressure_timeout_for(
+            &self.stream_hub_event_sender,
+            StreamHubEvent::UnPublish { identifier },
+            STREAMHUB_EVENT_SEND_TIMEOUT,
+        )
+        .await
         {
-            Ok(()) => {}
-            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                warn!(
-                    "PullStream stop: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
-                    room_id, media_id, event
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to send UnPublish to StreamHub for {} / {}: {}",
-                    self.room_id, self.media_id, e
-                );
-            }
+            warn!(
+                room_id = %room_id,
+                media_id = %media_id,
+                "Failed to send UnPublish to StreamHub: {error}"
+            );
         }
 
         self.lifecycle.abort_task().await;
@@ -443,29 +443,12 @@ impl Drop for PullStream {
         };
         let room_id = self.room_id.clone();
         let media_id = self.media_id.clone();
-        match self
-            .stream_hub_event_sender
-            .try_send(StreamHubEvent::UnPublish { identifier })
-        {
-            Ok(()) => {
-                debug!(
-                    "PullStream drop: sent UnPublish for {}/{}",
-                    room_id, media_id
-                );
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                warn!(
-                    "PullStream drop: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
-                    room_id, media_id, event
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "PullStream drop: failed to send UnPublish for {}/{}: {}",
-                    room_id, media_id, e
-                );
-            }
-        }
+        debug!("PullStream drop: scheduling UnPublish for {room_id}/{media_id}");
+        spawn_event_delivery_with_backpressure_timeout_for(
+            self.stream_hub_event_sender.clone(),
+            StreamHubEvent::UnPublish { identifier },
+            STREAMHUB_EVENT_SEND_TIMEOUT,
+        );
         // StreamLifecycle's Drop will abort the task handle
     }
 }

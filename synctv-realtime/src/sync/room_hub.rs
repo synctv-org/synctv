@@ -268,8 +268,8 @@ pub struct RoomMessageHub {
     redis_key_ttl_secs: i64,
 
     /// Cancellation token for the auto-spawned TTL refresh background task.
-    /// Cancelled on `shutdown()` to stop the task gracefully.
-    ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
+    /// Replaced on restart so a hub can shut down and start again cleanly.
+    ttl_refresh_cancel: Arc<Mutex<tokio_util::sync::CancellationToken>>,
 
     /// Guards idempotent startup of Redis-backed background tasks.
     background_tasks_started: Arc<AtomicBool>,
@@ -380,7 +380,7 @@ impl RoomMessageHub {
             redis_conn: None,
             redis_key_prefix: String::new(),
             redis_key_ttl_secs: 180, // 3 minutes default
-            ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            ttl_refresh_cancel: Arc::new(Mutex::new(tokio_util::sync::CancellationToken::new())),
             background_tasks_started: Arc::new(AtomicBool::new(false)),
             ttl_refresh_handle: Arc::new(Mutex::new(None)),
         }
@@ -632,7 +632,13 @@ impl RoomMessageHub {
             return;
         }
 
-        let ttl_cancel = (*self.ttl_refresh_cancel).clone();
+        let ttl_cancel = {
+            let mut cancel = self.ttl_refresh_cancel.lock();
+            if cancel.is_cancelled() {
+                *cancel = tokio_util::sync::CancellationToken::new();
+            }
+            cancel.clone()
+        };
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
         let refresh_interval_secs = ttl_refresh_interval_secs(self.redis_key_ttl_secs);
         let Some(ttl_handle) =
@@ -652,7 +658,7 @@ impl RoomMessageHub {
     /// Cancel the auto-spawned TTL refresh task and wait for it to exit.
     pub async fn shutdown(&self) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        self.ttl_refresh_cancel.cancel();
+        self.ttl_refresh_cancel.lock().cancel();
 
         let ttl_handle = self.ttl_refresh_handle.lock().take();
         if let Some(handle) = ttl_handle {
@@ -669,7 +675,7 @@ impl RoomMessageHub {
 
     #[cfg(test)]
     pub(crate) fn background_shutdown_requested(&self) -> bool {
-        self.ttl_refresh_cancel.is_cancelled()
+        self.ttl_refresh_cancel.lock().is_cancelled()
     }
 
     /// Set the TTL for Redis subscription keys (crash-safety mechanism).

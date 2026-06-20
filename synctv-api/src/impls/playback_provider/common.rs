@@ -811,18 +811,9 @@ fn validate_playback_provider_url(
         .port_or_known_default()
         .ok_or_else(|| anyhow::anyhow!("playback provider URL port could not be determined"))?;
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if guard.is_ip_blocked(&ip) || guard.is_port_blocked_for_ip(port, &ip) {
-            return Err(anyhow::anyhow!(
-                "playback provider URL is blocked by SSRF policy"
-            ));
-        }
-    } else if guard.is_host_blocked(host) || guard.is_port_blocked_for_host(port, host) {
-        return Err(anyhow::anyhow!(
-            "playback provider URL is blocked by SSRF policy"
-        ));
-    }
-    Ok(())
+    guard
+        .validate_url_target(host, port)
+        .map_err(|error| anyhow::anyhow!("playback provider URL target is invalid: {error}"))
 }
 
 fn response_to_chunk_stream(

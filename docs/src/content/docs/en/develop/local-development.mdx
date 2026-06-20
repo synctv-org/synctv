@@ -329,7 +329,7 @@ SYNCTV_DOCS_SITE=https://example.com SYNCTV_DOCS_BASE=/synctv npm run build
 
 ## When Changing CLI
 
-CLI definitions live in `synctv/src/cli.rs`. After changing commands or arguments, check:
+CLI definitions live under `synctv/src/cli/`. After changing commands or arguments, check:
 
 ```bash
 cargo run -p synctv --bin synctv -- --help

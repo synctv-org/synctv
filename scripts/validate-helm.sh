@@ -150,6 +150,40 @@ assert_security_rendering() {
   ' "$file"
 }
 
+assert_file_storage_s3_file_credentials_rendering() {
+  local file="$1"
+  ruby -ryaml -e '
+    file = ARGV.fetch(0)
+    docs = YAML.load_stream(File.read(file)).compact
+
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
+    abort("synctv-config ConfigMap was not rendered in #{file}") unless config
+    synctv_yaml = config.dig("data", "synctv.yaml")
+    abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
+    app_config = YAML.safe_load(synctv_yaml)
+    s3 = app_config.dig("file_storage", "backends", "s3_public", "s3") || {}
+    abort("S3 access_key_id_file was not rendered") unless s3["access_key_id_file"] == "/run/secrets/file-storage-s3/access_key_id"
+    abort("S3 secret_access_key_file was not rendered") unless s3["secret_access_key_file"] == "/run/secrets/file-storage-s3/secret_access_key"
+    abort("S3 inline access_key_id was rendered with file credentials") if s3.key?("access_key_id")
+    abort("S3 inline secret_access_key was rendered with file credentials") if s3.key?("secret_access_key")
+
+    deployment = docs.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "synctv" }
+    abort("synctv Deployment was not rendered in #{file}") unless deployment
+    volumes = deployment.dig("spec", "template", "spec", "volumes") || []
+    volume = volumes.find { |item| item["name"] == "file-storage-s3" }
+    abort("file-storage-s3 volume was not rendered") unless volume&.dig("secret", "secretName") == "synctv-file-storage-s3"
+
+    containers = deployment.dig("spec", "template", "spec", "containers") || []
+    synctv = containers.find { |item| item["name"] == "synctv" }
+    abort("synctv container was not rendered") unless synctv
+    mounts = synctv["volumeMounts"] || []
+    mount = mounts.find { |item| item["name"] == "file-storage-s3" }
+    abort("file-storage-s3 volumeMount was not rendered") unless mount
+    abort("file-storage-s3 mountPath was #{mount["mountPath"].inspect}") unless mount["mountPath"] == "/run/secrets/file-storage-s3"
+    abort("file-storage-s3 volumeMount should be readOnly") unless mount["readOnly"] == true
+  ' "$file"
+}
+
 validate_rendered_synctv_config() {
   local rendered_manifest="$1"
   local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
@@ -162,6 +196,45 @@ validate_rendered_synctv_config() {
     abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
     File.write(output, synctv_yaml)
   ' "$rendered_manifest" "$rendered_config"
+  local -a validation_env=(
+    "PATH=${PATH:-/usr/bin:/bin}"
+    "HOME=${HOME:-$tmp_dir}"
+    "TMPDIR=${TMPDIR:-/tmp}"
+    "SYNCTV_JWT_SECRET=helm-validation-jwt-secret-12345678901234567890"
+    "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=helm-validation-opaque-secret-123456789012345"
+    "SYNCTV_CLUSTER_SECRET=helm-validation-cluster-secret-12345678901234567890"
+    "SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.10"
+    "SYNCTV_REDIS_HOST=synctv-redis"
+    "SYNCTV_REDIS_PORT=6379"
+    "SYNCTV_REDIS_DATABASE=0"
+  )
+  [ -z "${USER:-}" ] || validation_env+=("USER=$USER")
+  [ -z "${CARGO_HOME:-}" ] || validation_env+=("CARGO_HOME=$CARGO_HOME")
+  [ -z "${RUSTUP_HOME:-}" ] || validation_env+=("RUSTUP_HOME=$RUSTUP_HOME")
+  [ -z "${CARGO_TARGET_DIR:-}" ] || validation_env+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
+  env -i "${validation_env[@]}" \
+    cargo run -q -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
+}
+
+validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
+  local rendered_manifest="$1"
+  local secret_dir="$tmp_dir/file-storage-s3"
+  mkdir -p "$secret_dir"
+  printf '%s\n' "file-storage-access-key" >"$secret_dir/access_key_id"
+  printf '%s\n' "file-storage-secret-key" >"$secret_dir/secret_access_key"
+
+  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  ruby -ryaml -e '
+    file, output, secret_dir = ARGV
+    docs = YAML.load_stream(File.read(file)).compact
+    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
+    abort("synctv-config ConfigMap was not rendered in #{file}") unless config
+    synctv_yaml = config.dig("data", "synctv.yaml")
+    abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
+    synctv_yaml = synctv_yaml.gsub("/run/secrets/file-storage-s3", secret_dir)
+    File.write(output, synctv_yaml)
+  ' "$rendered_manifest" "$rendered_config" "$secret_dir"
+
   local -a validation_env=(
     "PATH=${PATH:-/usr/bin:/bin}"
     "HOME=${HOME:-$tmp_dir}"
@@ -256,6 +329,24 @@ helm template synctv "$chart_dir" \
   --set config.database.useSecretReadUrl=true \
   >"$tmp_dir/secret-read-url.yaml"
 
+helm template synctv "$chart_dir" \
+  --namespace "$namespace" \
+  --set config.fileStorage.defaultBackend=s3_public \
+  --set config.fileStorage.backends.s3_public.type=s3 \
+  --set config.fileStorage.backends.s3_public.s3.endpoint=https://s3.example.com \
+  --set config.fileStorage.backends.s3_public.s3.bucket=synctv-files \
+  --set config.fileStorage.backends.s3_public.s3.region=auto \
+  --set config.fileStorage.backends.s3_public.s3.basePath=files/ \
+  --set config.fileStorage.backends.s3_public.s3.publicBaseUrl=https://cdn.example.com/files \
+  --set config.fileStorage.backends.s3_public.s3.accessKeyIdFile=/run/secrets/file-storage-s3/access_key_id \
+  --set config.fileStorage.backends.s3_public.s3.secretAccessKeyFile=/run/secrets/file-storage-s3/secret_access_key \
+  --set extraVolumes[0].name=file-storage-s3 \
+  --set extraVolumes[0].secret.secretName=synctv-file-storage-s3 \
+  --set extraVolumeMounts[0].name=file-storage-s3 \
+  --set extraVolumeMounts[0].mountPath=/run/secrets/file-storage-s3 \
+  --set extraVolumeMounts[0].readOnly=true \
+  >"$tmp_dir/file-storage-s3-files.yaml"
+
 if helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set replicaCount=2 \
@@ -320,9 +411,11 @@ helm template synctv "$chart_dir" \
 assert_service "$tmp_dir/loadbalancer-stun.yaml" synctv-stun LoadBalancer
 
 assert_security_rendering "$tmp_dir/security.yaml"
+assert_file_storage_s3_file_credentials_rendering "$tmp_dir/file-storage-s3-files.yaml"
 validate_rendered_synctv_config "$tmp_dir/default.yaml"
 validate_rendered_synctv_config "$tmp_dir/security.yaml"
 validate_rendered_synctv_config "$tmp_dir/cluster-replicas.yaml"
+validate_rendered_synctv_config_with_file_storage_s3_secret_files "$tmp_dir/file-storage-s3-files.yaml"
 assert_env_secret_key_ref "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL SYNCTV_DATABASE_READ_URL
 assert_secret_string_data_key "$tmp_dir/secret-read-url.yaml" SYNCTV_DATABASE_READ_URL
 assert_env_secret_key_ref "$tmp_dir/kubeblocks.yaml" SYNCTV_DATABASE_PASSWORD SYNCTV_DATABASE_PASSWORD

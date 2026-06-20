@@ -16,12 +16,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfGuard;
-use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
+use synctv_xiu::streamhub::{
+    define::{StreamHubEvent, StreamHubEventSender},
+    send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout_for,
+};
 use tracing::{debug, error, info, warn};
 
 const DEFAULT_MAX_CONCURRENT_STREAMS: usize = 100;
 const START_CONFIRM_TIMEOUT: Duration = Duration::from_secs(15);
+const STREAMHUB_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const EXTERNAL_PUBLISHER_USER_ID: &str = "";
 
 async fn await_start_confirmation(
@@ -402,7 +406,12 @@ impl ExternalPublishManager {
                             app_name: room_id.to_string(),
                             stream_name: media_id.to_string(),
                         };
-                        if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish { identifier }).await
+                        if let Err(e) = send_event_with_backpressure_timeout_for(
+                            &hub_sender,
+                            StreamHubEvent::UnPublish { identifier },
+                            STREAMHUB_EVENT_SEND_TIMEOUT,
+                        )
+                        .await
                         {
                             warn!("Failed to send UnPublish for {}: {}", stream_key, e);
                         }
@@ -808,9 +817,12 @@ impl ExternalPublishStream {
             };
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
-            if let Err(e) = self
-                .stream_hub_event_sender
-                .try_send(StreamHubEvent::UnPublish { identifier })
+            if let Err(e) = send_event_with_backpressure_timeout_for(
+                &self.stream_hub_event_sender,
+                StreamHubEvent::UnPublish { identifier },
+                STREAMHUB_EVENT_SEND_TIMEOUT,
+            )
+            .await
             {
                 warn!(
                     "Failed to send UnPublish for {}/{}: {}",
@@ -854,29 +866,15 @@ impl Drop for ExternalPublishStream {
             };
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
-            match self
-                .stream_hub_event_sender
-                .try_send(StreamHubEvent::UnPublish { identifier })
-            {
-                Ok(()) => {
-                    debug!(
-                        "ExternalPublishStream drop: sent UnPublish for {}/{}",
-                        room_id, media_id
-                    );
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    warn!(
-                        "ExternalPublishStream drop: channel full, skipped UnPublish for {}/{}",
-                        room_id, media_id
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "ExternalPublishStream drop: failed to send UnPublish for {}/{}: {}",
-                        room_id, media_id, e
-                    );
-                }
-            }
+            debug!(
+                "ExternalPublishStream drop: scheduling UnPublish for {}/{}",
+                room_id, media_id
+            );
+            spawn_event_delivery_with_backpressure_timeout_for(
+                self.stream_hub_event_sender.clone(),
+                StreamHubEvent::UnPublish { identifier },
+                STREAMHUB_EVENT_SEND_TIMEOUT,
+            );
         }
 
         debug!(

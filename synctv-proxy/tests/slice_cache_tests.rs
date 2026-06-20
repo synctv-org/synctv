@@ -3336,6 +3336,67 @@ async fn test_file_backend_via_try_new() {
 }
 
 #[tokio::test]
+async fn test_file_backend_try_new_loads_existing_index() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mock_server = MockServer::start().await;
+    let total_size = 1024;
+    let slice_body = Bytes::from(vec![0x4D; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/persistent.mp4"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_body.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        backend: synctv_proxy::slice_cache::CacheBackendConfig::File {
+            cache_dir: tmp.path().to_path_buf(),
+            dir_levels: (2, 2),
+        },
+        ..Default::default()
+    };
+    let client = mock_client(&mock_server);
+    let guard = synctv_common::ssrf::SsrfGuard::builder()
+        .extra_allowed_host("cdn.example.com".to_string())
+        .build();
+    let url = mock_public_url(&mock_server, "/persistent.mp4");
+    let headers = HashMap::new();
+
+    let first_cache = SliceCache::try_new_with_client_and_ssrf_guard(
+        config.clone(),
+        client.clone(),
+        guard.clone(),
+    )
+    .await
+    .unwrap();
+    let (_, first_status) = first_cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(first_status, CacheStatus::Miss);
+    drop(first_cache);
+
+    let second_cache = SliceCache::try_new_with_client_and_ssrf_guard(config, client, guard)
+        .await
+        .unwrap();
+    let (data, second_status) = second_cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+
+    assert_eq!(second_status, CacheStatus::Hit);
+    assert_eq!(data, slice_body);
+}
+
+#[tokio::test]
 async fn test_proxy_with_cache_enabled_overrides_disabled_config() {
     let mock_server = MockServer::start().await;
     let total_size: u64 = 10 * 1024 * 1024;

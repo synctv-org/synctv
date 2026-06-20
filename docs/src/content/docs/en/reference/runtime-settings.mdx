@@ -96,7 +96,7 @@ See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/) for perm
 | `user.enable_email_signup` | bool | `false` | Allow email registration where confirmation sets local password credentials |
 | `user.email_signup_need_review` | bool | `false` | Require review for email signup |
 | `user.enable_webauthn_signup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
-| `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup. The current review table does not store temporary WebAuthn credentials, so enabling this rejects new WebAuthn registrations |
+| `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup; the review queue stores the pending passkey and approval creates the account with its WebAuthn credential |
 | `user.enable_guest` | bool | `true` | Allow guest capability |
 
 All registration modes are disabled by default. Production deployments should enable only the intended entry points and configure review independently for each mode.

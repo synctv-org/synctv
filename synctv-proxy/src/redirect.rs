@@ -218,27 +218,9 @@ pub(crate) fn validate_target_url_against_ssrf(
         ProxyError::InvalidRequest("URL port could not be determined".to_string())
     })?;
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if guard.is_ip_blocked(&ip) {
-            return Err(ProxyError::Ssrf(format!(
-                "target host `{host}` is blocked by SSRF policy"
-            )));
-        }
-        if guard.is_port_blocked_for_ip(port, &ip) {
-            return Err(ProxyError::Ssrf(format!(
-                "target port `{port}` is blocked by SSRF policy"
-            )));
-        }
-    } else if guard.is_host_blocked(host) {
-        return Err(ProxyError::Ssrf(format!(
-            "target host `{host}` is blocked by SSRF policy"
-        )));
-    } else if guard.is_port_blocked_for_host(port, host) {
-        return Err(ProxyError::Ssrf(format!(
-            "target port `{port}` is blocked by SSRF policy"
-        )));
-    }
-
+    guard
+        .validate_url_target(host, port)
+        .map_err(|error| ProxyError::Ssrf(error.to_string()))?;
     Ok(())
 }
 

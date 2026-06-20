@@ -385,6 +385,9 @@ spec:
               mountPath: /etc/synctv/metrics/tls
               readOnly: true
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -413,6 +416,9 @@ spec:
         - name: metrics-tls
           secret:
             secretName: {{ include "synctv.metricsTlsSecretName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

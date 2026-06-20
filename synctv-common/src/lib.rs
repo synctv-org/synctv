@@ -5,6 +5,7 @@ pub mod execution;
 pub mod http;
 pub mod id;
 pub mod messages;
+pub mod redaction;
 pub mod reserved;
 pub mod ssrf;
 pub mod time;

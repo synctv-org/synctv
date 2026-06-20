@@ -8,7 +8,9 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome};
-use crate::util::{validate_stream_id_component, validate_stream_ids};
+use crate::util::{
+    validate_publisher_api_address, validate_stream_id_component, validate_stream_ids,
+};
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
@@ -551,13 +553,7 @@ impl StreamRegistry {
         api_address: &str,
     ) -> anyhow::Result<bool> {
         validate_stream_ids(room_id, media_id)?;
-        // Validate api_address at registration time (not usage time)
-        // This ensures publishers cannot register without a valid shared API address.
-        if api_address.trim().is_empty() {
-            return Err(anyhow!(
-                "Cannot register publisher for node={node_id} with empty api_address (room={room_id}, media={media_id})"
-            ));
-        }
+        validate_publisher_api_address(api_address, node_id, room_id, media_id)?;
 
         let key = self.publisher_key(room_id, media_id);
         let epoch_key = self.epoch_key(room_id, media_id);

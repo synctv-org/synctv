@@ -833,3 +833,17 @@ async fn test_dispatch_event_only_delivers_duplicate_once() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn resync_room_subscription_state_keeps_failed_unsubscribes_for_retry() {
+    let keep_retry = RoomId::expect_positive(10_000_198);
+    let removed = RoomId::expect_positive(10_000_199);
+    let active = RoomId::expect_positive(10_000_200);
+    let mut subscribed_rooms = HashSet::from([keep_retry, removed, active]);
+
+    remove_successfully_unsubscribed_rooms(&mut subscribed_rooms, &[removed]);
+
+    assert!(subscribed_rooms.contains(&keep_retry));
+    assert!(!subscribed_rooms.contains(&removed));
+    assert!(subscribed_rooms.contains(&active));
+}

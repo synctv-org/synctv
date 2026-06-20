@@ -505,6 +505,41 @@ async fn test_shutdown_aborts_stuck_background_tasks() -> TestResult {
 }
 
 #[tokio::test]
+async fn test_start_rebuilds_cancel_token_after_shutdown() -> TestResult {
+    struct HangingRedisRuntime;
+
+    #[async_trait::async_trait]
+    impl RedisConnectionRuntime for HangingRedisRuntime {
+        async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
+            std::future::pending().await
+        }
+
+        fn operation_timeout(&self) -> Duration {
+            Duration::from_millis(10)
+        }
+    }
+
+    let hub = RoomMessageHub::new_with_redis_runtime(
+        Arc::new(HangingRedisRuntime),
+        "restart-token-test:",
+    );
+
+    assert!(!hub.background_shutdown_requested());
+
+    hub.shutdown().await;
+    assert!(hub.background_shutdown_requested());
+
+    hub.start();
+    assert!(
+        !hub.background_shutdown_requested(),
+        "restart should replace the cancelled TTL refresh token"
+    );
+
+    hub.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_remove_room_cleans_connection_tracking() -> TestResult {
     let hub = RoomMessageHub::new();
     let room_id = RoomId::expect_positive(10_000_009);

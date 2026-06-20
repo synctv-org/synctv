@@ -133,6 +133,34 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 
 `config.fileStorage.backends.<name>.database.compression` 控制数据库文件存储后端写入 PostgreSQL `file_blob_parts` 永久分段的压缩算法，默认 `zstd`。`compressionMinSizeBytes` 默认 `4096`，`compressionMinSavingsPercent` 默认 `10`，压缩收益低于阈值时写入原始 bytes。Database 文件存储使用永久分段并从分段服务 HTTP Range；S3 文件存储使用原生 multipart 直传支持 GB 级断点续传。
 
+S3 文件存储凭证建议挂载 Kubernetes Secret，并在 Helm values 中设置 camelCase 的 `accessKeyIdFile` / `secretAccessKeyFile`。生成的 SyncTV YAML 会使用 snake_case 的 `access_key_id_file` / `secret_access_key_file` 路径，并在启动时读取 Secret 文件。
+
+```yaml
+config:
+  fileStorage:
+    defaultBackend: s3_public
+    backends:
+      s3_public:
+        type: s3
+        s3:
+          endpoint: https://s3.example.com
+          bucket: synctv-files
+          region: auto
+          basePath: files/
+          publicBaseUrl: https://cdn.example.com/files
+          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+
+extraVolumes:
+  - name: file-storage-s3
+    secret:
+      secretName: synctv-file-storage-s3
+extraVolumeMounts:
+  - name: file-storage-s3
+    mountPath: /run/secrets/file-storage-s3
+    readOnly: true
+```
+
 ## Ingress
 
 默认 HTTP Ingress 使用：
@@ -273,7 +301,7 @@ redis:
 
 external PostgreSQL 必须通过 `existingSecret` 的 `SYNCTV_DATABASE_PASSWORD` 或 `secrets.database.password` 提供密码。external Redis 的 `SYNCTV_REDIS_PASSWORD` 是可选的：只有外部 Redis 启用了密码认证时才需要提供。
 
-如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 以及对外 HTTP/HTTPS egress 会使用 `ipBlock` CIDR，而不是匹配 Chart 内部 Pod label；这些规则默认 fail-closed：external PostgreSQL 或 Redis 模式要求设置 `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalDatabaseEgress=true`；对外 OAuth/媒体源 HTTP 访问要求设置 `networkPolicy.externalHttpCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalHttpEgress=true`。
+如果同时启用 `networkPolicy.enabled=true`，external PostgreSQL/Redis 以及对外 HTTP/HTTPS egress 会使用 `ipBlock` CIDR，而不是匹配 Chart 内部 Pod label；这些规则默认 fail-closed：external PostgreSQL 或 Redis 模式要求设置 `networkPolicy.externalPostgresqlCIDRs` / `networkPolicy.externalRedisCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalDatabaseEgress=true`；对外 OAuth、媒体源 HTTP、HLS OSS 和 S3-compatible 对象存储 endpoint 要求设置 `networkPolicy.externalHttpCIDRs`，或者显式设置 `networkPolicy.allowAnyExternalHttpEgress=true`。
 
 应用 Service、PDB 和应用 NetworkPolicy 只选择带有 `app.kubernetes.io/component=app` 的 Pod。Chart 管理的 PostgreSQL 和 Redis 使用各自的 component label；启用 NetworkPolicy ingress 隔离时，Chart 会为它们渲染依赖专用 ingress policy，只允许 SyncTV 应用 Pod 访问对应端口。因此启用 NetworkPolicy 不会把 API 流量路由到依赖 Pod，也不会把依赖和 SyncTV 自身隔离开。
 

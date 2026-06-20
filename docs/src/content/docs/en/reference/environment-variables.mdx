@@ -41,6 +41,11 @@ The list below mirrors the environment variable names used by the runtime.
 | `SYNCTV_CACHE_L2_TTL_SECONDS` | `cache.l2_ttl_seconds` |
 | `SYNCTV_CACHE_PERMISSION_CACHE_CAPACITY` | `cache.permission_cache_capacity` |
 | `SYNCTV_CACHE_PERMISSION_CACHE_TTL_SECONDS` | `cache.permission_cache_ttl_seconds` |
+
+## File Storage
+
+| Environment variable | Configuration field |
+| --- | --- |
 | `SYNCTV_FILE_STORAGE_DEFAULT_BACKEND` | `file_storage.default_backend` |
 | `SYNCTV_FILE_STORAGE_CHAT_ATTACHMENTS_BACKEND` | `file_storage.chat_attachments_backend` |
 | `SYNCTV_FILE_STORAGE_USER_AVATARS_BACKEND` | `file_storage.user_avatars_backend` |
@@ -87,6 +92,11 @@ SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
 SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
 SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","access_key_id":"access-key","secret_access_key":"secret-key","bucket":"synctv-files","region":"auto","base_path":"files/","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":900}}}'
 ```
+
+## Additional Runtime Variables
+
+| Environment variable | Configuration field |
+| --- | --- |
 | `SYNCTV_PROXY_SLICE_CACHE_ENABLED` | `proxy_slice_cache.enabled` |
 | `SYNCTV_PROXY_SLICE_CACHE_SLICE_SIZE_BYTES` | `proxy_slice_cache.slice_size_bytes` |
 | `SYNCTV_PROXY_SLICE_CACHE_MAX_CACHE_SIZE_BYTES` | `proxy_slice_cache.max_cache_size_bytes` |

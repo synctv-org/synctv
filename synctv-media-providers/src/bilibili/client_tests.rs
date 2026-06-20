@@ -678,8 +678,8 @@ async fn test_wbi_state_is_isolated_per_client_instance() -> TestResult {
     let state_a = client_a.shared_wbi_state();
     let state_b = client_b.shared_wbi_state();
 
-    state_a.reset_for_tests().await;
-    state_b.reset_for_tests().await;
+    state_a.reset_for_tests();
+    state_b.reset_for_tests();
 
     state_a.set_wbi_key("key-a".to_string());
     state_b.set_wbi_key("key-b".to_string());

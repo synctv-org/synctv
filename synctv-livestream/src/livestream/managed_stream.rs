@@ -205,12 +205,16 @@ impl<S: ManagedStream> StreamPool<S> {
     pub(crate) async fn stop_all(&self) {
         let keys: Vec<String> = self.streams.iter().map(|e| e.key().clone()).collect();
         for key in &keys {
-            if let Some((_, stream)) = self.streams.remove(key) {
-                stream.stop_managed().await;
-            }
+            self.remove_and_stop(key).await;
         }
         self.creation_locks.clear();
         debug!("Stopped all managed streams ({} removed)", keys.len());
+    }
+
+    async fn remove_and_stop(&self, stream_key: &str) -> Option<Arc<S>> {
+        let (_, stream) = self.streams.remove(stream_key)?;
+        stream.stop_managed().await;
+        Some(stream)
     }
 
     /// Returns a healthy stream with its subscriber count already incremented.
@@ -227,7 +231,7 @@ impl<S: ManagedStream> StreamPool<S> {
                 stream.lifecycle().decrement_subscriber_count();
             }
             drop(stream);
-            self.streams.remove(stream_key);
+            self.remove_and_stop(stream_key).await;
         }
         None
     }
@@ -454,7 +458,8 @@ mod tests {
         });
         stream.lifecycle().set_running();
 
-        pool.streams.insert("room:media".to_string(), stream);
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
 
         let found = pool.get_existing("room:media").await;
         let found = found.ok_or_else(|| test_error("healthy stream should exist"))?;
@@ -473,11 +478,17 @@ mod tests {
         });
         // Not running, so unhealthy
 
-        pool.streams.insert("room:media".to_string(), stream);
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
 
         let found = pool.get_existing("room:media").await;
         assert!(found.is_none());
         assert!(pool.streams.is_empty());
+        assert_eq!(
+            stream.stop_count.load(Ordering::Acquire),
+            1,
+            "unhealthy streams removed on access must run the stream-specific stop protocol"
+        );
     }
 
     /// Test that try_claim_for_cleanup succeeds when subscriber count is 0.

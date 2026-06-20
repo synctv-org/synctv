@@ -11,6 +11,14 @@ pub async fn send_event_with_backpressure_timeout(
     sender: &StreamHubEventSender,
     event: StreamHubEvent,
 ) -> Result<(), StreamHubError> {
+    send_event_with_backpressure_timeout_for(sender, event, EVENT_SEND_TIMEOUT).await
+}
+
+pub async fn send_event_with_backpressure_timeout_for(
+    sender: &StreamHubEventSender,
+    event: StreamHubEvent,
+    timeout: std::time::Duration,
+) -> Result<(), StreamHubError> {
     match sender.try_send(event) {
         Ok(()) => Ok(()),
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
@@ -35,7 +43,7 @@ pub async fn send_event_with_backpressure_timeout(
                 }
             };
 
-            match tokio::time::timeout(EVENT_SEND_TIMEOUT, send_future).await {
+            match tokio::time::timeout(timeout, send_future).await {
                 Ok(result) => result,
                 Err(_) => Err(StreamHubError {
                     value: StreamHubErrorValue::EventSendTimeout,
@@ -99,10 +107,20 @@ pub fn spawn_event_delivery_with_backpressure_timeout(
     sender: StreamHubEventSender,
     event: StreamHubEvent,
 ) {
+    spawn_event_delivery_with_backpressure_timeout_for(sender, event, EVENT_SEND_TIMEOUT);
+}
+
+pub fn spawn_event_delivery_with_backpressure_timeout_for(
+    sender: StreamHubEventSender,
+    event: StreamHubEvent,
+    timeout: std::time::Duration,
+) {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
             handle.spawn(async move {
-                if let Err(err) = send_event_with_backpressure_timeout(&sender, event).await {
+                if let Err(err) =
+                    send_event_with_backpressure_timeout_for(&sender, event, timeout).await
+                {
                     tracing::warn!("deferred event delivery failed: {err}");
                 }
             });

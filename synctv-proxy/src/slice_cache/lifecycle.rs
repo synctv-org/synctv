@@ -150,6 +150,7 @@ impl CacheLifecycleManager {
         // 3. Cleanup orphaned temp files (file backend only).
         if let CacheBackend::File(ref fb) = *self.backend {
             fb.cleanup_temp_files().await;
+            fb.persist_access_times().await;
         }
     }
 }

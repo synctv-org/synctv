@@ -30,11 +30,11 @@ use synctv_xiu::streamhub::{
         FrameData, FrameDataSender, NotifyInfo, PublishType, PublisherInfo, StreamHubEvent,
         StreamHubEventSender,
     },
+    send_event_with_backpressure_timeout_for, spawn_event_delivery_with_backpressure_timeout_for,
     stream::StreamIdentifier,
     utils::Uuid,
 };
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::Duration;
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
@@ -52,6 +52,7 @@ const HTTP_FLV_REQUEST_START_TIMEOUT: std::time::Duration = std::time::Duration:
 /// Per-chunk read timeout: if no data arrives for 30s, the stream is dead.
 const HTTP_FLV_CHUNK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const FRAME_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const STREAMHUB_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 // FLV format constants
 const FLV_HEADER_SIZE: usize = 9;
@@ -212,8 +213,7 @@ impl ExternalStreamPuller {
         // address to prevent DNS rebinding between validation and connection.
         let parsed = Url::parse(&source_url)?;
         let host = parsed.host_str().unwrap_or("");
-        let mut resolved_addr = None;
-        let port = parsed.port().unwrap_or(match source_type {
+        let default_port = match source_type {
             ExternalSourceType::Rtmp => 1935,
             ExternalSourceType::HttpFlv => {
                 if parsed.scheme() == "https" {
@@ -222,22 +222,16 @@ impl ExternalStreamPuller {
                     80
                 }
             }
-        });
+        };
+        let mut resolved_addr = None;
+        let port = parsed.port().unwrap_or(default_port);
 
         if !host.is_empty() {
-            if ssrf_guard.is_host_blocked(host) {
-                return Err(anyhow::anyhow!(
-                    "SSRF protection blocked host: {host} is denied by policy"
-                ));
-            }
+            ssrf_guard
+                .validate_url_target_with_default_port(host, port, default_port)
+                .map_err(|error| anyhow::anyhow!("SSRF protection blocked URL: {error}"))?;
 
             if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-                // Literal IP address - check directly
-                if ssrf_guard.is_ip_blocked(&ip) {
-                    return Err(anyhow::anyhow!(
-                        "SSRF protection blocked IP: {ip} is private/reserved"
-                    ));
-                }
                 resolved_addr = Some(std::net::SocketAddr::new(ip, port));
             } else {
                 // Hostname - resolve and check all IPs
@@ -859,16 +853,13 @@ impl ExternalStreamPuller {
             result_sender: event_result_sender,
         };
 
-        // Use send().await with timeout instead of try_send() to handle backpressure
-        // gracefully. try_send() would silently fail when the StreamHub channel is
-        // temporarily full under load (e.g., many streams starting simultaneously).
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            self.stream_hub_event_sender.send(publish_event),
+        send_event_with_backpressure_timeout_for(
+            &self.stream_hub_event_sender,
+            publish_event,
+            STREAMHUB_EVENT_SEND_TIMEOUT,
         )
         .await
-        .map_err(|_| anyhow::anyhow!("Timed out waiting to send publish event to StreamHub"))?
-        .map_err(|_| anyhow::anyhow!("StreamHub event channel closed"))?;
+        .map_err(|error| anyhow::anyhow!("Failed to send publish event to StreamHub: {error}"))?;
 
         let result = event_result_receiver
             .await
@@ -896,9 +887,11 @@ impl ExternalStreamPuller {
 
         let unpublish_event = StreamHubEvent::UnPublish { identifier };
 
-        if let Err(e) = self.stream_hub_event_sender.try_send(unpublish_event) {
-            warn!("Failed to send unpublish event: {}", e);
-        }
+        spawn_event_delivery_with_backpressure_timeout_for(
+            self.stream_hub_event_sender.clone(),
+            unpublish_event,
+            STREAMHUB_EVENT_SEND_TIMEOUT,
+        );
     }
 }
 
@@ -987,29 +980,15 @@ impl Drop for UnpublishGuard {
             stream_name: self.media_id.clone(),
         };
 
-        match self
-            .stream_hub_event_sender
-            .try_send(StreamHubEvent::UnPublish { identifier })
-        {
-            Ok(()) => {
-                debug!(
-                    "UnpublishGuard: sent UnPublish for {}/{}",
-                    self.room_id, self.media_id
-                );
-            }
-            Err(mpsc::error::TrySendError::Full(event)) => {
-                warn!(
-                    "UnpublishGuard: StreamHub queue full, dropping UnPublish for {}/{}: {:?}",
-                    self.room_id, self.media_id, event
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "UnpublishGuard: failed to send UnPublish for {}/{}: {}",
-                    self.room_id, self.media_id, e
-                );
-            }
-        }
+        debug!(
+            "UnpublishGuard: scheduling UnPublish for {}/{}",
+            self.room_id, self.media_id
+        );
+        spawn_event_delivery_with_backpressure_timeout_for(
+            self.stream_hub_event_sender.clone(),
+            StreamHubEvent::UnPublish { identifier },
+            STREAMHUB_EVENT_SEND_TIMEOUT,
+        );
     }
 }
 
@@ -1432,6 +1411,35 @@ mod tests {
                 async move {
                     assert_eq!(host, "internal.example");
                     assert_eq!(port, 1935);
+                    Ok(vec![expected])
+                }
+            },
+        )
+        .await?;
+
+        assert_eq!(puller.resolved_addr, Some(resolved));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_external_puller_allows_custom_port_for_allowed_hostname() -> TestResult {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+        let resolved = std::net::SocketAddr::from(([10, 0, 0, 42], 18000));
+        let guard = SsrfGuard::builder()
+            .extra_allowed_host("internal.example".to_string())
+            .build();
+
+        let puller = ExternalStreamPuller::new_async_with_resolver(
+            "room123".to_string(),
+            "media456".to_string(),
+            "http://internal.example:18000/live.flv".to_string(),
+            sender,
+            guard,
+            move |host, port| {
+                let expected = resolved;
+                async move {
+                    assert_eq!(host, "internal.example");
+                    assert_eq!(port, 18000);
                     Ok(vec![expected])
                 }
             },

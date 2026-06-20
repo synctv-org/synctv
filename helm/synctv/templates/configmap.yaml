@@ -224,8 +224,16 @@ data:
           {{- $s3 := index $backend "s3" | default dict }}
           s3:
             endpoint: {{ $s3.endpoint | default "" | quote }}
+            {{- if $s3.accessKeyIdFile }}
+            access_key_id_file: {{ $s3.accessKeyIdFile | quote }}
+            {{- else }}
             access_key_id: {{ $s3.accessKeyId | default "" | quote }}
+            {{- end }}
+            {{- if $s3.secretAccessKeyFile }}
+            secret_access_key_file: {{ $s3.secretAccessKeyFile | quote }}
+            {{- else }}
             secret_access_key: {{ $s3.secretAccessKey | default "" | quote }}
+            {{- end }}
             bucket: {{ $s3.bucket | default "" | quote }}
             region: {{ $s3.region | default "auto" | quote }}
             base_path: {{ $s3.basePath | default "files/" | quote }}

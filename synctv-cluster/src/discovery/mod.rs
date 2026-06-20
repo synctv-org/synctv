@@ -90,10 +90,8 @@ pub async fn probe_node_identity(
     let mut request = tonic::Request::new(GetNodesRequest {});
 
     if !cluster_secret.is_empty() {
-        match cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
-            Ok(val) => {
-                request.metadata_mut().insert("x-cluster-secret", val);
-            }
+        match crate::grpc::attach_cluster_secret(&mut request, cluster_secret) {
+            Ok(()) => {}
             Err(e) => {
                 tracing::warn!(
                     error = %e,

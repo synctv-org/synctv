@@ -13,9 +13,10 @@ use synctv_cluster::grpc::ClusterAuthInterceptor;
 /// Helper: create a Request with a specific x-cluster-secret value.
 fn make_request_with_secret(secret: &str) -> Request<()> {
     let mut request = Request::new(());
-    request
-        .metadata_mut()
-        .insert("x-cluster-secret", secret.parse().unwrap());
+    request.metadata_mut().insert(
+        synctv_cluster::grpc::CLUSTER_SECRET_METADATA_KEY,
+        secret.parse().unwrap(),
+    );
     request
 }
 
@@ -172,7 +173,7 @@ fn test_invalid_metadata_value_unauthenticated() {
     // is not a -bin suffix key, so invalid UTF-8 would fail to_str().
     // We can test this by manually inserting a valid ASCII but wrong value.
     metadata.insert(
-        "x-cluster-secret",
+        synctv_cluster::grpc::CLUSTER_SECRET_METADATA_KEY,
         "valid\x01secret".parse().unwrap_or_else(|_| {
             // If parsing fails (non-visible ASCII), just use a regular wrong value
             "wrong".parse().unwrap()

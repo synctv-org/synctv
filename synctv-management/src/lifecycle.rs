@@ -155,70 +155,47 @@ impl ManagementLifecycleController {
     }
 
     pub fn publish_runtime_draining(&self) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(
+        self.publish_current(
             LifecycleStage::RuntimeDraining,
-            mode,
             "runtime shutdown in progress".to_string(),
             false,
         );
     }
 
     pub fn publish_connection_draining(&self) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(
+        self.publish_current(
             LifecycleStage::ConnectionDraining,
-            mode,
             "connection draining in progress".to_string(),
             false,
         );
     }
 
     pub fn publish_components_shutting_down(&self) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(
+        self.publish_current(
             LifecycleStage::ComponentsShuttingDown,
-            mode,
             "component shutdown in progress".to_string(),
             false,
         );
     }
 
     pub fn publish_finalizing(&self) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(
+        self.publish_current(
             LifecycleStage::Finalizing,
-            mode,
             "final shutdown tasks in progress".to_string(),
             false,
         );
     }
 
     pub fn publish_completed(&self) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(
+        self.publish_current(
             LifecycleStage::Completed,
-            mode,
             "shutdown complete".to_string(),
             true,
         );
     }
 
     pub fn publish_failure(&self, message: impl Into<String>) {
-        let mode = self
-            .current_shutdown_mode()
-            .unwrap_or(ShutdownMode::Graceful);
-        self.publish(LifecycleStage::Failed, mode, message.into(), true);
+        self.publish_current(LifecycleStage::Failed, message.into(), true);
     }
 
     #[must_use]
@@ -273,6 +250,18 @@ impl ManagementLifecycleController {
             );
         }
         event
+    }
+
+    fn publish_current(
+        &self,
+        stage: LifecycleStage,
+        message: String,
+        terminal: bool,
+    ) -> LifecycleEvent {
+        let mode = self
+            .current_shutdown_mode()
+            .unwrap_or(ShutdownMode::Graceful);
+        self.publish(stage, mode, message, terminal)
     }
 }
 

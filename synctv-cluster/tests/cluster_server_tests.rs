@@ -20,9 +20,10 @@ fn make_server() -> (Arc<NodeRegistry>, ClusterServer) {
 }
 
 fn with_cluster_secret<T>(mut request: Request<T>, secret: &str) -> Request<T> {
-    request
-        .metadata_mut()
-        .insert("x-cluster-secret", secret.parse().unwrap());
+    request.metadata_mut().insert(
+        synctv_cluster::grpc::CLUSTER_SECRET_METADATA_KEY,
+        secret.parse().unwrap(),
+    );
     request
 }
 

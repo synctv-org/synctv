@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use subtle::ConstantTimeEq;
 use synctv_core::models::{RoomId, UserId};
 use tonic::{Request, Response, Status};
 
@@ -11,7 +10,6 @@ use super::proto::{
 };
 use crate::sync::ConnectionRuntime;
 
-const AUTH_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 const MAX_USER_IDS: usize = 1000;
 
 fn u64_to_i64(value: u64) -> i64 {
@@ -58,25 +56,7 @@ impl RealtimePresenceServiceImpl {
                 "cluster authentication secret is not configured",
             ));
         };
-        if expected.is_empty() {
-            return Err(Status::unauthenticated(
-                "cluster authentication secret is not configured",
-            ));
-        }
-
-        let provided = request
-            .metadata()
-            .get(AUTH_SECRET_METADATA_KEY)
-            .ok_or_else(|| Status::unauthenticated("missing cluster authentication secret"))?
-            .as_bytes();
-
-        if provided.len() == expected.len() && provided.ct_eq(expected.as_bytes()).into() {
-            Ok(())
-        } else {
-            Err(Status::unauthenticated(
-                "invalid cluster authentication secret",
-            ))
-        }
+        synctv_cluster::grpc::validate_cluster_secret_metadata(request.metadata(), expected)
     }
 }
 
@@ -170,9 +150,10 @@ mod tests {
         value: T,
     ) -> Result<Request<T>, tonic::metadata::errors::InvalidMetadataValue> {
         let mut request = Request::new(value);
-        request
-            .metadata_mut()
-            .insert(AUTH_SECRET_METADATA_KEY, "cluster-secret".parse()?);
+        request.metadata_mut().insert(
+            synctv_cluster::grpc::CLUSTER_SECRET_METADATA_KEY,
+            "cluster-secret".parse()?,
+        );
         Ok(request)
     }
 

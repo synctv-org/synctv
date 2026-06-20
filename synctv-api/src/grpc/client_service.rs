@@ -67,6 +67,11 @@ fn map_message_stream_membership_error(err: synctv_core::Error) -> Status {
     map_api_error(crate::impls::ClientApiImpl::map_room_access_error(err))
 }
 
+struct GrpcRoomMetadata {
+    public_room_id: String,
+    room_id: RoomId,
+}
+
 /// Configuration for `ClientService`
 #[derive(Clone)]
 pub struct ClientServiceConfig {
@@ -150,54 +155,43 @@ impl ClientServiceImpl {
         )
     }
 
-    fn extract_public_room_id_from_metadata(
+    fn room_metadata(
         &self,
         request: &Request<impl std::fmt::Debug>,
-    ) -> Result<String, Status> {
-        let room_id = request
+    ) -> Result<GrpcRoomMetadata, Status> {
+        let public_room_id = request
             .metadata()
             .get("x-room-id")
             .ok_or_else(|| invalid_argument_status("Missing x-room-id header"))?
             .to_str()
             .map_err(|_| invalid_argument_status("Invalid x-room-id header"))?;
 
-        self.client_api
+        let room_id = self
+            .client_api
             .public_id_codec
-            .decode_room_id(room_id)
+            .decode_room_id(public_room_id)
             .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))?;
 
-        Ok(room_id.to_string())
-    }
-
-    fn extract_room_id_from_metadata(
-        &self,
-        request: &Request<impl std::fmt::Debug>,
-    ) -> Result<RoomId, Status> {
-        let room_id = self.extract_public_room_id_from_metadata(request)?;
-        self.client_api
-            .public_id_codec
-            .decode_room_id(&room_id)
-            .map_err(|error| invalid_argument_status(format!("Invalid room_id: {error}")))
+        Ok(GrpcRoomMetadata {
+            public_room_id: public_room_id.to_string(),
+            room_id,
+        })
     }
 
     fn room_request_context(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<(crate::impls::RequestMetadata, String), Status> {
-        Ok((
-            self.request_metadata(request)?,
-            self.extract_public_room_id_from_metadata(request)?,
-        ))
+        let room = self.room_metadata(request)?;
+        Ok((self.request_metadata(request)?, room.public_room_id))
     }
 
     fn internal_room_request_context(
         &self,
         request: &Request<impl std::fmt::Debug>,
     ) -> Result<(crate::impls::RequestMetadata, RoomId), Status> {
-        Ok((
-            self.request_metadata(request)?,
-            self.extract_room_id_from_metadata(request)?,
-        ))
+        let room = self.room_metadata(request)?;
+        Ok((self.request_metadata(request)?, room.room_id))
     }
 
     fn extract_guest_token_from_authorization(

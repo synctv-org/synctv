@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use futures::{Stream, StreamExt};
 use tonic::codec::CompressionEncoding;
-use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tonic::{Request, Response, Status};
 
@@ -50,7 +49,7 @@ use crate::proto::{
     UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
     UpdateUserUsernameRequest, UserRef,
 };
-use synctv_api::grpc_support::map_api_error_ref as map_api_error;
+use synctv_api::grpc_support::map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
 use synctv_api::impls::{
     AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl,
@@ -671,8 +670,9 @@ impl ManagementServiceImpl {
                 .await
                 .map_err(|error| Status::unavailable(error.to_string()))?;
             let mut futures = futures::stream::FuturesUnordered::new();
+            let service = Arc::new(self.clone());
             for node in remote_nodes {
-                let service = Arc::new(self.clone());
+                let service = service.clone();
                 let call = remote_call.clone();
                 futures.push(async move {
                     let node_id = node.node_id.clone();
@@ -758,13 +758,8 @@ impl ManagementServiceImpl {
                 "cluster secret is required for remote slice cache operations",
             ));
         }
-        let value = self
-            .config
-            .cluster
-            .secret
-            .parse::<MetadataValue<tonic::metadata::Ascii>>()
+        synctv_cluster::grpc::attach_cluster_secret(request, &self.config.cluster.secret)
             .map_err(|_| Status::failed_precondition("invalid cluster secret configuration"))?;
-        request.metadata_mut().insert("x-cluster-secret", value);
         Ok(())
     }
 
@@ -1009,14 +1004,14 @@ impl ManagementServiceImpl {
     }
 
     fn map_api_result<T>(result: Result<T, ApiError>) -> Result<T, Status> {
-        result.map_err(|error| map_api_error(&error))
+        result.map_err(map_api_error)
     }
 
     fn map_into_api_result<T, E>(result: Result<T, E>) -> Result<T, Status>
     where
         ApiError: From<E>,
     {
-        result.map_err(|error| map_api_error(&ApiError::from(error)))
+        result.map_err(map_api_error)
     }
 }
 
@@ -1047,7 +1042,7 @@ impl ManagementService for ManagementServiceImpl {
                 )?,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1062,7 +1057,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_user(admin_proto::GetUserRequest { user_id })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1077,7 +1072,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_user_preferences(admin_proto::GetUserPreferencesRequest { user_id })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1101,7 +1096,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1121,7 +1116,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1141,7 +1136,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1161,7 +1156,7 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1187,7 +1182,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1207,7 +1202,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1231,7 +1226,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1251,7 +1246,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1273,7 +1268,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1294,7 +1289,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1314,7 +1309,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1337,7 +1332,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1358,7 +1353,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1378,7 +1373,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1401,7 +1396,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1422,7 +1417,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1444,7 +1439,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1468,7 +1463,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1492,7 +1487,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1517,7 +1512,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1540,7 +1535,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1567,7 +1562,7 @@ impl ManagementService for ManagementServiceImpl {
                 )?,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1594,7 +1589,7 @@ impl ManagementService for ManagementServiceImpl {
                     &ctx,
                 )
                 .await
-                .map_err(|e| map_api_error(&e))?;
+                .map_err(map_api_error)?;
             Self::append_batch_user_ref_failures(
                 &mut response.results,
                 &mut response.failed,
@@ -1628,7 +1623,7 @@ impl ManagementService for ManagementServiceImpl {
                     &ctx,
                 )
                 .await
-                .map_err(|e| map_api_error(&e))?;
+                .map_err(map_api_error)?;
             Self::append_batch_user_ref_failures(
                 &mut response.results,
                 &mut response.failed,
@@ -1676,7 +1671,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1705,7 +1700,7 @@ impl ManagementService for ManagementServiceImpl {
                 )?,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1721,7 +1716,7 @@ impl ManagementService for ManagementServiceImpl {
                 room_id: req.room_id,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1746,7 +1741,7 @@ impl ManagementService for ManagementServiceImpl {
                 )?,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1771,7 +1766,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(client_proto::AddMemberResponse {
             member: response.member,
         }))
@@ -1801,7 +1796,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(
             client_proto::UpdateMemberPermissionsResponse {
                 member: response.member,
@@ -1829,7 +1824,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(client_proto::KickMemberResponse {
             success: response.success,
         }))
@@ -1847,7 +1842,7 @@ impl ManagementService for ManagementServiceImpl {
                 room_id: req.room_id,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1863,7 +1858,7 @@ impl ManagementService for ManagementServiceImpl {
                 room_id: req.room_id.clone(),
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         let mut settings = if current.settings.is_empty() {
             serde_json::Value::Object(serde_json::Map::new())
         } else {
@@ -1888,7 +1883,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1907,7 +1902,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1929,7 +1924,7 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::TransferRoomOwnershipRequest { new_owner_user_id },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1965,7 +1960,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1987,7 +1982,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2008,7 +2003,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2029,7 +2024,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2051,7 +2046,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2072,7 +2067,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2096,7 +2091,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2111,7 +2106,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .stop_playback(&req.room_id, &validated.user_id, &ctx)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2129,7 +2124,7 @@ impl ManagementService for ManagementServiceImpl {
                 req.playback_client_profile,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2151,7 +2146,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2173,7 +2168,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2187,7 +2182,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_stream_info(&req.room_id, &req.media_id)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2224,7 +2219,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2246,7 +2241,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(client_proto::KickRoomStreamResponse {}))
     }
 
@@ -2275,7 +2270,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2289,7 +2284,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_playlist(&req.room_id, &req.playlist_id, &validated.user_id)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2315,7 +2310,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2345,7 +2340,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2371,7 +2366,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2396,7 +2391,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2424,7 +2419,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2445,7 +2440,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2475,7 +2470,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2501,7 +2496,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2531,7 +2526,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2561,7 +2556,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2587,7 +2582,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2615,7 +2610,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2641,7 +2636,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2667,7 +2662,7 @@ impl ManagementService for ManagementServiceImpl {
                 },
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2689,7 +2684,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2710,7 +2705,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -2743,7 +2738,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3160,7 +3155,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .list_available_provider_instances(req)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3174,7 +3169,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .list_provider_backends(req)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3188,7 +3183,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .list_provider_instances(req)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3203,7 +3198,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .add_provider_instance(req, &validated.user_id, &ctx, None)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3218,7 +3213,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .update_provider_instance(req, &validated.user_id, &ctx, None)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3233,7 +3228,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .delete_provider_instance(req, &validated.user_id, &ctx)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3248,7 +3243,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .reconnect_provider_instance(req, &validated.user_id, &ctx, None)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3262,7 +3257,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .enable_provider_instance(req, None)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3276,7 +3271,7 @@ impl ManagementService for ManagementServiceImpl {
             .provider_common_api
             .disable_provider_instance(req, None)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3290,7 +3285,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_settings(admin_proto::GetSettingsRequest {}, &validated.user_id, &ctx)
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3309,7 +3304,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3331,7 +3326,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3345,7 +3340,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .send_test_email(admin_proto::SendTestEmailRequest { to: req.to })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3358,7 +3353,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_system_stats(admin_proto::GetSystemStatsRequest {})
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3421,7 +3416,7 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -3443,7 +3438,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(|e| map_api_error(&e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(admin_proto::KickStreamResponse {}))
     }
 

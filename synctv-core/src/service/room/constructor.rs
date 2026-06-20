@@ -76,8 +76,10 @@ impl RoomService {
                 room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
                 invalidation_service: options.cache_invalidation.clone(),
                 version_fence: options.version_fence.clone(),
-                member_permission_l2_cache: options.room_settings_l2_cache.clone(),
-                member_permission_cache_key_prefix: "member_permission:".to_string(),
+                member_permission_l2_cache: options.member_permission_l2_cache.clone(),
+                member_permission_cache_key_prefix: options
+                    .member_permission_cache_key_prefix
+                    .clone(),
                 room_settings_l2_cache: options.room_settings_l2_cache.clone(),
                 room_settings_cache_key_prefix: options.room_settings_cache_key_prefix.clone(),
                 ..PermissionServiceRuntime::local_only()

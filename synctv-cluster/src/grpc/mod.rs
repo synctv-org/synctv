@@ -18,7 +18,9 @@ pub use server::ClusterServer;
 pub use synctv::cluster::cluster_service_server::ClusterServiceServer;
 
 use subtle::ConstantTimeEq;
-use tonic::{Request, Status};
+use tonic::{metadata::MetadataValue, Request, Status};
+
+pub const CLUSTER_SECRET_METADATA_KEY: &str = "x-cluster-secret";
 
 /// Constant-time byte comparison to prevent timing attacks.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -48,34 +50,14 @@ impl ClusterAuthInterceptor {
     /// Validate the shared secret from request metadata
     #[allow(clippy::result_large_err)]
     pub fn validate<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        self.validate_metadata(request.metadata())?;
+        validate_cluster_secret_metadata(request.metadata(), &self.secret)?;
         Ok(request)
     }
 
     /// Validate the shared secret directly from request metadata.
     #[allow(clippy::result_large_err)]
     pub fn validate_metadata(&self, metadata: &tonic::metadata::MetadataMap) -> Result<(), Status> {
-        if self.secret.is_empty() {
-            tracing::error!(
-                "Cluster gRPC auth interceptor is misconfigured: shared secret is empty"
-            );
-            return Err(Status::unauthenticated(
-                "Cluster authentication secret is not configured",
-            ));
-        }
-
-        let token = metadata
-            .get("x-cluster-secret")
-            .ok_or_else(|| Status::unauthenticated("Missing x-cluster-secret header"))?
-            .to_str()
-            .map_err(|_| Status::unauthenticated("Invalid x-cluster-secret header"))?;
-
-        if !constant_time_eq(token.as_bytes(), self.secret.as_bytes()) {
-            tracing::warn!("Cluster gRPC auth failed: invalid secret");
-            return Err(Status::unauthenticated("Invalid cluster secret"));
-        }
-
-        Ok(())
+        validate_cluster_secret_metadata(metadata, &self.secret)
     }
 }
 
@@ -83,4 +65,47 @@ impl std::fmt::Debug for ClusterAuthInterceptor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClusterAuthInterceptor").finish()
     }
+}
+
+#[allow(clippy::result_large_err)]
+pub fn validate_cluster_secret_metadata(
+    metadata: &tonic::metadata::MetadataMap,
+    expected_secret: &str,
+) -> Result<(), Status> {
+    if expected_secret.is_empty() {
+        tracing::error!("Cluster gRPC auth is misconfigured: shared secret is empty");
+        return Err(Status::unauthenticated(
+            "Cluster authentication secret is not configured",
+        ));
+    }
+
+    let token = metadata
+        .get(CLUSTER_SECRET_METADATA_KEY)
+        .ok_or_else(|| Status::unauthenticated("Missing x-cluster-secret header"))?
+        .to_str()
+        .map_err(|_| Status::unauthenticated("Invalid x-cluster-secret header"))?;
+
+    if !constant_time_eq(token.as_bytes(), expected_secret.as_bytes()) {
+        tracing::warn!("Cluster gRPC auth failed: invalid secret");
+        return Err(Status::unauthenticated("Invalid cluster secret"));
+    }
+
+    Ok(())
+}
+
+pub fn cluster_secret_metadata_value(
+    cluster_secret: &str,
+) -> Result<MetadataValue<tonic::metadata::Ascii>, tonic::metadata::errors::InvalidMetadataValue> {
+    cluster_secret.parse::<MetadataValue<tonic::metadata::Ascii>>()
+}
+
+pub fn attach_cluster_secret<T>(
+    request: &mut tonic::Request<T>,
+    cluster_secret: &str,
+) -> Result<(), tonic::metadata::errors::InvalidMetadataValue> {
+    let value = cluster_secret_metadata_value(cluster_secret)?;
+    request
+        .metadata_mut()
+        .insert(CLUSTER_SECRET_METADATA_KEY, value);
+    Ok(())
 }

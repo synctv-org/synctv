@@ -1191,6 +1191,8 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
                 playback_l2_cache: runtime.playback_l2_cache,
                 room_settings_l2_cache: runtime.room_settings_l2_cache,
                 room_settings_cache_key_prefix: runtime.room_settings_cache_key_prefix,
+                member_permission_l2_cache: runtime.member_permission_l2_cache,
+                member_permission_cache_key_prefix: runtime.member_permission_cache_key_prefix,
                 credential_encryption,
                 credential_repo,
                 provider_access_service: Some(provider_access_service),

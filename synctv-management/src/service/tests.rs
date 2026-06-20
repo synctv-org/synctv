@@ -9,7 +9,7 @@ use tonic::Code;
 
 #[test]
 fn map_api_error_preserves_service_unavailable() {
-    let status = super::map_api_error(&synctv_api::impls::ApiError::ServiceUnavailable(
+    let status = super::map_api_error(synctv_api::impls::ApiError::ServiceUnavailable(
         "live streaming backend unavailable".to_string(),
     ));
 
@@ -19,7 +19,7 @@ fn map_api_error_preserves_service_unavailable() {
 
 #[test]
 fn map_api_error_hides_internal_details() {
-    let status = super::map_api_error(&synctv_api::impls::ApiError::Internal(
+    let status = super::map_api_error(synctv_api::impls::ApiError::Internal(
         "redis://user:secret@localhost:6379 failure".to_string(),
     ));
 

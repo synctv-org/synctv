@@ -5,6 +5,7 @@ use synctv_core::repository::realtime_outbox::{
     RealtimeOutboxEvent, RealtimeOutboxRepository, REALTIME_OUTBOX_CHANNEL,
 };
 use synctv_realtime::sync::{RealtimeEvent, RealtimeManager};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -12,6 +13,7 @@ const CLAIM_BATCH_SIZE: i64 = 100;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BUSY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PROCESSING_STALE_AFTER_SECS: i64 = 120;
+const STALE_REQUEUE_INTERVAL: Duration = Duration::from_secs(60);
 const PUBLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn start_realtime_outbox_dispatcher(
@@ -56,8 +58,16 @@ async fn run_dispatcher(
         }
     };
 
+    let mut stale_requeue = StaleRequeueSchedule::new(STALE_REQUEUE_INTERVAL);
+
     loop {
-        let dispatched = dispatch_once(outbox.clone(), realtime_manager.clone(), &worker_id).await;
+        let dispatched = dispatch_once(
+            outbox.clone(),
+            realtime_manager.clone(),
+            &worker_id,
+            &mut stale_requeue,
+        )
+        .await;
         if dispatched {
             continue;
         }
@@ -76,13 +86,9 @@ async fn dispatch_once(
     outbox: Arc<RealtimeOutboxRepository>,
     realtime_manager: Arc<RealtimeManager>,
     worker_id: &str,
+    stale_requeue: &mut StaleRequeueSchedule,
 ) -> bool {
-    if let Err(error) = outbox
-        .requeue_stale_processing(PROCESSING_STALE_AFTER_SECS)
-        .await
-    {
-        warn!(error = %error, "Failed to requeue stale realtime outbox events");
-    }
+    requeue_stale_processing_if_due(&outbox, stale_requeue).await;
 
     let events = match outbox.claim_batch(worker_id, CLAIM_BATCH_SIZE).await {
         Ok(events) => events,
@@ -102,6 +108,51 @@ async fn dispatch_once(
 
     tokio::time::sleep(BUSY_POLL_INTERVAL).await;
     true
+}
+
+struct StaleRequeueSchedule {
+    next_due: Instant,
+    interval: Duration,
+}
+
+impl StaleRequeueSchedule {
+    fn new(interval: Duration) -> Self {
+        Self {
+            next_due: Instant::now(),
+            interval,
+        }
+    }
+
+    fn is_due(&self) -> bool {
+        Instant::now() >= self.next_due
+    }
+
+    fn mark_run(&mut self) {
+        self.next_due = Instant::now() + self.interval;
+    }
+}
+
+async fn requeue_stale_processing_if_due(
+    outbox: &RealtimeOutboxRepository,
+    schedule: &mut StaleRequeueSchedule,
+) {
+    if !schedule.is_due() {
+        return;
+    }
+    schedule.mark_run();
+
+    match outbox
+        .requeue_stale_processing(PROCESSING_STALE_AFTER_SECS)
+        .await
+    {
+        Ok(requeued) if requeued > 0 => {
+            info!(requeued, "Requeued stale realtime outbox events");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            warn!(error = %error, "Failed to requeue stale realtime outbox events");
+        }
+    }
 }
 
 async fn wait_for_outbox_signal(listener: &mut Option<sqlx::postgres::PgListener>) {

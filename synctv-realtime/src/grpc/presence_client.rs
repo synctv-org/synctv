@@ -6,7 +6,6 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use moka::sync::Cache;
 use synctv_cluster::discovery::{ClusterNodeDirectory, NodeInfo};
 use synctv_core::models::{RoomId, UserId};
-use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{debug, warn};
 
@@ -140,15 +139,12 @@ impl RealtimePresenceClient {
             ));
         }
 
-        let value = self
-            .config
-            .cluster_secret
-            .parse::<MetadataValue<tonic::metadata::Ascii>>()
-            .map_err(|error| {
+        synctv_cluster::grpc::attach_cluster_secret(request, &self.config.cluster_secret).map_err(
+            |error| {
                 tracing::error!("cluster_secret contains invalid characters (non-ASCII?): {error}");
                 Error::Rpc("invalid cluster secret configuration".to_string())
-            })?;
-        request.metadata_mut().insert("x-cluster-secret", value);
+            },
+        )?;
         Ok(())
     }
 
@@ -410,7 +406,7 @@ mod tests {
         assert_eq!(
             request
                 .metadata()
-                .get("x-cluster-secret")
+                .get(synctv_cluster::grpc::CLUSTER_SECRET_METADATA_KEY)
                 .and_then(|value| value.to_str().ok()),
             Some("cluster-secret")
         );

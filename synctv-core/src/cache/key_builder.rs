@@ -70,7 +70,7 @@ impl KeyBuilder {
     /// Value: JSON { `node_id`, addr, ports, status, `last_heartbeat` }
     #[must_use]
     pub fn cluster_node(&self, node_id: &str) -> String {
-        format!("{}:cluster:nodes:{}", self.prefix, node_id)
+        self.prefixed_key(&format!("cluster:nodes:{node_id}"))
     }
 
     /// Active nodes list (Sorted Set)
@@ -80,7 +80,7 @@ impl KeyBuilder {
     /// Score: timestamp (for cleanup)
     #[must_use]
     pub fn cluster_nodes_active(&self) -> String {
-        format!("{}:cluster:nodes:active", self.prefix)
+        self.prefixed_key("cluster:nodes:active")
     }
 
     /// Stream publisher information
@@ -89,7 +89,7 @@ impl KeyBuilder {
     /// Fields: `node_id`, `started_at`, status, `viewer_count`
     #[must_use]
     pub fn stream_info(&self, stream_key: &str) -> String {
-        format!("{}:stream:info:{}", self.prefix, stream_key)
+        self.prefixed_key(&format!("stream:info:{stream_key}"))
     }
 
     /// Stream pull subscribers
@@ -98,7 +98,7 @@ impl KeyBuilder {
     /// Members: `node_id` (nodes that are pulling this stream)
     #[must_use]
     pub fn stream_subscribers(&self, stream_key: &str) -> String {
-        format!("{}:stream:subscribers:{}", self.prefix, stream_key)
+        self.prefixed_key(&format!("stream:subscribers:{stream_key}"))
     }
 
     /// Stream statistics
@@ -107,7 +107,7 @@ impl KeyBuilder {
     /// Fields: viewers, bitrate, packets, bytes
     #[must_use]
     pub fn stream_stats(&self, stream_key: &str) -> String {
-        format!("{}:stream:stats:{}", self.prefix, stream_key)
+        self.prefixed_key(&format!("stream:stats:{stream_key}"))
     }
 
     /// Room current state
@@ -116,7 +116,7 @@ impl KeyBuilder {
     /// Fields: `room_id`, `playing_media_id`, position, speed, `is_playing`, `updated_at`, version
     #[must_use]
     pub fn room_state(&self, room_id: &str) -> String {
-        format!("{}:room:{}:state", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:state"))
     }
 
     /// Room member list
@@ -125,7 +125,7 @@ impl KeyBuilder {
     /// Members: `user_id`
     #[must_use]
     pub fn room_members(&self, room_id: &str) -> String {
-        format!("{}:room:{}:members", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:members"))
     }
 
     /// Room online users
@@ -135,7 +135,7 @@ impl KeyBuilder {
     /// Score: `last_activity_timestamp`
     #[must_use]
     pub fn room_online_users(&self, room_id: &str) -> String {
-        format!("{}:room:{}:online", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:online"))
     }
 
     /// Room viewer count
@@ -144,7 +144,7 @@ impl KeyBuilder {
     /// Value: number (count)
     #[must_use]
     pub fn room_viewers(&self, room_id: &str) -> String {
-        format!("{}:room:{}:viewers", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:viewers"))
     }
 
     /// Playback information cache
@@ -153,7 +153,7 @@ impl KeyBuilder {
     /// Value: JSON with playback state
     #[must_use]
     pub fn playback_cache(&self, cache_key: &str) -> String {
-        format!("{}:playback:{}", self.prefix, cache_key)
+        self.prefixed_key(&format!("playback:{cache_key}"))
     }
 
     /// User session
@@ -162,7 +162,7 @@ impl KeyBuilder {
     /// Value: JSON with session data
     #[must_use]
     pub fn user_session(&self, session_id: &str) -> String {
-        format!("{}:session:{}", self.prefix, session_id)
+        self.prefixed_key(&format!("session:{session_id}"))
     }
 
     /// Short-lived auth/session workflow key.
@@ -189,12 +189,11 @@ impl KeyBuilder {
     /// window: "1s", "1m", "1h", etc.
     #[must_use]
     pub fn rate_limit(&self, identifier: &str, window: &str) -> String {
-        format!(
-            "{}:ratelimit:{}:{}",
-            self.prefix,
+        self.prefixed_key(&format!(
+            "ratelimit:{}:{}",
             Self::sanitize_key_segment(identifier),
             window
-        )
+        ))
     }
 
     /// `OAuth2` state token (for CSRF protection during authorization flow)
@@ -212,11 +211,7 @@ impl KeyBuilder {
     /// Value: JSON with code + attempts
     #[must_use]
     pub fn email_code(&self, email: &str) -> String {
-        format!(
-            "{}:email:code:{}",
-            self.prefix,
-            Self::sanitize_key_segment(email)
-        )
+        self.prefixed_key(&format!("email:code:{}", Self::sanitize_key_segment(email)))
     }
 
     /// Failed login attempt counter per username
@@ -225,11 +220,10 @@ impl KeyBuilder {
     /// Value: counter (INCR operation)
     #[must_use]
     pub fn login_attempts(&self, username: &str) -> String {
-        format!(
-            "{}:auth:login_attempts:{}",
-            self.prefix,
+        self.prefixed_key(&format!(
+            "auth:login_attempts:{}",
             Self::sanitize_key_segment(username)
-        )
+        ))
     }
 
     /// Failed login attempt counter per IP address
@@ -238,11 +232,10 @@ impl KeyBuilder {
     /// Value: JSON with count and `last_failure_at`
     #[must_use]
     pub fn login_attempts_ip(&self, ip: &str) -> String {
-        format!(
-            "{}:auth:login_attempts_ip:{}",
-            self.prefix,
+        self.prefixed_key(&format!(
+            "auth:login_attempts_ip:{}",
             Self::sanitize_key_segment(ip)
-        )
+        ))
     }
 
     /// Failed room password verification counter per room+IP combination
@@ -251,7 +244,7 @@ impl KeyBuilder {
     /// Value: JSON with count and `last_failure_at`
     #[must_use]
     pub fn room_password_attempts(&self, room_id: &str, ip: &str) -> String {
-        format!("{}:room:pwd_attempts:{}:{}", self.prefix, room_id, ip)
+        self.prefixed_key(&format!("room:pwd_attempts:{room_id}:{ip}"))
     }
 
     /// Blacklisted refresh token JTI (used for refresh token rotation)
@@ -260,7 +253,7 @@ impl KeyBuilder {
     /// Value: "1" (presence check only)
     #[must_use]
     pub fn refresh_token_blacklist(&self, jti: &str) -> String {
-        format!("{}:auth:rt_blacklist:{}", self.prefix, jti)
+        self.prefixed_key(&format!("auth:rt_blacklist:{jti}"))
     }
 
     /// Blacklisted access token JTI (used on logout to invalidate access tokens)
@@ -269,7 +262,7 @@ impl KeyBuilder {
     /// Value: "1" (presence check only)
     #[must_use]
     pub fn access_token_blacklist(&self, jti: &str) -> String {
-        format!("{}:auth:at_blacklist:{}", self.prefix, jti)
+        self.prefixed_key(&format!("auth:at_blacklist:{jti}"))
     }
 
     /// Refresh token session revocation key (per user login session).
@@ -278,12 +271,11 @@ impl KeyBuilder {
     /// Value: Unix timestamp when the session was revoked
     #[must_use]
     pub fn refresh_token_session_revoked(&self, user_id: &str, session_id: &str) -> String {
-        format!(
-            "{}:auth:rt_session_revoked:{}:{}",
-            self.prefix,
+        self.prefixed_key(&format!(
+            "auth:rt_session_revoked:{}:{}",
             Self::sanitize_key_segment(user_id),
             Self::sanitize_key_segment(session_id)
-        )
+        ))
     }
 
     /// Blacklisted guest token JTI (for revoking guest access)
@@ -292,7 +284,7 @@ impl KeyBuilder {
     /// Value: "1" (presence check only)
     #[must_use]
     pub fn guest_token_blacklist(&self, jti: &str) -> String {
-        format!("{}:auth:guest_blacklist:{}", self.prefix, jti)
+        self.prefixed_key(&format!("auth:guest_blacklist:{jti}"))
     }
 
     /// Room guest version key (for revoking all guest tokens in a room)
@@ -301,7 +293,7 @@ impl KeyBuilder {
     /// Value: Monotonically increasing version number
     #[must_use]
     pub fn room_guest_version(&self, room_id: &str) -> String {
-        format!("{}:room:{}:guest_version", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:guest_version"))
     }
 
     /// WebSocket ticket (one-time use)
@@ -327,7 +319,7 @@ impl KeyBuilder {
     /// Used for cross-node cache invalidation via Redis Streams
     #[must_use]
     pub fn cache_invalidation_stream(&self) -> String {
-        format!("{}:cache:invalidate:stream", self.prefix)
+        self.prefixed_key("cache:invalidate:stream")
     }
 
     /// Cluster events pub/sub channel
@@ -335,7 +327,7 @@ impl KeyBuilder {
     /// Used for cross-cluster message broadcasting
     #[must_use]
     pub fn realtime_events_channel(&self) -> String {
-        format!("{}:cluster:events", self.prefix)
+        self.prefixed_key("cluster:events")
     }
 
     /// Room-specific messages channel
@@ -343,7 +335,7 @@ impl KeyBuilder {
     /// Used for room message broadcasting.
     #[must_use]
     pub fn room_messages_channel(&self, room_id: &str) -> String {
-        format!("{}:room:{}:messages", self.prefix, room_id)
+        self.prefixed_key(&format!("room:{room_id}:messages"))
     }
 }
 
@@ -448,6 +440,13 @@ mod tests {
     #[test]
     fn test_key_builder_empty_prefix_has_no_leading_separator() {
         let builder = KeyBuilder::new("");
+        assert_eq!(builder.cluster_node("node-1"), "cluster:nodes:node-1");
+        assert_eq!(builder.room_state("room-1"), "room:room-1:state");
+        assert_eq!(builder.rate_limit("user:id", "1m"), "ratelimit:user_id:1m");
+        assert_eq!(
+            builder.login_attempts("user:name"),
+            "auth:login_attempts:user_name"
+        );
         assert_eq!(builder.oauth2_state("state_abc"), "oauth2:state:state_abc");
         assert_eq!(builder.ws_ticket("ticket_abc"), "ws_ticket:ticket_abc");
         assert_eq!(builder.session("auth:test", "sess:1"), "auth:test:sess_1");

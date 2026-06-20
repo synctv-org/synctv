@@ -47,6 +47,7 @@ pub(crate) mod convert;
 mod tests;
 
 use futures::future::BoxFuture;
+use std::collections::HashMap;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
 use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
@@ -296,6 +297,66 @@ impl ClientApiImpl {
             .transpose()?
             .flatten();
         convert::try_user_public_view_to_proto(user, avatar_url.as_deref(), &self.public_id_codec)
+    }
+
+    /// Batch load user public views with avatars loaded in parallel
+    ///
+    /// This is a drop-in replacement for calling `user_public_view_with_loaded_avatar`
+    /// in a loop, but loads all avatars in parallel for better performance.
+    ///
+    /// # Performance
+    /// - Serial: N users × ~10-50ms per avatar = 100-500ms for 10 users
+    /// - Batch: ~10-50ms total regardless of user count
+    pub(crate) async fn batch_user_public_views_with_loaded_avatars(
+        &self,
+        users: &[synctv_core::models::User],
+    ) -> Result<Vec<synctv_proto::client::UserPublicView>, ApiError> {
+        // Collect all unique avatar file reference IDs
+        let avatar_refs: Vec<i64> = users
+            .iter()
+            .filter_map(|u| u.avatar_file_reference_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        // Batch load all avatar files in parallel using tokio::spawn
+        let mut tasks = Vec::new();
+        for ref_id in avatar_refs {
+            let self_clone = self.clone();
+            tasks.push(tokio::spawn(async move {
+                let file = self_clone.load_stored_file_reference(Some(ref_id)).await?;
+                Ok::<_, ApiError>((ref_id, file))
+            }));
+        }
+
+        let mut avatar_files = HashMap::new();
+        for task in tasks {
+            let (ref_id, file) = task
+                .await
+                .map_err(|e| ApiError::Internal(format!("Avatar loading task failed: {e}")))??;
+            avatar_files.insert(ref_id, file);
+        }
+
+        // Generate URLs and convert to proto
+        let policy = synctv_core::service::user_avatar_upload_policy();
+        users
+            .iter()
+            .map(|user| {
+                let avatar_url = user
+                    .avatar_file_reference_id
+                    .and_then(|ref_id| avatar_files.get(&ref_id))
+                    .and_then(|opt| opt.as_ref())
+                    .map(|file| self.stored_file_reference_url(file, &policy))
+                    .transpose()?
+                    .flatten();
+
+                convert::try_user_public_view_to_proto(
+                    user,
+                    avatar_url.as_deref(),
+                    &self.public_id_codec,
+                )
+            })
+            .collect()
     }
 
     pub(crate) async fn room_creator_public_view(

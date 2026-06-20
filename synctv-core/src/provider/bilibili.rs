@@ -114,14 +114,6 @@ impl BilibiliProvider {
     }
 
     /// Match URL to determine type and ID
-    pub async fn r#match(
-        &self,
-        url: String,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, ProviderError> {
-        self.r#match_with_context(url, instance_name, None).await
-    }
-
     pub async fn r#match_with_context(
         &self,
         url: String,
@@ -136,15 +128,6 @@ impl BilibiliProvider {
     }
 
     /// Parse video page
-    pub async fn parse_video_page(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        self.parse_video_page_with_context(req, instance_name, None)
-            .await
-    }
-
     pub async fn parse_video_page_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
@@ -161,15 +144,6 @@ impl BilibiliProvider {
     }
 
     /// Parse PGC page
-    pub async fn parse_pgc_page(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        self.parse_pgc_page_with_context(req, instance_name, None)
-            .await
-    }
-
     pub async fn parse_pgc_page_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
@@ -186,15 +160,6 @@ impl BilibiliProvider {
     }
 
     /// Parse live page
-    pub async fn parse_live_page(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
-        self.parse_live_page_with_context(req, instance_name, None)
-            .await
-    }
-
     pub async fn parse_live_page_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
@@ -211,13 +176,6 @@ impl BilibiliProvider {
     }
 
     /// Generate QR code for login
-    pub async fn new_qr_code(
-        &self,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, ProviderError> {
-        self.new_qr_code_with_context(instance_name, None).await
-    }
-
     pub async fn new_qr_code_with_context(
         &self,
         instance_name: Option<&str>,
@@ -233,15 +191,6 @@ impl BilibiliProvider {
     }
 
     /// Check QR code login status
-    pub async fn login_with_qr_code(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
-        self.login_with_qr_code_with_context(req, instance_name, None)
-            .await
-    }
-
     pub async fn login_with_qr_code_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
@@ -258,13 +207,6 @@ impl BilibiliProvider {
     }
 
     /// Get new captcha
-    pub async fn new_captcha(
-        &self,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, ProviderError> {
-        self.new_captcha_with_context(instance_name, None).await
-    }
-
     pub async fn new_captcha_with_context(
         &self,
         instance_name: Option<&str>,
@@ -280,14 +222,6 @@ impl BilibiliProvider {
     }
 
     /// Send SMS verification code
-    pub async fn new_sms(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::NewSmsReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, ProviderError> {
-        self.new_sms_with_context(req, instance_name, None).await
-    }
-
     pub async fn new_sms_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::NewSmsReq,
@@ -301,15 +235,6 @@ impl BilibiliProvider {
     }
 
     /// Login with SMS code
-    pub async fn login_with_sms(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
-        self.login_with_sms_with_context(req, instance_name, None)
-            .await
-    }
-
     pub async fn login_with_sms_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
@@ -326,14 +251,6 @@ impl BilibiliProvider {
     }
 
     /// Get user info
-    pub async fn user_info(
-        &self,
-        req: synctv_media_providers::grpc::bilibili::UserInfoReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
-        self.user_info_with_context(req, instance_name, None).await
-    }
-
     pub async fn user_info_with_context(
         &self,
         req: synctv_media_providers::grpc::bilibili::UserInfoReq,
@@ -350,16 +267,6 @@ impl BilibiliProvider {
     }
 
     /// Get live danmaku server info for the WebSocket connection
-    pub async fn get_live_danmu_info(
-        &self,
-        room_id: u64,
-        cookies: HashMap<String, String>,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
-        self.get_live_danmu_info_with_context(room_id, cookies, instance_name, None)
-            .await
-    }
-
     pub async fn get_live_danmu_info_with_context(
         &self,
         room_id: u64,

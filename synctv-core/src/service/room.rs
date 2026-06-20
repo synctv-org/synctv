@@ -136,6 +136,7 @@ pub use opaque_sessions::{
 };
 mod outbox;
 mod password;
+mod permission_fence_guard;
 mod resource_access;
 mod settings;
 mod types;
@@ -241,12 +242,8 @@ pub struct RoomService {
     room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
 }
 
-#[derive(Debug)]
-struct PendingRoomMemberPermissionFence {
-    room_id: RoomId,
-    user_id: UserId,
-    fence: PermissionWriteFence,
-}
+pub(crate) use permission_fence_guard::PendingRoomMemberPermissionFence;
+use permission_fence_guard::PermissionFenceGuard;
 
 impl std::fmt::Debug for RoomService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -649,14 +646,12 @@ impl RoomService {
         outbox_event: Option<NewRealtimeOutboxEvent>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let permission_fences = self
-            .reserve_room_member_permission_fences(room_id, &mut tx)
-            .await?;
+        let guard = PermissionFenceGuard::reserve(Arc::new(self.clone()), room_id, &mut tx).await?;
+
         let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
             Ok(impact) => impact,
             Err(error) => {
-                self.abort_room_member_permission_fences(&permission_fences)
-                    .await;
+                guard.abort().await;
                 return Err(error);
             }
         };
@@ -664,24 +659,15 @@ impl RoomService {
             .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
             .await
         {
-            self.abort_room_member_permission_fences(&permission_fences)
-                .await;
+            guard.abort().await;
             return Err(error);
         }
-
         if let Err(error) = tx.commit().await {
-            self.abort_room_member_permission_fences(&permission_fences)
-                .await;
+            guard.abort().await;
             return Err(error.into());
         }
 
-        if let Err(error) = self
-            .commit_removed_room_member_permission_fences(
-                permission_fences,
-                &impact.removed_members,
-            )
-            .await
-        {
+        if let Err(error) = guard.commit(&impact.removed_members).await {
             tracing::warn!(
                 error = %error,
                 room_id = %room_id,
@@ -809,31 +795,21 @@ impl RoomService {
         );
 
         let mut tx = self.pool.begin().await?;
-        let permission_fences = self
-            .reserve_room_member_permission_fences(room_id, &mut tx)
-            .await?;
+        let guard = PermissionFenceGuard::reserve(Arc::new(self.clone()), room_id, &mut tx).await?;
+
         let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, room_id).await {
             Ok(impact) => impact,
             Err(error) => {
-                self.abort_room_member_permission_fences(&permission_fences)
-                    .await;
+                guard.abort().await;
                 return Err(error);
             }
         };
-
         if let Err(error) = tx.commit().await {
-            self.abort_room_member_permission_fences(&permission_fences)
-                .await;
+            guard.abort().await;
             return Err(error.into());
         }
 
-        if let Err(error) = self
-            .commit_removed_room_member_permission_fences(
-                permission_fences,
-                &impact.removed_members,
-            )
-            .await
-        {
+        if let Err(error) = guard.commit(&impact.removed_members).await {
             tracing::warn!(
                 error = %error,
                 room_id = %room_id,

@@ -44,6 +44,7 @@ pub(crate) mod settings;
 pub(crate) mod settings_vars;
 mod source_config;
 pub(crate) mod stun_server;
+pub(crate) mod system_stats;
 pub mod user;
 pub mod user_notification;
 pub(crate) mod ws_ticket;
@@ -150,6 +151,7 @@ pub use stun_server::{
     resolve_external_ip, validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState,
     StunServer, StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
 };
+pub use system_stats::SystemStatsService;
 pub use user::UserService;
 pub use user::{
     AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin, MfaChallenge,

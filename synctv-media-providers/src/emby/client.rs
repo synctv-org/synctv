@@ -13,12 +13,12 @@ use reqwest::{
 use serde_json::{json, Value};
 use tokio::sync::OnceCell;
 
-use super::error::{check_response, json_with_limit, EmbyError};
 use super::types::{
     device_profile_from_playback_client_profile, AuthResponse, FsListResponse, Item, ItemsResponse,
     PathInfo, PlaybackInfoResponse, SystemInfo, UserInfo,
 };
 use crate::error::with_retry;
+use crate::error::{check_response, json_with_limit, ProviderClientError as EmbyError};
 
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {

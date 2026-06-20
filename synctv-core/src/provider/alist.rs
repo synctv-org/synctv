@@ -449,15 +449,9 @@ impl AlistProvider {
 
     /// Login to Alist
     ///
+    /// Login to Alist and return a token string.
+    ///
     /// Takes grpc-generated `LoginReq` and returns token string
-    pub async fn login(
-        &self,
-        req: synctv_media_providers::grpc::alist::LoginReq,
-        instance_name: Option<&str>,
-    ) -> Result<String, ProviderError> {
-        self.login_with_context(req, instance_name, None).await
-    }
-
     pub async fn login_with_context(
         &self,
         req: synctv_media_providers::grpc::alist::LoginReq,
@@ -473,14 +467,6 @@ impl AlistProvider {
     /// List Alist directory
     ///
     /// Takes grpc-generated `FsListReq` and returns `FsListResp`
-    pub async fn fs_list(
-        &self,
-        req: synctv_media_providers::grpc::alist::FsListReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::alist::FsListResp, ProviderError> {
-        self.fs_list_with_context(req, instance_name, None).await
-    }
-
     pub async fn fs_list_with_context(
         &self,
         req: synctv_media_providers::grpc::alist::FsListReq,
@@ -494,14 +480,6 @@ impl AlistProvider {
     }
 
     /// Search Alist files and directories.
-    pub async fn fs_search(
-        &self,
-        req: synctv_media_providers::grpc::alist::FsSearchReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
-        self.fs_search_with_context(req, instance_name, None).await
-    }
-
     pub async fn fs_search_with_context(
         &self,
         req: synctv_media_providers::grpc::alist::FsSearchReq,
@@ -566,14 +544,6 @@ impl AlistProvider {
     /// Get Alist user info
     ///
     /// Takes grpc-generated `MeReq` and returns `MeResp`
-    pub async fn me(
-        &self,
-        req: synctv_media_providers::grpc::alist::MeReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
-        self.me_with_context(req, instance_name, None).await
-    }
-
     pub async fn me_with_context(
         &self,
         req: synctv_media_providers::grpc::alist::MeReq,

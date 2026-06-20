@@ -687,10 +687,7 @@ mod tests {
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let service = BilibiliService::new()?;
         service.wbi_state.reset_for_tests().await;
-        service
-            .wbi_state
-            .set_wbi_key("shared-key".to_string())
-            .await;
+        service.wbi_state.set_wbi_key("shared-key".to_string());
 
         let client_a = super::client_from_cookies_and_state(
             service.client.clone(),
@@ -706,19 +703,11 @@ mod tests {
         );
 
         assert_eq!(
-            client_a
-                .shared_wbi_state()
-                .get_valid_wbi_key()
-                .await
-                .as_deref(),
+            client_a.shared_wbi_state().get_valid_wbi_key().as_deref(),
             Some("shared-key")
         );
         assert_eq!(
-            client_b
-                .shared_wbi_state()
-                .get_valid_wbi_key()
-                .await
-                .as_deref(),
+            client_b.shared_wbi_state().get_valid_wbi_key().as_deref(),
             Some("shared-key")
         );
         Ok(())

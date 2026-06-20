@@ -9,15 +9,14 @@
 //! - Anti-crawler handling
 
 mod client;
-mod error;
 mod service;
 mod types;
 
+pub use crate::error::ProviderClientError as BilibiliError;
 pub use client::{
     BilibiliClient, BilibiliEndpoints, DanmakuMessage, HeartbeatConfig, LiveDanmakuConnection,
     ReconnectConfig, ReconnectResult, ReconnectableLiveDanmakuConnection,
 };
-pub use error::BilibiliError;
 pub use service::{BilibiliInterface, BilibiliLiveDanmakuStream, BilibiliService};
 pub use types::{
     CodecEntry, DashAudio, DashInfo, DashPgcResp, DashPgcResult, DashVideo, DashVideoData,

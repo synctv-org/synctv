@@ -12,12 +12,12 @@ use reqwest::{
 use serde_json::json;
 use std::collections::HashMap;
 
-use super::error::{check_response, json_with_limit, AlistError};
 use super::types::{
     AlistResp, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpFsSearchResp, HttpMeResp,
     LoginData,
 };
 use crate::error::with_retry;
+use crate::error::{check_response, json_with_limit, ProviderClientError as AlistError};
 use serde::de::DeserializeOwned;
 
 /// Validate that a path does not contain traversal components.

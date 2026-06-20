@@ -1,5 +1,8 @@
 use super::*;
 use crate::bilibili::Quality;
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -16,6 +19,31 @@ fn signed_value<'a>(
         .find(|(candidate, _)| candidate == key)
         .map(|(_, value)| value.as_str())
         .ok_or_else(|| missing(key))
+}
+
+fn test_endpoints(base_url: impl AsRef<str>) -> BilibiliEndpoints {
+    let base = base_url.as_ref().trim_end_matches('/').to_string();
+    BilibiliEndpoints {
+        web_base: base.clone(),
+        api_base: base.clone(),
+        passport_base: base.clone(),
+        live_api_base: base,
+    }
+}
+
+fn nav_response_with_wbi_keys(img_key: &str, sub_key: &str) -> serde_json::Value {
+    json!({
+        "data": {
+            "isLogin": false,
+            "wbi_img": {
+                "img_url": format!("https://i0.hdslb.com/bfs/wbi/{img_key}.png"),
+                "sub_url": format!("https://i0.hdslb.com/bfs/wbi/{sub_key}.png")
+            }
+        },
+        "message": "0",
+        "code": 0,
+        "ttl": 1
+    })
 }
 
 #[test]
@@ -653,20 +681,110 @@ async fn test_wbi_state_is_isolated_per_client_instance() -> TestResult {
     state_a.reset_for_tests().await;
     state_b.reset_for_tests().await;
 
-    state_a.set_wbi_key("key-a".to_string()).await;
-    state_b.set_wbi_key("key-b".to_string()).await;
+    state_a.set_wbi_key("key-a".to_string());
+    state_b.set_wbi_key("key-b".to_string());
 
-    assert_eq!(state_a.get_valid_wbi_key().await.as_deref(), Some("key-a"));
-    assert_eq!(state_b.get_valid_wbi_key().await.as_deref(), Some("key-b"));
+    assert_eq!(state_a.get_valid_wbi_key().as_deref(), Some("key-a"));
+    assert_eq!(state_b.get_valid_wbi_key().as_deref(), Some("key-b"));
 
-    state_a.release_refresh_lock_on_failure_and_notify();
-    state_a.release_refresh_lock_on_failure_and_notify();
-    state_a.release_refresh_lock_on_failure_and_notify();
+    state_a.record_failure_for_tests();
+    state_a.record_failure_for_tests();
+    state_a.record_failure_for_tests();
 
-    assert!(state_a.has_exceeded_max_failures());
-    assert!(!state_b.has_exceeded_max_failures());
+    assert!(state_a.has_exceeded_max_failures_for_tests());
+    assert!(!state_b.has_exceeded_max_failures_for_tests());
     assert_eq!(state_a.api_call_count(), 0);
     assert_eq!(state_b.api_call_count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_force_wbi_refresh_reuses_key_written_while_waiting() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(WbiState::default());
+    state.set_wbi_key("old-key".to_string());
+    let refresh_guard = state.acquire_refresh_for_tests().await;
+    let client = BilibiliClient::new_with_transport(
+        reqwest::Client::new(),
+        reqwest::Client::new(),
+        test_endpoints(server.uri()),
+        state.clone(),
+        SsrfGuard::strict_policy(),
+    );
+
+    let waiter_client = Arc::new(client);
+    let waiter = {
+        let waiter_client = waiter_client.clone();
+        tokio::spawn(async move { waiter_client.get_wbi_mixin_key_for_tests(true).await })
+    };
+    tokio::task::yield_now().await;
+
+    state.set_wbi_key("fresh-key".to_string());
+    drop(refresh_guard);
+
+    let key = waiter.await??;
+    assert_eq!(key, "fresh-key");
+    assert_eq!(state.get_valid_wbi_key().as_deref(), Some("fresh-key"));
+    assert_eq!(state.api_call_count(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wbi_refresh_rechecks_failure_breaker_after_waiting() -> TestResult {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/x/web-interface/nav"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nav_response_with_wbi_keys(
+                "7cd084941338484aae1ad9425b84077c",
+                "4932caff0ff746eab6f01bf08b70ac45",
+            )),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let state = Arc::new(WbiState::default());
+    let refresh_guard = state.acquire_refresh_for_tests().await;
+    let client = Arc::new(BilibiliClient::new_with_transport(
+        reqwest::Client::new(),
+        reqwest::Client::new(),
+        test_endpoints(server.uri()),
+        state.clone(),
+        SsrfGuard::strict_policy(),
+    ));
+
+    let waiter = {
+        let client = client.clone();
+        tokio::spawn(async move { client.get_wbi_mixin_key_for_tests(false).await })
+    };
+    tokio::task::yield_now().await;
+
+    state.record_failure_for_tests();
+    state.record_failure_for_tests();
+    state.record_failure_for_tests();
+    drop(refresh_guard);
+
+    let err = waiter
+        .await?
+        .expect_err("waiter should observe the breaker after acquiring refresh lock");
+    assert!(
+        err.to_string().contains("too many consecutive failures"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(state.api_call_count(), 0);
     Ok(())
 }
 

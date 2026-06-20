@@ -26,8 +26,9 @@ use futures::StreamExt;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::{future::Future, time::Duration};
-use synctv_media_providers::alist::{AlistError, AlistInterface};
+use synctv_media_providers::alist::AlistInterface;
 use synctv_media_providers::grpc::alist::{FsGetResp, FsListResp, FsOtherResp};
+use synctv_media_providers::ProviderClientError;
 use tonic::client::GrpcService;
 use tonic::codec::CompressionEncoding;
 use tonic::{Code, Request, Status};
@@ -568,7 +569,7 @@ impl AlistInterface for GrpcAlistClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::alist::alist_client,
         AlistClient,
-        AlistError,
+        ProviderClientError,
         fs_get,
         synctv_media_providers::grpc::alist::FsGetReq,
         FsGetResp
@@ -576,7 +577,7 @@ impl AlistInterface for GrpcAlistClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::alist::alist_client,
         AlistClient,
-        AlistError,
+        ProviderClientError,
         fs_list,
         synctv_media_providers::grpc::alist::FsListReq,
         FsListResp
@@ -584,7 +585,7 @@ impl AlistInterface for GrpcAlistClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::alist::alist_client,
         AlistClient,
-        AlistError,
+        ProviderClientError,
         fs_other,
         synctv_media_providers::grpc::alist::FsOtherReq,
         FsOtherResp
@@ -592,7 +593,7 @@ impl AlistInterface for GrpcAlistClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::alist::alist_client,
         AlistClient,
-        AlistError,
+        ProviderClientError,
         fs_search,
         synctv_media_providers::grpc::alist::FsSearchReq,
         synctv_media_providers::grpc::alist::FsSearchResp
@@ -600,7 +601,7 @@ impl AlistInterface for GrpcAlistClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::alist::alist_client,
         AlistClient,
-        AlistError,
+        ProviderClientError,
         me,
         synctv_media_providers::grpc::alist::MeReq,
         synctv_media_providers::grpc::alist::MeResp
@@ -610,7 +611,7 @@ impl AlistInterface for GrpcAlistClient {
     async fn login(
         &self,
         request: synctv_media_providers::grpc::alist::LoginReq,
-    ) -> Result<String, AlistError> {
+    ) -> Result<String, ProviderClientError> {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
         let mut client = apply_provider_client_compression(
             AlistClient::new(self.connection.channel()),
@@ -807,7 +808,7 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
 
 // Bilibili Client
 
-use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
+use synctv_media_providers::bilibili::BilibiliInterface;
 
 /// Type alias for Bilibili client
 pub type BilibiliClientArc = Arc<dyn BilibiliInterface>;
@@ -835,7 +836,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         new_qr_code,
         synctv_media_providers::grpc::bilibili::Empty,
         synctv_media_providers::grpc::bilibili::NewQrCodeResp
@@ -843,7 +844,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         login_with_qr_code,
         synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
         synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp
@@ -851,7 +852,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         new_captcha,
         synctv_media_providers::grpc::bilibili::Empty,
         synctv_media_providers::grpc::bilibili::NewCaptchaResp
@@ -859,7 +860,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         new_sms,
         synctv_media_providers::grpc::bilibili::NewSmsReq,
         synctv_media_providers::grpc::bilibili::NewSmsResp
@@ -867,7 +868,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         login_with_sms,
         synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
         synctv_media_providers::grpc::bilibili::LoginWithSmsResp
@@ -875,7 +876,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         parse_video_page,
         synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
         synctv_media_providers::grpc::bilibili::VideoPageInfo
@@ -883,7 +884,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_video_url,
         synctv_media_providers::grpc::bilibili::GetVideoUrlReq,
         synctv_media_providers::grpc::bilibili::VideoUrl
@@ -891,7 +892,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_dash_video_url,
         synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq,
         synctv_media_providers::grpc::bilibili::GetDashVideoUrlResp
@@ -899,7 +900,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_subtitles,
         synctv_media_providers::grpc::bilibili::GetSubtitlesReq,
         synctv_media_providers::grpc::bilibili::GetSubtitlesResp
@@ -907,7 +908,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         parse_pgc_page,
         synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
         synctv_media_providers::grpc::bilibili::VideoPageInfo
@@ -915,7 +916,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_pgcurl,
         synctv_media_providers::grpc::bilibili::GetPgcurlReq,
         synctv_media_providers::grpc::bilibili::VideoUrl
@@ -923,7 +924,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_dash_pgcurl,
         synctv_media_providers::grpc::bilibili::GetDashPgcurlReq,
         synctv_media_providers::grpc::bilibili::GetDashPgcurlResp
@@ -931,7 +932,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         user_info,
         synctv_media_providers::grpc::bilibili::UserInfoReq,
         synctv_media_providers::grpc::bilibili::UserInfoResp
@@ -939,7 +940,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         r#match,
         synctv_media_providers::grpc::bilibili::MatchReq,
         synctv_media_providers::grpc::bilibili::MatchResp
@@ -947,7 +948,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_live_streams,
         synctv_media_providers::grpc::bilibili::GetLiveStreamsReq,
         synctv_media_providers::grpc::bilibili::GetLiveStreamsResp
@@ -955,7 +956,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         parse_live_page,
         synctv_media_providers::grpc::bilibili::ParseLivePageReq,
         synctv_media_providers::grpc::bilibili::VideoPageInfo
@@ -963,7 +964,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::bilibili::bilibili_client,
         BilibiliClient,
-        BilibiliError,
+        ProviderClientError,
         get_live_danmu_info,
         synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq,
         synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp
@@ -977,7 +978,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
             dyn ::core::future::Future<
                     Output = Result<
                         synctv_media_providers::bilibili::BilibiliLiveDanmakuStream,
-                        BilibiliError,
+                        ProviderClientError,
                     >,
                 > + ::core::marker::Send
                 + 'async_trait,
@@ -1015,7 +1016,7 @@ impl BilibiliInterface for GrpcBilibiliClient {
 
 // Emby Client
 
-use synctv_media_providers::emby::{EmbyError, EmbyInterface};
+use synctv_media_providers::emby::EmbyInterface;
 
 /// Type alias for Emby client
 pub type EmbyClientArc = Arc<dyn EmbyInterface>;
@@ -1043,7 +1044,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         login,
         synctv_media_providers::grpc::emby::LoginReq,
         synctv_media_providers::grpc::emby::LoginResp
@@ -1051,7 +1052,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         me,
         synctv_media_providers::grpc::emby::MeReq,
         synctv_media_providers::grpc::emby::MeResp
@@ -1059,7 +1060,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         get_items,
         synctv_media_providers::grpc::emby::GetItemsReq,
         synctv_media_providers::grpc::emby::GetItemsResp
@@ -1067,7 +1068,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         get_item,
         synctv_media_providers::grpc::emby::GetItemReq,
         synctv_media_providers::grpc::emby::Item
@@ -1075,7 +1076,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         fs_list,
         synctv_media_providers::grpc::emby::FsListReq,
         synctv_media_providers::grpc::emby::FsListResp
@@ -1083,7 +1084,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         get_system_info,
         synctv_media_providers::grpc::emby::SystemInfoReq,
         synctv_media_providers::grpc::emby::SystemInfoResp
@@ -1091,7 +1092,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         logout,
         synctv_media_providers::grpc::emby::LogoutReq,
         synctv_media_providers::grpc::emby::Empty
@@ -1099,7 +1100,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         playback_info,
         synctv_media_providers::grpc::emby::PlaybackInfoReq,
         synctv_media_providers::grpc::emby::PlaybackInfoResp
@@ -1107,7 +1108,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         delete_active_encodings,
         synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq,
         synctv_media_providers::grpc::emby::Empty
@@ -1115,7 +1116,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         report_playback_start,
         synctv_media_providers::grpc::emby::ReportPlaybackStartReq,
         synctv_media_providers::grpc::emby::Empty
@@ -1123,7 +1124,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         report_playback_stop,
         synctv_media_providers::grpc::emby::ReportPlaybackStopReq,
         synctv_media_providers::grpc::emby::Empty
@@ -1131,7 +1132,7 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(
         synctv_media_providers::grpc::emby::emby_client,
         EmbyClient,
-        EmbyError,
+        ProviderClientError,
         report_playback_progress,
         synctv_media_providers::grpc::emby::ReportPlaybackProgressReq,
         synctv_media_providers::grpc::emby::Empty

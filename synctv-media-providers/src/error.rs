@@ -52,6 +52,18 @@ pub enum ProviderClientError {
     ResponseTooLarge { size: u64 },
 }
 
+/// Fetch JSON from a request: send + check status + deserialize with size limit.
+///
+/// Combines `check_response()` and `json_with_limit()` into a single helper.
+/// This is the recommended way to fetch JSON from provider APIs.
+pub async fn fetch_json<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+) -> Result<T, ProviderClientError> {
+    let response = request.send().await?;
+    let response = check_response(response).await?;
+    json_with_limit(response).await
+}
+
 /// Read a response body with size limit and deserialize as JSON.
 ///
 /// Checks `Content-Length` hint first (if available), then enforces the

@@ -26,12 +26,11 @@
 //! ```
 
 mod client;
-mod error;
 mod service;
 mod types;
 
+pub use crate::error::ProviderClientError as AlistError;
 pub use client::AlistClient;
-pub use error::AlistError;
 pub use service::{AlistInterface, AlistService};
 pub use types::{
     AlistResp, HttpFsGetRelated, HttpFsGetResp, HttpFsListContent, HttpFsListResp, HttpFsOtherResp,

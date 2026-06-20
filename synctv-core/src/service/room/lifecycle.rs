@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     models::{
         AuditAction, AuditTargetType, PageParams, ReviewStatus, Room, RoomId, RoomMember,
@@ -8,8 +10,8 @@ use crate::{
 };
 
 use super::{
-    creation::RoomCreationPolicy, soft_delete_room_and_cleanup_in_tx, NewRealtimeOutboxEvent,
-    RoomService,
+    creation::RoomCreationPolicy, permission_fence_guard::PermissionFenceGuard,
+    soft_delete_room_and_cleanup_in_tx, NewRealtimeOutboxEvent, RoomService,
 };
 
 impl RoomService {
@@ -134,36 +136,27 @@ impl RoomService {
         let actor = self.user_service.get_user(&user_id).await?;
         let is_global_admin = actor.role.is_admin_or_above();
         let is_creator = room.created_by == user_id;
-        let has_room_delete_permission = if is_creator || is_global_admin {
-            true
-        } else {
-            self.permission_service
-                .check_permission_no_cache(&room_id, &user_id, RoomPermission::DELETE_ROOM)
-                .await
-                .is_ok()
-        };
 
-        if !is_creator && !is_global_admin && !has_room_delete_permission {
-            if self.member_repo.get(&room_id, &user_id).await?.is_some() {
+        // Check authorization: creator, global admin, or member with delete permission
+        if !is_creator && !is_global_admin {
+            if self.member_repo.get(&room_id, &user_id).await?.is_none() {
                 return Err(Error::Authorization(
-                    "Only the room creator, a member with delete_room permission, or a global admin can delete this room".to_string(),
+                    "You are not a member of this room".to_string(),
                 ));
             }
-
-            return Err(Error::Authorization(
-                "You are not a member of this room".to_string(),
-            ));
+            self.permission_service
+                .check_permission_no_cache(&room_id, &user_id, RoomPermission::DELETE_ROOM)
+                .await?;
         }
 
         let mut tx = self.pool.begin().await?;
-        let permission_fences = self
-            .reserve_room_member_permission_fences(&room_id, &mut tx)
-            .await?;
+        let guard =
+            PermissionFenceGuard::reserve(Arc::new(self.clone()), &room_id, &mut tx).await?;
+
         let impact = match soft_delete_room_and_cleanup_in_tx(&mut tx, &room_id).await {
             Ok(impact) => impact,
             Err(error) => {
-                self.abort_room_member_permission_fences(&permission_fences)
-                    .await;
+                guard.abort().await;
                 return Err(error);
             }
         };
@@ -171,25 +164,17 @@ impl RoomService {
             .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
             .await
         {
-            self.abort_room_member_permission_fences(&permission_fences)
-                .await;
+            guard.abort().await;
             return Err(error);
         }
 
         // Commit transaction - all or nothing
         if let Err(error) = tx.commit().await {
-            self.abort_room_member_permission_fences(&permission_fences)
-                .await;
+            guard.abort().await;
             return Err(error.into());
         }
 
-        if let Err(error) = self
-            .commit_removed_room_member_permission_fences(
-                permission_fences,
-                &impact.removed_members,
-            )
-            .await
-        {
+        if let Err(error) = guard.commit(&impact.removed_members).await {
             tracing::warn!(
                 error = %error,
                 room_id = %room_id,

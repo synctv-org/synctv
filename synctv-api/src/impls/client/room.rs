@@ -50,18 +50,24 @@ impl ClientApiImpl {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
+
         let creators = self
             .user_service
             .get_users_by_ids(&creator_ids)
             .await
             .map_err(ApiError::from)?;
-        let mut map = HashMap::with_capacity(creators.len());
-        for creator in creators {
-            map.insert(
-                creator.id,
-                self.user_public_view_with_loaded_avatar(&creator).await?,
-            );
+
+        // Batch load all avatars in parallel
+        let creator_views = self
+            .batch_user_public_views_with_loaded_avatars(&creators)
+            .await?;
+
+        // Build map from user ID to public view
+        let mut map = HashMap::with_capacity(creator_views.len());
+        for (i, creator) in creators.iter().enumerate() {
+            map.insert(creator.id, creator_views[i].clone());
         }
+
         Ok(map)
     }
 

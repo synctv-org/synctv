@@ -25,11 +25,11 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
-        executor
+        let client_api_clone = client_api.clone();
+        client_api
             .execute_scoped_public_endpoint(&request_meta, category, scope, move || {
-                operation(client_api)
+                operation(client_api_clone)
             })
             .await
             .map_err(super::super::error::map_api_error)
@@ -56,11 +56,11 @@ where
 {
     async move {
         let request_meta = request_metadata(request_meta);
-        let executor = state.shared_api_runtime.client_api.clone();
         let client_api = state.shared_api_runtime.client_api.clone();
-        executor
+        let client_api_clone = client_api.clone();
+        client_api
             .execute_scoped_user_endpoint(&request_meta, category, scope, move |authenticated| {
-                operation(client_api, authenticated)
+                operation(client_api_clone, authenticated)
             })
             .await
             .map_err(super::super::error::map_api_error)

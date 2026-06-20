@@ -184,28 +184,36 @@ const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 const CONNECTION_LIFECYCLE_LOCK_STRIPES: usize = 256;
 
 impl ConnectionManager {
+    fn redis_key(&self, namespace: &str, id: impl std::fmt::Display) -> String {
+        format!("{}{namespace}:{id}", self.redis_key_prefix)
+    }
+
+    fn redis_key_no_id(&self, namespace: &str) -> String {
+        format!("{}{namespace}", self.redis_key_prefix)
+    }
+
     fn conn_metadata_key(&self, connection_id: &str) -> String {
-        format!("{}conn_mgr:conn:{connection_id}", self.redis_key_prefix)
+        self.redis_key("conn_mgr:conn", connection_id)
     }
 
     fn user_index_key(&self, user_id: impl std::fmt::Display) -> String {
-        format!("{}conn_mgr:user:{user_id}", self.redis_key_prefix)
+        self.redis_key("conn_mgr:user", user_id)
     }
 
     fn room_index_key(&self, room_id: impl std::fmt::Display) -> String {
-        format!("{}conn_mgr:room:{room_id}", self.redis_key_prefix)
+        self.redis_key("conn_mgr:room", room_id)
     }
 
     fn total_counter_key(&self) -> String {
-        format!("{}connections:total", self.redis_key_prefix)
+        self.redis_key_no_id("connections:total")
     }
 
     fn user_counter_key(&self, user_id: impl std::fmt::Display) -> String {
-        format!("{}connections:user:{user_id}", self.redis_key_prefix)
+        self.redis_key("connections:user", user_id)
     }
 
     fn room_counter_key(&self, room_id: impl std::fmt::Display) -> String {
-        format!("{}connections:room:{room_id}", self.redis_key_prefix)
+        self.redis_key("connections:room", room_id)
     }
 
     fn user_index_directory_key(&self) -> String {

@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                (\n                    SELECT COUNT(*)\n                    FROM user_account_profiles\n                    WHERE deleted_at IS NULL\n                ) AS \"total_users!\",\n                (\n                    SELECT COUNT(*)\n                    FROM user_account_profiles\n                    WHERE deleted_at IS NULL\n                      AND is_banned = FALSE\n                ) AS \"active_users!\",\n                (\n                    SELECT COUNT(*)\n                    FROM user_account_profiles\n                    WHERE deleted_at IS NULL\n                      AND is_banned = TRUE\n                ) AS \"banned_users!\",\n                (\n                    SELECT COUNT(*)\n                    FROM rooms r\n                    WHERE r.deleted_at IS NULL\n                      AND r.closed_at IS NULL\n                      AND NOT EXISTS (\n                          SELECT 1\n                          FROM room_bans rb\n                          WHERE rb.room_id = r.id\n                            AND rb.revoked_at IS NULL\n                            AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                      )\n                ) AS \"total_rooms!\",\n                (\n                    SELECT COUNT(*)\n                    FROM rooms r\n                    WHERE r.deleted_at IS NULL\n                      AND r.closed_at IS NULL\n                      AND NOT EXISTS (\n                          SELECT 1\n                          FROM room_bans rb\n                          WHERE rb.room_id = r.id\n                            AND rb.revoked_at IS NULL\n                            AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                      )\n                ) AS \"active_rooms!\",\n                (\n                    SELECT COUNT(*)\n                    FROM rooms r\n                    WHERE r.deleted_at IS NULL\n                      AND r.closed_at IS NULL\n                      AND EXISTS (\n                          SELECT 1\n                          FROM room_bans rb\n                          WHERE rb.room_id = r.id\n                            AND rb.revoked_at IS NULL\n                            AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)\n                      )\n                ) AS \"banned_rooms!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total_users!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "active_users!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "banned_users!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "total_rooms!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "active_rooms!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "banned_rooms!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2aa01ea04f3f440b7093df47e2acbbd94e2123593233a67fa8ebe1695d503350"
+}

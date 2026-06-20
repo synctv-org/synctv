@@ -441,14 +441,6 @@ impl EmbyProvider {
     }
 
     /// Login to Emby and return a validated provider credential payload.
-    pub async fn login(
-        &self,
-        req: synctv_media_providers::grpc::emby::LoginReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::emby::LoginResp, ProviderError> {
-        self.login_with_context(req, instance_name, None).await
-    }
-
     pub async fn login_with_context(
         &self,
         req: synctv_media_providers::grpc::emby::LoginReq,
@@ -462,14 +454,6 @@ impl EmbyProvider {
     }
 
     /// List Emby library items
-    pub async fn fs_list(
-        &self,
-        req: synctv_media_providers::grpc::emby::FsListReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::emby::FsListResp, ProviderError> {
-        self.fs_list_with_context(req, instance_name, None).await
-    }
-
     pub async fn fs_list_with_context(
         &self,
         req: synctv_media_providers::grpc::emby::FsListReq,
@@ -483,14 +467,6 @@ impl EmbyProvider {
     }
 
     /// Get Emby user info
-    pub async fn me(
-        &self,
-        req: synctv_media_providers::grpc::emby::MeReq,
-        instance_name: Option<&str>,
-    ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
-        self.me_with_context(req, instance_name, None).await
-    }
-
     pub async fn me_with_context(
         &self,
         req: synctv_media_providers::grpc::emby::MeReq,

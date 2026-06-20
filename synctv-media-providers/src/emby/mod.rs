@@ -9,12 +9,11 @@
 //! - Device profile management
 
 mod client;
-mod error;
 mod service;
 mod types;
 
+pub use crate::error::ProviderClientError as EmbyError;
 pub use client::{EmbyClient, PlaybackInfoRequest};
-pub use error::EmbyError;
 pub use service::{EmbyInterface, EmbyService};
 pub use types::{
     default_device_profile, device_profile_from_playback_client_profile, AuthResponse,

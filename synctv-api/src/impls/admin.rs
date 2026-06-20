@@ -130,6 +130,7 @@ impl AdminApiRuntime {
 pub struct AdminApiImpl {
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
+    pub system_stats_service: Arc<synctv_core::service::SystemStatsService>,
     pub review_service: Arc<ReviewService>,
     pub ban_record_service: Arc<BanRecordService>,
     pub content_report_service: Arc<ContentReportService>,
@@ -181,6 +182,9 @@ impl AdminApiImpl {
 
         let read_pool =
             read_pool.unwrap_or_else(|| user_service.eventually_consistent_pool().clone());
+        let system_stats_service = Arc::new(synctv_core::service::SystemStatsService::new(
+            read_pool.clone(),
+        ));
         let review_service = Arc::new(ReviewService::new_with_read_pool(
             user_service.pool().clone(),
             read_pool.clone(),
@@ -216,6 +220,7 @@ impl AdminApiImpl {
         Self {
             room_service,
             user_service,
+            system_stats_service,
             review_service,
             ban_record_service,
             content_report_service,

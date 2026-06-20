@@ -1,7 +1,7 @@
 //! Shared gRPC transport helpers used by public API and management services.
 
 pub const ERROR_CODE_METADATA_KEY: &str = "x-synctv-error-code";
-pub const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
+pub use synctv_common::messages::RETRY_AFTER_METADATA_KEY;
 
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///

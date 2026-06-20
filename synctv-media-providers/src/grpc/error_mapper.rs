@@ -12,7 +12,7 @@ use tonic::Status;
 
 use crate::error::ProviderClientError;
 
-const RETRY_AFTER_METADATA_KEY: &str = "retry-after";
+use synctv_common::messages::RETRY_AFTER_METADATA_KEY;
 
 /// Map a `ProviderClientError` to a `tonic::Status` with an appropriate gRPC
 /// status code.

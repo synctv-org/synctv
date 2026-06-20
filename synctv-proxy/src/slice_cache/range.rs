@@ -133,6 +133,21 @@ pub fn slice_index_for_byte(byte: u64, slice_size: usize) -> u64 {
     byte / slice_size as u64
 }
 
+#[must_use]
+pub fn format_request_range(start: u64, end: u64) -> String {
+    format!("bytes={start}-{end}")
+}
+
+#[must_use]
+pub fn first_byte_request_range() -> &'static str {
+    "bytes=0-0"
+}
+
+#[must_use]
+pub fn format_content_range(start: u64, end: u64, total_size: u64) -> String {
+    format!("bytes {start}-{end}/{total_size}")
+}
+
 // Response Content-Range parsing (modeled after nginx)
 
 /// Parsed Content-Range response header: `bytes START-END/TOTAL`

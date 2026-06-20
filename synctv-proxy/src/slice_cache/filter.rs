@@ -17,8 +17,8 @@ use bytes::Bytes;
 use synctv_common::ExecutionControl;
 
 use crate::{
-    apply_provider_headers, run_with_proxy_cancellation,
-    send_with_redirect_validation_with_control_and_timeout, ProviderHeaders, ProxyError,
+    apply_provider_headers, send_with_redirect_validation_with_control_and_timeout,
+    ProviderHeaders, ProxyError,
 };
 
 use super::etag::CachedResourceMeta;
@@ -28,8 +28,8 @@ use super::passthrough::{
     stream_through_with_status, StreamThroughRequest,
 };
 use super::range::{
-    parse_client_range_plan, range_bounds_for_total, slice_index_for_byte, ClientRangeError,
-    ClientRangePlan,
+    format_content_range, parse_client_range_plan, range_bounds_for_total, slice_index_for_byte,
+    ClientRangeError, ClientRangePlan,
 };
 use super::status::CacheStatus;
 use super::store::SliceCache;
@@ -691,7 +691,7 @@ async fn range_slice_cache_path(request: RangeSliceRequest<'_>) -> Result<Respon
         .status(StatusCode::PARTIAL_CONTENT)
         .header(
             "Content-Range",
-            format!("bytes {range_start}-{range_end}/{total_size}"),
+            format_content_range(range_start, range_end, total_size),
         )
         .header("Content-Length", content_length.to_string())
         .header("Accept-Ranges", "bytes")
@@ -729,15 +729,6 @@ async fn no_range_slice_cache_path(
         SliceFetchResult::Slice(slice) => slice,
         SliceFetchResult::Bypass(resp) => {
             if !resp.status().is_success() {
-                if let Err(error) = run_with_proxy_cancellation(
-                    "no-range slice probe rejection drain",
-                    request_control,
-                    resp.bytes(),
-                )
-                .await
-                {
-                    tracing::debug!(%error, "failed to drain rejected no-range slice probe");
-                }
                 return stream_through_with_status(StreamThroughRequest {
                     client: cache.client(),
                     ssrf_guard: cache.ssrf_guard(),

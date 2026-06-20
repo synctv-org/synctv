@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 
-use crate::models::RoomId;
 use crate::Result;
 
 use super::{now_unix_seconds, TicketStore, WsTicketData};
@@ -33,7 +32,7 @@ pub struct InMemoryTicketStore {
 
 impl InMemoryTicketStore {
     #[must_use]
-    pub fn new(_ttl_secs: u64) -> Self {
+    pub fn new() -> Self {
         Self {
             cache: moka::future::Cache::builder()
                 .expire_after(TicketEntryExpiry)
@@ -58,7 +57,7 @@ impl TicketStore for InMemoryTicketStore {
         Ok(())
     }
 
-    async fn load(&self, ticket: &str, _expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+    async fn load(&self, ticket: &str) -> Result<Option<WsTicketData>> {
         let Some(entry) = self.cache.get(ticket).await else {
             return Ok(None);
         };
@@ -72,12 +71,7 @@ impl TicketStore for InMemoryTicketStore {
         Ok(Some(entry.data))
     }
 
-    async fn claim(
-        &self,
-        ticket: &str,
-        _expected_room_id: &RoomId,
-        expected_ticket: &WsTicketData,
-    ) -> Result<bool> {
+    async fn claim(&self, ticket: &str, expected_ticket: &WsTicketData) -> Result<bool> {
         let Some(entry) = self.cache.get(ticket).await else {
             return Ok(false);
         };

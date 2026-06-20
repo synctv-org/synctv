@@ -609,7 +609,7 @@ async fn test_ticket_checked_validation_concurrent_consumption_only_succeeds_onc
 async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
     let room_id = create_test_room_id(50_031);
     let ticket = "ticket-claim";
-    let store = InMemoryTicketStore::new(30);
+    let store = InMemoryTicketStore::new();
     let user_id = create_test_user_id(50_032);
     let original = WsTicketData::user(&user_id, &room_id, 7);
     ok(
@@ -621,7 +621,7 @@ async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
     mismatched.created_at = mismatched.created_at.saturating_add(1);
 
     let first_claim = ok(
-        store.claim(ticket, &room_id, &mismatched).await,
+        store.claim(ticket, &mismatched).await,
         "mismatched claim should complete",
     );
     assert!(
@@ -630,7 +630,7 @@ async fn test_in_memory_claim_mismatch_does_not_consume_ticket() {
     );
 
     let second_claim = ok(
-        store.claim(ticket, &room_id, &original).await,
+        store.claim(ticket, &original).await,
         "original claim should complete",
     );
     assert!(
@@ -743,7 +743,7 @@ fn test_non_cluster_mode_without_redis_succeeds() {
 /// Test: `from_store` allows custom backends for testing purposes.
 #[test]
 fn test_from_store_allows_custom_backend() {
-    let store = Arc::new(InMemoryTicketStore::new(30));
+    let store = Arc::new(InMemoryTicketStore::new());
     let service = WsTicketService::from_store(store, Some(45));
 
     assert!(!service.supports_cluster_runtime());

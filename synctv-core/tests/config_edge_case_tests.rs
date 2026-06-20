@@ -108,6 +108,10 @@ fn test_database_config_debug_no_password() {
 fn test_redis_config_debug_masks_password() {
     let config = RedisConfig {
         url: "redis://:my_secret@redis-host:6379".to_string(),
+        sentinel_addresses: vec![
+            "redis://sentinel_user:sentinel_secret@sentinel-a:26379".to_string(),
+            "redis://sentinel-b:26379".to_string(),
+        ],
         ..RedisConfig::default()
     };
     let debug = format!("{config:?}");
@@ -116,8 +120,20 @@ fn test_redis_config_debug_masks_password() {
         "Redis password should be masked in Debug output"
     );
     assert!(
+        !debug.contains("sentinel_secret"),
+        "Redis Sentinel passwords should be masked in Debug output"
+    );
+    assert!(
         debug.contains("****"),
         "Masked password should appear as ****"
+    );
+    assert!(
+        debug.contains("sentinel_user"),
+        "Sentinel username should remain visible"
+    );
+    assert!(
+        debug.contains("sentinel-b"),
+        "Sentinel address without password should remain visible"
     );
 }
 

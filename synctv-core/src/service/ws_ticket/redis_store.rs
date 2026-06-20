@@ -4,7 +4,6 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use crate::cache::KeyBuilder;
-use crate::models::RoomId;
 use crate::{Error, RedisConnectionRuntime, Result};
 
 use super::{TicketStore, WsTicketData};
@@ -100,7 +99,7 @@ impl TicketStore for RedisTicketStore {
         Ok(())
     }
 
-    async fn load(&self, ticket: &str, _expected_room_id: &RoomId) -> Result<Option<WsTicketData>> {
+    async fn load(&self, ticket: &str) -> Result<Option<WsTicketData>> {
         use redis::AsyncCommands;
 
         let key = self.redis_key(ticket);
@@ -118,12 +117,7 @@ impl TicketStore for RedisTicketStore {
         Ok(Some(data))
     }
 
-    async fn claim(
-        &self,
-        ticket: &str,
-        _expected_room_id: &RoomId,
-        expected_ticket: &WsTicketData,
-    ) -> Result<bool> {
+    async fn claim(&self, ticket: &str, expected_ticket: &WsTicketData) -> Result<bool> {
         let key = self.redis_key(ticket);
         let mut conn = self.conn("claim ticket").await?;
         let expected_json = serde_json::to_string(expected_ticket)

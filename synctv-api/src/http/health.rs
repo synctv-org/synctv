@@ -699,7 +699,6 @@ mod tests {
         async fn load(
             &self,
             _ticket: &str,
-            _expected_room_id: &synctv_core::models::RoomId,
         ) -> synctv_core::Result<Option<synctv_core::service::WsTicketData>> {
             Ok(None)
         }
@@ -707,7 +706,6 @@ mod tests {
         async fn claim(
             &self,
             _ticket: &str,
-            _expected_room_id: &synctv_core::models::RoomId,
             _expected_ticket: &synctv_core::service::WsTicketData,
         ) -> synctv_core::Result<bool> {
             Ok(false)

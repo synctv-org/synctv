@@ -48,7 +48,7 @@ fn mask_url_password_for_debug(url: &str) -> String {
         return url.to_string();
     };
     let scheme_end = url.find("://").map_or(0, |p| p + 3);
-    if colon_pos <= scheme_end {
+    if colon_pos < scheme_end {
         return url.to_string();
     }
     format!("{}:****@{}", &url[..colon_pos], &url[at_pos + 1..])
@@ -1102,53 +1102,13 @@ pub struct RedisConfig {
 
 impl std::fmt::Debug for RedisConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Mask password in Redis URL if present (redis://:password@host or redis://user:password@host)
-        let masked_url = if self.url.contains('@') {
-            if let Some(at_pos) = self.url.find('@') {
-                if let Some(colon_pos) = self.url[..at_pos].rfind(':') {
-                    let scheme_end = self.url.find("://").map_or(0, |p| p + 3);
-                    if colon_pos >= scheme_end && colon_pos < at_pos {
-                        // Has password - mask it
-                        format!(
-                            "{}:****@{}",
-                            &self.url[..colon_pos],
-                            &self.url[at_pos + 1..]
-                        )
-                    } else {
-                        self.url.clone()
-                    }
-                } else {
-                    self.url.clone()
-                }
-            } else {
-                self.url.clone()
-            }
-        } else {
-            self.url.clone()
-        };
-
-        // Helper to mask password in Redis URLs
-        let mask_url = |url: &str| -> String {
-            if url.contains('@') {
-                if let Some(at_pos) = url.find('@') {
-                    if let Some(colon_pos) = url[..at_pos].rfind(':') {
-                        let scheme_end = url.find("://").map_or(0, |p| p + 3);
-                        if colon_pos >= scheme_end && colon_pos < at_pos {
-                            return format!("{}:****@{}", &url[..colon_pos], &url[at_pos + 1..]);
-                        }
-                    }
-                }
-            }
-            url.to_string()
-        };
-
         let masked_sentinel: Vec<String> = self
             .sentinel_addresses
             .iter()
-            .map(|u| mask_url(u))
+            .map(|url| mask_url_password_for_debug(url))
             .collect();
         f.debug_struct("RedisConfig")
-            .field("url", &masked_url)
+            .field("url", &mask_url_password_for_debug(&self.url))
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)

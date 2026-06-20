@@ -28,16 +28,56 @@ use super::etag::{CachedResourceMeta, StoredEntry};
 use super::head::HeadFetchContext;
 use super::keys::{resource_meta_key, slice_cache_key};
 use super::maintenance::{ratio_u64, MetaEvictionCandidate, UpdatingKeyGuard};
-use super::range::parse_content_range;
+use super::range::{format_request_range, parse_content_range};
 use super::status::CacheStatus;
 use super::types::{
     CachedSlice, FetchedSlice, HeadResourceResult, SliceCachePurgeResult, SliceCacheStats,
     SliceFetchRequest, SliceFetchResult,
 };
 
+pub(super) fn cleanup_stale_resource_meta(
+    meta: &dashmap::DashMap<String, CachedResourceMeta>,
+    max_meta_entries: usize,
+) {
+    if meta.len() <= max_meta_entries {
+        return;
+    }
+
+    let retention_target = max_meta_entries / META_RETENTION_TARGET_DIVISOR;
+    let target_removals = meta.len().saturating_sub(retention_target);
+    if target_removals == 0 {
+        return;
+    }
+
+    let mut oldest_candidates = BinaryHeap::with_capacity(target_removals);
+    for entry in meta.iter() {
+        let candidate = MetaEvictionCandidate {
+            key: entry.key().clone(),
+            last_accessed: entry.value().last_accessed,
+        };
+
+        if oldest_candidates.len() < target_removals {
+            oldest_candidates.push(candidate);
+            continue;
+        }
+
+        let Some(newest_eviction_candidate) = oldest_candidates.peek() else {
+            continue;
+        };
+        if candidate < *newest_eviction_candidate {
+            oldest_candidates.pop();
+            oldest_candidates.push(candidate);
+        }
+    }
+
+    for candidate in oldest_candidates {
+        meta.remove(&candidate.key);
+    }
+}
+
 /// Number of lock cleanup cycles before triggering a stale-lock sweep.
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
-const MAX_META_ENTRIES: usize = 100_000;
+pub(super) const MAX_META_ENTRIES: usize = 100_000;
 const META_RETENTION_TARGET_DIVISOR: usize = 2;
 
 // SliceCache
@@ -177,7 +217,7 @@ impl SliceCache {
     ) -> Result<SliceRangeRequest, anyhow::Error> {
         let (range_start, range_end) =
             Self::aligned_slice_request_range(slice_index, self.config.slice_size)?;
-        let range_header = format!("bytes={range_start}-{range_end}");
+        let range_header = format_request_range(range_start, range_end);
 
         let mut request = self.client.get(url);
         request = apply_provider_headers(request, url, provider_headers)?;
@@ -668,7 +708,21 @@ impl SliceCache {
         meta: CachedResourceMeta,
     ) {
         let mk = Self::meta_key(url, provider_headers);
-        self.meta.insert(mk, meta);
+        self.put_resource_meta_by_key(mk, meta);
+    }
+
+    fn put_resource_meta_by_key(&self, meta_key: String, meta: CachedResourceMeta) {
+        self.put_resource_meta_by_key_with_limit(meta_key, meta, MAX_META_ENTRIES);
+    }
+
+    fn put_resource_meta_by_key_with_limit(
+        &self,
+        meta_key: String,
+        meta: CachedResourceMeta,
+        max_meta_entries: usize,
+    ) {
+        self.meta.insert(meta_key, meta);
+        self.cleanup_stale_meta_with_limit(max_meta_entries);
     }
 
     pub(super) fn resource_meta_lock(
@@ -1186,7 +1240,7 @@ impl SliceCache {
 
         let data = read_exact_slice_body(resp, expected_len, request_control).await?;
 
-        self.meta.insert(
+        self.put_resource_meta_by_key(
             mk,
             CachedResourceMeta {
                 etag: resp_etag.clone(),
@@ -1263,41 +1317,8 @@ impl SliceCache {
         self.locks.retain(|_key, lock| Arc::strong_count(lock) > 1);
     }
 
-    fn cleanup_stale_meta_with_limit(&self, max_meta_entries: usize) {
-        if self.meta.len() <= max_meta_entries {
-            return;
-        }
-
-        let retention_target = max_meta_entries / META_RETENTION_TARGET_DIVISOR;
-        let target_removals = self.meta.len().saturating_sub(retention_target);
-        if target_removals == 0 {
-            return;
-        }
-
-        let mut oldest_candidates = BinaryHeap::with_capacity(target_removals);
-        for entry in self.meta.iter() {
-            let candidate = MetaEvictionCandidate {
-                key: entry.key().clone(),
-                last_accessed: entry.value().last_accessed,
-            };
-
-            if oldest_candidates.len() < target_removals {
-                oldest_candidates.push(candidate);
-                continue;
-            }
-
-            let Some(newest_eviction_candidate) = oldest_candidates.peek() else {
-                continue;
-            };
-            if candidate < *newest_eviction_candidate {
-                oldest_candidates.pop();
-                oldest_candidates.push(candidate);
-            }
-        }
-
-        for candidate in oldest_candidates {
-            self.meta.remove(&candidate.key);
-        }
+    pub(super) fn cleanup_stale_meta_with_limit(&self, max_meta_entries: usize) {
+        cleanup_stale_resource_meta(&self.meta, max_meta_entries);
     }
 
     /// Remove stale metadata entries to prevent unbounded growth of the

@@ -97,6 +97,13 @@ fn slice_index_for_byte_uses_zero_based_slice_numbers() {
 }
 
 #[test]
+fn range_formatters_keep_protocol_strings_in_one_place() {
+    assert_eq!(format_request_range(10, 20), "bytes=10-20");
+    assert_eq!(first_byte_request_range(), "bytes=0-0");
+    assert_eq!(format_content_range(10, 20, 100), "bytes 10-20/100");
+}
+
+#[test]
 fn test_parse_content_range_basic() -> ContentRangeTestResult {
     let cr = parse_content_range("bytes 0-499/1000")?;
     assert_eq!(cr.start, 0);

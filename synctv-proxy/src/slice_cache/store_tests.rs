@@ -64,6 +64,38 @@ fn cleanup_stale_meta_skips_when_within_limit() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn put_resource_meta_applies_metadata_cap() -> TestResult {
+    let cache = test_cache()?;
+    let now = std::time::SystemTime::now();
+
+    for index in 0_u64..6 {
+        cache.put_resource_meta_by_key_with_limit(
+            format!("meta-{index}"),
+            CachedResourceMeta {
+                etag: None,
+                last_modified: None,
+                total_size: None,
+                supports_ranges: false,
+                content_type: None,
+                validated_at: now,
+                last_accessed: now + Duration::from_secs(index),
+            },
+            4,
+        );
+    }
+
+    assert_eq!(cache.meta_count(), 3);
+    assert!(!cache.meta.contains_key("meta-0"));
+    assert!(!cache.meta.contains_key("meta-1"));
+    assert!(!cache.meta.contains_key("meta-2"));
+    assert!(cache.meta.contains_key("meta-3"));
+    assert!(cache.meta.contains_key("meta-4"));
+    assert!(cache.meta.contains_key("meta-5"));
+    assert!(cache.meta_count() <= 4);
+    Ok(())
+}
+
 #[tokio::test]
 async fn stats_reports_backend_and_runtime_counters() -> TestResult {
     let cache = test_cache()?;

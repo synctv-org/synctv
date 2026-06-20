@@ -16,3 +16,4 @@ pub const REQUEST_CANCELLED: &str = "Request cancelled";
 pub const REQUEST_TIMED_OUT: &str = "Request timed out";
 pub const NOT_A_MEMBER_OF_THIS_ROOM: &str = "Not a member of this room";
 pub const STALE_PROXY_ACCESS: &str = "Proxy URL is no longer valid for this user";
+pub const RETRY_AFTER_METADATA_KEY: &str = "retry-after";

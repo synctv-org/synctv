@@ -11,7 +11,10 @@ use crate::{
 };
 
 use super::etag::CachedResourceMeta;
-use super::range::{parse_client_range_plan, parse_content_range, range_bounds_for_total};
+use super::range::{
+    first_byte_request_range, format_content_range, parse_client_range_plan, parse_content_range,
+    range_bounds_for_total,
+};
 use super::status::CacheStatus;
 use super::types::HeadResourceResult;
 
@@ -47,7 +50,7 @@ async fn discover_content_length_via_range_get(
 ) -> Result<u64, anyhow::Error> {
     let mut request = client.get(url);
     request = apply_provider_headers(request, url, provider_headers)?;
-    request = request.header(reqwest::header::RANGE, "bytes=0-0");
+    request = request.header(reqwest::header::RANGE, first_byte_request_range());
     let resp = send_with_redirect_validation_with_control_and_timeout(
         client,
         request,
@@ -200,7 +203,7 @@ pub(super) fn cached_head_headers(
         let Ok((start, end)) = range_bounds_for_total(plan, total_size) else {
             return None;
         };
-        let content_range = format!("bytes {start}-{end}/{total_size}");
+        let content_range = format_content_range(start, end, total_size);
         insert_header_from_str(&mut headers, reqwest::header::CONTENT_RANGE, &content_range);
         let content_length = end.checked_sub(start)?.checked_add(1)?;
         insert_header_from_str(
@@ -281,8 +284,11 @@ pub(super) async fn get_or_fetch_head_resource_with_control(
     let headers = resp.headers().clone();
 
     if status.is_success() {
-        ctx.meta
-            .insert(ctx.meta_key, resource_meta_from_head_headers(&headers));
+        put_resource_meta(
+            ctx.meta,
+            ctx.meta_key,
+            resource_meta_from_head_headers(&headers),
+        );
     }
 
     Ok(HeadResourceResult {
@@ -302,6 +308,15 @@ fn get_resource_meta(
     } else {
         None
     }
+}
+
+fn put_resource_meta(
+    meta: &dashmap::DashMap<String, CachedResourceMeta>,
+    meta_key: String,
+    resource_meta: CachedResourceMeta,
+) {
+    meta.insert(meta_key, resource_meta);
+    super::store::cleanup_stale_resource_meta(meta, super::store::MAX_META_ENTRIES);
 }
 
 fn resource_meta_from_head_headers(headers: &reqwest::header::HeaderMap) -> CachedResourceMeta {

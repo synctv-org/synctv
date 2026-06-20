@@ -237,8 +237,7 @@ impl WsTicketService {
     }
 
     fn with_memory(ticket_ttl_secs: Option<u64>) -> Self {
-        let ttl = normalize_ticket_ttl_secs(ticket_ttl_secs);
-        Self::from_store(Arc::new(InMemoryTicketStore::new(ttl)), ticket_ttl_secs)
+        Self::from_store(Arc::new(InMemoryTicketStore::new()), ticket_ttl_secs)
     }
 
     #[must_use]
@@ -383,8 +382,7 @@ impl WsTicketService {
     ) -> Result<ValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
-        let Some(ticket_data) =
-            Self::run_with_control(control, self.store.load(ticket, expected_room_id)).await?
+        let Some(ticket_data) = Self::run_with_control(control, self.store.load(ticket)).await?
         else {
             debug!(
                 ticket = %ticket,
@@ -398,12 +396,7 @@ impl WsTicketService {
 
         Self::ensure_ticket_room_matches(&ticket_data, expected_room_id, cross_node_capable)?;
 
-        if !Self::run_with_control(
-            control,
-            self.store.claim(ticket, expected_room_id, &ticket_data),
-        )
-        .await?
-        {
+        if !Self::run_with_control(control, self.store.claim(ticket, &ticket_data)).await? {
             debug!(
                 ticket = %ticket,
                 cross_node_capable,
@@ -460,12 +453,7 @@ impl WsTicketService {
             .validate_checked_with_control(ticket, expected_room_id, user_validator, control)
             .await?;
 
-        if !Self::run_with_control(
-            control,
-            self.store
-                .claim(ticket, expected_room_id, pending.ticket_data()),
-        )
-        .await?
+        if !Self::run_with_control(control, self.store.claim(ticket, pending.ticket_data())).await?
         {
             debug!(
                 ticket = %ticket,
@@ -511,8 +499,7 @@ impl WsTicketService {
     ) -> Result<PendingValidatedTicket> {
         let cross_node_capable = self.store.supports_cluster_runtime();
 
-        let Some(ticket_data) =
-            Self::run_with_control(control, self.store.load(ticket, expected_room_id)).await?
+        let Some(ticket_data) = Self::run_with_control(control, self.store.load(ticket)).await?
         else {
             debug!(
                 ticket = %ticket,
@@ -611,12 +598,7 @@ impl WsTicketService {
             cross_node_capable,
         )?;
 
-        if !Self::run_with_control(
-            control,
-            self.store
-                .claim(ticket, expected_room_id, pending.ticket_data()),
-        )
-        .await?
+        if !Self::run_with_control(control, self.store.claim(ticket, pending.ticket_data())).await?
         {
             debug!(
                 ticket = %ticket,

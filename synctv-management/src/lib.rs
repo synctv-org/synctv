@@ -6,6 +6,7 @@ pub mod lifecycle;
 mod mapping;
 pub mod server;
 mod service;
+mod source_config;
 
 pub use service::{ManagementServiceImpl, ManagementSliceCacheRuntime};
 

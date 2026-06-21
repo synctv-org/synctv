@@ -100,6 +100,16 @@ pub fn range_bounds_for_total(
         total_size,
     };
 
+    if matches!(
+        plan,
+        ClientRangePlan::Explicit { .. }
+            | ClientRangePlan::OpenEnded { .. }
+            | ClientRangePlan::Suffix { .. }
+    ) && total_size == 0
+    {
+        return Err(unsatisfiable("Range start beyond total size"));
+    }
+
     match plan {
         ClientRangePlan::Explicit { start, mut end } => {
             if start >= total_size {

@@ -4,7 +4,6 @@
 
 use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
-    store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
     ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
@@ -967,61 +966,16 @@ impl MediaProvider for EmbyProvider {
         );
         let cache_ttl = Duration::from_mins(30); // 30 minutes
 
-        let store = _ctx.store.as_ref();
-
-        // Check cache
-        if let Some(store) = store {
-            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                if !cached.is_expired() {
-                    return super::build_cached_versioned_playback_response(
-                        cached,
-                        Self::NAME,
-                        _ctx,
-                        mark_emby_playback_resources,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // Acquire lock to prevent concurrent resolution of same content
-        let _lock = if let Some(store) = store {
-            store
-                .lock(&format!("lock:{cache_key}"), Duration::from_secs(30))
-                .await
-                .ok()
-        } else {
-            None
-        };
-
-        // Double-check cache after lock acquisition
-        if let Some(store) = store {
-            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                if !cached.is_expired() {
-                    return super::build_cached_versioned_playback_response(
-                        cached,
-                        Self::NAME,
-                        _ctx,
-                        mark_emby_playback_resources,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // Call provider API
-        let result = self
-            .resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
-            .await?;
-
-        // Generate version and store result
-        super::cache_versioned_playback_and_build_response(
-            result,
+        super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
             _ctx,
             mark_emby_playback_resources,
+            || async {
+                self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
+                    .await
+            },
         )
         .await
     }

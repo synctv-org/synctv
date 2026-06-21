@@ -17,12 +17,17 @@ use synctv_common::ssrf::SsrfGuard;
 use synctv_core::config::HlsStorageBackend;
 use synctv_xiu::hls::remuxer::StreamRegistry as HlsStreamRegistry;
 use synctv_xiu::httpflv::HttpFlvSession;
-use synctv_xiu::streamhub::define::StreamHubEventSender;
+use synctv_xiu::streamhub::{
+    define::{StreamHubEvent, StreamHubEventSender},
+    send_event_with_backpressure_timeout_for,
+};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 pub use super::tracker::{StreamSubscriberGuard, StreamTracker};
+
+const KICK_PUBLISHER_EVENT_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct LiveStreamingInfrastructure {
@@ -128,7 +133,7 @@ impl LiveStreamingInfrastructure {
     }
 
     /// Enqueue a local `UnPublish` event for an RTMP publisher.
-    pub fn kick_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
+    pub async fn kick_publisher(&self, room_id: &str, media_id: &str) -> Result<()> {
         use synctv_xiu::streamhub::stream::StreamIdentifier;
 
         // StreamHub uses canonical (room_id, media_id) identifiers after auth rewrite
@@ -137,11 +142,13 @@ impl LiveStreamingInfrastructure {
             stream_name: media_id.to_string(),
         };
 
-        self.stream_hub_event_sender
-            .try_send(synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { identifier })
-            .map_err(|_| {
-                anyhow::anyhow!("Failed to send unpublish event (StreamHub not running)")
-            })?;
+        send_event_with_backpressure_timeout_for(
+            &self.stream_hub_event_sender,
+            StreamHubEvent::UnPublish { identifier },
+            KICK_PUBLISHER_EVENT_SEND_TIMEOUT,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Failed to send unpublish event (StreamHub not running)"))?;
 
         Ok(())
     }
@@ -347,7 +354,7 @@ impl LiveStreamingInfrastructure {
         }
 
         // Send UnPublish to StreamHub
-        self.kick_publisher(room_id, media_id)?;
+        self.kick_publisher(room_id, media_id).await?;
 
         Ok(())
     }
@@ -1171,6 +1178,56 @@ mod tests {
             registry.get_publisher("room1", "media1").await?.is_some(),
             "kick_stream must keep registry entry until epoch-fenced unpublish cleanup"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_kick_stream_waits_for_streamhub_backpressure_to_clear() -> TestResult {
+        let registry = Arc::new(TestStreamRegistry::with_publishers(
+            std::collections::HashMap::from([(
+                ("room1".to_string(), "media1".to_string()),
+                PublisherInfo {
+                    node_id: "node-local".to_string(),
+                    api_address: "127.0.0.1:50051".to_string(),
+                    app_name: "live".to_string(),
+                    user_id: "user1".to_string(),
+                    started_at: Utc::now(),
+                    epoch: 1,
+                },
+            )]),
+        ));
+        let (event_sender, mut event_receiver) = mpsc::channel(1);
+        event_sender
+            .try_send(StreamHubEvent::UnPublish {
+                identifier: synctv_xiu::streamhub::stream::StreamIdentifier::Rtmp {
+                    app_name: "blocked".to_string(),
+                    stream_name: "blocked".to_string(),
+                },
+            })
+            .map_err(|error| test_error(format!("failed to prefill channel: {error}")))?;
+
+        let tracker = Arc::new(StreamTracker::new());
+        let infrastructure = LiveStreamingInfrastructure::new(
+            registry,
+            event_sender,
+            tracker,
+            "node-local".to_string(),
+            synctv_common::ssrf::SsrfGuard::disabled(),
+        )?;
+
+        let kick = tokio::spawn(async move { infrastructure.kick_stream("room1", "media1").await });
+        let blocked = event_receiver
+            .recv()
+            .await
+            .ok_or_else(|| test_error("expected prefilled event"))?;
+        assert!(
+            matches!(blocked, StreamHubEvent::UnPublish { .. }),
+            "expected prefilled UnPublish event, got {blocked:?}"
+        );
+
+        kick.await
+            .map_err(|error| test_error(format!("kick task panicked: {error}")))??;
+        recv_unpublish_event(&mut event_receiver).await?;
         Ok(())
     }
 

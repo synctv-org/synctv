@@ -1,7 +1,7 @@
 //! Tests for critical event buffering in Redis pub/sub.
 //!
-//! These tests verify that critical events (kick/ban) are never dropped
-//! even when the normal retry buffer is full.
+//! These tests verify that events affecting access control and room availability
+//! are classified as critical before they enter the Redis priority path.
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::models::id::{MediaId, RoomId, UserId};
@@ -130,7 +130,42 @@ fn test_user_left_is_critical() {
     assert!(event.is_critical(), "UserLeft should be a critical event");
 }
 
-// Test 7: is_critical returns false for ChatMessage (non-critical)
+// Test 7: is_critical returns true for RoomBanned
+
+#[test]
+fn test_room_banned_is_critical() {
+    let room_id = RoomId::new();
+    let banned_by = UserId::new();
+    let event = RealtimeEvent::RoomBanned {
+        event_id: event_id(),
+        room_id,
+        banned_by,
+        timestamp: chrono::Utc::now(),
+    };
+    assert!(event.is_critical(), "RoomBanned should be a critical event");
+}
+
+// Test 8: is_critical returns true for RoomOwnerInactive
+
+#[test]
+fn test_room_owner_inactive_is_critical() {
+    let room_id = RoomId::new();
+    let owner_id = UserId::new();
+    let triggered_by = UserId::new();
+    let event = RealtimeEvent::RoomOwnerInactive {
+        event_id: event_id(),
+        room_id,
+        owner_id,
+        triggered_by,
+        timestamp: chrono::Utc::now(),
+    };
+    assert!(
+        event.is_critical(),
+        "RoomOwnerInactive should be a critical event"
+    );
+}
+
+// Test 9: is_critical returns false for ChatMessage (non-critical)
 
 #[test]
 fn test_chat_message_is_not_critical() {
@@ -152,7 +187,7 @@ fn test_chat_message_is_not_critical() {
     );
 }
 
-// Test 8: is_critical returns false for PlaybackStateChanged (non-critical)
+// Test 10: is_critical returns false for PlaybackStateChanged (non-critical)
 
 #[test]
 fn test_playback_state_changed_is_not_critical() {
@@ -173,7 +208,7 @@ fn test_playback_state_changed_is_not_critical() {
     );
 }
 
-// Test 9: is_critical returns false for RoomCreated (non-critical)
+// Test 11: is_critical returns false for RoomCreated (non-critical)
 
 #[test]
 fn test_room_created_is_not_critical() {
@@ -192,7 +227,7 @@ fn test_room_created_is_not_critical() {
     );
 }
 
-// Test 10: is_critical returns false for MediaAdded (non-critical)
+// Test 12: is_critical returns false for MediaAdded (non-critical)
 
 #[test]
 fn test_media_added_is_not_critical() {
@@ -213,7 +248,7 @@ fn test_media_added_is_not_critical() {
     );
 }
 
-// Test 11: is_critical returns false for MediaRemoved (non-critical)
+// Test 13: is_critical returns false for MediaRemoved (non-critical)
 
 #[test]
 fn test_media_removed_is_not_critical() {
@@ -233,12 +268,10 @@ fn test_media_removed_is_not_critical() {
     );
 }
 
-// Test 12: Verify all critical event types are covered
+// Test 14: Verify all critical event types are covered
 
 #[test]
 fn test_all_critical_events_covered() {
-    // Critical events are: KickPublisher, KickUser, KickUserFromRoom,
-    // UserLeft, PermissionChanged, RoomDeleted
     let critical_event_types = vec![
         "KickPublisher",
         "KickUser",
@@ -246,6 +279,8 @@ fn test_all_critical_events_covered() {
         "UserLeft",
         "PermissionChanged",
         "RoomDeleted",
+        "RoomBanned",
+        "RoomOwnerInactive",
     ];
 
     // Each critical event type should have a corresponding test

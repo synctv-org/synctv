@@ -58,7 +58,8 @@ pub struct RealtimeConfig {
     /// Deduplication window duration
     pub dedup_window: Duration,
     /// Capacity for the high-priority critical event channel.
-    /// Critical events are never dropped; senders block when full.
+    /// Senders apply backpressure here so normal-channel pressure cannot drop
+    /// critical events before they reach the Redis publisher.
     pub critical_channel_capacity: usize,
     /// Capacity for the normal-priority Redis publish channel.
     /// Normal events are dropped with warning when full.
@@ -160,7 +161,7 @@ pub struct RealtimeManager {
     deduplicator: Arc<MessageDeduplicator>,
     /// Sender for publishing events to Redis (normal priority)
     redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
-    /// Sender for publishing critical events to Redis (high priority, never dropped)
+    /// Sender for publishing critical events to Redis (high priority)
     redis_critical_tx: Option<mpsc::Sender<PublishRequest>>,
     /// This node's unique identifier
     node_id: String,
@@ -304,11 +305,11 @@ impl RealtimeManager {
             let tx = transport_runtime.publish_tx.clone();
             let publisher_handle = transport_runtime.publisher_handle;
             // Critical events share the same distributed publisher but use a separate
-            // bounded channel so they are never dropped when the normal channel is full.
+            // bounded channel so normal-channel pressure cannot evict them.
             let critical_capacity = config.critical_channel_capacity;
             let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(critical_capacity);
             // Forward critical events into the normal publish channel using `.send().await`
-            // (blocks until space available, never drops).
+            // so channel pressure becomes backpressure on critical senders.
             let normal_tx = tx.clone();
             let cancel_critical = manager_cancel_token.clone();
             let critical_forwarder_handle = tokio::spawn(async move {

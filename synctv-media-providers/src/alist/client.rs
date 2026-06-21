@@ -39,6 +39,17 @@ fn parse_host_url(host: &str) -> Result<url::Url, AlistError> {
     Ok(parsed)
 }
 
+fn normalize_host_url(host: &str) -> Result<String, AlistError> {
+    let parsed = parse_host_url(host)?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(AlistError::InvalidConfig(
+            "Host URL must not include query or fragment".to_string(),
+        ));
+    }
+
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
+}
+
 fn origin_value(url: &url::Url) -> Result<HeaderValue, AlistError> {
     let origin = url.origin().unicode_serialization();
     HeaderValue::from_str(&origin)
@@ -101,7 +112,7 @@ impl AlistClient {
     /// Create a new Alist client with a prebuilt HTTP client.
     pub fn with_http_client(host: impl Into<String>, client: Client) -> Result<Self, AlistError> {
         Ok(Self {
-            host: host.into(),
+            host: normalize_host_url(&host.into())?,
             token: None,
             client,
         })
@@ -127,7 +138,7 @@ impl AlistClient {
         client: Client,
     ) -> Result<Self, AlistError> {
         Ok(Self {
-            host: host.into(),
+            host: normalize_host_url(&host.into())?,
             token: Some(token.into()),
             client,
         })
@@ -183,6 +194,10 @@ impl AlistClient {
         }
 
         Ok(headers)
+    }
+
+    fn endpoint(&self, path: &str) -> String {
+        format!("{}{}", self.host, path)
     }
 
     /// Perform a retried POST request, decode the `AlistResp<T>` envelope, check
@@ -272,9 +287,9 @@ impl AlistClient {
         otp_code: Option<&str>,
     ) -> Result<String, AlistError> {
         let url = if hashed {
-            format!("{}/api/auth/login/hash", self.host)
+            self.endpoint("/api/auth/login/hash")
         } else {
-            format!("{}/api/auth/login", self.host)
+            self.endpoint("/api/auth/login")
         };
         let body = json!({
             "username": username,
@@ -304,7 +319,7 @@ impl AlistClient {
     ) -> Result<HttpFsGetResp, AlistError> {
         validate_path(path)?;
         let user_agent = effective_user_agent(request_headers);
-        let url = format!("{}/api/fs/get", self.host);
+        let url = self.endpoint("/api/fs/get");
         let body = json!({
             "path": path,
             "password": password.unwrap_or(""),
@@ -344,7 +359,7 @@ impl AlistClient {
         refresh: bool,
     ) -> Result<HttpFsListResp, AlistError> {
         validate_path(path)?;
-        let url = format!("{}/api/fs/list", self.host);
+        let url = self.endpoint("/api/fs/list");
         let body = json!({
             "path": path,
             "password": password.unwrap_or(""),
@@ -379,7 +394,7 @@ impl AlistClient {
         password: Option<&str>,
     ) -> Result<HttpFsOtherResp, AlistError> {
         validate_path(path)?;
-        let url = format!("{}/api/fs/other", self.host);
+        let url = self.endpoint("/api/fs/other");
         let body = json!({
             "path": path,
             "method": method,
@@ -394,7 +409,7 @@ impl AlistClient {
     ///
     /// Requires authentication token
     pub async fn me(&self) -> Result<HttpMeResp, AlistError> {
-        let url = format!("{}/api/me", self.host);
+        let url = self.endpoint("/api/me");
         let headers = self.build_headers(&HashMap::new())?;
 
         self.get_json(&url, &headers, "me").await
@@ -438,7 +453,7 @@ impl AlistClient {
         password: Option<&str>,
     ) -> Result<HttpFsSearchResp, AlistError> {
         validate_path(parent)?;
-        let url = format!("{}/api/fs/search", self.host);
+        let url = self.endpoint("/api/fs/search");
         let body = json!({
             "parent": parent,
             "keywords": keywords,

@@ -58,6 +58,22 @@ impl KeyBuilder {
         }
     }
 
+    /// Build a normalized namespace prefix for callers that append their own cache keys.
+    ///
+    /// `namespace_prefix("user")` returns `synctv:user:` with the default prefix.
+    /// `namespace_prefix("")` returns the normalized root prefix, such as `synctv:`.
+    #[must_use]
+    pub fn namespace_prefix(&self, namespace: &str) -> String {
+        if namespace.is_empty() {
+            return if self.prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{}:", self.prefix)
+            };
+        }
+        format!("{}:", self.prefixed_key(namespace))
+    }
+
     /// Get the key prefix
     #[must_use]
     pub fn prefix(&self) -> &str {
@@ -472,6 +488,17 @@ mod tests {
         let builder = KeyBuilder::from_config(&config);
 
         assert_eq!(builder.prefix(), "tenant-a");
+    }
+
+    #[test]
+    fn test_namespace_prefix_normalizes_separators() {
+        let builder = KeyBuilder::new("tenant-a:");
+        assert_eq!(builder.namespace_prefix("username"), "tenant-a:username:");
+        assert_eq!(builder.namespace_prefix(""), "tenant-a:");
+
+        let empty = KeyBuilder::new("");
+        assert_eq!(empty.namespace_prefix("username"), "username:");
+        assert_eq!(empty.namespace_prefix(""), "");
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::sync::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::{RedisConnectionRuntime, RedisCoordinationRuntime};
@@ -18,6 +18,15 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn u128_to_u64_saturating(value: u128) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn critical_event(event_id: impl Into<String>) -> RealtimeEvent {
+    RealtimeEvent::KickUser {
+        event_id: event_id.into(),
+        user_id: UserId::expect_positive(10_000_250),
+        reason: "test".to_string(),
+        timestamp: Utc::now(),
+    }
 }
 
 #[derive(Clone)]
@@ -208,6 +217,59 @@ fn test_event_envelope_serialization() -> serde_json::Result<()> {
     let deserialized: EventEnvelope = serde_json::from_str(&json)?;
     assert_eq!(deserialized.node_id, "node1");
     assert_eq!(deserialized.event.event_type(), "chat_message");
+    Ok(())
+}
+
+#[test]
+fn test_push_critical_retry_buffer_evicts_oldest_request_when_full() {
+    let mut buffer = VecDeque::new();
+    for index in 0..MAX_CRITICAL_BUFFER {
+        push_critical_retry_buffer(
+            &mut buffer,
+            PublishRequest::new(critical_event(index.to_string())),
+        );
+    }
+
+    push_critical_retry_buffer(&mut buffer, PublishRequest::new(critical_event("new")));
+
+    assert_eq!(buffer.len(), MAX_CRITICAL_BUFFER);
+    assert_eq!(
+        buffer
+            .front()
+            .expect("buffer should retain remaining events")
+            .event
+            .event_id(),
+        "1"
+    );
+    assert_eq!(
+        buffer
+            .back()
+            .expect("buffer should retain newest event")
+            .event
+            .event_id(),
+        "new"
+    );
+}
+
+#[tokio::test]
+async fn test_push_critical_retry_buffer_acknowledges_evicted_request_failure() -> TestResult {
+    let mut buffer = VecDeque::new();
+    let (oldest, oldest_ack) = PublishRequest::with_ack(critical_event("oldest"));
+    push_critical_retry_buffer(&mut buffer, oldest);
+
+    for index in 1..MAX_CRITICAL_BUFFER {
+        push_critical_retry_buffer(
+            &mut buffer,
+            PublishRequest::new(critical_event(index.to_string())),
+        );
+    }
+    push_critical_retry_buffer(&mut buffer, PublishRequest::new(critical_event("new")));
+
+    let ack = oldest_ack.await?;
+    assert!(
+        matches!(ack, Err(ref error) if error.contains("critical retry buffer full")),
+        "expected evicted request failure ack, got {ack:?}"
+    );
     Ok(())
 }
 

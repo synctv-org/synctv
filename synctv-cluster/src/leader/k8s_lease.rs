@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use k8s_openapi::api::coordination::v1::Lease;
 use kube::api::{Api, PostParams};
 use kube::Client;
@@ -56,6 +57,38 @@ fn elapsed_secs_since(
     renew_time: &k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime,
 ) -> i64 {
     k8s_openapi::jiff::Timestamp::now().as_second() - renew_time.0.as_second()
+}
+
+fn lease_is_expired(
+    renew_time: Option<&k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime>,
+    lease_duration_secs: i32,
+) -> bool {
+    let Some(renew_time) = renew_time else {
+        return true;
+    };
+    let effective_duration = i64::from(lease_duration_secs) + CLOCK_DRIFT_TOLERANCE_SECS;
+    elapsed_secs_since(renew_time) > effective_duration
+}
+
+fn validate_config(config: &K8sLeaderElectorConfig) -> anyhow::Result<()> {
+    if config.lease_duration_secs <= 0 {
+        return Err(anyhow::anyhow!(
+            "K8s leader lease_duration_secs must be greater than 0"
+        ));
+    }
+    if config.renew_interval_secs == 0 {
+        return Err(anyhow::anyhow!(
+            "K8s leader renew_interval_secs must be greater than 0"
+        ));
+    }
+    let lease_duration_secs = u64::try_from(config.lease_duration_secs)
+        .context("K8s leader lease_duration_secs must fit in u64")?;
+    if config.renew_interval_secs >= lease_duration_secs {
+        return Err(anyhow::anyhow!(
+            "K8s leader renew_interval_secs must be less than lease_duration_secs"
+        ));
+    }
+    Ok(())
 }
 
 /// K8s Lease-based leader election.
@@ -143,6 +176,8 @@ impl K8sLeaderElector {
         namespace: String,
         config: K8sLeaderElectorConfig,
     ) -> anyhow::Result<Self> {
+        validate_config(&config)?;
+
         let client = Client::try_default()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create in-cluster K8s client: {e}"))?;
@@ -289,15 +324,7 @@ impl K8sLeaderElector {
 
         let is_our_lease = holder == Some(self.identity.as_str());
 
-        // Check if the lease has expired. Include clock drift tolerance to
-        // prevent premature takeovers due to NTP adjustments or node clock skew.
-        let lease_expired = if let Some(renew) = renew_time {
-            // Add tolerance to lease duration to account for clock drift
-            let effective_duration = i64::from(duration) + CLOCK_DRIFT_TOLERANCE_SECS;
-            elapsed_secs_since(renew) > effective_duration
-        } else {
-            true // No renew time means expired
-        };
+        let lease_expired = lease_is_expired(renew_time, duration);
 
         if is_our_lease {
             // We hold the lease, renew it
@@ -543,11 +570,7 @@ impl K8sLeaderElector {
             let duration = spec
                 .and_then(|s| s.lease_duration_seconds)
                 .unwrap_or(self.lease_duration_secs);
-            let lease_expired = if let Some(renew) = renew_time {
-                elapsed_secs_since(renew) > i64::from(duration)
-            } else {
-                true // No renew time means expired
-            };
+            let lease_expired = lease_is_expired(renew_time, duration);
 
             if !lease_expired && attempt > 1 {
                 debug!(
@@ -884,6 +907,50 @@ impl super::LeaderElect for K8sLeaderElector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_config_validation_rejects_invalid_timing() {
+        let invalid_lease = K8sLeaderElectorConfig {
+            lease_duration_secs: 0,
+            ..K8sLeaderElectorConfig::default()
+        };
+        assert!(validate_config(&invalid_lease).is_err());
+
+        let invalid_interval = K8sLeaderElectorConfig {
+            renew_interval_secs: 0,
+            ..K8sLeaderElectorConfig::default()
+        };
+        assert!(validate_config(&invalid_interval).is_err());
+
+        let expired_before_renew = K8sLeaderElectorConfig {
+            lease_duration_secs: 10,
+            renew_interval_secs: 10,
+            ..K8sLeaderElectorConfig::default()
+        };
+        assert!(validate_config(&expired_before_renew).is_err());
+
+        let valid = K8sLeaderElectorConfig {
+            lease_duration_secs: 10,
+            renew_interval_secs: 9,
+            ..K8sLeaderElectorConfig::default()
+        };
+        assert!(validate_config(&valid).is_ok());
+    }
+
+    #[test]
+    fn test_lease_expiry_applies_clock_drift_tolerance() {
+        let now = k8s_openapi::jiff::Timestamp::now();
+        let within_tolerance = k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime::from(
+            now - k8s_openapi::jiff::SignedDuration::from_secs(29 + CLOCK_DRIFT_TOLERANCE_SECS),
+        );
+        assert!(!lease_is_expired(Some(&within_tolerance), 30));
+
+        let past_tolerance = k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime::from(
+            now - k8s_openapi::jiff::SignedDuration::from_secs(31 + CLOCK_DRIFT_TOLERANCE_SECS),
+        );
+        assert!(lease_is_expired(Some(&past_tolerance), 30));
+        assert!(lease_is_expired(None, 30));
+    }
 
     #[test]
     fn test_calculate_grace_period_exponential_backoff() {

@@ -155,7 +155,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
         let room_id_key = room_id.to_string();
         let media_id_key = media_id.to_string();
         if let Some(infra) = &self.live_streaming_infrastructure {
-            if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key) {
+            if let Err(error) = infra.kick_publisher(&room_id_key, &media_id_key).await {
                 let stream_error = StreamError::StreamHubError(error.to_string());
                 tracing::warn!(
                     room_id = %room_id,

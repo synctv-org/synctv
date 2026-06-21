@@ -90,6 +90,20 @@ fn range_bounds_for_total_reports_unsatisfiable_ranges() {
 }
 
 #[test]
+fn range_bounds_for_total_reports_empty_resource_ranges_as_unsatisfiable() {
+    for plan in [
+        ClientRangePlan::Explicit { start: 0, end: 0 },
+        ClientRangePlan::OpenEnded { start: 0 },
+        ClientRangePlan::Suffix { suffix_len: 1 },
+    ] {
+        assert!(matches!(
+            range_bounds_for_total(plan, 0),
+            Err(ClientRangeError::Unsatisfiable { total_size: 0, .. })
+        ));
+    }
+}
+
+#[test]
 fn slice_index_for_byte_uses_zero_based_slice_numbers() {
     assert_eq!(slice_index_for_byte(0, 100), 0);
     assert_eq!(slice_index_for_byte(99, 100), 0);

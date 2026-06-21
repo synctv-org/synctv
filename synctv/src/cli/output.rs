@@ -3,7 +3,8 @@ use clap::ValueEnum;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{prune_null_config_values, ToHuman};
+use super::human_output::ToHuman;
+use super::prune_null_config_values;
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub enum ConfigOutputFormat {

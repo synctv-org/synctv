@@ -1,7 +1,7 @@
 use tonic::Status;
 
 use synctv_core::models::UserStatus as CoreUserStatus;
-use synctv_proto::{admin as admin_proto, common as common_proto};
+use synctv_proto::{admin as admin_proto, client as client_proto, common as common_proto};
 
 pub(crate) fn invalid_enum_value(field: &'static str, value: i32) -> Status {
     Status::invalid_argument(format!("Invalid {field}: unknown enum value {value}"))
@@ -67,6 +67,32 @@ pub(crate) fn map_room_member_list_sort_by(sort_by: i32) -> Result<i32, Status> 
     })
 }
 
+pub(crate) fn map_room_stream_list_sort_by(sort_by: i32) -> Result<i32, Status> {
+    let sort_by = crate::proto::RoomStreamListSortBy::try_from(sort_by)
+        .map_err(|_| invalid_enum_value("sort_by", sort_by))?;
+    Ok(match sort_by {
+        crate::proto::RoomStreamListSortBy::MediaId => {
+            client_proto::RoomStreamListSortBy::MediaId as i32
+        }
+        crate::proto::RoomStreamListSortBy::Unspecified => {
+            client_proto::RoomStreamListSortBy::Unspecified as i32
+        }
+    })
+}
+
+pub(crate) fn map_client_sort_direction(
+    sort_direction: i32,
+    default: client_proto::SortDirection,
+) -> Result<i32, Status> {
+    let sort_direction = crate::proto::SortDirection::try_from(sort_direction)
+        .map_err(|_| invalid_enum_value("sort_direction", sort_direction))?;
+    Ok(match sort_direction {
+        crate::proto::SortDirection::Asc => client_proto::SortDirection::Asc as i32,
+        crate::proto::SortDirection::Desc => client_proto::SortDirection::Desc as i32,
+        crate::proto::SortDirection::Unspecified => default as i32,
+    })
+}
+
 pub(crate) fn map_sort_direction(
     sort_direction: i32,
     default: admin_proto::SortDirection,
@@ -122,7 +148,10 @@ pub(crate) fn map_management_user_lookup_error(err: synctv_core::Error) -> Statu
 
 #[cfg(test)]
 mod tests {
-    use super::{map_sort_direction, map_user_list_sort_by, validate_client_actor_user};
+    use super::{
+        map_client_sort_direction, map_room_stream_list_sort_by, map_sort_direction,
+        map_user_list_sort_by, validate_client_actor_user,
+    };
     use synctv_core::models::{SignupMethod, User, UserStatus};
 
     fn make_actor_user(username: &str, status: UserStatus) -> User {
@@ -178,6 +207,24 @@ mod tests {
     fn enum_mapping_rejects_unknown_sort_direction_values() {
         let status = map_sort_direction(99, synctv_proto::admin::SortDirection::Desc)
             .expect_err("unknown management sort direction enum should fail");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("sort_direction"));
+    }
+
+    #[test]
+    fn enum_mapping_rejects_unknown_room_stream_sort_values() {
+        let status = map_room_stream_list_sort_by(99)
+            .expect_err("unknown room-stream sort enum should fail");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("sort_by"));
+    }
+
+    #[test]
+    fn enum_mapping_rejects_unknown_client_sort_direction_values() {
+        let status = map_client_sort_direction(99, synctv_proto::client::SortDirection::Desc)
+            .expect_err("unknown client sort direction enum should fail");
 
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
         assert!(status.message().contains("sort_direction"));

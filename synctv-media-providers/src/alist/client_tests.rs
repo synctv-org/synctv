@@ -94,6 +94,20 @@ fn test_client_host_preserved() -> TestResult {
 }
 
 #[test]
+fn test_client_host_normalizes_trailing_slash() -> TestResult {
+    let client = AlistClient::new("https://my-server.com:5244/base/")?;
+    assert_eq!(client.host(), "https://my-server.com:5244/base");
+    Ok(())
+}
+
+#[test]
+fn test_client_host_normalizes_trailing_slash_without_reencoding_path() -> TestResult {
+    let client = AlistClient::new("https://proxy.example/a%20list/")?;
+    assert_eq!(client.host(), "https://proxy.example/a%20list");
+    Ok(())
+}
+
+#[test]
 fn test_client_with_token_host() -> TestResult {
     let client = AlistClient::with_token("https://alist.example.com", "token123")?;
     assert_eq!(client.host(), "https://alist.example.com");
@@ -111,8 +125,8 @@ fn test_set_token_overwrite() -> TestResult {
 }
 
 #[test]
-fn test_build_headers_uses_origin_without_path_or_query() -> TestResult {
-    let client = AlistClient::new("https://alist.example.com/base?token=secret#frag")?;
+fn test_build_headers_uses_origin_without_path() -> TestResult {
+    let client = AlistClient::new("https://alist.example.com/base")?;
     let headers = client.build_headers(&HashMap::new())?;
 
     assert_eq!(
@@ -127,18 +141,25 @@ fn test_build_headers_uses_origin_without_path_or_query() -> TestResult {
 }
 
 #[test]
-fn test_build_headers_rejects_userinfo_in_host() -> TestResult {
-    let client = AlistClient::new("https://user:pass@alist.example.com")?;
-    let err = client
-        .build_headers(&HashMap::new())
-        .expect_err("userinfo must not be accepted in provider host");
+fn test_client_creation_rejects_query_and_fragment_in_host() {
+    let Err(err) = AlistClient::new("https://alist.example.com/base?token=secret#frag") else {
+        panic!("query and fragment must not be accepted in provider host");
+    };
     assert!(
-        err.to_string().contains("Origin header")
-            || err.to_string().contains("userinfo")
-            || err.to_string().contains("Invalid host URL"),
+        err.to_string().contains("query or fragment"),
         "unexpected error: {err}"
     );
-    Ok(())
+}
+
+#[test]
+fn test_client_creation_rejects_userinfo_in_host() {
+    let Err(err) = AlistClient::new("https://user:pass@alist.example.com") else {
+        panic!("userinfo must not be accepted in provider host");
+    };
+    assert!(
+        err.to_string().contains("userinfo"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

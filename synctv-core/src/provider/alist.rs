@@ -8,7 +8,6 @@ use super::{
         create_remote_alist_client, AlistClientArc, AlistClientExt, AlistFileInfo,
         AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview, ProviderClientManager,
     },
-    store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
     PlaybackStreamPreference, PlaybackSubtitlePreference, ProviderContext,
@@ -1168,62 +1167,17 @@ impl MediaProvider for AlistProvider {
         );
         let cache_ttl = Duration::from_mins(15);
 
-        let store = _ctx.store.as_ref();
-
-        // Check cache
-        if let Some(store) = store {
-            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                if !cached.is_expired() {
-                    return super::build_cached_versioned_playback_response(
-                        cached,
-                        Self::NAME,
-                        _ctx,
-                        mark_alist_playback_resources,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // Acquire lock to prevent concurrent resolution of same content
-        let _lock = if let Some(store) = store {
-            store
-                .lock(&format!("lock:{cache_key}"), Duration::from_secs(30))
-                .await
-                .ok()
-        } else {
-            None
-        };
-
-        // Double-check cache after lock acquisition
-        if let Some(store) = store {
-            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
-                if !cached.is_expired() {
-                    return super::build_cached_versioned_playback_response(
-                        cached,
-                        Self::NAME,
-                        _ctx,
-                        mark_alist_playback_resources,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        // Call provider API
-        let resolved = self.resolve_config(_ctx, source_config).await?;
-        let result = self
-            .resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
-            .await?;
-
-        // Generate version and store result
-        super::cache_versioned_playback_and_build_response(
-            result,
+        super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
             _ctx,
             mark_alist_playback_resources,
+            || async {
+                let resolved = self.resolve_config(_ctx, source_config).await?;
+                self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
+                    .await
+            },
         )
         .await
     }

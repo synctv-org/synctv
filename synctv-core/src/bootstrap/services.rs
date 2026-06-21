@@ -8,8 +8,8 @@ use tracing::{info, warn};
 use crate::{
     cache::{
         build_l2_cache_backend, version_fence_store_from_shared_state_profile,
-        CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, RoomCache,
-        UserCache, UsernameCache, VersionFenceStore,
+        CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, KeyBuilder,
+        RoomCache, UserCache, UsernameCache, VersionFenceStore,
     },
     config::FileStorageBackendType,
     provider::{
@@ -236,7 +236,7 @@ fn build_request_rate_limiter(
 fn build_refresh_token_rate_limiter(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn RequestRateLimiterService>, anyhow::Error> {
-    let rate_limit_prefix = format!("{}refresh_rl:", profile.key_prefix());
+    let rate_limit_prefix = KeyBuilder::new(profile.key_prefix()).namespace_prefix("refresh_rl");
     let refresh_profile = SharedStateProfile::new(
         profile.state_mode(),
         profile.shared_runtime(),
@@ -361,6 +361,7 @@ pub async fn init_services_with_options(
         &config.redis.key_prefix,
         cluster_mode,
     );
+    let key_builder = KeyBuilder::from_config(config);
     let version_fence = version_fence_store_from_shared_state_profile(&shared_state_profile)?;
     let consistency = ConsistencyCoordinator::new(version_fence.clone());
 
@@ -391,7 +392,7 @@ pub async fn init_services_with_options(
         })?;
     let username_cache = UsernameCache::new_with_invalidation(
         cache_l2.clone(),
-        format!("{}username:", config.redis.key_prefix),
+        key_builder.namespace_prefix("username"),
         username_cache_capacity,
         config.cache.username_cache_ttl_seconds,
         Some(cache_invalidation.clone()),
@@ -407,14 +408,14 @@ pub async fn init_services_with_options(
         config.cache.l1_capacity,
         config.cache.l1_ttl_seconds,
         config.cache.l2_ttl_seconds,
-        format!("{}user:", config.redis.key_prefix),
+        key_builder.namespace_prefix("user"),
     ));
     let room_cache = Arc::new(RoomCache::new(
         cache_l2.clone(),
         config.cache.l1_capacity,
         config.cache.l1_ttl_seconds,
         config.cache.l2_ttl_seconds,
-        format!("{}room:", config.redis.key_prefix),
+        key_builder.namespace_prefix("room"),
     ));
     info!(
         "User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
@@ -442,7 +443,6 @@ pub async fn init_services_with_options(
     // Prepare UserService construction-time dependencies. UserService is
     // constructed after Settings/Email so its runtime collaborators are
     // complete before the service is cloned into RoomService.
-    let key_builder = crate::cache::KeyBuilder::from_config(config);
     // Shared-state refresh limiting prevents N * limit bypass across replicas.
     let refresh_rate_limiter = build_refresh_token_rate_limiter(&shared_state_profile)?;
 
@@ -599,7 +599,7 @@ pub async fn init_services_with_options(
         crate::service::settings::SettingsServiceRuntime {
             version_fence: version_fence.clone(),
             l2_cache: cache_l2.clone(),
-            cache_key_prefix: format!("{}runtime_settings:", config.redis.key_prefix),
+            cache_key_prefix: key_builder.namespace_prefix("runtime_settings"),
             cache_max_capacity: 512,
             cache_ttl_secs: 300,
             cache_l2_ttl_secs: config.cache.l2_ttl_seconds,
@@ -766,12 +766,9 @@ pub async fn init_services_with_options(
             invalidation_service: Some(cache_invalidation.clone()),
             version_fence: version_fence.clone(),
             member_permission_l2_cache: cache_l2.clone(),
-            member_permission_cache_key_prefix: format!(
-                "{}member_permission:",
-                config.redis.key_prefix
-            ),
+            member_permission_cache_key_prefix: key_builder.namespace_prefix("member_permission"),
             room_settings_l2_cache: room_settings_l2_cache_for_chat.clone(),
-            room_settings_cache_key_prefix: format!("{}room_settings:", config.redis.key_prefix),
+            room_settings_cache_key_prefix: key_builder.namespace_prefix("room_settings"),
         },
     )?;
 
@@ -781,7 +778,7 @@ pub async fn init_services_with_options(
             jwt_service: jwt_service.clone(),
             username_cache: username_cache.clone(),
             token_blacklist,
-            key_builder,
+            key_builder: key_builder.clone(),
             brute_force: brute_force.clone(),
             password_complexity: config.password_complexity.clone(),
         },
@@ -889,7 +886,7 @@ pub async fn init_services_with_options(
             cache_max_capacity: Some(10_000),
             version_fence,
             l2_cache: room_settings_l2_cache_for_chat,
-            cache_key_prefix: format!("{}room_settings:", shared_state_profile.key_prefix()),
+            cache_key_prefix: key_builder.namespace_prefix("room_settings"),
         },
     );
     let permission_service_for_chat = room_service.permission_service().clone();
@@ -1119,7 +1116,7 @@ fn build_room_service_runtime(
         crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
         crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
         cache_l2_ttl_seconds,
-        format!("{}playback:", profile.key_prefix()),
+        KeyBuilder::new(profile.key_prefix()).namespace_prefix("playback"),
     );
 
     let room_settings_l2_cache = cache_l2_backend_for_profile(profile, "room settings cache L2")?;
@@ -1130,9 +1127,11 @@ fn build_room_service_runtime(
         distributed_lock,
         playback_l2_cache,
         room_settings_l2_cache,
-        room_settings_cache_key_prefix: format!("{}room_settings:", profile.key_prefix()),
+        room_settings_cache_key_prefix: KeyBuilder::new(profile.key_prefix())
+            .namespace_prefix("room_settings"),
         member_permission_l2_cache,
-        member_permission_cache_key_prefix: format!("{}member_permission:", profile.key_prefix()),
+        member_permission_cache_key_prefix: KeyBuilder::new(profile.key_prefix())
+            .namespace_prefix("member_permission"),
     })
 }
 

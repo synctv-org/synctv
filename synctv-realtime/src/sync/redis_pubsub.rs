@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use redis::streams::StreamReadReply;
 use redis::AsyncCommands;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use synctv_core::RedisCoordinationRuntime;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -466,10 +466,10 @@ impl RedisPubSub {
             // events that fail during a connection interruption window are all
             // preserved for retry, not just the last one.
             let mut retry_buffer: Vec<PublishRequest> = Vec::new();
-            // Separate buffer for critical events (kick/ban) that must NEVER be dropped.
-            // This ensures user access control events are always delivered even during
-            // prolonged Redis outages.
-            let mut critical_retry_buffer: Vec<PublishRequest> = Vec::new();
+            // Separate bounded buffer for critical events (kick/ban). Normal retry
+            // pressure never evicts this buffer; confirmed requests fail back to the
+            // durable outbox when the critical buffer itself is full.
+            let mut critical_retry_buffer: VecDeque<PublishRequest> = VecDeque::new();
             // Helper to update buffer pressure state
             let update_pressure = |retry_len: usize, critical_len: usize| {
                 buffer_pressure_state.set_retry_size(retry_len);
@@ -527,7 +527,7 @@ impl RedisPubSub {
 
                 // CRITICAL EVENTS: Always retry first (highest priority)
                 if !critical_retry_buffer.is_empty() {
-                    let critical_batch = std::mem::take(&mut critical_retry_buffer);
+                    let critical_batch: Vec<_> = critical_retry_buffer.drain(..).collect();
                     update_pressure(retry_buffer.len(), 0); // Critical buffer is empty during retry
                     info!(
                         critical_count = critical_batch.len(),
@@ -547,7 +547,7 @@ impl RedisPubSub {
                             failed_count = failed.len(),
                             "Some critical events failed to retry, keeping in buffer"
                         );
-                        critical_retry_buffer = failed;
+                        critical_retry_buffer = failed.into();
                         update_pressure(retry_buffer.len(), critical_retry_buffer.len());
                         let cancelled = tokio::select! {
                             () = cancel_publisher.cancelled() => true,
@@ -659,7 +659,7 @@ impl RedisPubSub {
                             }
 
                             // CRITICAL: Flush critical_retry_buffer FIRST (highest priority)
-                            for req in std::mem::take(&mut critical_retry_buffer) {
+                            for req in critical_retry_buffer.drain(..) {
                                 flush_event!(req, true, "critical_buffer");
                             }
                             // Then flush normal retry_buffer
@@ -735,18 +735,7 @@ impl RedisPubSub {
                                         "Failed to publish event to Redis: {e}"
                                     ));
                                 } else if req.event.is_critical() {
-                                    if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
-                                        let mut dropped = critical_retry_buffer.remove(0);
-                                        warn!(
-                                            critical_buffer_len = critical_retry_buffer.len(),
-                                            max = MAX_CRITICAL_BUFFER,
-                                            "Critical event buffer full, dropping oldest event"
-                                        );
-                                        dropped.acknowledge_failure(
-                                            "Redis critical retry buffer full",
-                                        );
-                                    }
-                                    critical_retry_buffer.push(req);
+                                    push_critical_retry_buffer(&mut critical_retry_buffer, req);
                                 } else {
                                     retry_buffer.push(req);
                                 }
@@ -762,20 +751,7 @@ impl RedisPubSub {
                                             "Redis publisher connection failed before confirmed publish",
                                         );
                                     } else if is_critical {
-                                        // Critical events are buffered with a hard cap
-                                        // to prevent OOM during prolonged outages.
-                                        if critical_retry_buffer.len() >= MAX_CRITICAL_BUFFER {
-                                            let mut dropped = critical_retry_buffer.remove(0);
-                                            warn!(
-                                                critical_buffer_len = critical_retry_buffer.len(),
-                                                max = MAX_CRITICAL_BUFFER,
-                                                "Critical event buffer full, dropping oldest event"
-                                            );
-                                            dropped.acknowledge_failure(
-                                                "Redis critical retry buffer full",
-                                            );
-                                        }
-                                        critical_retry_buffer.push(req);
+                                        push_critical_retry_buffer(&mut critical_retry_buffer, req);
 
                                         // Warn if critical buffer is growing large
                                         if critical_retry_buffer.len()
@@ -2260,6 +2236,24 @@ impl PublishRequest {
     fn expects_ack(&self) -> bool {
         self.ack.is_some()
     }
+}
+
+fn push_critical_retry_buffer(buffer: &mut VecDeque<PublishRequest>, req: PublishRequest) {
+    if buffer.len() >= MAX_CRITICAL_BUFFER {
+        let mut dropped = buffer
+            .pop_front()
+            .expect("full critical retry buffer must contain an oldest request");
+        warn!(
+            critical_buffer_len = buffer.len(),
+            max = MAX_CRITICAL_BUFFER,
+            "Critical event buffer full, dropping oldest event"
+        );
+        synctv_core::metrics::cluster::REALTIME_EVENTS_DROPPED
+            .with_label_values(&["critical_retry_buffer_full"])
+            .inc();
+        dropped.acknowledge_failure("Redis critical retry buffer full");
+    }
+    buffer.push_back(req);
 }
 
 async fn retry_publish_batch(

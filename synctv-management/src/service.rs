@@ -10,8 +10,9 @@ use tonic::{Request, Response, Status};
 use crate::access::ManagementAccessController;
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
 use crate::mapping::{
-    map_management_user_lookup_error, map_room_list_sort_by, map_room_member_list_sort_by,
-    map_room_status, map_sort_direction, map_user_list_sort_by, map_user_role, map_user_status,
+    map_client_sort_direction, map_management_user_lookup_error, map_room_list_sort_by,
+    map_room_member_list_sort_by, map_room_status, map_room_stream_list_sort_by,
+    map_sort_direction, map_user_list_sort_by, map_user_role, map_user_status,
     validate_client_actor_user,
 };
 use crate::proto::{
@@ -48,6 +49,10 @@ use crate::proto::{
     UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
     UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
     UpdateUserUsernameRequest, UserRef,
+};
+use crate::source_config::{
+    alist_source_config, bilibili_live_source_config, bilibili_pgc_source_config,
+    bilibili_video_source_config, direct_url_source_config, emby_source_config,
 };
 use synctv_api::grpc_support::map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
@@ -324,124 +329,6 @@ impl ManagementServiceImpl {
                 *base_slot = patch_value;
             }
         }
-    }
-
-    fn encode_source_config(provider: &str, value: &serde_json::Value) -> Result<Vec<u8>, Status> {
-        serde_json::to_vec(&value).map_err(|error| {
-            tracing::error!(provider, error = %error, "failed to encode provider source config");
-            Status::internal("failed to encode provider source config")
-        })
-    }
-
-    fn trimmed_required(field_name: &str, value: &str) -> Result<String, Status> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(Status::invalid_argument(format!(
-                "{field_name} must not be empty"
-            )));
-        }
-        Ok(trimmed.to_string())
-    }
-
-    fn alist_source_config(server_id: &str, path: &str, password: &str) -> Result<Vec<u8>, Status> {
-        let mut source_config = serde_json::Map::new();
-        source_config.insert(
-            "server_id".to_string(),
-            serde_json::Value::String(Self::trimmed_required("server_id", server_id)?),
-        );
-        source_config.insert(
-            "path".to_string(),
-            serde_json::Value::String(Self::trimmed_required("path", path)?),
-        );
-        let password = password.trim();
-        if !password.is_empty() {
-            source_config.insert(
-                "password".to_string(),
-                serde_json::Value::String(password.to_string()),
-            );
-        }
-        Self::encode_source_config("alist", &serde_json::Value::Object(source_config))
-    }
-
-    fn emby_source_config(server_id: &str, item_id: &str) -> Result<Vec<u8>, Status> {
-        Self::encode_source_config(
-            "emby",
-            &serde_json::json!({
-                "server_id": Self::trimmed_required("server_id", server_id)?,
-                "item_id": Self::trimmed_required("item_id", item_id)?,
-            }),
-        )
-    }
-
-    fn bilibili_video_source_config(
-        bvid: &str,
-        aid: Option<u64>,
-        cid: u64,
-        shared: bool,
-    ) -> Result<Vec<u8>, Status> {
-        if bvid.trim().is_empty() && aid.is_none() {
-            return Err(Status::invalid_argument("bvid or aid is required"));
-        }
-        if cid == 0 {
-            return Err(Status::invalid_argument("cid must be non-zero"));
-        }
-
-        let mut source_config = serde_json::Map::new();
-        source_config.insert(
-            "type".to_string(),
-            serde_json::Value::String("video".to_string()),
-        );
-        let bvid = bvid.trim();
-        if !bvid.is_empty() {
-            source_config.insert(
-                "bvid".to_string(),
-                serde_json::Value::String(bvid.to_string()),
-            );
-        }
-        if let Some(aid) = aid {
-            source_config.insert("aid".to_string(), serde_json::Value::from(aid));
-        }
-        source_config.insert("cid".to_string(), serde_json::Value::from(cid));
-        if shared {
-            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
-        }
-        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
-    }
-
-    fn bilibili_pgc_source_config(epid: u64, cid: u64, shared: bool) -> Result<Vec<u8>, Status> {
-        if epid == 0 {
-            return Err(Status::invalid_argument("epid must be non-zero"));
-        }
-        if cid == 0 {
-            return Err(Status::invalid_argument("cid must be non-zero"));
-        }
-        let mut source_config = serde_json::Map::new();
-        source_config.insert(
-            "type".to_string(),
-            serde_json::Value::String("pgc".to_string()),
-        );
-        source_config.insert("epid".to_string(), serde_json::Value::from(epid));
-        source_config.insert("cid".to_string(), serde_json::Value::from(cid));
-        if shared {
-            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
-        }
-        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
-    }
-
-    fn bilibili_live_source_config(room_live_id: u64, shared: bool) -> Result<Vec<u8>, Status> {
-        if room_live_id == 0 {
-            return Err(Status::invalid_argument("room_live_id must be non-zero"));
-        }
-        let mut source_config = serde_json::Map::new();
-        source_config.insert(
-            "type".to_string(),
-            serde_json::Value::String("live".to_string()),
-        );
-        source_config.insert("room_id".to_string(), serde_json::Value::from(room_live_id));
-        if shared {
-            source_config.insert("shared".to_string(), serde_json::Value::Bool(true));
-        }
-        Self::encode_source_config("bilibili", &serde_json::Value::Object(source_config))
     }
 
     async fn resolve_batch_user_refs(&self, users: Vec<UserRef>) -> BatchUserResolution {
@@ -2200,22 +2087,11 @@ impl ManagementService for ManagementServiceImpl {
                     page: req.page,
                     page_size: req.page_size,
                     search: req.search,
-                    sort_by: match crate::proto::RoomStreamListSortBy::try_from(req.sort_by) {
-                        Ok(crate::proto::RoomStreamListSortBy::MediaId) => {
-                            client_proto::RoomStreamListSortBy::MediaId as i32
-                        }
-                        _ => client_proto::RoomStreamListSortBy::Unspecified as i32,
-                    },
-                    sort_direction: match crate::proto::SortDirection::try_from(req.sort_direction)
-                    {
-                        Ok(crate::proto::SortDirection::Desc) => {
-                            client_proto::SortDirection::Desc as i32
-                        }
-                        Ok(crate::proto::SortDirection::Asc) => {
-                            client_proto::SortDirection::Asc as i32
-                        }
-                        _ => client_proto::SortDirection::Unspecified as i32,
-                    },
+                    sort_by: map_room_stream_list_sort_by(req.sort_by)?,
+                    sort_direction: map_client_sort_direction(
+                        req.sort_direction,
+                        client_proto::SortDirection::Unspecified,
+                    )?,
                 },
             )
             .await
@@ -2331,11 +2207,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: "alist".to_string(),
-                    source_config: Self::alist_source_config(
-                        &req.server_id,
-                        &req.path,
-                        &req.password,
-                    )?,
+                    source_config: alist_source_config(&req.server_id, &req.path, &req.password)?,
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -2361,7 +2233,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: "emby".to_string(),
-                    source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
+                    source_config: emby_source_config(&req.server_id, &req.item_id)?,
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -2517,11 +2389,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "direct_url".to_string(),
                     provider_instance_name: String::new(),
-                    source_config: serde_json::to_vec(&serde_json::json!({ "url": req.url }))
-                        .map_err(|error| {
-                            tracing::error!(error = %error, "failed to encode media source config");
-                            Status::internal("failed to encode media source config")
-                        })?,
+                    source_config: direct_url_source_config(&req.url)?,
                     name: req.name,
                 },
             )
@@ -2547,11 +2415,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "alist".to_string(),
                     provider_instance_name: req.provider_instance_name,
-                    source_config: Self::alist_source_config(
-                        &req.server_id,
-                        &req.path,
-                        &req.password,
-                    )?,
+                    source_config: alist_source_config(&req.server_id, &req.path, &req.password)?,
                     name: req.name,
                 },
             )
@@ -2577,7 +2441,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "emby".to_string(),
                     provider_instance_name: req.provider_instance_name,
-                    source_config: Self::emby_source_config(&req.server_id, &req.item_id)?,
+                    source_config: emby_source_config(&req.server_id, &req.item_id)?,
                     name: req.name,
                 },
             )
@@ -2603,7 +2467,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
-                    source_config: Self::bilibili_video_source_config(
+                    source_config: bilibili_video_source_config(
                         &req.bvid, req.aid, req.cid, req.shared,
                     )?,
                     name: req.name,
@@ -2631,7 +2495,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
-                    source_config: Self::bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
+                    source_config: bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
                     name: req.name,
                 },
             )
@@ -2657,7 +2521,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: "bilibili".to_string(),
                     provider_instance_name: req.provider_instance_name,
-                    source_config: Self::bilibili_live_source_config(req.room_live_id, req.shared)?,
+                    source_config: bilibili_live_source_config(req.room_live_id, req.shared)?,
                     name: req.name,
                 },
             )

@@ -178,7 +178,7 @@ impl Expiry<String, LockValue> for LockEntryExpiry {
 pub struct InMemoryProviderStore {
     cache: moka::future::Cache<String, TtlValue>,
     locks: moka::sync::Cache<String, LockValue>,
-    lock_mutex: Mutex<()>,
+    lock_mutex: Arc<Mutex<()>>,
 }
 
 impl InMemoryProviderStore {
@@ -191,7 +191,7 @@ impl InMemoryProviderStore {
             locks: moka::sync::Cache::builder()
                 .expire_after(LockEntryExpiry)
                 .build(),
-            lock_mutex: Mutex::new(()),
+            lock_mutex: Arc::new(Mutex::new(())),
         }
     }
 }
@@ -237,9 +237,11 @@ impl ProviderStore for InMemoryProviderStore {
         drop(_guard);
 
         let locks = self.locks.clone();
+        let lock_mutex = self.lock_mutex.clone();
         let key_owned = key.to_string();
         let owner_token_owned = owner_token;
         Ok(StoreLockGuard::new(move || {
+            let _guard = lock_mutex.lock();
             let should_release = locks
                 .get(&key_owned)
                 .is_some_and(|value| value.owner_token == owner_token_owned);
@@ -454,10 +456,11 @@ impl ProviderStoreRegistry {
         redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
         key_prefix: impl Into<String>,
     ) -> Self {
+        let key_prefix = crate::cache::KeyBuilder::new(key_prefix).namespace_prefix("");
         Self {
             redis_runtime,
             stores: Mutex::new(HashMap::new()),
-            key_prefix: key_prefix.into().into(),
+            key_prefix: key_prefix.into(),
         }
     }
 
@@ -760,6 +763,7 @@ mod tests {
     #[tokio::test]
     async fn test_provider_store_registry_respects_configured_prefix() {
         let registry = ProviderStoreRegistry::local_only("tenant-a:");
+        assert_eq!(registry.key_prefix(), "tenant-a:");
         let store = registry.load("bilibili");
         store
             .set_raw("cache-key", b"value", Duration::from_mins(1))
@@ -787,6 +791,15 @@ mod tests {
                 .is_none(),
             "different configured prefixes must isolate provider cache state"
         );
+    }
+
+    #[test]
+    fn test_provider_store_registry_normalizes_prefix_without_trailing_colon() {
+        let registry = ProviderStoreRegistry::local_only("tenant-a");
+        assert_eq!(registry.key_prefix(), "tenant-a:");
+
+        let rootless = ProviderStoreRegistry::local_only("");
+        assert_eq!(rootless.key_prefix(), "");
     }
 
     #[test]

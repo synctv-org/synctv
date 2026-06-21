@@ -60,6 +60,8 @@ pub use traits::{
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
+use std::future::Future;
+use std::time::Duration;
 
 pub(crate) fn subtitle_headers_for_proxy(
     media_headers: &std::collections::HashMap<String, String>,
@@ -431,4 +433,107 @@ pub(crate) async fn cache_versioned_playback_and_build_response(
         versioned.expires_at,
         mark_provider_resources,
     ))
+}
+
+const PLAYBACK_CACHE_LOCK_TTL: Duration = Duration::from_secs(30);
+const PLAYBACK_CACHE_LOCK_WAIT_ATTEMPTS: usize = 5;
+const PLAYBACK_CACHE_LOCK_WAIT_DELAY: Duration = Duration::from_millis(50);
+
+async fn read_fresh_versioned_playback(
+    store: &dyn ProviderStore,
+    cache_key: &str,
+) -> Option<VersionedPlayback> {
+    match store.get::<VersionedPlayback>(cache_key).await {
+        Ok(Some(cached)) if !cached.is_expired() => Some(cached),
+        _ => None,
+    }
+}
+
+async fn wait_for_fresh_versioned_playback(
+    store: &dyn ProviderStore,
+    cache_key: &str,
+) -> Option<VersionedPlayback> {
+    for _ in 0..PLAYBACK_CACHE_LOCK_WAIT_ATTEMPTS {
+        tokio::time::sleep(PLAYBACK_CACHE_LOCK_WAIT_DELAY).await;
+        if let Some(cached) = read_fresh_versioned_playback(store, cache_key).await {
+            return Some(cached);
+        }
+    }
+    None
+}
+
+pub(crate) async fn cached_versioned_playback_or_fill<F, Fut>(
+    provider_name: &'static str,
+    cache_key: &str,
+    cache_ttl: Duration,
+    ctx: &ProviderContext<'_>,
+    mark_provider_resources: fn(&mut PlaybackResult, &str, i64),
+    fill: F,
+) -> std::result::Result<PlaybackResult, ProviderError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = std::result::Result<PlaybackResult, ProviderError>>,
+{
+    let store = ctx.store.as_ref().ok_or_else(|| {
+        ProviderError::Internal(format!(
+            "Provider '{provider_name}' cannot generate playback transport without a provider store"
+        ))
+    })?;
+
+    if let Some(cached) = read_fresh_versioned_playback(store.as_ref(), cache_key).await {
+        return build_cached_versioned_playback_response(
+            cached,
+            provider_name,
+            ctx,
+            mark_provider_resources,
+        )
+        .await;
+    }
+
+    let lock_key = format!("lock:{cache_key}");
+    let lock = match store.lock(&lock_key, PLAYBACK_CACHE_LOCK_TTL).await {
+        Ok(lock) => Some(lock),
+        Err(error) => {
+            tracing::warn!(
+                provider = provider_name,
+                cache_key = cache_key,
+                error = %error,
+                "Provider playback cache lock unavailable; waiting for peer cache fill"
+            );
+            if let Some(cached) = wait_for_fresh_versioned_playback(store.as_ref(), cache_key).await
+            {
+                return build_cached_versioned_playback_response(
+                    cached,
+                    provider_name,
+                    ctx,
+                    mark_provider_resources,
+                )
+                .await;
+            }
+            None
+        }
+    };
+
+    if lock.is_some() {
+        if let Some(cached) = read_fresh_versioned_playback(store.as_ref(), cache_key).await {
+            return build_cached_versioned_playback_response(
+                cached,
+                provider_name,
+                ctx,
+                mark_provider_resources,
+            )
+            .await;
+        }
+    }
+
+    let result = fill().await?;
+    cache_versioned_playback_and_build_response(
+        result,
+        provider_name,
+        cache_key,
+        cache_ttl,
+        ctx,
+        mark_provider_resources,
+    )
+    .await
 }

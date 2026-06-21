@@ -17,6 +17,7 @@ use crate::models::media::{
     PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia,
     PlaybackMediaProvider, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
+use crate::models::{AlistMediaSourceConfig, AlistPlaylistSourceConfig};
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
@@ -583,16 +584,6 @@ impl AlistProvider {
     }
 }
 
-/// Alist source configuration
-#[derive(Debug, Deserialize, Serialize)]
-struct AlistSourceConfig {
-    path: String,
-    #[serde(default)]
-    password: Option<String>,
-    /// Saved Alist credential server identifier.
-    server_id: String,
-}
-
 /// Resolved Alist configuration with credentials ready for API calls.
 struct ResolvedAlistBinding {
     path: String,
@@ -609,13 +600,52 @@ struct ResolvedAlistConfig {
     provider_instance_name: Option<String>,
 }
 
-impl TryFrom<&Value> for AlistSourceConfig {
-    type Error = ProviderError;
+#[derive(Debug, Clone)]
+struct AlistSourceConfig {
+    path: String,
+    password: Option<String>,
+    server_id: String,
+}
 
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+impl From<AlistMediaSourceConfig> for AlistSourceConfig {
+    fn from(config: AlistMediaSourceConfig) -> Self {
+        Self {
+            path: config.path,
+            password: config.password,
+            server_id: config.server_id,
+        }
+    }
+}
+
+impl From<AlistPlaylistSourceConfig> for AlistSourceConfig {
+    fn from(config: AlistPlaylistSourceConfig) -> Self {
+        Self {
+            path: config.path,
+            password: config.password,
+            server_id: config.server_id,
+        }
+    }
+}
+
+impl AlistSourceConfig {
+    fn media_from_value(value: &Value) -> Result<Self, ProviderError> {
+        super::parse_source_config::<AlistMediaSourceConfig>(value, "Alist media").map(Into::into)
+    }
+
+    fn playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
+        super::parse_source_config::<AlistPlaylistSourceConfig>(value, "Alist playlist")
+            .map(Into::into)
+    }
+
+    fn media_or_playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
         super::reject_source_config_provider_instance_name(value, "Alist")?;
         super::reject_source_config_credential_ref(value, "Alist")?;
-        super::parse_source_config(value, "Alist")
+
+        if let Ok(config) = Self::media_from_value(value) {
+            return Ok(config);
+        }
+
+        Self::playlist_from_value(value)
     }
 }
 
@@ -653,7 +683,7 @@ impl AlistProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<ResolvedAlistBinding, ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::media_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -687,7 +717,7 @@ impl AlistProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<ResolvedAlistConfig, ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -1063,7 +1093,16 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config.value())?;
+        super::reject_source_config_provider_instance_name(source_config.value(), "Alist")?;
+        super::reject_source_config_credential_ref(source_config.value(), "Alist")?;
+        let config = match source_config.kind() {
+            super::SourceConfigKind::Media => {
+                AlistSourceConfig::media_from_value(source_config.value())?
+            }
+            super::SourceConfigKind::DynamicPlaylist => {
+                AlistSourceConfig::playlist_from_value(source_config.value())?
+            }
+        };
 
         // Validate path is not empty and doesn't contain path traversal
         if config.path.is_empty() {
@@ -1111,7 +1150,7 @@ impl MediaProvider for AlistProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -1132,6 +1171,7 @@ impl MediaProvider for AlistProvider {
     ) -> Result<Value, ProviderError> {
         super::reject_source_config_provider_instance_name(&source_config, "Alist")?;
         super::reject_source_config_credential_ref(&source_config, "Alist")?;
+        let _config = AlistSourceConfig::media_or_playlist_from_value(&source_config)?;
 
         Ok(source_config)
     }
@@ -1151,7 +1191,7 @@ impl MediaProvider for AlistProvider {
         })?;
 
         // Build cache key from server_id and path
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::media_from_value(source_config)?;
         let playback_client_profile = _ctx.playback_client_profile();
         let playback_profile_cache_key = playback_client_profile.map_or_else(
             || "default".to_string(),
@@ -1497,7 +1537,7 @@ impl DynamicFolder for AlistProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = AlistSourceConfig::try_from(config)?;
+        let base_config = AlistSourceConfig::playlist_from_value(config)?;
 
         let build_next_source_config = |full_path: &str| -> Value {
             json!({
@@ -1581,7 +1621,7 @@ impl DynamicFolder for AlistProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = AlistSourceConfig::try_from(config)?;
+        let base_config = AlistSourceConfig::playlist_from_value(config)?;
 
         let build_next_source_config = |full_path: &str| -> Value {
             json!({

@@ -10,7 +10,7 @@ use super::{
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -22,7 +22,7 @@ use crate::models::media::{
     PlaybackDanmakuProvider, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::UserId;
+use crate::models::{BilibiliMediaSourceConfig as BilibiliSourceConfig, UserId};
 use crate::service::RemoteProviderManager;
 
 use synctv_media_providers::grpc::bilibili as bilibili_proto;
@@ -284,39 +284,12 @@ impl BilibiliProvider {
     }
 }
 
-/// Bilibili source configuration structs
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-enum BilibiliSourceConfig {
-    Video {
-        bvid: Option<String>,
-        aid: Option<u64>,
-        cid: u64,
-        /// Whether playback should use the media creator's Bilibili login.
-        #[serde(default)]
-        shared: bool,
-    },
-    Pgc {
-        epid: u64,
-        cid: u64,
-        /// Whether playback should use the media creator's Bilibili login.
-        #[serde(default)]
-        shared: bool,
-    },
-    Live {
-        room_id: u64,
-        /// Whether playback should use the media creator's Bilibili login.
-        #[serde(default)]
-        shared: bool,
-    },
-}
-
 impl BilibiliSourceConfig {
     const fn shared(&self) -> bool {
         match self {
-            Self::Video { shared, .. } | Self::Pgc { shared, .. } | Self::Live { shared, .. } => {
-                *shared
-            }
+            Self::Video(config) => config.shared,
+            Self::Pgc(config) => config.shared,
+            Self::Live(config) => config.shared,
         }
     }
 }
@@ -778,19 +751,29 @@ fn playback_cache_entry(
     credential_cache_partition: &str,
 ) -> Result<(String, Duration), ProviderError> {
     match config {
-        BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-            let video_key = BilibiliVideoIdentifier::parse(bvid.as_deref(), *aid)?.cache_key_part();
+        BilibiliSourceConfig::Video(config) => {
+            let video_key = BilibiliVideoIdentifier::parse(config.bvid.as_deref(), config.aid)?
+                .cache_key_part();
             Ok((
-                format!("playback:video:{video_key}:{cid}:{credential_cache_partition}"),
+                format!(
+                    "playback:video:{video_key}:{}:{credential_cache_partition}",
+                    config.cid
+                ),
                 Duration::from_hours(2),
             ))
         }
-        BilibiliSourceConfig::Pgc { epid, cid, .. } => Ok((
-            format!("playback:pgc:{epid}:{cid}:{credential_cache_partition}"),
+        BilibiliSourceConfig::Pgc(config) => Ok((
+            format!(
+                "playback:pgc:{}:{}:{credential_cache_partition}",
+                config.epid, config.cid
+            ),
             Duration::from_hours(2),
         )),
-        BilibiliSourceConfig::Live { room_id, .. } => Ok((
-            format!("playback:live:{room_id}:{credential_cache_partition}"),
+        BilibiliSourceConfig::Live(config) => Ok((
+            format!(
+                "playback:live:{}:{credential_cache_partition}",
+                config.room_id
+            ),
             Duration::from_mins(2),
         )),
     }
@@ -887,28 +870,28 @@ impl MediaProvider for BilibiliProvider {
         let config = BilibiliSourceConfig::try_from(source_config.value())?;
 
         match &config {
-            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                BilibiliVideoIdentifier::parse(bvid.as_deref(), *aid)?;
-                if *cid == 0 {
+            BilibiliSourceConfig::Video(config) => {
+                BilibiliVideoIdentifier::parse(config.bvid.as_deref(), config.aid)?;
+                if config.cid == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili video cid must be non-zero".to_string(),
                     ));
                 }
             }
-            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
-                if *epid == 0 {
+            BilibiliSourceConfig::Pgc(config) => {
+                if config.epid == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili PGC epid must be non-zero".to_string(),
                     ));
                 }
-                if *cid == 0 {
+                if config.cid == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili PGC cid must be non-zero".to_string(),
                     ));
                 }
             }
-            BilibiliSourceConfig::Live { room_id, .. } => {
-                if *room_id == 0 {
+            BilibiliSourceConfig::Live(config) => {
+                if config.room_id == 0 {
                     return Err(ProviderError::InvalidConfig(
                         "Bilibili live room_id must be non-zero".to_string(),
                     ));
@@ -1011,13 +994,13 @@ impl super::BilibiliLiveDanmakuProvider for BilibiliProvider {
         source_config: &Value,
     ) -> Result<super::BilibiliLiveDanmakuStream, ProviderError> {
         let config = BilibiliSourceConfig::try_from(source_config)?;
-        let BilibiliSourceConfig::Live { room_id, shared } = config else {
+        let BilibiliSourceConfig::Live(config) = config else {
             return Err(ProviderError::InvalidConfig(
                 "Bilibili live danmaku requires a live source config".to_string(),
             ));
         };
 
-        let credential_owner_id = if shared {
+        let credential_owner_id = if config.shared {
             *ctx.credential_owner_id().ok_or_else(|| {
                 ProviderError::Internal(
                     "credential_owner_id not available in ProviderContext".to_string(),
@@ -1036,7 +1019,7 @@ impl super::BilibiliLiveDanmakuProvider for BilibiliProvider {
             .watch_bilibili_live_danmaku(
                 synctv_media_providers::grpc::bilibili::WatchBilibiliLiveDanmakuReq {
                     cookies,
-                    room_id,
+                    room_id: config.room_id,
                 },
             )
             .await?;
@@ -1395,10 +1378,11 @@ impl BilibiliProvider {
         };
 
         match config {
-            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                let (bvid, aid) = resolve_bilibili_video_identifier(bvid.as_deref(), *aid)?;
+            BilibiliSourceConfig::Video(config) => {
+                let (bvid, aid) =
+                    resolve_bilibili_video_identifier(config.bvid.as_deref(), config.aid)?;
                 let request_bvid = bvid.clone().unwrap_or_default();
-                let cid = *cid;
+                let cid = config.cid;
 
                 let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
                     aid,
@@ -1551,9 +1535,9 @@ impl BilibiliProvider {
                 })
             }
 
-            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
-                let epid = *epid;
-                let cid = *cid;
+            BilibiliSourceConfig::Pgc(config) => {
+                let epid = config.epid;
+                let cid = config.cid;
 
                 let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
                     epid,
@@ -1699,8 +1683,8 @@ impl BilibiliProvider {
                 })
             }
 
-            BilibiliSourceConfig::Live { room_id, .. } => {
-                let room_id = *room_id;
+            BilibiliSourceConfig::Live(config) => {
+                let room_id = config.room_id;
 
                 let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
                     cid: room_id,

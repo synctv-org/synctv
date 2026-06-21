@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::{FromProviderParams, Media};
+use crate::models::{FromProviderParams, Media, SourceProvider};
 use crate::repository::media::MediaRepository;
 use crate::test_helpers::TestResultExt;
 use synctv_core_testing::create_test_pool;
@@ -16,8 +16,10 @@ async fn attach_test_media(
         creator_id: Some(owner_id),
         name: "Playback Position Test Video".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -150,8 +152,10 @@ async fn test_update_playback_state() {
         creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });

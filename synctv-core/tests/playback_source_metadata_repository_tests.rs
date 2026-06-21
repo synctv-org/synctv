@@ -6,7 +6,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
         Media, MediaId, PlaybackDurationStatus, PlaybackSourceIdentity, Playlist, PlaylistId, Room,
-        RoomId, User, UserId, UserRole, UserStatus,
+        RoomId, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaybackSourceMetadataRepository, PlaylistRepository,
@@ -84,8 +84,10 @@ async fn create_media(pool: &PgPool, room_id: RoomId, owner_id: UserId, name: &s
         name: name.to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -148,8 +150,10 @@ async fn create_dynamic_playlist(
         cover_file_reference_id: None,
         parent_id: None,
         position: 0.0,
-        source_provider: Some("alist".to_string()),
-        source_config: Some(serde_json::json!({})),
+        source_provider: Some(SourceProvider::Alist),
+        source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+            "alist", "/",
+        )),
         provider_instance_name: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),

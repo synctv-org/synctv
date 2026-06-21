@@ -12,7 +12,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
-        RoomMember, RoomStatus, SignupMethod, User, UserId, UserRole, UserStatus,
+        RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
         OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID, OPAQUE_SERVER_SETUP_VERSION,
     },
     repository::{
@@ -490,8 +490,10 @@ fn make_media(
         name: name.to_string(),
         description: String::new(),
         position: f64::from(position),
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: now,

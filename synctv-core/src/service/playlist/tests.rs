@@ -37,7 +37,7 @@ struct CredentialOwnerCheckProvider;
 #[async_trait]
 impl MediaProvider for CredentialOwnerCheckProvider {
     fn name(&self) -> &'static str {
-        "credential_check"
+        crate::provider::AlistProvider::NAME
     }
 
     async fn generate_playback(
@@ -61,7 +61,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
     ) -> std::result::Result<(), ProviderError> {
         if !source_config.is_dynamic_playlist() {
             return Err(ProviderError::Internal(
-                "credential_check validates dynamic playlist sources only".to_string(),
+                "test provider validates dynamic playlist sources only".to_string(),
             ));
         }
         let user_id = ctx
@@ -217,7 +217,7 @@ async fn test_credential_check_providers_manager() -> Arc<crate::service::Provid
         "providers manager should build",
     );
     providers_manager.register_factory(
-        "credential_check",
+        crate::provider::AlistProvider::NAME,
         Box::new(|_instance_id, _config, _instance_manager| {
             Ok(Arc::new(CredentialOwnerCheckProvider))
         }),
@@ -226,16 +226,6 @@ async fn test_credential_check_providers_manager() -> Arc<crate::service::Provid
     ok(
         providers_manager.create_builtin_defaults().await,
         "built-in providers should initialize",
-    );
-    ok(
-        providers_manager
-            .create_provider(
-                "credential_check",
-                "credential_check",
-                &serde_json::json!({}),
-            )
-            .await,
-        "credential_check provider should initialize",
     );
     providers_manager
 }
@@ -305,14 +295,14 @@ fn playlist_edit_requires_matching_creator() {
 fn dynamic_folder_allows_default_provider_instance() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
-            Some("alist".to_string()),
+            Some(SourceProvider::Alist),
             Some(serde_json::json!({"path": "/movies"})),
             None,
         ),
         "dynamic folder should allow default provider instance",
     );
 
-    assert_eq!(source_provider.as_deref(), Some("alist"));
+    assert_eq!(source_provider, Some(SourceProvider::Alist));
     assert_eq!(source_config, Some(serde_json::json!({"path": "/movies"})));
     assert!(provider_instance_name.is_none());
 }
@@ -335,17 +325,17 @@ fn static_folder_rejects_dynamic_fields_without_provider() {
 }
 
 #[test]
-fn dynamic_folder_fields_are_trimmed() {
+fn dynamic_folder_fields_normalize_provider_instance_name() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
-            Some("  emby  ".to_string()),
+            Some(SourceProvider::Emby),
             Some(serde_json::json!({"library_id": "abc123"})),
             Some("  emby-main  ".to_string()),
         ),
         "dynamic folder fields should normalize",
     );
 
-    assert_eq!(source_provider.as_deref(), Some("emby"));
+    assert_eq!(source_provider, Some(SourceProvider::Emby));
     assert!(source_config.is_some());
     assert_eq!(provider_instance_name.as_deref(), Some("emby-main"));
 }
@@ -363,8 +353,8 @@ async fn validate_dynamic_playlist_source_requires_credential_repo_wiring() {
             },
             &RoomId::new(),
             &UserId::new(),
-            "alist".to_string(),
-            serde_json::json!({"path": "/movies", "server_id": "srv"}),
+            SourceProvider::Alist,
+            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
             Some("alist".to_string()),
         )
         .await,
@@ -392,8 +382,8 @@ async fn validate_dynamic_playlist_source_requires_provider_registry_for_unknown
             },
             &RoomId::new(),
             &UserId::new(),
-            "alist".to_string(),
-            serde_json::json!({"path": "/movies", "server_id": "srv"}),
+            SourceProvider::Alist,
+            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
             Some("alist-main".to_string()),
         )
         .await,
@@ -420,8 +410,8 @@ async fn validate_dynamic_playlist_source_rejects_provider_type_mismatch() {
             },
             &RoomId::new(),
             &UserId::new(),
-            "alist".to_string(),
-            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            SourceProvider::Alist,
+            synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
             Some("direct_url".to_string()),
         )
         .await,
@@ -446,8 +436,8 @@ async fn validate_dynamic_playlist_source_rejects_non_dynamic_provider() {
             },
             &RoomId::new(),
             &UserId::new(),
-            "direct_url".to_string(),
-            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            SourceProvider::DirectUrl,
+            synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
             Some("direct_url".to_string()),
         )
         .await,
@@ -474,7 +464,7 @@ async fn validate_dynamic_playlist_source_rejects_oversized_config_before_provid
             },
             &RoomId::new(),
             &UserId::new(),
-            "direct_url".to_string(),
+            SourceProvider::DirectUrl,
             serde_json::json!({"data": "x".repeat(2 * 1024 * 1024)}),
             Some("direct_url".to_string()),
         )
@@ -512,8 +502,8 @@ async fn validate_dynamic_playlist_source_runs_provider_validation() {
             },
             &RoomId::new(),
             &UserId::new(),
-            "alist".to_string(),
-            serde_json::json!({"path": "", "server_id": "srv"}),
+            SourceProvider::Alist,
+            synctv_core_testing::alist_directory_playlist_source_config("srv", ""),
             Some("alist".to_string()),
         )
         .await,
@@ -547,7 +537,7 @@ async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency(
             },
             &RoomId::new(),
             &UserId::new(),
-            crate::provider::AlistProvider::NAME.to_string(),
+            SourceProvider::Alist,
             serde_json::json!({"credential_server_id": "missing-server"}),
             None,
         )
@@ -583,7 +573,7 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
             },
             &RoomId::new(),
             &UserId::new(),
-            crate::provider::AlistProvider::NAME.to_string(),
+            SourceProvider::Alist,
             serde_json::json!({
                 "credential_server_id": "viewer-optional-server",
                 "credential_optional": true
@@ -598,20 +588,26 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
 #[tokio::test]
 async fn validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
     let providers_manager = test_credential_check_providers_manager().await;
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let credential_encryption = test_credential_encryption();
+    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+        pool,
+        credential_encryption.clone(),
+    ));
     let user_id = UserId::new();
 
     ok(
         validate_dynamic_playlist_source_with_dependencies(
             DynamicPlaylistValidationDeps {
                 providers_manager: &providers_manager,
-                credential_encryption: None,
-                credential_repo: None,
+                credential_encryption: Some(&credential_encryption),
+                credential_repo: Some(&credential_repo),
             },
             &RoomId::new(),
             &user_id,
-            "credential_check".to_string(),
-            serde_json::json!({}),
-            Some("credential_check".to_string()),
+            SourceProvider::Alist,
+            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
+            None,
         )
         .await,
         "dynamic playlist validation should expose creator credentials",

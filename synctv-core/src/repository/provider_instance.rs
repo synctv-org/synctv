@@ -3,9 +3,9 @@
 
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{
-    normalize_provider_instance_name, provider_type_code_from_name, provider_type_codes_from_names,
-    provider_type_name_from_code, ProviderInstance, ProviderInstanceListQuery,
-    ProviderInstanceListSortBy, UserId, UserProviderCredential,
+    normalize_provider_instance_name, provider_type_code_from_name, provider_type_name_from_code,
+    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, SourceProvider,
+    UserId, UserProviderCredential,
 };
 use crate::repository::pools::RepoPools;
 use crate::Result;
@@ -34,7 +34,7 @@ impl TryFrom<ProviderInstanceRow> for ProviderInstance {
         let providers = row
             .providers
             .into_iter()
-            .map(provider_type_name_from_code)
+            .map(SourceProvider::try_from)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(crate::Error::InvalidInput)?;
 
@@ -91,8 +91,12 @@ fn provider_type_code(provider: &str) -> Result<i16> {
     provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
 }
 
-fn provider_type_codes(providers: &[String]) -> Result<Vec<i16>> {
-    provider_type_codes_from_names(providers).map_err(crate::Error::InvalidInput)
+fn provider_type_codes(providers: &[SourceProvider]) -> Vec<i16> {
+    providers
+        .iter()
+        .copied()
+        .map(SourceProvider::as_i16)
+        .collect()
 }
 
 /// Provider Instance Repository
@@ -169,7 +173,7 @@ impl ProviderInstanceRepository {
 
         if let Some(provider_type) = &query.provider_type {
             builder.push(" AND ");
-            builder.push_bind(provider_type_code(provider_type)?);
+            builder.push_bind(provider_type.as_i16());
             builder.push(" = ANY(providers)");
         }
         if let Some(enabled) = query.enabled {
@@ -469,7 +473,7 @@ impl ProviderInstanceRepository {
         self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
         let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
-        let provider_codes = provider_type_codes(&instance.providers)?;
+        let provider_codes = provider_type_codes(&instance.providers);
         let result = sqlx::query!(
             r"
             INSERT INTO media_provider_instances
@@ -507,7 +511,7 @@ impl ProviderInstanceRepository {
         self.ensure_encryption_for_sensitive_fields(instance)?;
         let encrypted_jwt_secret = self.encrypt_field(instance.jwt_secret.as_deref())?;
         let encrypted_custom_ca = self.encrypt_field(instance.custom_ca.as_deref())?;
-        let provider_codes = provider_type_codes(&instance.providers)?;
+        let provider_codes = provider_type_codes(&instance.providers);
 
         let result = sqlx::query!(
             r"

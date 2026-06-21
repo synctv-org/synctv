@@ -6446,6 +6446,7 @@ dependencies = [
  "opaque-ke",
  "rand 0.10.1",
  "redis",
+ "serde_json",
  "sha2 0.10.9",
  "sqlx",
  "synctv-common",

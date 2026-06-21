@@ -14,7 +14,9 @@ use redis::AsyncCommands;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, PlaybackStateCache, RedisCacheL2, UsernameCache},
-    models::{Media, MediaId, PlaylistId, RoomId, User, UserId, UserRole, UserStatus},
+    models::{
+        Media, MediaId, PlaylistId, RoomId, SourceProvider, User, UserId, UserRole, UserStatus,
+    },
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -94,8 +96,10 @@ async fn attach_test_media(
         name: "Playback Cache Test Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),

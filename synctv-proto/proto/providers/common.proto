@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.provider.common;
 
 import "proto/buf/validate/validate.proto";
+import "proto/source_config.proto";
 
 message ProviderInstanceQuery {
   string instance_name = 1 [(buf.validate.field).cel = {
@@ -40,15 +41,10 @@ message ProviderInstance {
   uint32 timeout_seconds = 4;
   bool tls = 5;
   bool insecure_tls = 6;
-  repeated string providers = 7 [(buf.validate.field).repeated = {
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
     min_items: 1
     unique: true
-    items: {
-      string: {
-        pattern: "^[a-z][a-z0-9_]*$"
-        max_len: 64
-      }
-    }
+    items: { enum: { defined_only: true not_in: [0] } }
   }];
   bool enabled = 8;
   ProviderInstanceStatus status = 9;
@@ -57,13 +53,7 @@ message ProviderInstance {
 }
 
 message ListAvailableProviderInstancesRequest {
-  string provider_type = 1 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ];
+  synctv.source_config.SourceProvider provider_type = 1 [(buf.validate.field).enum.defined_only = true];
 }
 
 message ListProviderInstancesRequest {
@@ -79,13 +69,7 @@ message ListProviderInstancesRequest {
   };
   int32 page = 1;
   int32 page_size = 2;
-  string provider_type = 3 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ];
+  synctv.source_config.SourceProvider provider_type = 3 [(buf.validate.field).enum.defined_only = true];
   string search = 4 [(buf.validate.field).string.max_len = 100];
   optional bool enabled = 5;
   optional bool tls = 6;
@@ -109,15 +93,10 @@ message AddProviderInstanceRequest {
   uint32 timeout_seconds = 4;
   bool tls = 5;
   bool insecure_tls = 6;
-  repeated string providers = 7 [(buf.validate.field).repeated = {
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
     min_items: 1
     unique: true
-    items: {
-      string: {
-        pattern: "^[a-z][a-z0-9_]*$"
-        max_len: 64
-      }
-    }
+    items: { enum: { defined_only: true not_in: [0] } }
   }];
   optional string jwt_secret = 8;
   optional string custom_ca = 9;
@@ -138,14 +117,9 @@ message UpdateProviderInstanceRequest {
   optional uint32 timeout_seconds = 4;
   optional bool tls = 5;
   optional bool insecure_tls = 6;
-  repeated string providers = 7 [(buf.validate.field).repeated = {
+  repeated synctv.source_config.SourceProvider providers = 7 [(buf.validate.field).repeated = {
     unique: true
-    items: {
-      string: {
-        pattern: "^[a-z][a-z0-9_]*$"
-        max_len: 64
-      }
-    }
+    items: { enum: { defined_only: true not_in: [0] } }
   }];
   optional string jwt_secret = 8;
   optional string custom_ca = 9;
@@ -207,9 +181,9 @@ message DisableProviderInstanceResponse {
 }
 
 message ListProviderBackendsRequest {
-  string provider_type = 1 [(buf.validate.field).string = {
-    max_len: 64
-    pattern: "^[a-z][a-z0-9_]*$"
+  synctv.source_config.SourceProvider provider_type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
   }];
 }
 

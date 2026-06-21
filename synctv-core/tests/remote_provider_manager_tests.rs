@@ -14,7 +14,7 @@ use std::time::Duration;
 use synctv_core::{
     cache::{CacheInvalidationRuntime, CacheInvalidationService, InvalidationMessage},
     credential_encryption::CredentialEncryption,
-    models::ProviderInstance,
+    models::{ProviderInstance, SourceProvider},
     repository::ProviderInstanceRepository,
     service::RemoteProviderManager,
     Error,
@@ -282,7 +282,7 @@ fn make_test_instance(name: &str) -> ProviderInstance {
         timeout: "1s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["bilibili".to_string()],
+        providers: vec![SourceProvider::Bilibili],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -292,7 +292,7 @@ fn make_test_instance(name: &str) -> ProviderInstance {
 fn make_reachable_remote_instance(name: &str, host: &str, port: u16) -> ProviderInstance {
     let mut instance = make_test_instance(name);
     instance.endpoint = format!("http://{host}:{port}");
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     instance
 }
 
@@ -776,7 +776,7 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
         timeout: "1s".to_string(),
         tls: true,
         insecure_tls: insecure,
-        providers: vec!["emby".to_string()],
+        providers: vec![SourceProvider::Emby],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -1031,7 +1031,7 @@ async fn scenario_health_check_integration() {
 
     let mut instance = make_test_instance("test-instance-6");
     instance.endpoint = format!("http://health-check.test.localhost:{}", health_addr.port());
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     manager
         .add(instance.clone())
         .await
@@ -1183,7 +1183,7 @@ async fn scenario_health_check_reports_enabled_instance_with_wrong_secret_as_unh
         "http://wrong-secret-health.test.localhost:{}",
         health_addr.port()
     );
-    wrong.providers = vec!["alist".to_string()];
+    wrong.providers = vec![SourceProvider::Alist];
     wrong.jwt_secret = Some("wrong-secret".to_string());
 
     provider_repo(&infra.pool)
@@ -1226,7 +1226,7 @@ async fn scenario_health_check_ignores_authenticated_provider_handler_failure() 
         "http://handler-failure-health.test.localhost:{}",
         health_addr.port()
     );
-    broken.providers = vec!["alist".to_string()];
+    broken.providers = vec![SourceProvider::Alist];
 
     provider_repo(&infra.pool)
         .create(&broken)
@@ -1302,7 +1302,7 @@ async fn scenario_health_check_ignores_emby_authenticated_provider_handler_failu
         "http://emby-handler-failure-health.test.localhost:{}",
         health_addr.port()
     );
-    broken.providers = vec!["emby".to_string()];
+    broken.providers = vec![SourceProvider::Emby];
 
     provider_repo(&infra.pool)
         .create(&broken)
@@ -1345,7 +1345,7 @@ async fn scenario_add_emby_instance_does_not_require_authenticated_handler_succe
         host,
         health_addr.port(),
     );
-    instance.providers = vec!["emby".to_string()];
+    instance.providers = vec![SourceProvider::Emby];
 
     manager
         .add(instance.clone())
@@ -1973,7 +1973,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
     assert_eq!(fetched.jwt_secret, None);
 
     let mut local_missing_secret = make_test_instance("test-instance-local-to-remote-update");
-    local_missing_secret.providers = vec!["live_proxy".to_string()];
+    local_missing_secret.providers = vec![SourceProvider::LiveProxy];
     local_missing_secret.jwt_secret = None;
 
     repo.create(&local_missing_secret)
@@ -1981,7 +1981,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
         .checked("local-only row should persist without jwt_secret");
 
     let mut local_to_remote_missing_secret = local_missing_secret.clone();
-    local_to_remote_missing_secret.providers = vec!["bilibili".to_string()];
+    local_to_remote_missing_secret.providers = vec![SourceProvider::Bilibili];
 
     let result = manager.update(local_to_remote_missing_secret.clone()).await;
     assert!(
@@ -2002,7 +2002,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
         .checked("instance should still exist");
     assert_eq!(
         persisted.providers,
-        vec!["live_proxy".to_string()],
+        vec![SourceProvider::LiveProxy],
         "failed update must not persist the remote-capable provider set"
     );
     assert_eq!(persisted.jwt_secret, None);
@@ -2046,7 +2046,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
 
     let mut local_invalid_secret =
         make_test_instance("test-instance-local-to-remote-invalid-secret");
-    local_invalid_secret.providers = vec!["live_proxy".to_string()];
+    local_invalid_secret.providers = vec![SourceProvider::LiveProxy];
     local_invalid_secret.jwt_secret = None;
     local_invalid_secret.enabled = false;
 
@@ -2055,7 +2055,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
         .checked("local-only row should persist without jwt_secret");
 
     let mut local_to_remote_invalid_secret = local_invalid_secret.clone();
-    local_to_remote_invalid_secret.providers = vec!["bilibili".to_string()];
+    local_to_remote_invalid_secret.providers = vec![SourceProvider::Bilibili];
     local_to_remote_invalid_secret.jwt_secret = Some("shared\nsecret".to_string());
 
     let result = manager.update(local_to_remote_invalid_secret.clone()).await;
@@ -2078,7 +2078,7 @@ async fn scenario_update_remote_instances_validate_jwt_secret() {
         .checked("instance should still exist");
     assert_eq!(
         persisted.providers,
-        vec!["live_proxy".to_string()],
+        vec![SourceProvider::LiveProxy],
         "failed update must not persist the remote-capable provider set"
     );
     assert_eq!(persisted.jwt_secret, None);
@@ -2619,9 +2619,9 @@ async fn scenario_provider_instance_supports_provider() {
         tls: false,
         insecure_tls: false,
         providers: vec![
-            "bilibili".to_string(),
-            "alist".to_string(),
-            "emby".to_string(),
+            SourceProvider::Bilibili,
+            SourceProvider::Alist,
+            SourceProvider::Emby,
         ],
         enabled: true,
         created_at: Utc::now(),
@@ -2701,7 +2701,7 @@ async fn scenario_add_instance_rejects_local_only_providers() {
         timeout: "1s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["direct_url".to_string(), "rtmp".to_string()],
+        providers: vec![SourceProvider::DirectUrl, SourceProvider::Rtmp],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -2735,7 +2735,7 @@ async fn scenario_add_unreachable_remote_instance_fails_connectivity_validation(
 
     let mut instance = make_test_instance("test-instance-unreachable-add");
     instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     instance.timeout = "1s".to_string();
 
     let result = manager.add(instance.clone()).await;
@@ -2775,7 +2775,7 @@ async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_valid
         "http://reachable-provider.test.localhost:{}",
         health_addr.port()
     );
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
 
     manager
         .add(instance.clone())
@@ -2812,7 +2812,7 @@ async fn scenario_enable_unreachable_remote_instance_preserves_disabled_state() 
     let mut instance = make_test_instance("test-instance-unreachable-enable");
     instance.enabled = false;
     instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     instance.timeout = "1s".to_string();
 
     provider_repo(&infra.pool)
@@ -2846,7 +2846,7 @@ async fn scenario_reconnect_unreachable_remote_instance_fails_connectivity_valid
 
     let mut instance = make_test_instance("test-instance-unreachable-reconnect");
     instance.endpoint = "http://unreachable-provider.example.invalid:50051".to_string();
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     instance.timeout = "1s".to_string();
 
     provider_repo(&infra.pool)
@@ -2882,7 +2882,7 @@ async fn scenario_update_unreachable_remote_instance_preserves_existing_configur
         "http://update-provider.test.localhost:{}",
         health_addr.port()
     );
-    instance.providers = vec!["alist".to_string()];
+    instance.providers = vec![SourceProvider::Alist];
     manager
         .add(instance.clone())
         .await

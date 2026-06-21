@@ -94,15 +94,11 @@ impl AdminApiImpl {
             .map_err(|error| public_id_encode_error("room", &error))?;
 
         let providers_manager = self.room_service.media_service().providers_manager();
-        let provider_name = media.source_provider.trim();
-        if provider_name.is_empty() {
-            return Err(ApiError::Internal(format!(
-                "Static media '{}' is missing source_provider",
-                media.id
-            )));
-        }
         let provider = providers_manager
-            .resolve_provider(provider_name, media.provider_instance_name.as_deref())
+            .resolve_provider(
+                media.source_provider,
+                media.provider_instance_name.as_deref(),
+            )
             .await
             .map_err(ApiError::from)?;
 
@@ -227,10 +223,7 @@ impl AdminApiImpl {
         let source_fields = dynamic_playlist_source_fields(&playlist)?;
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider = providers_manager
-            .resolve_provider(
-                source_fields.provider_name,
-                source_fields.provider_instance_name,
-            )
+            .resolve_provider(source_fields.provider, source_fields.provider_instance_name)
             .await
             .map_err(ApiError::from)?;
 

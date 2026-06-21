@@ -1,6 +1,6 @@
 use super::*;
 use crate::cache::CacheInvalidationService;
-use crate::models::ProviderInstance;
+use crate::models::{ProviderInstance, SourceProvider};
 use chrono::Utc;
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -27,7 +27,7 @@ fn remote_instance(endpoint: &str) -> ProviderInstance {
         timeout: "5s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["alist".to_string()],
+        providers: vec![SourceProvider::Alist],
         enabled: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -85,7 +85,7 @@ fn validate_config_rejects_invalid_provider_instance_name() {
 #[test]
 fn validate_config_rejects_unsupported_provider_type() {
     let mut config = remote_instance("http://provider.example.com:50051");
-    config.providers = vec!["custom_local".to_string()];
+    config.providers = vec![SourceProvider::DirectUrl];
 
     let err = RemoteProviderManager::validate_config(&config)
         .expect_err("unsupported remote provider types must be rejected");

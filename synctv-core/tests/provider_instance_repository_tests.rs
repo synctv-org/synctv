@@ -43,7 +43,7 @@ fn make_instance(
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["bilibili".to_string()],
+        providers: vec![ProviderType::Bilibili],
         enabled: true,
         created_at: now,
         updated_at: now,

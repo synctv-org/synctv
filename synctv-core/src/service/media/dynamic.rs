@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{MediaId, Playlist, PlaylistId, RoomId, UserId},
+    models::{MediaId, Playlist, PlaylistId, RoomId, SourceProvider, UserId},
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, MediaProvider,
         NextPlayItem, ProviderContext,
@@ -57,7 +57,8 @@ impl MediaService {
         &self,
         playlist: &Playlist,
     ) -> Result<(String, Arc<dyn MediaProvider>)> {
-        let provider_name = dynamic_playlist_source_provider(playlist)?.to_string();
+        let source_provider = dynamic_playlist_source_provider(playlist)?;
+        let provider_name = source_provider.as_str().to_string();
 
         let bound_instance = playlist.provider_instance_name.as_deref().and_then(|name| {
             let trimmed = name.trim();
@@ -70,7 +71,7 @@ impl MediaService {
 
         let provider = self
             .providers_manager
-            .resolve_provider(&provider_name, bound_instance)
+            .resolve_provider(source_provider, bound_instance)
             .await?;
 
         Ok((provider_name, provider))
@@ -226,7 +227,12 @@ impl MediaService {
             name: format!("dynamic:{playlist_id}"),
             description: String::new(),
             position: 0.0,
-            source_provider: prepared.provider_name.clone(),
+            source_provider: prepared.playlist.source_provider.ok_or_else(|| {
+                Error::Internal(format!(
+                    "Dynamic playlist {} missing provider",
+                    prepared.playlist.id
+                ))
+            })?,
             source_config: serde_json::Value::Null,
             provider_instance_name: prepared.playlist.provider_instance_name.clone(),
             cover_file_reference_id: None,
@@ -251,20 +257,10 @@ impl MediaService {
     }
 }
 
-fn dynamic_playlist_source_provider(playlist: &Playlist) -> Result<&str> {
-    let provider = playlist
-        .source_provider
-        .as_deref()
-        .ok_or_else(|| {
-            Error::Internal(format!("Dynamic playlist {} missing provider", playlist.id))
-        })?
-        .trim();
-    if provider.is_empty() {
-        return Err(Error::Internal(format!(
-            "Dynamic playlist {} has empty provider",
-            playlist.id
-        )));
-    }
+fn dynamic_playlist_source_provider(playlist: &Playlist) -> Result<SourceProvider> {
+    let provider = playlist.source_provider.ok_or_else(|| {
+        Error::Internal(format!("Dynamic playlist {} missing provider", playlist.id))
+    })?;
     if playlist.source_config.is_none() {
         return Err(Error::Internal(format!(
             "Dynamic playlist {} missing source_config",
@@ -278,11 +274,11 @@ fn dynamic_playlist_source_provider(playlist: &Playlist) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Playlist;
+    use crate::models::{Playlist, SourceProvider};
     use chrono::Utc;
 
     fn dynamic_playlist(
-        source_provider: Option<String>,
+        source_provider: Option<SourceProvider>,
         source_config: Option<serde_json::Value>,
     ) -> Playlist {
         Playlist {
@@ -304,13 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_playlist_source_provider_trims_valid_provider() {
-        let playlist = dynamic_playlist(Some(" alist ".to_string()), Some(serde_json::json!({})));
+    fn dynamic_playlist_source_provider_returns_valid_provider() {
+        let playlist = dynamic_playlist(Some(SourceProvider::Alist), Some(serde_json::json!({})));
 
         assert_eq!(
             dynamic_playlist_source_provider(&playlist)
                 .expect("dynamic playlist provider should parse"),
-            "alist"
+            SourceProvider::Alist
         );
     }
 
@@ -327,20 +323,8 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_playlist_source_provider_rejects_empty_provider() {
-        let playlist = dynamic_playlist(Some("   ".to_string()), Some(serde_json::json!({})));
-
-        assert!(matches!(
-            dynamic_playlist_source_provider(&playlist),
-            Err(Error::Internal(message))
-                if message.contains("Dynamic playlist")
-                    && message.contains("provider")
-        ));
-    }
-
-    #[test]
     fn dynamic_playlist_source_provider_rejects_missing_source_config() {
-        let playlist = dynamic_playlist(Some("alist".to_string()), None);
+        let playlist = dynamic_playlist(Some(SourceProvider::Alist), None);
 
         assert!(matches!(
             dynamic_playlist_source_provider(&playlist),

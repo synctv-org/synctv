@@ -9,7 +9,7 @@ use serde_json::Value;
 use sha1::Sha1;
 use std::collections::HashMap;
 
-use super::{pagination::PageParams, query::SortDirection, UserId};
+use super::{pagination::PageParams, query::SortDirection, SourceProvider, UserId};
 
 pub const DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS: u32 = 10;
 pub const PROVIDER_INSTANCE_NAME_MAX_LEN: usize = 64;
@@ -108,7 +108,7 @@ sort_field_enum! {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInstanceListQuery {
     pub pagination: PageParams,
-    pub provider_type: Option<String>,
+    pub provider_type: Option<SourceProvider>,
     pub search: Option<String>,
     pub enabled: Option<bool>,
     pub tls: Option<bool>,
@@ -162,9 +162,7 @@ pub struct ProviderInstance {
     /// Skip TLS certificate verification for explicitly trusted private endpoints.
     pub insecure_tls: bool,
 
-    /// Supported media provider type names (e.g., `["bilibili", "alist", "emby"]`).
-    /// The database stores the corresponding numeric provider type codes.
-    pub providers: Vec<String>,
+    pub providers: Vec<SourceProvider>,
 
     /// Whether this instance is enabled
     pub enabled: bool,
@@ -186,7 +184,7 @@ pub struct NewProviderInstance {
     pub timeout_seconds: u32,
     pub tls: bool,
     pub insecure_tls: bool,
-    pub providers: Vec<String>,
+    pub providers: Vec<SourceProvider>,
 }
 
 impl ProviderInstance {
@@ -231,7 +229,9 @@ impl ProviderInstance {
     /// Check if this instance supports a specific media provider type
     #[must_use]
     pub fn supports_provider(&self, provider: &str) -> bool {
-        self.providers.iter().any(|candidate| candidate == provider)
+        self.providers
+            .iter()
+            .any(|candidate| candidate.as_str() == provider)
     }
 
     /// Parse timeout string to Duration
@@ -515,7 +515,7 @@ mod tests {
             timeout: "10s".to_string(),
             tls: false,
             insecure_tls: false,
-            providers: vec!["bilibili".to_string(), "alist".to_string()],
+            providers: vec![SourceProvider::Bilibili, SourceProvider::Alist],
             enabled: true,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -558,7 +558,7 @@ mod tests {
             timeout_seconds: 0,
             tls: true,
             insecure_tls: false,
-            providers: vec!["alist".to_string()],
+            providers: vec![SourceProvider::Alist],
         });
 
         assert_eq!(instance.comment.as_deref(), Some("primary remote"));

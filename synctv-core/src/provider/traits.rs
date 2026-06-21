@@ -305,7 +305,7 @@ pub trait MediaProvider: Send + Sync {
     /// # Example
     /// ```rust
     /// // Bilibili video:
-    /// // source_config = {"type": "video", "bvid": "BV1xx", "cid": 123, "shared": false}
+    /// // source_config = {"kind": "video", "bvid": "BV1xx", "cid": 123, "shared": false}
     /// // Returns provider-owned modes, for example:
     /// // {
     /// //   playback_infos: {"dash": {...}, "proxy_dash": {...}},

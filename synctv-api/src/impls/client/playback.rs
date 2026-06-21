@@ -4,7 +4,7 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
-use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity};
+use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity, SourceProvider};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
 use synctv_core::service::playback::{
@@ -25,16 +25,8 @@ use synctv_core::models::MediaId;
 
 pub(super) fn static_media_source_provider(
     media: &synctv_core::models::Media,
-) -> Result<&str, ApiError> {
-    let source_provider = media.source_provider.trim();
-    if source_provider.is_empty() {
-        return Err(ApiError::Internal(format!(
-            "Static media '{}' is missing source_provider",
-            media.id
-        )));
-    }
-
-    Ok(source_provider)
+) -> Result<SourceProvider, ApiError> {
+    Ok(media.source_provider)
 }
 
 async fn resolve_playback_duration(
@@ -561,10 +553,7 @@ impl ClientApiImpl {
         let source_fields = dynamic_playlist_source_fields(&playlist)?;
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider = providers_manager
-            .resolve_provider(
-                source_fields.provider_name,
-                source_fields.provider_instance_name,
-            )
+            .resolve_provider(source_fields.provider, source_fields.provider_instance_name)
             .await
             .map_err(ApiError::from)?;
 
@@ -590,7 +579,7 @@ impl ClientApiImpl {
                     state,
                     actor_user_id: user_id,
                     provider: provider.as_ref(),
-                    provider_name: source_fields.provider_name,
+                    provider_name: provider.name(),
                     provider_instance_name: source_fields.provider_instance_name,
                     credential_owner_id: playlist.creator_id.as_ref(),
                     source_config: &item.source_config,
@@ -743,10 +732,7 @@ impl ClientApiImpl {
             let source_fields = dynamic_playlist_source_fields(&playlist)?;
             let providers_manager = self.room_service.media_service().providers_manager();
             let provider = providers_manager
-                .resolve_provider(
-                    source_fields.provider_name,
-                    source_fields.provider_instance_name,
-                )
+                .resolve_provider(source_fields.provider, source_fields.provider_instance_name)
                 .await
                 .map_err(ApiError::from)?;
             let ctx = self.build_provider_context(

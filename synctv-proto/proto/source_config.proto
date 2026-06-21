@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package synctv.source_config;
+
+enum SourceProvider {
+  SOURCE_PROVIDER_UNSPECIFIED = 0;
+  SOURCE_PROVIDER_DIRECT_URL = 1;
+  SOURCE_PROVIDER_BILIBILI = 2;
+  SOURCE_PROVIDER_ALIST = 3;
+  SOURCE_PROVIDER_EMBY = 4;
+  SOURCE_PROVIDER_RTMP = 5;
+  SOURCE_PROVIDER_LIVE_PROXY = 6;
+}
+
+message DirectUrlMediaResourceConfig {
+  string name = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  string format = 4;
+}
+
+message DirectUrlSubtitleSourceConfig {
+  string name = 1;
+  string language = 2;
+  string url = 3;
+  map<string, string> headers = 4;
+  string format = 5;
+}
+
+message DirectUrlDanmakuSourceConfig {
+  string name = 1;
+  string url = 2;
+  map<string, string> headers = 3;
+  optional string format = 4;
+}
+
+message DirectUrlMediaSourceConfig {
+  repeated DirectUrlMediaResourceConfig medias = 1;
+  optional uint32 default_media_index = 2;
+  repeated DirectUrlSubtitleSourceConfig subtitles = 3;
+  optional uint32 default_subtitle_index = 4;
+  repeated DirectUrlDanmakuSourceConfig danmakus = 5;
+  optional uint32 default_danmaku_index = 6;
+}
+
+message AlistMediaSourceConfig {
+  string server_id = 1;
+  string path = 2;
+  optional string password = 3;
+}
+
+message AlistPlaylistSourceConfig {
+  string server_id = 1;
+  string path = 2;
+  optional string password = 3;
+}
+
+message EmbyMediaSourceConfig {
+  string server_id = 1;
+  string item_id = 2;
+}
+
+message EmbyPlaylistSourceConfig {
+  string server_id = 1;
+  string item_id = 2;
+}
+
+message RtmpMediaSourceConfig {}
+
+message LiveProxyMediaSourceConfig {
+  string url = 1;
+}
+
+message BilibiliVideoSourceConfig {
+  string bvid = 1;
+  optional uint64 aid = 2;
+  uint64 cid = 3;
+  bool shared = 4;
+}
+
+message BilibiliPgcSourceConfig {
+  uint64 epid = 1;
+  uint64 cid = 2;
+  bool shared = 3;
+}
+
+message BilibiliLiveSourceConfig {
+  uint64 room_id = 1;
+  bool shared = 2;
+}
+
+message BilibiliMediaSourceConfig {
+  oneof source {
+    BilibiliVideoSourceConfig video = 1;
+    BilibiliPgcSourceConfig pgc = 2;
+    BilibiliLiveSourceConfig live = 3;
+  }
+}
+
+message MediaSourceConfig {
+  oneof provider {
+    DirectUrlMediaSourceConfig direct_url = 1;
+    BilibiliMediaSourceConfig bilibili = 2;
+    AlistMediaSourceConfig alist = 3;
+    EmbyMediaSourceConfig emby = 4;
+    RtmpMediaSourceConfig rtmp = 5;
+    LiveProxyMediaSourceConfig live_proxy = 6;
+  }
+}
+
+message PlaylistSourceConfig {
+  oneof provider {
+    AlistPlaylistSourceConfig alist = 1;
+    EmbyPlaylistSourceConfig emby = 2;
+  }
+}

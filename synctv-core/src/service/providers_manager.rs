@@ -390,6 +390,15 @@ impl ProvidersManager {
     /// `RemoteProviderManager`.
     pub async fn resolve_provider(
         &self,
+        provider_type: crate::models::SourceProvider,
+        provider_instance_name: Option<&str>,
+    ) -> Result<Arc<dyn MediaProvider>> {
+        self.resolve_provider_by_name(provider_type.as_str(), provider_instance_name)
+            .await
+    }
+
+    async fn resolve_provider_by_name(
+        &self,
         provider_type: &str,
         provider_instance_name: Option<&str>,
     ) -> Result<Arc<dyn MediaProvider>> {
@@ -786,11 +795,11 @@ mod tests {
             .checked("default provider should be created");
 
         let implicit_default = manager
-            .resolve_provider("alist", None)
+            .resolve_provider(crate::models::SourceProvider::Alist, None)
             .await
             .checked("implicit default provider should resolve");
         let empty_default = manager
-            .resolve_provider("alist", Some("  "))
+            .resolve_provider(crate::models::SourceProvider::Alist, Some("  "))
             .await
             .checked("empty default provider should resolve");
 
@@ -812,12 +821,15 @@ mod tests {
             .checked("explicit provider should be created");
 
         let provider = manager
-            .resolve_provider("alist", Some(" alist_alt "))
+            .resolve_provider(crate::models::SourceProvider::Alist, Some(" alist_alt "))
             .await
             .checked("explicit provider should resolve");
         assert_eq!(provider.name(), "alist");
 
-        let error = match manager.resolve_provider("emby", Some("alist_alt")).await {
+        let error = match manager
+            .resolve_provider(crate::models::SourceProvider::Emby, Some("alist_alt"))
+            .await
+        {
             Ok(provider) => std::panic::panic_any(format!(
                 "explicit local instance must match the requested provider type, got provider '{}'",
                 provider.name()

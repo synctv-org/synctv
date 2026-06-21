@@ -17,14 +17,55 @@ use synctv_proto::client::{
 };
 use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
 use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
+use synctv_proto::source_config::SourceProvider;
+
+fn direct_url_media_source_config(
+    url: &str,
+) -> Option<synctv_proto::source_config::MediaSourceConfig> {
+    Some(synctv_proto::source_config::MediaSourceConfig {
+        provider: Some(
+            synctv_proto::source_config::media_source_config::Provider::DirectUrl(
+                synctv_proto::source_config::DirectUrlMediaSourceConfig {
+                    medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
+                        name: String::new(),
+                        url: url.to_string(),
+                        headers: Default::default(),
+                        format: String::new(),
+                    }],
+                    default_media_index: None,
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            ),
+        ),
+    })
+}
+
+fn alist_playlist_source_config(
+    path: &str,
+) -> Option<synctv_proto::source_config::PlaylistSourceConfig> {
+    Some(synctv_proto::source_config::PlaylistSourceConfig {
+        provider: Some(
+            synctv_proto::source_config::playlist_source_config::Provider::Alist(
+                synctv_proto::source_config::AlistPlaylistSourceConfig {
+                    server_id: "alist-main".to_string(),
+                    path: path.to_string(),
+                    password: None,
+                },
+            ),
+        ),
+    })
+}
 
 #[test]
 fn test_add_media_request_allows_room_root_without_playlist_id() {
     let request = AddMediaRequest {
         playlist_id: None,
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
-        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         name: "Example".to_string(),
         description: String::new(),
     };
@@ -75,9 +116,9 @@ fn test_error_message_code_is_application_int32() {
 fn test_add_media_request_requires_non_empty_provider() {
     let request = AddMediaRequest {
         playlist_id: None,
-        source_provider: String::new(),
+        source_provider: SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
-        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         name: "Example".to_string(),
         description: String::new(),
     };
@@ -91,9 +132,9 @@ fn test_add_media_request_requires_non_empty_provider() {
 fn test_add_media_request_rejects_invalid_playlist_id() {
     let request = AddMediaRequest {
         playlist_id: Some("bad-playlist".to_string()),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
-        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         name: "Example".to_string(),
         description: String::new(),
     };
@@ -111,7 +152,7 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
         page: 1,
         page_size: 50,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
@@ -403,8 +444,8 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
     let request = synctv_proto::client::CreatePlaylistRequest {
         name: "Dyn".to_string(),
         parent_id: "playlist-root".to_string(),
-        source_provider: "alist".to_string(),
-        source_config: br#"{"path":"/tv"}"#.to_vec(),
+        source_provider: SourceProvider::Alist as i32,
+        source_config: alist_playlist_source_config("/tv"),
         provider_instance_name: "alist-main".to_string(),
         description: String::new(),
     };
@@ -413,7 +454,96 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
     assert!(json.get("is_folder").is_none());
     assert_eq!(json["source_provider"], "alist");
     assert_eq!(json["provider_instance_name"], "alist-main");
-    assert_eq!(json["source_config"], serde_json::json!({"path":"/tv"}));
+    assert_eq!(
+        json["source_config"],
+        serde_json::json!({
+            "alist": {
+                "server_id": "alist-main",
+                "path": "/tv",
+                "password": null
+            }
+        })
+    );
+}
+
+#[test]
+fn test_playlist_source_config_oneof_only_contains_dynamic_playlist_providers() {
+    let message = synctv_proto::DESCRIPTOR_POOL
+        .get_message_by_name("synctv.source_config.PlaylistSourceConfig")
+        .expect("PlaylistSourceConfig descriptor should exist");
+    let oneof = message
+        .oneofs()
+        .find(|oneof| oneof.name() == "provider")
+        .expect("PlaylistSourceConfig.provider oneof should exist");
+    let mut fields = oneof
+        .fields()
+        .map(|field| field.name().to_string())
+        .collect::<Vec<_>>();
+    fields.sort();
+
+    assert_eq!(fields, ["alist", "emby"]);
+}
+
+#[test]
+fn test_media_source_config_json_accepts_omitted_proto_default_fields() {
+    let config: synctv_proto::source_config::MediaSourceConfig = serde_json::from_str(
+        r#"{"direct_url":{"medias":[{"url":"https://example.com/video.mp4"}]}}"#,
+    )
+    .expect("direct_url source_config should allow omitted default fields");
+
+    let provider = config
+        .provider
+        .expect("direct_url provider should be retained");
+    match provider {
+        synctv_proto::source_config::media_source_config::Provider::DirectUrl(config) => {
+            assert_eq!(config.medias.len(), 1);
+            assert_eq!(config.medias[0].url, "https://example.com/video.mp4");
+            assert!(config.subtitles.is_empty());
+            assert!(config.danmakus.is_empty());
+        }
+        other => panic!("unexpected provider: {other:?}"),
+    }
+}
+
+#[test]
+fn test_media_source_config_json_rejects_unknown_provider_key() {
+    let error = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
+        r#"{"unknown_provider":{"url":"https://example.com/video.mp4"}}"#,
+    )
+    .expect_err("unknown provider key should be rejected");
+    assert!(error.to_string().contains("unknown_provider"), "{error}");
+}
+
+#[test]
+fn test_media_source_config_json_rejects_multiple_provider_keys() {
+    let error = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
+        r#"{"direct_url":{"medias":[{"url":"https://example.com/video.mp4"}]},"rtmp":{}}"#,
+    )
+    .expect_err("media source_config should accept exactly one provider");
+    assert!(
+        error.to_string().contains("exactly one provider"),
+        "{error}"
+    );
+}
+
+#[test]
+fn test_bilibili_source_config_json_accepts_single_source_key() {
+    let config: synctv_proto::source_config::MediaSourceConfig =
+        serde_json::from_str(r#"{"bilibili":{"video":{"bvid":"BV1234567890","cid":"42"}}}"#)
+            .expect("bilibili source_config should deserialize");
+
+    let provider = config
+        .provider
+        .expect("bilibili provider should be retained");
+    match provider {
+        synctv_proto::source_config::media_source_config::Provider::Bilibili(config) => {
+            assert!(matches!(
+                config.source,
+                Some(synctv_proto::source_config::bilibili_media_source_config::Source::Video(_))
+            ));
+        }
+        other => panic!("unexpected provider: {other:?}"),
+    }
 }
 
 #[test]
@@ -438,9 +568,7 @@ fn test_provider_instance_query_rejects_invalid_instance_name() {
 
 #[test]
 fn test_list_provider_backends_request_rejects_invalid_provider_type_format() {
-    let request = ListProviderBackendsRequest {
-        provider_type: "bad-name".to_string(),
-    };
+    let request = ListProviderBackendsRequest { provider_type: 99 };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
@@ -588,7 +716,7 @@ fn test_list_playlists_request_rejects_too_long_search() {
         page: 1,
         page_size: 20,
         search: "a".repeat(101),
-        source_provider: String::new(),
+        source_provider: SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         dynamic_only: None,
         sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
@@ -602,17 +730,11 @@ fn test_list_playlists_request_rejects_too_long_search() {
 }
 
 #[test]
-fn test_create_playlist_request_rejects_invalid_source_provider_format() {
-    let request = synctv_proto::client::CreatePlaylistRequest {
-        name: "Dyn".to_string(),
-        parent_id: String::new(),
-        source_provider: "Bad Provider".to_string(),
-        source_config: br#"{"path":"/tv"}"#.to_vec(),
-        provider_instance_name: "alist-main".to_string(),
-        description: String::new(),
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+fn test_create_playlist_request_rejects_unknown_source_provider_json() {
+    let error = serde_json::from_str::<synctv_proto::client::CreatePlaylistRequest>(
+        r#"{"name":"Dyn","source_provider":"Bad Provider","source_config":{"alist":{"server_id":"alist-main","path":"/tv"}},"provider_instance_name":"alist-main"}"#,
+    )
+    .expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("source_provider"), "{message}");
 }
@@ -624,7 +746,7 @@ fn test_list_playlists_request_rejects_invalid_provider_filters() {
         page: 1,
         page_size: 20,
         search: String::new(),
-        source_provider: "Bad Provider".to_string(),
+        source_provider: 99,
         provider_instance_name: "bad name".to_string(),
         dynamic_only: None,
         sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
@@ -648,7 +770,7 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
         page: 1,
         page_size: 20,
         search: String::new(),
-        source_provider: "Bad Provider".to_string(),
+        source_provider: 99,
         provider_instance_name: "bad name".to_string(),
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
@@ -668,9 +790,9 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
 fn test_add_media_request_rejects_invalid_provider_identifiers() {
     let request = AddMediaRequest {
         playlist_id: None,
-        source_provider: "Bad Provider".to_string(),
+        source_provider: 99,
         provider_instance_name: "bad name".to_string(),
-        source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         name: "Example".to_string(),
         description: String::new(),
     };
@@ -691,7 +813,7 @@ fn test_list_playlist_items_request_rejects_too_long_search() {
         page: 1,
         page_size: 20,
         search: "a".repeat(101),
-        source_provider: String::new(),
+        source_provider: SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,

@@ -181,7 +181,7 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     value: &serde_json::Value,
     provider_name: &str,
 ) -> std::result::Result<T, ProviderError> {
-    serde_json::from_value(value.clone()).map_err(|e| {
+    T::deserialize(value).map_err(|e| {
         ProviderError::InvalidConfig(format!(
             "Failed to parse {provider_name} source config: {e}"
         ))

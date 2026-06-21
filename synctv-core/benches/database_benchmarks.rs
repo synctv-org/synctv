@@ -22,7 +22,8 @@ use sqlx::PgPool;
 use synctv_core::{
     models::{
         id::PlaylistId, media::Media, playlist::Playlist, MediaId, PageParams, Room, RoomId,
-        RoomListQuery, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
+        RoomListQuery, RoomMember, RoomRole, RoomStatus, SourceProvider, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -244,8 +245,10 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 name: format!("media_{media_count}_{i}"),
                 description: String::new(),
                 position: f64::from(i),
-                source_provider: "direct_url".to_string(),
-                source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                    "https://example.com/{i}.mp4"
+                )),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -317,7 +320,11 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                     let start = Instant::now();
                     for _ in 0..iters {
                         // Create a new playlist for each iteration
-                        let new_playlist = make_playlist(&room_id, None, &format!("batch_{}", uuid::Uuid::new_v4()));
+                        let new_playlist = make_playlist(
+                            &room_id,
+                            None,
+                            &format!("batch_{}", uuid::Uuid::new_v4()),
+                        );
                         let new_playlist = playlist_repo.create(&new_playlist).await.unwrap();
 
                         for i in 0..batch_size {
@@ -329,10 +336,12 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                                 name: format!("batch_media_{i}"),
                                 description: String::new(),
                                 position: f64::from(i),
-                                source_provider: "direct_url".to_string(),
-                                source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+                                source_provider: SourceProvider::DirectUrl,
+                                source_config: synctv_core_testing::direct_url_media_source_config(
+                                    "https://example.com/video.mp4",
+                                ),
                                 provider_instance_name: None,
-            cover_file_reference_id: None,
+                                cover_file_reference_id: None,
                                 added_at: Utc::now(),
                                 updated_at: Utc::now(),
                                 version: 0,

@@ -2,6 +2,7 @@ use synctv_proto::providers::common::{
     AddProviderInstanceRequest, ListProviderInstancesRequest, ProviderInstanceQuery,
     UpdateProviderInstanceRequest,
 };
+use synctv_proto::source_config::SourceProvider;
 
 #[test]
 fn test_provider_common_list_provider_instances_defaults_http_query_fields() {
@@ -11,7 +12,7 @@ fn test_provider_common_list_provider_instances_defaults_http_query_fields() {
 
     assert_eq!(request.page, 0);
     assert_eq!(request.page_size, 0);
-    assert_eq!(request.provider_type, "alist");
+    assert_eq!(request.provider_type, SourceProvider::Alist as i32);
     assert!(request.search.is_empty());
     assert_eq!(request.enabled, None);
     assert_eq!(request.tls, None);
@@ -25,7 +26,7 @@ fn test_provider_common_list_provider_instances_rejects_too_long_search() {
     let request = ListProviderInstancesRequest {
         page: 1,
         page_size: 20,
-        provider_type: String::new(),
+        provider_type: SourceProvider::Unspecified as i32,
         search: "a".repeat(101),
         enabled: None,
         tls: None,
@@ -39,19 +40,11 @@ fn test_provider_common_list_provider_instances_rejects_too_long_search() {
 }
 
 #[test]
-fn test_provider_common_list_provider_instances_rejects_invalid_provider_type_format() {
-    let request = ListProviderInstancesRequest {
-        page: 1,
-        page_size: 20,
-        provider_type: "Bad Provider".to_string(),
-        search: String::new(),
-        enabled: None,
-        tls: None,
-        sort_by: 0,
-        sort_direction: 0,
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+fn test_provider_common_list_provider_instances_rejects_unknown_provider_type_json() {
+    let error = serde_json::from_str::<ListProviderInstancesRequest>(
+        r#"{"provider_type":"Bad Provider","page":1,"page_size":20}"#,
+    )
+    .expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("provider_type"), "{message}");
 }

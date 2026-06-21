@@ -2,12 +2,11 @@
 //! Tests media item creation, unique constraints, deletion, and playlist association.
 //!
 use chrono::Utc;
-use serde_json::json;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
         Media, MediaId, Playlist, PlaylistId, ProviderType, Room, RoomId, RoomMember, RoomRole,
-        RoomStatus, User, UserId, UserRole, UserStatus,
+        RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -132,8 +131,10 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         name: name.to_string(),
         description: String::new(),
         position: f64::from(position),
-        source_provider: "direct_url".to_string(),
-        source_config: json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -151,8 +152,10 @@ fn make_room_root_media(room_id: &RoomId, name: &str, position: i32) -> Media {
         name: name.to_string(),
         description: String::new(),
         position: f64::from(position),
-        source_provider: "direct_url".to_string(),
-        source_config: json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -175,7 +178,7 @@ async fn test_create_media_basic() {
 
     assert_eq!(created.name, "test_video.mp4");
     assert_f64_eq(created.position, 0.0);
-    assert_eq!(created.source_provider, "direct_url");
+    assert_eq!(created.source_provider, SourceProvider::DirectUrl);
     assert_eq!(created.playlist_id, Some(ctx.root_playlist.id));
     assert_eq!(created.room_id, ctx.room.id);
 }
@@ -385,7 +388,7 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
         "root-media.mp4",
         0.0,
         ProviderType::DirectUrl.as_i16(),
-        json!({"url": "https://example.com/root.mp4"}),
+        synctv_core_testing::direct_url_media_source_config("https://example.com/root.mp4"),
         Option::<String>::None
     )
     .execute(&pool)
@@ -1008,8 +1011,10 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 name: format!("concurrent_{i}.mp4"),
                 description: String::new(),
                 position,
-                source_provider: "direct_url".to_string(),
-                source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                    "https://example.com/video{i}.mp4"
+                )),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -1110,8 +1115,10 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 name: format!("new_{i}.mp4"),
                 description: String::new(),
                 position,
-                source_provider: "direct_url".to_string(),
-                source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                    "https://example.com/new{i}.mp4"
+                )),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -1239,8 +1246,10 @@ async fn test_media_rejects_cross_room_playlist_reference() {
             name: "cross-room.mp4".to_string(),
             description: String::new(),
             position: 0.0,
-            source_provider: "direct_url".to_string(),
-            source_config: json!({"url": "https://example.com/cross-room.mp4"}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/cross-room.mp4",
+            ),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: Utc::now(),

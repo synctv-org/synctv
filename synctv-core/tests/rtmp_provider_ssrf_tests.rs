@@ -61,7 +61,10 @@ async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
     let ctx = create_context();
 
     let result = provider
-        .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+        .validate_source_config(
+            &ctx,
+            SourceConfig::media(&synctv_core_testing::rtmp_managed_live_media_source_config()),
+        )
         .await;
     assert!(
         result.is_ok(),
@@ -76,7 +79,10 @@ async fn test_rtmp_provider_validate_source_config_accepts_empty_config_with_con
     let ctx = create_context();
 
     let result = provider
-        .validate_source_config(&ctx, SourceConfig::media(&json!({})))
+        .validate_source_config(
+            &ctx,
+            SourceConfig::media(&synctv_core_testing::rtmp_managed_live_media_source_config()),
+        )
         .await;
     assert!(
         result.is_ok(),

@@ -4,6 +4,7 @@ package synctv.client;
 
 import "proto/buf/validate/validate.proto";
 import "proto/common.proto";
+import "proto/source_config.proto";
 
 // ==================== Auth Service ====================
 // Authentication: None (public access)
@@ -275,14 +276,14 @@ message Room {
 message Media {
   string id = 1;
   string room_id = 2;
-  string source_provider = 4; // Source provider type, e.g. "direct_url", "bilibili", "alist"
+  synctv.source_config.SourceProvider source_provider = 4; // Source provider type, e.g. direct_url, bilibili, alist
   string name = 5; // Media display name
   bytes metadata = 6; // JSON metadata
   double position = 7; // Order position in playlist
   int64 added_at = 8;
   string creator_id = 9; // Public ID of the user who added the media
   string provider_instance_name = 10; // e.g., "bilibili_main", "alist_company"
-  bytes source_config = 11; // JSON source config, only returned to the media creator
+  synctv.source_config.MediaSourceConfig source_config = 11; // Only returned to the media creator
   ResourceAvailability availability = 12; // Availability derived from creator state
   int64 version = 13; // Resource version from database
   MediaCover cover = 14;
@@ -301,8 +302,8 @@ message Playlist {
   int64 updated_at = 9;
   ResourceAvailability availability = 10; // Availability derived from creator state
   int64 version = 11; // Resource version from database
-  bytes source_config = 12; // JSON source config, only returned to the playlist creator
-  string source_provider = 13; // Source provider for dynamic playlists
+  synctv.source_config.PlaylistSourceConfig source_config = 12; // Only returned to the playlist creator
+  synctv.source_config.SourceProvider source_provider = 13; // Source provider for dynamic playlists
   string provider_instance_name = 14; // Provider instance for dynamic playlists
   string description = 15;
   ResourceCover cover = 16;
@@ -1452,12 +1453,12 @@ message CreatePlaylistRequest {
   option (buf.validate.message).cel = {
     id: "playlist.dynamic.requires_fields"
     message: "dynamic playlists require non-empty source_config"
-    expression: "this.source_provider == '' || size(this.source_config) > 0"
+    expression: "this.source_provider == 0 || has(this.source_config)"
   };
   option (buf.validate.message).cel = {
     id: "playlist.static.rejects_dynamic_fields"
     message: "source_provider is required when source_config or provider_instance_name is set"
-    expression: "this.source_provider != '' || (size(this.source_config) == 0 && this.provider_instance_name == '')"
+    expression: "this.source_provider != 0 || (!has(this.source_config) && this.provider_instance_name == '')"
   };
   option (buf.validate.message).cel = {
     id: "playlist.parent_id.format"
@@ -1466,14 +1467,8 @@ message CreatePlaylistRequest {
   };
   string name = 1 [(buf.validate.field).string = {max_len: 255}];
   string parent_id = 2; // Optional parent playlist ID for nested playlists
-  string source_provider = 3 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ]; // Optional provider type for dynamic playlists
-  bytes source_config = 4; // Provider-specific config for dynamic playlists
+  synctv.source_config.SourceProvider source_provider = 3 [(buf.validate.field).enum.defined_only = true]; // Optional provider type for dynamic playlists
+  synctv.source_config.PlaylistSourceConfig source_config = 4; // Provider-specific config for dynamic playlists
   string provider_instance_name = 5 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
@@ -1584,13 +1579,7 @@ message ListPlaylistsRequest {
   int32 page = 2;
   int32 page_size = 3;
   string search = 4 [(buf.validate.field).string = {max_len: 100}];
-  string source_provider = 5 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ];
+  synctv.source_config.SourceProvider source_provider = 5 [(buf.validate.field).enum.defined_only = true];
   string provider_instance_name = 6 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
@@ -1685,20 +1674,17 @@ message AddMediaRequest {
   option (buf.validate.message).cel = {
     id: "add_media.source_provider"
     message: "source_provider is required"
-    expression: "this.source_provider != ''"
+    expression: "this.source_provider != 0"
   };
   optional string playlist_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^pl_[A-Za-z0-9]+$"
   }]; // Target playlist ID. Omit for room-root media
-  string source_provider = 2 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ]; // Required source provider type, e.g. "direct_url", "bilibili", "alist"
+  synctv.source_config.SourceProvider source_provider = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }]; // Required source provider type, e.g. direct_url, bilibili, alist
   string provider_instance_name = 3 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
@@ -1706,7 +1692,7 @@ message AddMediaRequest {
       max_len: 64
     }
   ]; // Optional provider instance name; empty means use the default provider instance for source_provider
-  bytes source_config = 4; // JSON source config (e.g., {"url": "...", "path": "..."})
+  synctv.source_config.MediaSourceConfig source_config = 4;
   string name = 5 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
   string description = 6 [(buf.validate.field).string.max_len = 5000];
 }
@@ -1794,13 +1780,7 @@ message ListPlaylistItemsRequest {
   int32 page = 3;
   int32 page_size = 4;
   string search = 5 [(buf.validate.field).string = {max_len: 100}];
-  string source_provider = 6 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).string = {
-      pattern: "^[a-z][a-z0-9_]*$"
-      max_len: 64
-    }
-  ];
+  synctv.source_config.SourceProvider source_provider = 6 [(buf.validate.field).enum.defined_only = true];
   string provider_instance_name = 7 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {

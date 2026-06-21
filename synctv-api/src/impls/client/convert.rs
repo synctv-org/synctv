@@ -1,4 +1,11 @@
 use synctv_core::service::room::ClientResourceAvailability;
+use synctv_proto::source_config as source_config_proto;
+
+pub(crate) use crate::impls::source_provider::{
+    core_source_provider_to_proto,
+    proto_source_provider_filter as optional_proto_source_provider_to_core,
+    proto_source_provider_required as proto_source_provider_to_core,
+};
 
 pub(crate) struct PlaybackHttpSigningContext<'a> {
     pub signing_key: &'a synctv_core::proxy_signature::ProxySigningKey,
@@ -66,6 +73,241 @@ pub(crate) fn json_to_string<T: serde::Serialize + ?Sized>(
             "Failed to serialize {context} as JSON string: {error}"
         ))
     })
+}
+
+fn invalid_source_config(message: impl Into<String>) -> crate::impls::ApiError {
+    crate::impls::ApiError::InvalidInput(message.into())
+}
+
+fn source_config_internal(message: impl Into<String>) -> crate::impls::ApiError {
+    crate::impls::ApiError::Internal(message.into())
+}
+
+pub(crate) fn proto_media_source_config_to_core_json(
+    config: Option<source_config_proto::MediaSourceConfig>,
+) -> Result<(synctv_core::models::SourceProvider, serde_json::Value), crate::impls::ApiError> {
+    use source_config_proto::media_source_config::Provider;
+
+    let provider = config
+        .and_then(|config| config.provider)
+        .ok_or_else(|| invalid_source_config("source_config is required"))?;
+    let config = match provider {
+        Provider::DirectUrl(config) => synctv_core::models::MediaSourceConfig::DirectUrl(
+            proto_direct_url_media_source_config_to_core(config)?,
+        ),
+        Provider::Bilibili(config) => synctv_core::models::MediaSourceConfig::Bilibili(
+            proto_bilibili_media_source_config_to_core(config)?,
+        ),
+        Provider::Alist(config) => synctv_core::models::MediaSourceConfig::Alist(
+            proto_alist_media_source_config_to_core(config)?,
+        ),
+        Provider::Emby(config) => synctv_core::models::MediaSourceConfig::Emby(
+            proto_emby_media_source_config_to_core(config)?,
+        ),
+        Provider::Rtmp(config) => synctv_core::models::MediaSourceConfig::Rtmp(
+            proto_rtmp_media_source_config_to_core(config)?,
+        ),
+        Provider::LiveProxy(config) => synctv_core::models::MediaSourceConfig::LiveProxy(
+            proto_live_proxy_media_source_config_to_core(config)?,
+        ),
+    };
+
+    let provider = config.provider();
+    let value = config.into_provider_json().map_err(|error| {
+        source_config_internal(format!(
+            "{} source_config serialization failed: {error}",
+            provider.as_str()
+        ))
+    })?;
+    Ok((provider, value))
+}
+
+pub(crate) fn proto_playlist_source_config_to_core_json(
+    config: Option<source_config_proto::PlaylistSourceConfig>,
+) -> Result<(synctv_core::models::SourceProvider, serde_json::Value), crate::impls::ApiError> {
+    use source_config_proto::playlist_source_config::Provider;
+
+    let provider = config
+        .and_then(|config| config.provider)
+        .ok_or_else(|| invalid_source_config("source_config is required"))?;
+    let config = match provider {
+        Provider::Alist(config) => synctv_core::models::PlaylistSourceConfig::Alist(
+            proto_alist_playlist_source_config_to_core(config)?,
+        ),
+        Provider::Emby(config) => synctv_core::models::PlaylistSourceConfig::Emby(
+            proto_emby_playlist_source_config_to_core(config)?,
+        ),
+    };
+
+    let provider = config.provider();
+    let value = config.into_provider_json().map_err(|error| {
+        source_config_internal(format!(
+            "{} source_config serialization failed: {error}",
+            provider.as_str()
+        ))
+    })?;
+    Ok((provider, value))
+}
+
+fn proto_direct_url_media_source_config_to_core(
+    config: source_config_proto::DirectUrlMediaSourceConfig,
+) -> Result<synctv_core::models::DirectUrlMediaSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::DirectUrlMediaSourceConfig {
+        medias: config
+            .medias
+            .into_iter()
+            .map(|media| synctv_core::models::DirectUrlMediaResourceConfig {
+                name: media.name,
+                url: media.url,
+                headers: media.headers,
+                format: media.format,
+            })
+            .collect(),
+        default_media_index: config
+            .default_media_index
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| invalid_source_config("direct_url default_media_index is too large"))?,
+        subtitles: config
+            .subtitles
+            .into_iter()
+            .map(
+                |subtitle| synctv_core::models::DirectUrlSubtitleSourceConfig {
+                    name: subtitle.name,
+                    language: subtitle.language,
+                    url: subtitle.url,
+                    headers: subtitle.headers,
+                    format: subtitle.format,
+                },
+            )
+            .collect(),
+        default_subtitle_index: config
+            .default_subtitle_index
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| invalid_source_config("direct_url default_subtitle_index is too large"))?,
+        danmakus: config
+            .danmakus
+            .into_iter()
+            .map(
+                |danmaku| synctv_core::models::DirectUrlDanmakuSourceConfig {
+                    name: danmaku.name,
+                    url: danmaku.url,
+                    headers: danmaku.headers,
+                    format: danmaku.format,
+                },
+            )
+            .collect(),
+        default_danmaku_index: config
+            .default_danmaku_index
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| invalid_source_config("direct_url default_danmaku_index is too large"))?,
+    })
+}
+
+fn proto_bilibili_media_source_config_to_core(
+    config: source_config_proto::BilibiliMediaSourceConfig,
+) -> Result<synctv_core::models::BilibiliMediaSourceConfig, crate::impls::ApiError> {
+    use source_config_proto::bilibili_media_source_config::Source;
+    match config
+        .source
+        .ok_or_else(|| invalid_source_config("bilibili source_config source is required"))?
+    {
+        Source::Video(video) => Ok(synctv_core::models::BilibiliMediaSourceConfig::Video(
+            synctv_core::models::BilibiliVideoSourceConfig {
+                bvid: (!video.bvid.trim().is_empty()).then_some(video.bvid),
+                aid: video.aid,
+                cid: video.cid,
+                shared: video.shared,
+            },
+        )),
+        Source::Pgc(pgc) => Ok(synctv_core::models::BilibiliMediaSourceConfig::Pgc(
+            synctv_core::models::BilibiliPgcSourceConfig {
+                epid: pgc.epid,
+                cid: pgc.cid,
+                shared: pgc.shared,
+            },
+        )),
+        Source::Live(live) => Ok(synctv_core::models::BilibiliMediaSourceConfig::Live(
+            synctv_core::models::BilibiliLiveSourceConfig {
+                room_id: live.room_id,
+                shared: live.shared,
+            },
+        )),
+    }
+}
+
+fn proto_alist_media_source_config_to_core(
+    config: source_config_proto::AlistMediaSourceConfig,
+) -> Result<synctv_core::models::AlistMediaSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::AlistMediaSourceConfig {
+        server_id: config.server_id,
+        path: config.path,
+        password: config.password,
+    })
+}
+
+fn proto_alist_playlist_source_config_to_core(
+    config: source_config_proto::AlistPlaylistSourceConfig,
+) -> Result<synctv_core::models::AlistPlaylistSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::AlistPlaylistSourceConfig {
+        server_id: config.server_id,
+        path: config.path,
+        password: config.password,
+    })
+}
+
+fn proto_emby_media_source_config_to_core(
+    config: source_config_proto::EmbyMediaSourceConfig,
+) -> Result<synctv_core::models::EmbyMediaSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::EmbyMediaSourceConfig {
+        server_id: config.server_id,
+        item_id: config.item_id,
+    })
+}
+
+fn proto_emby_playlist_source_config_to_core(
+    config: source_config_proto::EmbyPlaylistSourceConfig,
+) -> Result<synctv_core::models::EmbyPlaylistSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::EmbyPlaylistSourceConfig {
+        server_id: config.server_id,
+        item_id: config.item_id,
+    })
+}
+
+fn proto_rtmp_media_source_config_to_core(
+    _config: source_config_proto::RtmpMediaSourceConfig,
+) -> Result<synctv_core::models::RtmpMediaSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::RtmpMediaSourceConfig {})
+}
+
+fn proto_live_proxy_media_source_config_to_core(
+    config: source_config_proto::LiveProxyMediaSourceConfig,
+) -> Result<synctv_core::models::LiveProxyMediaSourceConfig, crate::impls::ApiError> {
+    Ok(synctv_core::models::LiveProxyMediaSourceConfig { url: config.url })
+}
+
+pub(crate) fn media_source_config_to_proto(
+    provider: synctv_core::models::SourceProvider,
+    value: &serde_json::Value,
+) -> Result<source_config_proto::MediaSourceConfig, crate::impls::ApiError> {
+    let config = synctv_core::models::MediaSourceConfig::from_provider_json(provider, value)
+        .map_err(|error| {
+            source_config_internal(format!("failed to decode media source_config: {error}"))
+        })?;
+    Ok(config.into())
+}
+
+pub(crate) fn playlist_source_config_to_proto(
+    provider: synctv_core::models::SourceProvider,
+    value: &serde_json::Value,
+) -> Result<source_config_proto::PlaylistSourceConfig, crate::impls::ApiError> {
+    let config = synctv_core::models::PlaylistSourceConfig::from_provider_json(provider, value)
+        .map_err(|error| {
+            source_config_internal(format!("failed to decode playlist source_config: {error}"))
+        })?;
+    Ok(config.into())
 }
 
 fn json_value_to_metadata_string(
@@ -194,11 +436,11 @@ fn can_view_media_source_config(
 fn serialize_source_config_for_viewer(
     media: &synctv_core::models::Media,
     viewer_id: Option<synctv_core::models::UserId>,
-) -> Result<Vec<u8>, crate::impls::ApiError> {
+) -> Result<Option<source_config_proto::MediaSourceConfig>, crate::impls::ApiError> {
     if can_view_media_source_config(media, viewer_id) {
-        json_to_vec(&media.source_config, "media source config")
+        media_source_config_to_proto(media.source_provider, &media.source_config).map(Some)
     } else {
-        Ok(Vec::new())
+        Ok(None)
     }
 }
 
@@ -214,16 +456,23 @@ fn can_view_playlist_source_config(
 fn serialize_playlist_source_config_for_viewer(
     playlist: &synctv_core::models::Playlist,
     viewer_id: Option<synctv_core::models::UserId>,
-) -> Result<Vec<u8>, crate::impls::ApiError> {
+) -> Result<Option<source_config_proto::PlaylistSourceConfig>, crate::impls::ApiError> {
     if can_view_playlist_source_config(playlist, viewer_id) {
-        playlist
-            .source_config
-            .as_ref()
-            .map(|source_config| json_to_vec(source_config, "playlist source config"))
-            .transpose()
-            .map(std::option::Option::unwrap_or_default)
+        match (playlist.source_provider, playlist.source_config.as_ref()) {
+            (Some(provider), Some(source_config)) => {
+                playlist_source_config_to_proto(provider, source_config).map(Some)
+            }
+            (Some(_), None) => Err(crate::impls::ApiError::Internal(format!(
+                "Dynamic playlist {} missing source_config",
+                playlist.id
+            ))),
+            (None, Some(_)) => Err(crate::impls::ApiError::Internal(
+                "playlist source_config is present without source_provider".to_string(),
+            )),
+            (None, None) => Ok(None),
+        }
     } else {
-        Ok(Vec::new())
+        Ok(None)
     }
 }
 
@@ -703,7 +952,7 @@ pub(crate) fn try_media_to_proto_for_viewer(
     Ok(synctv_proto::client::Media {
         id: encode_media_id_for_proto(media.id, public_id_codec)?,
         room_id: encode_room_id_for_proto(media.room_id, public_id_codec)?,
-        source_provider: media.source_provider.clone(),
+        source_provider: core_source_provider_to_proto(media.source_provider),
         name: media.name.clone(),
         metadata: metadata_bytes,
         position: media.position,
@@ -761,11 +1010,21 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
     viewer_id: Option<synctv_core::models::UserId>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
-    let source_provider = match playlist.source_provider.as_deref() {
-        Some(_) => dynamic_playlist_source_fields(playlist)?
-            .provider_name
-            .to_string(),
-        None => String::new(),
+    if playlist.source_provider.is_some() && playlist.source_config.is_none() {
+        return Err(crate::impls::ApiError::Internal(format!(
+            "Dynamic playlist {} missing source_config",
+            playlist.id
+        )));
+    }
+    if playlist.source_provider.is_none() && playlist.source_config.is_some() {
+        return Err(crate::impls::ApiError::Internal(
+            "playlist source_config is present without source_provider".to_string(),
+        ));
+    }
+
+    let source_provider = match playlist.source_provider {
+        Some(provider) => core_source_provider_to_proto(provider),
+        None => source_config_proto::SourceProvider::Unspecified as i32,
     };
 
     Ok(synctv_proto::client::Playlist {
@@ -793,7 +1052,7 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
 }
 
 pub(crate) struct DynamicPlaylistSourceFields<'a> {
-    pub provider_name: &'a str,
+    pub provider: synctv_core::models::SourceProvider,
     pub source_config: &'a serde_json::Value,
     pub provider_instance_name: Option<&'a str>,
 }
@@ -801,19 +1060,9 @@ pub(crate) struct DynamicPlaylistSourceFields<'a> {
 pub(crate) fn dynamic_playlist_source_fields(
     playlist: &synctv_core::models::Playlist,
 ) -> Result<DynamicPlaylistSourceFields<'_>, crate::impls::ApiError> {
-    let provider_name = playlist
-        .source_provider
-        .as_deref()
-        .ok_or_else(|| {
-            crate::impls::ApiError::Internal("Dynamic playlist missing provider".to_string())
-        })?
-        .trim();
-    if provider_name.is_empty() {
-        return Err(crate::impls::ApiError::Internal(format!(
-            "Dynamic playlist {} has empty source_provider",
-            playlist.id
-        )));
-    }
+    let provider = playlist.source_provider.ok_or_else(|| {
+        crate::impls::ApiError::Internal("Dynamic playlist missing provider".to_string())
+    })?;
     let source_config = playlist.source_config.as_ref().ok_or_else(|| {
         crate::impls::ApiError::Internal(format!(
             "Dynamic playlist {} missing source_config",
@@ -826,7 +1075,7 @@ pub(crate) fn dynamic_playlist_source_fields(
     });
 
     Ok(DynamicPlaylistSourceFields {
-        provider_name,
+        provider,
         source_config,
         provider_instance_name,
     })

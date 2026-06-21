@@ -378,7 +378,7 @@ synctv playlist delete <ROOM_ID> <PLAYLIST_ID>
 ```bash
 synctv media list <ROOM_ID>
 synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --name "视频"
-synctv media add --room-id <ROOM_ID> --username alice --source-provider direct_url --source-config-json '{"url":"https://example.com/video.mp4"}' --name "视频"
+synctv media add --room-id <ROOM_ID> --username alice --source-provider direct_url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "视频"
 synctv media update --room-id <ROOM_ID> <MEDIA_ID> --name "新名称"
 synctv media move --room-id <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>

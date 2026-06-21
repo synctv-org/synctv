@@ -12,6 +12,7 @@ use crate::models::media::{
     PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
+use crate::models::{EmbyMediaSourceConfig, EmbyPlaylistSourceConfig};
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -579,7 +580,7 @@ impl EmbyProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<ResolvedEmbyConfig, ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = EmbySourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -826,14 +827,6 @@ impl EmbyProvider {
     }
 }
 
-/// Emby source configuration
-#[derive(Debug, Deserialize, Serialize)]
-struct EmbySourceConfig {
-    item_id: String,
-    /// Saved Emby credential server identifier.
-    server_id: String,
-}
-
 /// Resolved Emby configuration with credentials ready for API calls.
 struct ResolvedEmbyConfig {
     host: String,
@@ -845,13 +838,49 @@ struct ResolvedEmbyConfig {
     provider_instance_name: Option<String>,
 }
 
-impl TryFrom<&Value> for EmbySourceConfig {
-    type Error = ProviderError;
+#[derive(Debug, Clone)]
+struct EmbySourceConfig {
+    item_id: String,
+    server_id: String,
+}
 
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+impl From<EmbyMediaSourceConfig> for EmbySourceConfig {
+    fn from(config: EmbyMediaSourceConfig) -> Self {
+        Self {
+            item_id: config.item_id,
+            server_id: config.server_id,
+        }
+    }
+}
+
+impl From<EmbyPlaylistSourceConfig> for EmbySourceConfig {
+    fn from(config: EmbyPlaylistSourceConfig) -> Self {
+        Self {
+            item_id: config.item_id,
+            server_id: config.server_id,
+        }
+    }
+}
+
+impl EmbySourceConfig {
+    fn media_from_value(value: &Value) -> Result<Self, ProviderError> {
+        super::parse_source_config::<EmbyMediaSourceConfig>(value, "Emby media").map(Into::into)
+    }
+
+    fn playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
+        super::parse_source_config::<EmbyPlaylistSourceConfig>(value, "Emby playlist")
+            .map(Into::into)
+    }
+
+    fn media_or_playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
         super::reject_source_config_provider_instance_name(value, "Emby")?;
         super::reject_source_config_credential_ref(value, "Emby")?;
-        super::parse_source_config(value, "Emby")
+
+        if let Ok(config) = Self::media_from_value(value) {
+            return Ok(config);
+        }
+
+        Self::playlist_from_value(value)
     }
 }
 
@@ -871,7 +900,16 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config.value())?;
+        super::reject_source_config_provider_instance_name(source_config.value(), "Emby")?;
+        super::reject_source_config_credential_ref(source_config.value(), "Emby")?;
+        let config = match source_config.kind() {
+            super::SourceConfigKind::Media => {
+                EmbySourceConfig::media_from_value(source_config.value())?
+            }
+            super::SourceConfigKind::DynamicPlaylist => {
+                EmbySourceConfig::playlist_from_value(source_config.value())?
+            }
+        };
 
         // Validate item_id is non-empty
         if config.item_id.is_empty() {
@@ -916,7 +954,7 @@ impl MediaProvider for EmbyProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = EmbySourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -937,6 +975,7 @@ impl MediaProvider for EmbyProvider {
     ) -> Result<Value, ProviderError> {
         super::reject_source_config_provider_instance_name(&source_config, "Emby")?;
         super::reject_source_config_credential_ref(&source_config, "Emby")?;
+        let _config = EmbySourceConfig::media_or_playlist_from_value(&source_config)?;
 
         Ok(source_config)
     }
@@ -946,7 +985,7 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = EmbySourceConfig::media_from_value(source_config)?;
         let resolved = self.resolve_config(_ctx, source_config).await?;
         let playback_client_profile = _ctx.playback_client_profile();
         let playback_profile_cache_key = playback_client_profile.map_or_else(
@@ -1287,7 +1326,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::try_from(config)?;
+        let base_config = EmbySourceConfig::playlist_from_value(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
         let target_item_id =
             Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
@@ -1358,7 +1397,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::try_from(config)?;
+        let base_config = EmbySourceConfig::playlist_from_value(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
         let item = self
             .fetch_item(&resolved, &item_id, ctx.request_context())
@@ -1396,7 +1435,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::try_from(config)?;
+        let base_config = EmbySourceConfig::playlist_from_value(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
         let current_item = self
             .fetch_item(&resolved, &item_id, ctx.request_context())
@@ -1607,7 +1646,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::try_from(config)?;
+        let base_config = EmbySourceConfig::playlist_from_value(config)?;
         let resolved = self.resolve_config(ctx, config).await?;
 
         let mut segments = Vec::new();

@@ -568,6 +568,12 @@ fn parse_json_bytes(bytes: &[u8]) -> Value {
     }
 }
 
+fn source_config_json<T: serde::Serialize>(config: Option<&T>) -> Value {
+    config
+        .and_then(|config| serde_json::to_value(config).ok())
+        .unwrap_or(Value::Null)
+}
+
 fn humanize_timestamp(raw: i64) -> String {
     if raw <= 0 {
         return "unset".to_string();
@@ -943,7 +949,7 @@ impl ToHuman for synctv_proto::providers::common::ProviderInstance {
             timeout_seconds: self.timeout_seconds,
             tls: self.tls,
             insecure_tls: self.insecure_tls,
-            providers: self.providers.clone(),
+            providers: humanize_source_providers(&self.providers),
             enabled: self.enabled,
             status: humanize_provider_instance_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
@@ -986,7 +992,7 @@ impl ToHuman for synctv_proto::client::Playlist {
             parent_id: self.parent_id.clone(),
             position: self.position,
             is_dynamic: self.is_dynamic,
-            source_provider: self.source_provider.clone(),
+            source_provider: humanize_source_provider(self.source_provider),
             provider_instance_name: self.provider_instance_name.clone(),
             item_count: self.item_count,
             created_at: humanize_timestamp(self.created_at),
@@ -994,7 +1000,7 @@ impl ToHuman for synctv_proto::client::Playlist {
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
-            source_config: parse_json_bytes(&self.source_config),
+            source_config: source_config_json(self.source_config.as_ref()),
         }
     }
 }
@@ -1006,14 +1012,14 @@ impl ToHuman for synctv_proto::client::Media {
         HumanMedia {
             id: self.id.clone(),
             room_id: self.room_id.clone(),
-            source_provider: self.source_provider.clone(),
+            source_provider: humanize_source_provider(self.source_provider),
             name: self.name.clone(),
             metadata: parse_json_bytes(&self.metadata),
             position: self.position,
             added_at: humanize_timestamp(self.added_at),
             creator_id: self.creator_id.clone(),
             provider_instance_name: self.provider_instance_name.clone(),
-            source_config: parse_json_bytes(&self.source_config),
+            source_config: source_config_json(self.source_config.as_ref()),
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
@@ -1797,6 +1803,27 @@ fn humanize_resource_availability(raw: i64) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+fn humanize_source_provider(raw: i32) -> String {
+    match synctv_proto::source_config::SourceProvider::try_from(raw) {
+        Ok(synctv_proto::source_config::SourceProvider::Unspecified) => String::new(),
+        Ok(synctv_proto::source_config::SourceProvider::DirectUrl) => "direct_url".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::Bilibili) => "bilibili".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::Alist) => "alist".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::Emby) => "emby".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::Rtmp) => "rtmp".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::LiveProxy) => "live_proxy".to_string(),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn humanize_source_providers(values: &[i32]) -> Vec<String> {
+    values
+        .iter()
+        .copied()
+        .map(humanize_source_provider)
+        .collect()
 }
 
 fn humanize_room_member_role(raw: i64) -> Option<String> {

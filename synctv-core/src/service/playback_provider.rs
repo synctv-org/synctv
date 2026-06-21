@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use crate::models::{MediaId, RoomId, UserId};
+use crate::models::{LiveProxyMediaSourceConfig, MediaId, RoomId, SourceProvider, UserId};
 use crate::provider::playback_transport::PlaybackTransportServices;
 use crate::provider::store::{ProviderStore, ProviderStoreResolver};
 use crate::provider::{
-    BilibiliProvider, ExecutionControl, LiveProxyProvider, PlaybackTransportAction,
-    ProviderAccessService, ProviderContext, ProviderError, ProviderSet,
+    BilibiliProvider, ExecutionControl, PlaybackTransportAction, ProviderAccessService,
+    ProviderContext, ProviderError, ProviderSet,
 };
 use crate::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use crate::{PublicIdCodec, PublicIdType};
@@ -625,13 +625,11 @@ impl LiveProxyPlaybackProviderService {
             .await
             .ok()
             .flatten()
-            .filter(|media| media.source_provider == LiveProxyProvider::NAME)
+            .filter(|media| media.source_provider == SourceProvider::LiveProxy)
             .and_then(|media| {
-                media
-                    .source_config
-                    .get("url")
-                    .and_then(serde_json::Value::as_str)
-                    .map(ToString::to_string)
+                serde_json::from_value::<LiveProxyMediaSourceConfig>(media.source_config)
+                    .ok()
+                    .map(|config| config.url)
             })
     }
 }
@@ -672,7 +670,7 @@ impl PlaybackProviderRuntime {
             .await
             .map_err(core_error_to_provider_error)?
             .ok_or(ProviderError::NotFound)?;
-        if media.source_provider.trim() != BilibiliProvider::NAME {
+        if media.source_provider != SourceProvider::Bilibili {
             return Err(ProviderError::InvalidConfig(
                 "Bilibili live danmaku requires Bilibili media".to_string(),
             ));
@@ -697,7 +695,7 @@ impl PlaybackProviderRuntime {
             .media_service()
             .providers_manager()
             .resolve_provider(
-                BilibiliProvider::NAME,
+                SourceProvider::Bilibili,
                 media.provider_instance_name.as_deref(),
             )
             .await

@@ -10,6 +10,7 @@ import "proto/providers/bilibili.proto";
 import "proto/providers/common.proto";
 import "proto/providers/emby.proto";
 import "proto/providers/rtmp.proto";
+import "proto/source_config.proto";
 
 service ManagementService {
     // =========================
@@ -547,7 +548,7 @@ message ListPlaylistsRequest {
     int32 page = 3;
     int32 page_size = 4;
     string search = 5;
-    string source_provider = 6;
+    synctv.source_config.SourceProvider source_provider = 6;
     string provider_instance_name = 7;
     optional bool dynamic_only = 8;
     PlaylistListSortBy sort_by = 9;
@@ -565,8 +566,8 @@ message CreatePlaylistRequest {
     string room_id = 2;
     string name = 3;
     string parent_id = 4;
-    string source_provider = 5;
-    bytes source_config_json = 6;
+    synctv.source_config.SourceProvider source_provider = 5;
+    synctv.source_config.PlaylistSourceConfig source_config = 6;
     string provider_instance_name = 7;
 }
 
@@ -619,7 +620,7 @@ message ListMediaRequest {
     int32 page = 4;
     int32 page_size = 5;
     string search = 6;
-    string source_provider = 7;
+    synctv.source_config.SourceProvider source_provider = 7;
     string provider_instance_name = 8;
     MediaListSortBy sort_by = 9;
     SortDirection sort_direction = 10;
@@ -631,16 +632,16 @@ message AddMediaRequest {
     UserRef actor = 1;
     string room_id = 2;
     string playlist_id = 3;
-    string source_provider = 4;
+    synctv.source_config.SourceProvider source_provider = 4;
     string provider_instance_name = 5;
-    bytes source_config_json = 6;
+    synctv.source_config.MediaSourceConfig source_config = 6;
     string name = 7;
 }
 
 message AddDirectUrlMediaRequest {
     UserRef actor = 1;
     string room_id = 2;
-    string url = 3;
+    synctv.source_config.DirectUrlMediaSourceConfig source_config = 3;
     string playlist_id = 4;
     string name = 5;
 }

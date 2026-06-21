@@ -3,7 +3,7 @@ use super::{
     PlaybackStateUpdateCommand,
 };
 use chrono::Utc;
-use synctv_core::models::{Media, MediaId, PlaylistId, RoomId};
+use synctv_core::models::{Media, MediaId, PlaylistId, RoomId, SourceProvider};
 
 const EMPTY_TARGET_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -285,8 +285,10 @@ fn make_media(provider_instance_name: &str) -> Media {
         name: "Static Media".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: Some(provider_instance_name.to_string()),
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -298,14 +300,20 @@ fn make_media(provider_instance_name: &str) -> Media {
 #[test]
 fn test_static_media_source_provider_ignores_explicit_instance_binding() -> TestResult {
     let media = make_media("direct_url");
-    assert_eq!(api_ok(static_media_source_provider(&media))?, "direct_url");
+    assert_eq!(
+        api_ok(static_media_source_provider(&media))?,
+        SourceProvider::DirectUrl
+    );
     Ok(())
 }
 
 #[test]
 fn test_static_media_source_provider_accepts_default_instance_binding() -> TestResult {
     let media = make_media("");
-    assert_eq!(api_ok(static_media_source_provider(&media))?, "direct_url");
+    assert_eq!(
+        api_ok(static_media_source_provider(&media))?,
+        SourceProvider::DirectUrl
+    );
     Ok(())
 }
 

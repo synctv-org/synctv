@@ -27,7 +27,7 @@ impl ClientApiImpl {
             }
         };
 
-        if media.source_provider != "live_proxy" {
+        if media.source_provider != synctv_core::models::SourceProvider::LiveProxy {
             return None;
         }
 

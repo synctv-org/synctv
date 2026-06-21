@@ -51,8 +51,9 @@ use crate::proto::{
     UpdateUserUsernameRequest, UserRef,
 };
 use crate::source_config::{
-    alist_source_config, bilibili_live_source_config, bilibili_pgc_source_config,
-    bilibili_video_source_config, direct_url_source_config, emby_source_config,
+    alist_media_source_config, alist_playlist_source_config, bilibili_live_source_config,
+    bilibili_pgc_source_config, bilibili_video_source_config, direct_url_source_config,
+    emby_media_source_config, emby_playlist_source_config,
 };
 use synctv_api::grpc_support::map_api_error;
 use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
@@ -2181,7 +2182,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     parent_id: req.parent_id,
                     source_provider: req.source_provider,
-                    source_config: req.source_config_json,
+                    source_config: req.source_config,
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -2206,8 +2207,12 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                     description: String::new(),
                     parent_id: req.parent_id,
-                    source_provider: "alist".to_string(),
-                    source_config: alist_source_config(&req.server_id, &req.path, &req.password)?,
+                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
+                    source_config: Some(alist_playlist_source_config(
+                        &req.server_id,
+                        &req.path,
+                        &req.password,
+                    )?),
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -2232,8 +2237,8 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                     description: String::new(),
                     parent_id: req.parent_id,
-                    source_provider: "emby".to_string(),
-                    source_config: emby_source_config(&req.server_id, &req.item_id)?,
+                    source_provider: synctv_proto::source_config::SourceProvider::Emby as i32,
+                    source_config: Some(emby_playlist_source_config(&req.server_id, &req.item_id)?),
                     provider_instance_name: req.provider_instance_name,
                 },
             )
@@ -2363,7 +2368,7 @@ impl ManagementService for ManagementServiceImpl {
                     description: String::new(),
                     source_provider: req.source_provider,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: req.source_config_json,
+                    source_config: req.source_config,
                     name: req.name,
                 },
             )
@@ -2387,9 +2392,12 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "direct_url".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     provider_instance_name: String::new(),
-                    source_config: direct_url_source_config(&req.url)?,
+                    source_config: Some(direct_url_source_config(
+                        req.source_config
+                            .ok_or_else(|| Status::invalid_argument("source_config is required"))?,
+                    )?),
                     name: req.name,
                 },
             )
@@ -2413,9 +2421,13 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "alist".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: alist_source_config(&req.server_id, &req.path, &req.password)?,
+                    source_config: Some(alist_media_source_config(
+                        &req.server_id,
+                        &req.path,
+                        &req.password,
+                    )?),
                     name: req.name,
                 },
             )
@@ -2439,9 +2451,9 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "emby".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Emby as i32,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: emby_source_config(&req.server_id, &req.item_id)?,
+                    source_config: Some(emby_media_source_config(&req.server_id, &req.item_id)?),
                     name: req.name,
                 },
             )
@@ -2465,11 +2477,11 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "bilibili".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Bilibili as i32,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: bilibili_video_source_config(
+                    source_config: Some(bilibili_video_source_config(
                         &req.bvid, req.aid, req.cid, req.shared,
-                    )?,
+                    )?),
                     name: req.name,
                 },
             )
@@ -2493,9 +2505,9 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "bilibili".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Bilibili as i32,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: bilibili_pgc_source_config(req.epid, req.cid, req.shared)?,
+                    source_config: Some(bilibili_pgc_source_config(req.epid, req.cid, req.shared)?),
                     name: req.name,
                 },
             )
@@ -2519,9 +2531,9 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
                     description: String::new(),
-                    source_provider: "bilibili".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Bilibili as i32,
                     provider_instance_name: req.provider_instance_name,
-                    source_config: bilibili_live_source_config(req.room_live_id, req.shared)?,
+                    source_config: Some(bilibili_live_source_config(req.room_live_id, req.shared)?),
                     name: req.name,
                 },
             )

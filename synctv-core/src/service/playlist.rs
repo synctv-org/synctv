@@ -14,7 +14,7 @@ use crate::{
         normalize_provider_instance_name_owned, CompleteFileUploadSession,
         CompleteFileUploadSessionResult, FileObjectDownload, FileRangeRequest, FileReferenceTarget,
         FileUploadManifestPart, FileUploadSessionCreateResult, GetFileObject, Playlist, PlaylistId,
-        RoomId, SubmittedFileReference, UserId,
+        RoomId, SourceProvider, SubmittedFileReference, UserId,
     },
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -35,18 +35,11 @@ pub type RealtimeOutboxPlaylistEventFactory =
     Arc<dyn Fn(&Playlist) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 
 fn normalize_dynamic_playlist_fields(
-    source_provider: Option<String>,
+    source_provider: Option<SourceProvider>,
     source_config: Option<JsonValue>,
     provider_instance_name: Option<String>,
-) -> Result<(Option<String>, Option<JsonValue>, Option<String>)> {
-    let normalized_provider = source_provider.and_then(|provider| {
-        let trimmed = provider.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
+) -> Result<(Option<SourceProvider>, Option<JsonValue>, Option<String>)> {
+    let normalized_provider = source_provider;
     let normalized_instance = normalize_provider_instance_name_owned(provider_instance_name);
 
     if let Some(provider) = normalized_provider {
@@ -75,7 +68,7 @@ pub struct CreatePlaylistRequest {
     pub parent_id: Option<PlaylistId>,
 
     // Dynamic folder fields
-    pub source_provider: Option<String>,
+    pub source_provider: Option<SourceProvider>,
     pub source_config: Option<JsonValue>,
     pub provider_instance_name: Option<String>,
 }
@@ -119,25 +112,25 @@ async fn validate_dynamic_playlist_source_with_dependencies(
     deps: DynamicPlaylistValidationDeps<'_>,
     room_id: &RoomId,
     user_id: &UserId,
-    source_provider: String,
+    source_provider: SourceProvider,
     source_config: JsonValue,
     provider_instance_name: Option<String>,
-) -> Result<(String, JsonValue, Option<String>)> {
-    let trimmed_provider = source_provider.trim().to_string();
+) -> Result<(SourceProvider, JsonValue, Option<String>)> {
     let trimmed_instance = normalize_provider_instance_name_owned(provider_instance_name);
     validate_source_config_size(&source_config)?;
 
     let provider = deps
         .providers_manager
-        .resolve_provider(&trimmed_provider, trimmed_instance.as_deref())
+        .resolve_provider(source_provider, trimmed_instance.as_deref())
         .await?;
+    let provider_name = source_provider.as_str();
 
     if provider.as_dynamic_folder().is_none() {
         return Err(Error::InvalidInput(format!(
-            "Provider {trimmed_provider} does not support dynamic folders"
+            "Provider {provider_name} does not support dynamic folders"
         )));
     }
-    ensure_provider_credential_repo_available(&trimmed_provider, deps.credential_repo)?;
+    ensure_provider_credential_repo_available(provider_name, deps.credential_repo)?;
 
     // NOTE: ProviderContext building is repeated twice below due to lifetime constraints.
     // The first context validates against trimmed_instance, the second against bound_instance.
@@ -176,11 +169,11 @@ async fn validate_dynamic_playlist_source_with_dependencies(
     } else {
         let provider = deps
             .providers_manager
-            .resolve_provider(&trimmed_provider, bound_instance.as_deref())
+            .resolve_provider(source_provider, bound_instance.as_deref())
             .await?;
         if provider.as_dynamic_folder().is_none() {
             return Err(Error::InvalidInput(format!(
-                "Provider {trimmed_provider} does not support dynamic folders"
+                "Provider {provider_name} does not support dynamic folders"
             )));
         }
         provider
@@ -210,7 +203,7 @@ async fn validate_dynamic_playlist_source_with_dependencies(
         .await
         .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
 
-    Ok((trimmed_provider, prepared_source_config, bound_instance))
+    Ok((source_provider, prepared_source_config, bound_instance))
 }
 
 fn ensure_provider_credential_repo_available(
@@ -374,10 +367,10 @@ impl PlaylistService {
         &self,
         room_id: &RoomId,
         user_id: &UserId,
-        source_provider: String,
+        source_provider: SourceProvider,
         source_config: JsonValue,
         provider_instance_name: Option<String>,
-    ) -> Result<(String, JsonValue, Option<String>)> {
+    ) -> Result<(SourceProvider, JsonValue, Option<String>)> {
         validate_dynamic_playlist_source_with_dependencies(
             DynamicPlaylistValidationDeps {
                 providers_manager: &self.providers_manager,

@@ -29,6 +29,46 @@ fn acquire_env_test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn direct_url_media_source_config(
+    url: &str,
+) -> Option<synctv_proto::source_config::MediaSourceConfig> {
+    Some(synctv_proto::source_config::MediaSourceConfig {
+        provider: Some(
+            synctv_proto::source_config::media_source_config::Provider::DirectUrl(
+                synctv_proto::source_config::DirectUrlMediaSourceConfig {
+                    medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
+                        name: String::new(),
+                        url: url.to_string(),
+                        headers: Default::default(),
+                        format: String::new(),
+                    }],
+                    default_media_index: None,
+                    subtitles: Vec::new(),
+                    default_subtitle_index: None,
+                    danmakus: Vec::new(),
+                    default_danmaku_index: None,
+                },
+            ),
+        ),
+    })
+}
+
+fn alist_playlist_source_config(
+    path: &str,
+) -> Option<synctv_proto::source_config::PlaylistSourceConfig> {
+    Some(synctv_proto::source_config::PlaylistSourceConfig {
+        provider: Some(
+            synctv_proto::source_config::playlist_source_config::Provider::Alist(
+                synctv_proto::source_config::AlistPlaylistSourceConfig {
+                    server_id: "alist-main".to_string(),
+                    path: path.to_string(),
+                    password: None,
+                },
+            ),
+        ),
+    })
+}
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -1724,7 +1764,7 @@ fn cli_parses_playlist_create_for_room_scope() {
             assert_eq!(args.actor.user_id, None);
             assert_eq!(args.name, "Favorites");
             assert_eq!(args.parent_id.as_deref(), Some("folder-1"));
-            assert_eq!(args.source_provider.as_deref(), Some("alist"));
+            assert_eq!(args.source_provider, Some(CliSourceProvider::Alist));
             assert_eq!(
                 args.source_config_json.as_deref(),
                 Some("{\"path\":\"/movies\"}")
@@ -1841,7 +1881,7 @@ fn cli_parses_media_add_for_room_scope() {
             assert_eq!(args.actor.username.as_deref(), Some("alice"));
             assert_eq!(args.actor.user_id, None);
             assert_eq!(args.playlist_id.as_deref(), Some("playlist-1"));
-            assert_eq!(args.source_provider, "alist");
+            assert_eq!(args.source_provider, CliSourceProvider::Alist);
             assert_eq!(args.provider_instance_name.as_deref(), Some("alist-main"));
             assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
             assert_eq!(args.name.as_deref(), Some("Demo Video"));
@@ -1886,7 +1926,7 @@ fn cli_rejects_media_add_without_actor_user() {
         "--source-provider",
         "direct_url",
         "--source-config-json",
-        "{\"url\":\"https://cdn.example.com/video.mp4\"}",
+        "{\"medias\":[{\"url\":\"https://cdn.example.com/video.mp4\"}]}",
     ]);
     assert!(
         result.is_err(),
@@ -1905,7 +1945,7 @@ fn cli_rejects_media_add_without_source_provider() {
         "--username",
         "alice",
         "--source-config-json",
-        "{\"url\":\"https://cdn.example.com/video.mp4\"}",
+        "{\"medias\":[{\"url\":\"https://cdn.example.com/video.mp4\"}]}",
     ]);
     assert!(result.is_err(), "media add must require --source-provider");
 }
@@ -1993,7 +2033,7 @@ fn cli_parses_media_add_with_provider_source() {
             assert_eq!(args.actor.username.as_deref(), Some("alice"));
             assert_eq!(args.actor.user_id, None);
             assert_eq!(args.playlist_id.as_deref(), Some("playlist-456"));
-            assert_eq!(args.source_provider, "alist");
+            assert_eq!(args.source_provider, CliSourceProvider::Alist);
             assert_eq!(args.provider_instance_name.as_deref(), Some("alist_main"));
             assert_eq!(args.source_config_json, "{\"path\":\"/movies/demo.mp4\"}");
             assert_eq!(args.name.as_deref(), Some("Demo Media"));
@@ -2221,14 +2261,18 @@ fn cli_media_move_help_describes_scope_and_append_semantics() {
 }
 
 #[test]
-fn normalized_provider_types_trims_cli_values() {
+fn normalized_provider_types_maps_cli_values() {
     assert_eq!(
         normalized_provider_types(&[
-            " alist ".to_string(),
-            "emby".to_string(),
-            " bilibili".to_string(),
+            CliSourceProvider::Alist,
+            CliSourceProvider::Emby,
+            CliSourceProvider::Bilibili,
         ]),
-        vec!["alist", "emby", "bilibili"]
+        vec![
+            synctv_proto::source_config::SourceProvider::Alist as i32,
+            synctv_proto::source_config::SourceProvider::Emby as i32,
+            synctv_proto::source_config::SourceProvider::Bilibili as i32,
+        ]
     );
 }
 
@@ -2259,7 +2303,10 @@ fn cli_parses_provider_create_with_remote_auth() {
         }) => {
             assert_eq!(args.name, "alist-edge");
             assert_eq!(args.provider_endpoint, "https://provider.example.com:50051");
-            assert_eq!(args.providers, vec!["alist", "emby"]);
+            assert_eq!(
+                args.providers,
+                vec![CliSourceProvider::Alist, CliSourceProvider::Emby]
+            );
             assert_eq!(args.comment.as_deref(), Some("edge provider"));
             assert_eq!(args.timeout_seconds, 15);
             assert!(args.tls);
@@ -2300,7 +2347,7 @@ fn cli_parses_provider_update_with_optional_fields() {
                 args.provider_endpoint.as_deref(),
                 Some("https://provider-v2.example.com:50052")
             );
-            assert_eq!(args.providers, vec!["alist"]);
+            assert_eq!(args.providers, vec![CliSourceProvider::Alist]);
             assert_eq!(args.timeout_seconds, Some(20));
             assert_eq!(args.tls, Some(true));
             assert_eq!(args.insecure_tls, Some(false));
@@ -2343,7 +2390,7 @@ fn cli_parses_provider_backends_command() {
         Commands::Provider(ProviderCommand {
             command: ProviderSubcommand::Backends(args),
             ..
-        }) => assert_eq!(args.provider_type, "emby"),
+        }) => assert_eq!(args.provider_type, CliSourceProvider::Emby),
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
@@ -2452,7 +2499,7 @@ fn cli_parses_provider_list_with_filter() {
         }) => {
             assert_eq!(args.page, 2);
             assert_eq!(args.page_size, 10);
-            assert_eq!(args.provider_type.as_deref(), Some("alist"));
+            assert_eq!(args.provider_type, Some(CliSourceProvider::Alist));
             assert_eq!(args.search.as_deref(), Some("edge"));
             assert_eq!(args.enabled, Some(true));
             assert_eq!(args.tls, Some(true));
@@ -3479,7 +3526,7 @@ fn cli_parses_provider_list_query_flags() {
         }) => {
             assert_eq!(args.page, 2);
             assert_eq!(args.page_size, 25);
-            assert_eq!(args.provider_type.as_deref(), Some("alist"));
+            assert_eq!(args.provider_type, Some(CliSourceProvider::Alist));
             assert_eq!(args.search.as_deref(), Some("edge"));
             assert_eq!(args.enabled, Some(true));
             assert_eq!(args.tls, Some(false));
@@ -4501,7 +4548,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
                 timeout_seconds: 30,
                 tls: false,
                 insecure_tls: false,
-                providers: vec!["direct_url".into()],
+                providers: vec![synctv_proto::source_config::SourceProvider::DirectUrl as i32],
                 enabled: true,
                 status: synctv_proto::providers::common::ProviderInstanceStatus::Disconnected
                     as i32,
@@ -4584,14 +4631,14 @@ fn render_human_output_includes_media_and_playlist_availability() {
     let rendered_media = render_human_output(&synctv_proto::client::Media {
         id: "media-1".into(),
         room_id: "room-1".into(),
-        source_provider: "direct".into(),
+        source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         name: "Example".into(),
         metadata: br#"{"duration":1}"#.to_vec(),
         position: 1.0,
         added_at: 1_775_291_657_i64,
         creator_id: "user-1".into(),
         provider_instance_name: "default".into(),
-        source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+        source_config: direct_url_media_source_config("https://example.com"),
         availability: synctv_proto::client::ResourceAvailability::CreatorInactive as i32,
         version: 12,
         cover: None,
@@ -4605,14 +4652,14 @@ fn render_human_output_includes_media_and_playlist_availability() {
         parent_id: String::new(),
         position: 1.0,
         is_dynamic: false,
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         item_count: 1,
         created_at: 1_775_144_583_i64,
         updated_at: 1_775_291_071_i64,
         availability: synctv_proto::client::ResourceAvailability::Available as i32,
         version: 34,
-        source_config: br#"{"path":"/shows"}"#.to_vec(),
+        source_config: alist_playlist_source_config("/shows"),
         description: String::new(),
         cover: None,
     })
@@ -4624,7 +4671,13 @@ fn render_human_output_includes_media_and_playlist_availability() {
     assert_eq!(rendered_playlist["version"], 34);
     assert_eq!(
         rendered_playlist["source_config"],
-        serde_json::json!({"path":"/shows"})
+        serde_json::json!({
+            "alist": {
+                "server_id": "alist-main",
+                "path": "/shows",
+                "password": null
+            }
+        })
     );
 }
 
@@ -4638,28 +4691,28 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             parent_id: String::new(),
             position: 1.0,
             is_dynamic: false,
-            source_provider: String::new(),
+            source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             item_count: 0,
             created_at: 1,
             updated_at: 2,
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 10,
-            source_config: Vec::new(),
+            source_config: None,
             description: String::new(),
             cover: None,
         }],
         media: vec![synctv_proto::client::Media {
             id: "media-1".into(),
             room_id: "room-1".into(),
-            source_provider: "direct_url".into(),
+            source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             name: "Example".into(),
             metadata: br#"{"duration":1}"#.to_vec(),
             position: 1.0,
             added_at: 3,
             creator_id: "user-1".into(),
             provider_instance_name: "default".into(),
-            source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+            source_config: direct_url_media_source_config("https://example.com"),
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 11,
             cover: None,

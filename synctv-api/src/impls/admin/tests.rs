@@ -2,6 +2,7 @@ use super::*;
 use crate::impls::admin::rooms::username_from_loaded_user;
 use crate::impls::ErrorKind;
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use synctv_core::models::{
@@ -2056,7 +2057,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
                     page: 1,
                     page_size: 20,
                     search: String::new(),
-                    source_provider: "Bad Provider".to_string(),
+                    source_provider: 99,
                     provider_instance_name: "bad name".to_string(),
                     dynamic_only: None,
                     sort_by: synctv_proto::client::PlaylistListSortBy::Unspecified as i32,
@@ -2079,7 +2080,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
                     page: 1,
                     page_size: 20,
                     search: String::new(),
-                    source_provider: "Bad Provider".to_string(),
+                    source_provider: 99,
                     provider_instance_name: "bad name".to_string(),
                     sort_by: synctv_proto::client::MediaListSortBy::Unspecified as i32,
                     sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
@@ -4037,6 +4038,9 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
     )?
     .0;
     let media_repo = MediaRepository::new(pool.clone());
+    let source_config = synctv_core_testing::direct_url_media_source_config(
+        "https://example.com/admin-lifecycle.mp4",
+    );
     let media = core_ok(
         media_repo
             .create(&synctv_core::models::Media::from_provider_with_params(
@@ -4046,8 +4050,8 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
                     creator_id: Some(owner.id),
                     name: "provider lifecycle media".to_string(),
                     description: String::new(),
-                    source_config: serde_json::json!({"item_id": "admin-lifecycle"}),
-                    provider_name: "direct_url".to_string(),
+                    source_config: source_config.clone(),
+                    source_provider: synctv_core::models::SourceProvider::DirectUrl,
                     provider_instance_name: None,
                     position: 0.0,
                 },
@@ -4071,7 +4075,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
                     "provider_instance_name": null,
                     "actor_user_id": owner.id.as_i64(),
                     "credential_owner_id": owner.id.as_i64(),
-                    "source_config": {"item_id": "admin-lifecycle"},
+                    "source_config": source_config,
                     "room_target_key": format!("media:{}", media.id),
                     "provider_session_id": "admin-session",
                     "started": true,
@@ -4213,8 +4217,8 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
         creator_id: Some(owner.id),
         name: "Invalid Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({ "opaque": true }),
-        provider_name: "live_proxy".to_string(),
+        source_config: serde_json::json!({}),
+        source_provider: synctv_core::models::SourceProvider::LiveProxy,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -4236,7 +4240,9 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
 
     assert!(matches!(
         error,
-        ApiError::InvalidInput(message) if message == "Missing url"
+        ApiError::InvalidInput(message)
+            if message.contains("Failed to parse LiveProxy source config")
+                && message.contains("missing field `url`")
     ));
     Ok(())
 }
@@ -4277,13 +4283,14 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         creator_id: Some(owner.id),
         name: "provider-playback-media".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {
-                "Authorization": "Bearer admin-provider-token"
-            }
-        }),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config_with_headers(
+            "https://example.com/video.mp4",
+            HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer admin-provider-token".to_string(),
+            )]),
+        ),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -4364,13 +4371,14 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         creator_id: Some(owner.id),
         name: "provider-playback-media".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {
-                "Authorization": "Bearer admin-provider-token"
-            }
-        }),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config_with_headers(
+            "https://example.com/video.mp4",
+            HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer admin-provider-token".to_string(),
+            )]),
+        ),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -4478,7 +4486,8 @@ async fn test_list_playlists_bypasses_room_membership_requirement_for_global_adm
                     page: 1,
                     page_size: 20,
                     search: String::new(),
-                    source_provider: String::new(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Unspecified
+                        as i32,
                     provider_instance_name: String::new(),
                     dynamic_only: None,
                     sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
@@ -4786,11 +4795,11 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
                     playlist_id: Some(child_playlist.id),
                     name: "playlist-delete-cascade-media".to_string(),
                     description: String::new(),
-                    source_provider: "direct_url".to_string(),
+                    source_provider: synctv_core::models::SourceProvider::DirectUrl,
                     provider_instance_name: None,
-                    source_config: serde_json::json!({
-                        "url": "https://example.com/admin-playlist-delete-cascade.mp4"
-                    }),
+                    source_config: synctv_core_testing::direct_url_media_source_config(
+                        "https://example.com/admin-playlist-delete-cascade.mp4",
+                    ),
                 },
             )
             .await,
@@ -4897,7 +4906,8 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
                     page: 1,
                     page_size: 20,
                     search: String::new(),
-                    source_provider: String::new(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Unspecified
+                        as i32,
                     provider_instance_name: String::new(),
                     sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                     sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -5080,7 +5090,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
                     page: 1,
                     page_size: 10,
                     search: "alpha".to_string(),
-                    source_provider: "direct_url".to_string(),
+                    source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     provider_instance_name: String::new(),
                     sort_by: synctv_proto::client::MediaListSortBy::Name as i32,
                     sort_direction: synctv_proto::client::SortDirection::Asc as i32,

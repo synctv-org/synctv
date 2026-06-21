@@ -12,7 +12,7 @@ use super::{
     ProviderError, SourceConfig,
 };
 use crate::models::media::{PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
-use crate::models::{MediaId, RoomId};
+use crate::models::{LiveProxyMediaSourceConfig, MediaId, RoomId};
 use crate::PublicIdCodec;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -28,6 +28,12 @@ use synctv_common::ssrf::SsrfTargetError;
 /// identity is injected at playback time through `ProviderContext`.
 pub struct LiveProxyProvider {
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
+}
+
+fn live_proxy_source_config(
+    source_config: &Value,
+) -> Result<LiveProxyMediaSourceConfig, ProviderError> {
+    super::parse_source_config(source_config, "LiveProxy")
 }
 
 impl Default for LiveProxyProvider {
@@ -186,7 +192,9 @@ impl LiveProxyProvider {
         Ok((room_id, media_id))
     }
 
-    fn validate_config_shape(source_config: &Value) -> Result<(), ProviderError> {
+    fn validate_config_shape(
+        source_config: &Value,
+    ) -> Result<LiveProxyMediaSourceConfig, ProviderError> {
         super::reject_source_config_provider_instance_name(source_config, "LiveProxy")?;
 
         for field in [
@@ -203,7 +211,7 @@ impl LiveProxyProvider {
             }
         }
 
-        Ok(())
+        live_proxy_source_config(source_config)
     }
 }
 
@@ -259,17 +267,14 @@ impl MediaProvider for LiveProxyProvider {
         ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        Self::validate_config_shape(source_config)?;
+        let source_config = Self::validate_config_shape(source_config)?;
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
-        let source_url = source_config
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
-        Self::validate_live_source_url(source_url, &self.ssrf_guard).await?;
+        let source_url = source_config.url;
+        Self::validate_live_source_url(&source_url, &self.ssrf_guard).await?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
-        let parsed_source_url = url::Url::parse(source_url).map_err(|error| {
+        let parsed_source_url = url::Url::parse(&source_url).map_err(|error| {
             ProviderError::InvalidConfig(format!(
                 "Invalid LiveProxy source URL '{source_url}': {error}"
             ))
@@ -305,16 +310,8 @@ impl MediaProvider for LiveProxyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let source_config = source_config.value();
-        Self::validate_config_shape(source_config)?;
-
-        // Validate required fields
-        let url = source_config
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
-
-        Self::validate_live_source_url(url, &self.ssrf_guard).await
+        let source_config = Self::validate_config_shape(source_config.value())?;
+        Self::validate_live_source_url(&source_config.url, &self.ssrf_guard).await
     }
 }
 

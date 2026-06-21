@@ -5,9 +5,8 @@
 use super::{query_builder::escape_ilike, required_count};
 use crate::{
     models::{
-        normalize_provider_instance_name, provider_type_code_from_name,
-        provider_type_name_from_code, Playlist, PlaylistId, PlaylistListQuery, ProviderTypeName,
-        RoomId,
+        normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery,
+        ProviderTypeName, RoomId, SourceProvider,
     },
     Result,
 };
@@ -46,7 +45,7 @@ impl TryFrom<PlaylistRow> for Playlist {
             position: row.position,
             source_provider: row
                 .source_provider
-                .map(provider_type_name_from_code)
+                .map(SourceProvider::try_from)
                 .transpose()
                 .map_err(crate::Error::InvalidInput)?,
             source_config: row.source_config,
@@ -159,10 +158,6 @@ impl PlaylistRepository {
         builder.push(order_by);
     }
 
-    fn provider_type_code(provider: &str) -> Result<i16> {
-        provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
-    }
-
     fn push_playlist_scope_filters(
         builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         room_id: &RoomId,
@@ -191,7 +186,7 @@ impl PlaylistRepository {
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND p.source_provider = ");
-            builder.push_bind(Self::provider_type_code(source_provider)?);
+            builder.push_bind(source_provider.as_i16());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
             if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
@@ -901,11 +896,7 @@ impl PlaylistRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let source_provider_code = playlist
-            .source_provider
-            .as_deref()
-            .map(Self::provider_type_code)
-            .transpose()?;
+        let source_provider_code = playlist.source_provider.map(SourceProvider::as_i16);
         let parent_id = playlist.parent_id;
 
         let row = sqlx::query_as!(

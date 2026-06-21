@@ -529,7 +529,7 @@ mod tests {
             timeout: "10s".to_string(),
             tls: false,
             insecure_tls: false,
-            providers: vec!["alist".to_string()],
+            providers: vec![synctv_core::models::SourceProvider::Alist],
             enabled: true,
             created_at: now,
             updated_at: now,
@@ -548,7 +548,7 @@ mod tests {
         );
         let backends = api
             .list_provider_backends(ListProviderBackendsRequest {
-                provider_type: "alist".to_string(),
+                provider_type: synctv_proto::source_config::SourceProvider::Alist as i32,
             })
             .await
             .map_err(|error| test_error(format!("{error:?}")))?;

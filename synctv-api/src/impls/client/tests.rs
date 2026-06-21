@@ -862,7 +862,7 @@ fn make_test_media() -> synctv_core::models::Media {
         name: "Test Video".to_string(),
         description: String::new(),
         position: 3.0,
-        source_provider: "bilibili".to_string(),
+        source_provider: synctv_core::models::SourceProvider::Bilibili,
         source_config: serde_json::json!({"bvid": "BV1234"}),
         provider_instance_name: Some("bili_main".to_string()),
         cover_file_reference_id: None,
@@ -889,9 +889,12 @@ fn test_media_to_proto_basic() -> TestResult {
         proto.room_id,
         codec_ok(public_id_codec.encode_room_id(media.room_id))?
     );
-    assert_eq!(proto.source_provider, "bilibili");
+    assert_eq!(
+        proto.source_provider,
+        synctv_proto::source_config::SourceProvider::Bilibili as i32
+    );
     assert_eq!(proto.name, "Test Video");
-    assert!(proto.source_config.is_empty());
+    assert!(proto.source_config.is_none());
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(
         proto.creator_id,
@@ -918,7 +921,10 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResu
     )
     .map_err(|error| test_error(error.to_string()))?;
     let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
-    assert_eq!(proto.source_provider, "direct_url");
+    assert_eq!(
+        proto.source_provider,
+        synctv_proto::source_config::SourceProvider::DirectUrl as i32
+    );
     assert!(proto.provider_instance_name.is_empty());
     Ok(())
 }
@@ -1046,13 +1052,16 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         id: PlaylistId::expect_positive(306),
         room_id: RoomId::expect_positive(301),
         creator_id: Some(UserId::expect_positive(304)),
-        name: "Bilibili Folder".to_string(),
+        name: "Alist Folder".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
         parent_id: Some(PlaylistId::expect_positive(303)),
         position: 1.0,
-        source_provider: Some("bilibili".to_string()),
-        source_config: Some(serde_json::json!({})),
+        source_provider: Some(synctv_core::models::SourceProvider::Alist),
+        source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+            "alist-main",
+            "/tv",
+        )),
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -1069,7 +1078,10 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         codec_ok(public_id_codec.encode_playlist_id(parent_id))?
     );
     assert!(proto.is_dynamic);
-    assert_eq!(proto.source_provider, "bilibili");
+    assert_eq!(
+        proto.source_provider,
+        synctv_proto::source_config::SourceProvider::Alist as i32
+    );
     assert_eq!(proto.provider_instance_name, "");
     Ok(())
 }
@@ -1086,7 +1098,7 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
         cover_file_reference_id: None,
         parent_id: None,
         position: 1.0,
-        source_provider: Some("bilibili".to_string()),
+        source_provider: Some(synctv_core::models::SourceProvider::Bilibili),
         source_config: None,
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
@@ -1099,35 +1111,6 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
         Err(ApiError::Internal(message))
             if message.contains("Dynamic playlist")
                 && message.contains("source_config")
-    ));
-    Ok(())
-}
-
-#[test]
-fn test_playlist_to_proto_dynamic_rejects_empty_source_provider() -> TestResult {
-    let public_id_codec = test_public_id_codec();
-    let playlist = synctv_core::models::Playlist {
-        id: PlaylistId::expect_positive(308),
-        room_id: RoomId::expect_positive(301),
-        creator_id: Some(UserId::expect_positive(304)),
-        name: "Broken Dynamic Folder".to_string(),
-        description: String::new(),
-        cover_file_reference_id: None,
-        parent_id: None,
-        position: 1.0,
-        source_provider: Some("   ".to_string()),
-        source_config: Some(serde_json::json!({})),
-        provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        version: 0,
-    };
-
-    assert!(matches!(
-        try_playlist_to_proto(&playlist, 5, &public_id_codec),
-        Err(ApiError::Internal(message))
-            if message.contains("Dynamic playlist")
-                && message.contains("source_provider")
     ));
     Ok(())
 }

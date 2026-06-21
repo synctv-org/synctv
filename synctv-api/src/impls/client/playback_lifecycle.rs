@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use synctv_core::models::{RoomId, RoomPlaybackState, UserId};
+use synctv_core::models::{RoomId, RoomPlaybackState, SourceProvider, UserId};
 use synctv_core::provider::store::{ProviderStore, ProviderStoreExt, ProviderStoreResolver};
 use synctv_core::provider::{MediaProvider, PlaybackResult, ProviderContext};
 use synctv_core::service::{ProvidersManager, RoomService};
@@ -124,12 +124,21 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         session: &ProviderPlaybackSession,
     ) -> Option<Arc<dyn MediaProvider>> {
         let providers_manager = self.lifecycle_providers_manager();
+        let provider = match session.provider.parse::<SourceProvider>() {
+            Ok(provider) => provider,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    provider = %session.provider,
+                    session_id = %session.provider_session_id,
+                    "provider playback lifecycle skipped unknown provider"
+                );
+                return None;
+            }
+        };
 
         match providers_manager
-            .resolve_provider(
-                session.provider.as_str(),
-                session.provider_instance_name.as_deref(),
-            )
+            .resolve_provider(provider, session.provider_instance_name.as_deref())
             .await
         {
             Ok(provider) => Some(provider),
@@ -644,6 +653,8 @@ mod tests {
     };
     use synctv_core_testing::{TestOptionExt, TestResultExt};
 
+    const LIFECYCLE_TEST_PROVIDER_NAME: &str = synctv_core::provider::DirectUrlProvider::NAME;
+
     fn locked_clone<T: Clone>(mutex: &std::sync::Mutex<T>) -> T {
         mutex
             .lock()
@@ -694,7 +705,7 @@ mod tests {
     #[async_trait]
     impl MediaProvider for LifecycleTestProvider {
         fn name(&self) -> &'static str {
-            "lifecycle_test"
+            LIFECYCLE_TEST_PROVIDER_NAME
         }
 
         async fn generate_playback(
@@ -804,13 +815,17 @@ mod tests {
         let mut providers_manager = synctv_core::service::ProvidersManager::new(instance_manager)
             .checked("providers manager should build");
         providers_manager.register_factory(
-            "lifecycle_test",
+            LIFECYCLE_TEST_PROVIDER_NAME,
             Box::new(move |_instance_id, _config, _instance_manager| {
                 Ok(provider_for_factory.clone())
             }),
         );
         providers_manager
-            .create_provider("lifecycle_test", "lifecycle_test", &Value::Null)
+            .create_provider(
+                LIFECYCLE_TEST_PROVIDER_NAME,
+                LIFECYCLE_TEST_PROVIDER_NAME,
+                &Value::Null,
+            )
             .await
             .map(|_| ())
             .checked("create lifecycle test provider");
@@ -919,7 +934,7 @@ mod tests {
         let actor_user_id = UserId::expect_positive(20);
         let credential_owner_id = UserId::expect_positive(30);
         let session = ProviderPlaybackSession {
-            provider: "lifecycle_test".to_string(),
+            provider: LIFECYCLE_TEST_PROVIDER_NAME.to_string(),
             provider_instance_name: Some("primary".to_string()),
             actor_user_id,
             credential_owner_id: Some(credential_owner_id),
@@ -968,7 +983,7 @@ mod tests {
             state: &state,
             actor_user_id: &first_actor,
             provider: provider.as_ref(),
-            provider_name: "lifecycle_test",
+            provider_name: provider.name(),
             provider_instance_name: Some("  primary  "),
             credential_owner_id: None,
             source_config: &first_source,
@@ -980,7 +995,7 @@ mod tests {
             state: &state,
             actor_user_id: &second_actor,
             provider: provider.as_ref(),
-            provider_name: "lifecycle_test",
+            provider_name: provider.name(),
             provider_instance_name: Some("primary"),
             credential_owner_id: Some(&credential_owner),
             source_config: &second_source,
@@ -1027,7 +1042,7 @@ mod tests {
             state: &state,
             actor_user_id: &actor_user_id,
             provider: provider.as_ref(),
-            provider_name: "lifecycle_test",
+            provider_name: provider.name(),
             provider_instance_name: None,
             credential_owner_id: None,
             source_config: &source_config,
@@ -1083,7 +1098,7 @@ mod tests {
             state: &first_state,
             actor_user_id: &actor_user_id,
             provider: provider.as_ref(),
-            provider_name: "lifecycle_test",
+            provider_name: provider.name(),
             provider_instance_name: None,
             credential_owner_id: None,
             source_config: &source_config,

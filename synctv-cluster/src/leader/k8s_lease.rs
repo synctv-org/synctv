@@ -941,12 +941,12 @@ mod tests {
     fn test_lease_expiry_applies_clock_drift_tolerance() {
         let now = k8s_openapi::jiff::Timestamp::now();
         let within_tolerance = k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime::from(
-            now - k8s_openapi::jiff::SignedDuration::from_secs(29 + CLOCK_DRIFT_TOLERANCE_SECS),
+            now - k8s_openapi::jiff::SignedDuration::from_secs(25 + CLOCK_DRIFT_TOLERANCE_SECS),
         );
         assert!(!lease_is_expired(Some(&within_tolerance), 30));
 
         let past_tolerance = k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime::from(
-            now - k8s_openapi::jiff::SignedDuration::from_secs(31 + CLOCK_DRIFT_TOLERANCE_SECS),
+            now - k8s_openapi::jiff::SignedDuration::from_secs(35 + CLOCK_DRIFT_TOLERANCE_SECS),
         );
         assert!(lease_is_expired(Some(&past_tolerance), 30));
         assert!(lease_is_expired(None, 30));

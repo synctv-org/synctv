@@ -1,6 +1,4 @@
 //! Playlist operations: create, update, delete, list playlists
-
-use serde_json::Value as JsonValue;
 use synctv_core::models::{
     PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
     StoreFileUploadResult, UserId,
@@ -10,6 +8,9 @@ use synctv_core::service::playlist::{
     MovePlaylistRequest as CoreMovePlaylistRequest, SetPlaylistRequest as CoreSetPlaylistRequest,
 };
 
+use super::convert::{
+    optional_proto_source_provider_to_core, proto_playlist_source_config_to_core_json,
+};
 use super::media::{
     complete_upload_response_fields, complete_upload_session_request, parse_json_metadata,
     playlist_cover_object_to_proto, playlist_cover_upload_create_result_to_proto,
@@ -105,14 +106,21 @@ pub(crate) fn build_create_playlist_request(
     } = req;
 
     let parent_id = crate::impls::proto_validated_optional_playlist_id(parent_id, public_id_codec)?;
-    let source_provider = normalize_non_empty_filter(&source_provider);
-    let source_config = if source_config.is_empty() {
-        None
-    } else {
-        Some(
-            serde_json::from_slice::<JsonValue>(&source_config)
-                .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?,
-        )
+    let source_provider = optional_proto_source_provider_to_core(source_provider)?;
+    let source_config = match source_config {
+        Some(source_config) => {
+            let (config_provider, config_json) =
+                proto_playlist_source_config_to_core_json(Some(source_config))?;
+            if source_provider != Some(config_provider) {
+                return Err(ApiError::InvalidInput(format!(
+                    "source_provider '{}' does not match source_config provider '{}'",
+                    source_provider.map_or("", synctv_core::models::SourceProvider::as_str),
+                    config_provider.as_str()
+                )));
+            }
+            Some(config_json)
+        }
+        None => None,
     };
     let provider_instance_name = normalize_non_empty_filter(&provider_instance_name);
 
@@ -708,7 +716,7 @@ impl ClientApiImpl {
         };
         let search =
             normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase());
-        let source_provider = normalize_non_empty_filter(&req.source_provider);
+        let source_provider = optional_proto_source_provider_to_core(req.source_provider)?;
         let provider_instance_name = normalize_non_empty_filter(&req.provider_instance_name);
         let sort_by = proto_playlist_list_sort_by(req.sort_by)?;
         let sort_direction = proto_sort_direction(req.sort_direction)?;
@@ -826,6 +834,22 @@ mod tests {
         result.map_err(test_error)
     }
 
+    fn alist_playlist_source_config(
+        path: &str,
+    ) -> Option<synctv_proto::source_config::PlaylistSourceConfig> {
+        Some(synctv_proto::source_config::PlaylistSourceConfig {
+            provider: Some(
+                synctv_proto::source_config::playlist_source_config::Provider::Alist(
+                    synctv_proto::source_config::AlistPlaylistSourceConfig {
+                        server_id: "alist-server".to_string(),
+                        path: path.to_string(),
+                        password: None,
+                    },
+                ),
+            ),
+        })
+    }
+
     #[test]
     fn playlist_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> TestResult {
         assert_eq!(
@@ -870,8 +894,8 @@ mod tests {
             synctv_proto::client::CreatePlaylistRequest {
                 name: "a".repeat(256),
                 parent_id: String::new(),
-                source_provider: "alist".into(),
-                source_config: Vec::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
+                source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
             },
@@ -899,8 +923,8 @@ mod tests {
             synctv_proto::client::CreatePlaylistRequest {
                 name: "Dynamic".into(),
                 parent_id: String::new(),
-                source_provider: "alist".into(),
-                source_config: serde_json::to_vec(&serde_json::json!({"path":"/tv"}))?,
+                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
+                source_config: alist_playlist_source_config("/tv"),
                 provider_instance_name: "alist-main".into(),
                 description: String::new(),
             },
@@ -909,14 +933,20 @@ mod tests {
 
         assert_eq!(request.room_id, room_id);
         assert_eq!(request.name, "Dynamic");
-        assert_eq!(request.source_provider.as_deref(), Some("alist"));
+        assert_eq!(
+            request.source_provider,
+            Some(synctv_core::models::SourceProvider::Alist)
+        );
         assert_eq!(
             request.provider_instance_name.as_deref(),
             Some("alist-main")
         );
         assert_eq!(
             request.source_config,
-            Some(serde_json::json!({"path":"/tv"}))
+            Some(synctv_core_testing::alist_directory_playlist_source_config(
+                "alist-server",
+                "/tv"
+            ))
         );
         Ok(())
     }
@@ -932,8 +962,8 @@ mod tests {
             synctv_proto::client::CreatePlaylistRequest {
                 name: "Child".into(),
                 parent_id: parent_public_id,
-                source_provider: String::new(),
-                source_config: Vec::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
+                source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
             },

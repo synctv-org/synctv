@@ -4,8 +4,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const MAIN_PROTO_FILES: [&str; 4] = [
+const MAIN_PROTO_FILES: [&str; 5] = [
     "proto/common.proto",
+    "proto/source_config.proto",
     "proto/client.proto",
     "proto/admin.proto",
     "proto/oauth2.proto",
@@ -88,7 +89,10 @@ fn collect_proto_fields(
                 pending_field.clear();
                 message_stack.push((message_name.to_string(), depth));
             } else if let Some((message_name, _)) = message_stack.last() {
-                if let Some(field_name) = parse_proto_field_name(line, &mut pending_field) {
+                if let Some(oneof_name) = parse_proto_oneof_name(line) {
+                    fields.insert(format!(".{package}.{message_name}.{oneof_name}"));
+                    pending_field.clear();
+                } else if let Some(field_name) = parse_proto_field_name(line, &mut pending_field) {
                     fields.insert(format!(".{package}.{message_name}.{field_name}"));
                 }
             }
@@ -192,6 +196,12 @@ fn serde_attribute_for_64bit_integer(
     }
 }
 
+fn parse_proto_oneof_name(line: &str) -> Option<String> {
+    line.strip_prefix("oneof ")
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_owned)
+}
+
 fn parse_proto_field_name<'a>(line: &'a str, pending_field: &'a mut String) -> Option<String> {
     parse_proto_field(line, pending_field).map(|(_, field_name, _, _)| field_name)
 }
@@ -222,8 +232,7 @@ fn parse_proto_field<'a>(
 
     let candidate = std::mem::take(pending_field);
     let before_equals = candidate.split('=').next()?.trim();
-    if before_equals.is_empty() || before_equals.ends_with(')') || before_equals.starts_with("map<")
-    {
+    if before_equals.is_empty() || before_equals.ends_with(')') {
         return None;
     }
 
@@ -717,6 +726,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.StartPasskeyLoginRequest",
         "#[serde(try_from = \"crate::http_serde::StartPasskeyLoginRequestDef\")]",
     );
+    for (path, attr) in [
+        (
+            ".synctv.source_config.BilibiliMediaSourceConfig",
+            "#[serde(try_from = \"crate::http_serde::BilibiliMediaSourceConfigDef\")]",
+        ),
+        (
+            ".synctv.source_config.BilibiliMediaSourceConfig",
+            "#[serde(into = \"crate::http_serde::BilibiliMediaSourceConfigDef\")]",
+        ),
+        (
+            ".synctv.source_config.MediaSourceConfig",
+            "#[serde(try_from = \"crate::http_serde::MediaSourceConfigDef\")]",
+        ),
+        (
+            ".synctv.source_config.MediaSourceConfig",
+            "#[serde(into = \"crate::http_serde::MediaSourceConfigDef\")]",
+        ),
+        (
+            ".synctv.source_config.PlaylistSourceConfig",
+            "#[serde(try_from = \"crate::http_serde::PlaylistSourceConfigDef\")]",
+        ),
+        (
+            ".synctv.source_config.PlaylistSourceConfig",
+            "#[serde(into = \"crate::http_serde::PlaylistSourceConfigDef\")]",
+        ),
+    ] {
+        prost_config.message_attribute(path, attr);
+    }
     add_field_attributes(
         &mut main_field_attributes,
         &[
@@ -770,8 +807,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.CreateRoomRequest.settings",
             ".synctv.client.Room.settings",
             ".synctv.client.Media.metadata",
-            ".synctv.client.Media.source_config",
-            ".synctv.client.Playlist.source_config",
             ".synctv.client.PlaybackState.target",
             ".synctv.client.UpdateRoomSettingsRequest.settings",
             ".synctv.client.GetRoomSettingsResponse.settings",
@@ -789,11 +824,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.FinishSensitiveOperationVerificationRequest.passkey_credential",
             ".synctv.client.StartOpaquePasswordUpdateResponse.passkey_options",
             ".synctv.client.FinishOpaquePasswordUpdateRequest.passkey_credential",
-            ".synctv.client.AddMediaRequest.source_config",
             ".synctv.client.ListPlaylistItemsRequest.target",
             ".synctv.client.PlaylistItem.target",
             ".synctv.client.PlaylistBrowsePathNode.target",
-            ".synctv.client.CreatePlaylistRequest.source_config",
             ".synctv.client.NotificationProto.data",
             ".synctv.client.UserAvatar.metadata",
             ".synctv.client.CreateUserAvatarUploadSessionRequest.metadata",
@@ -823,7 +856,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.UpdatePlaybackStateRequest.type",
             ".synctv.client.ListPlaylistItemsRequest.target",
             ".synctv.client.ObserveResource.delivery_mode",
-            ".synctv.client.CreatePlaylistRequest.source_config",
             ".synctv.client.FinishSensitiveOperationVerificationRequest.passkey_credential",
             ".synctv.client.ChatAttachment.filename",
             ".synctv.client.ChatAttachment.kind",
@@ -869,6 +901,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         "#[serde(default)]",
     );
+    add_field_attributes(
+        &mut main_field_attributes,
+        &[
+            ".synctv.source_config.DirectUrlMediaResourceConfig.name",
+            ".synctv.source_config.DirectUrlMediaResourceConfig.headers",
+            ".synctv.source_config.DirectUrlMediaResourceConfig.format",
+            ".synctv.source_config.DirectUrlMediaSourceConfig.medias",
+            ".synctv.source_config.DirectUrlMediaSourceConfig.subtitles",
+            ".synctv.source_config.DirectUrlMediaSourceConfig.danmakus",
+            ".synctv.source_config.DirectUrlSubtitleSourceConfig.name",
+            ".synctv.source_config.DirectUrlSubtitleSourceConfig.language",
+            ".synctv.source_config.DirectUrlSubtitleSourceConfig.headers",
+            ".synctv.source_config.DirectUrlSubtitleSourceConfig.format",
+            ".synctv.source_config.DirectUrlDanmakuSourceConfig.name",
+            ".synctv.source_config.DirectUrlDanmakuSourceConfig.headers",
+            ".synctv.source_config.BilibiliVideoSourceConfig.bvid",
+            ".synctv.source_config.BilibiliVideoSourceConfig.aid",
+            ".synctv.source_config.BilibiliVideoSourceConfig.shared",
+            ".synctv.source_config.BilibiliPgcSourceConfig.shared",
+            ".synctv.source_config.BilibiliLiveSourceConfig.shared",
+        ],
+        "#[serde(default)]",
+    );
     add_field_attribute(
         &mut main_field_attributes,
         ".synctv.admin.BanUserRequest.reason",
@@ -899,6 +954,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ".synctv.client.GetPublicSettingsResponse.email_whitelist_domains",
         "#[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
     );
+    add_field_attributes(
+        &mut main_field_attributes,
+        &[
+            ".synctv.client.Media.source_provider",
+            ".synctv.client.Playlist.source_provider",
+            ".synctv.client.CreatePlaylistRequest.source_provider",
+            ".synctv.client.ListPlaylistsRequest.source_provider",
+            ".synctv.client.AddMediaRequest.source_provider",
+            ".synctv.client.ListPlaylistItemsRequest.source_provider",
+        ],
+        "#[serde(with = \"crate::http_serde::source_provider\")]",
+    );
     validate_field_attributes(&MAIN_PROTO_FILES, &main_field_attributes)?;
     apply_main_field_attributes(&mut prost_config, &main_field_attributes);
     let mut main_builder = tonic_prost_build::configure();
@@ -923,6 +990,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.UpdateRoomSettingsRequest",
             "#[serde(from = \"crate::http_serde::AdminUpdateRoomSettingsRequestDef\")]",
         );
+    for path in [
+        "synctv.source_config.BilibiliMediaSourceConfig.source",
+        "synctv.source_config.MediaSourceConfig.provider",
+        "synctv.source_config.PlaylistSourceConfig.provider",
+    ] {
+        main_builder = main_builder.field_attribute(path, "#[serde(skip)]");
+    }
+    main_builder = main_builder.enum_attribute(
+        ".synctv.source_config.SourceProvider",
+        "#[serde(rename_all = \"snake_case\")]",
+    );
     for path in [
         ".synctv.client.ListMyRoomsRequest",
         ".synctv.client.ListNotificationsRequest",
@@ -968,6 +1046,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut provider_prost_config = tonic_prost_build::Config::new();
     provider_prost_config.protoc_executable(protoc);
+    provider_prost_config.extern_path(".synctv.source_config", "crate::source_config");
     prost_reflect_build::Builder::new()
         .descriptor_pool("crate::PROVIDERS_DESCRIPTOR_POOL")
         .file_descriptor_set_path(provider_out_dir.join("descriptor.bin"))
@@ -1064,6 +1143,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.provider.common.ListProviderBackendsRequest.provider_type",
         ],
         "#[serde(default)]",
+    );
+    add_field_attributes(
+        &mut provider_field_attributes,
+        &[
+            ".synctv.provider.common.ProviderInstance.providers",
+            ".synctv.provider.common.AddProviderInstanceRequest.providers",
+            ".synctv.provider.common.UpdateProviderInstanceRequest.providers",
+        ],
+        "#[serde(with = \"crate::http_serde::provider_type_vec\")]",
+    );
+    add_field_attributes(
+        &mut provider_field_attributes,
+        &[
+            ".synctv.provider.common.ListAvailableProviderInstancesRequest.provider_type",
+            ".synctv.provider.common.ListProviderInstancesRequest.provider_type",
+            ".synctv.provider.common.ListProviderBackendsRequest.provider_type",
+        ],
+        "#[serde(with = \"crate::http_serde::provider_type\")]",
     );
     validate_field_attributes(&PROVIDER_PROTO_FILES, &provider_field_attributes)?;
     provider_builder =

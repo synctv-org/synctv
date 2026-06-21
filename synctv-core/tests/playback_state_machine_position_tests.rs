@@ -2,7 +2,7 @@
 
 use chrono::Utc;
 use synctv_core::{
-    models::{Media, MediaId},
+    models::{Media, MediaId, SourceProvider},
     repository::{MediaRepository, UserRepository},
 };
 use synctv_core_testing::{create_test_pool, TestResultExt};
@@ -88,8 +88,10 @@ async fn test_position_reset_on_media_switch() {
         name: "Test Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),

@@ -24,6 +24,7 @@ pub mod providers;
 pub mod request_context;
 mod room_members_snapshot;
 pub mod room_settings_snapshot;
+pub(crate) mod source_provider;
 pub(crate) mod validation;
 
 // Re-export for convenience

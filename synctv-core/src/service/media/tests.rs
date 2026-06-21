@@ -11,9 +11,11 @@ fn media_edit_requires_matching_creator() {
         name: "Owned".to_string(),
         description: String::new(),
         position: 1.0,
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: serde_json::json!({}),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 1,

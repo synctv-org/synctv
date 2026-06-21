@@ -34,7 +34,7 @@ sort_field_enum! {
 pub struct MediaListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
-    pub source_provider: Option<String>,
+    pub source_provider: Option<SourceProvider>,
     pub provider_instance_name: Option<String>,
     pub availability: Option<bool>,
     #[serde(default)]
@@ -57,10 +57,9 @@ impl Default for MediaListQuery {
     }
 }
 
-/// Media provider type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderType {
+pub enum SourceProvider {
     DirectUrl,
     Bilibili,
     Alist,
@@ -69,7 +68,9 @@ pub enum ProviderType {
     LiveProxy,
 }
 
-impl FromStr for ProviderType {
+pub type ProviderType = SourceProvider;
+
+impl FromStr for SourceProvider {
     type Err = String;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
@@ -85,7 +86,7 @@ impl FromStr for ProviderType {
     }
 }
 
-impl ProviderType {
+impl SourceProvider {
     #[must_use]
     pub const fn as_i16(self) -> i16 {
         match self {
@@ -111,7 +112,7 @@ impl ProviderType {
     }
 }
 
-impl TryFrom<i16> for ProviderType {
+impl TryFrom<i16> for SourceProvider {
     type Error = String;
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
@@ -127,18 +128,18 @@ impl TryFrom<i16> for ProviderType {
     }
 }
 
-impl From<ProviderType> for i16 {
-    fn from(value: ProviderType) -> Self {
+impl From<SourceProvider> for i16 {
+    fn from(value: SourceProvider) -> Self {
         value.as_i16()
     }
 }
 
 pub fn provider_type_code_from_name(raw: &str) -> Result<i16, String> {
-    raw.parse::<ProviderType>().map(ProviderType::as_i16)
+    raw.parse::<SourceProvider>().map(SourceProvider::as_i16)
 }
 
 pub fn provider_type_name_from_code(code: i16) -> Result<String, String> {
-    ProviderType::try_from(code).map(|provider| provider.to_string())
+    SourceProvider::try_from(code).map(|provider| provider.to_string())
 }
 
 pub fn provider_type_codes_from_names<'a>(
@@ -151,13 +152,13 @@ pub fn provider_type_codes_from_names<'a>(
 }
 
 #[derive(Debug, Clone)]
-pub struct ProviderTypeName(pub String);
+pub struct ProviderTypeName(pub SourceProvider);
 
 impl TryFrom<i16> for ProviderTypeName {
     type Error = String;
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
-        provider_type_name_from_code(value).map(Self)
+        SourceProvider::try_from(value).map(Self)
     }
 }
 
@@ -174,12 +175,12 @@ impl sqlx::Type<sqlx::Postgres> for ProviderTypeName {
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeName {
     fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
         let code = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(provider_type_name_from_code(code)?))
+        Ok(Self(SourceProvider::try_from(code)?))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ProviderTypeNames(pub Vec<String>);
+pub struct ProviderTypeNames(pub Vec<SourceProvider>);
 
 impl sqlx::Type<sqlx::Postgres> for ProviderTypeNames {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
@@ -196,13 +197,13 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeNames {
         let codes = <Vec<i16> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         let names = codes
             .into_iter()
-            .map(provider_type_name_from_code)
+            .map(SourceProvider::try_from)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self(names))
     }
 }
 
-impl std::fmt::Display for ProviderType {
+impl std::fmt::Display for SourceProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -224,10 +225,7 @@ pub struct Media {
     #[serde(default)]
     pub description: String,
     pub position: f64,
-    /// Provider type name (e.g., "bilibili", "alist", "emby", "`direct_url`").
-    /// The database stores the corresponding numeric provider type code; API
-    /// and provider boundaries keep using canonical names.
-    pub source_provider: String,
+    pub source_provider: SourceProvider,
     /// Provider-specific configuration (JSONB)
     /// Should ONLY be parsed by the provider implementation, NOT by Media model
     pub source_config: JsonValue,
@@ -252,7 +250,7 @@ pub struct FromProviderParams {
     pub name: String,
     pub description: String,
     pub source_config: JsonValue,
-    pub provider_name: String,
+    pub source_provider: SourceProvider,
     pub provider_instance_name: Option<String>,
     pub position: f64,
 }
@@ -280,7 +278,7 @@ impl Media {
             name: params.name,
             description: params.description,
             position: params.position,
-            source_provider: params.provider_name,
+            source_provider: params.source_provider,
             source_config: params.source_config,
             provider_instance_name: normalize_provider_instance_name_owned(
                 params.provider_instance_name,
@@ -312,10 +310,15 @@ impl Media {
             PlaybackMedia::upstream_headers,
         );
 
-        let source_config = serde_json::json!({
-            "url": default_url,
-            "headers": default_headers,
-        });
+        let source_config = super::MediaSourceConfig::DirectUrl(
+            super::DirectUrlMediaSourceConfig::single(default_url.to_string(), default_headers),
+        )
+        .into_provider_json()
+            .map_err(|error| {
+                crate::Error::Internal(format!(
+                    "Failed to serialize DirectUrl source_config: {error}"
+                ))
+            })?;
 
         let now = Utc::now();
         Ok(Self {
@@ -326,7 +329,7 @@ impl Media {
             name: params.name,
             description: String::new(),
             position: params.position,
-            source_provider: "direct_url".to_string(),
+            source_provider: SourceProvider::DirectUrl,
             source_config,
             provider_instance_name: None,
             cover_file_reference_id: None,
@@ -794,7 +797,7 @@ impl PlaybackResult {
             playlist_id: media.playlist_id,
             room_id: media.room_id,
             name: media.name.clone(),
-            provider: media.source_provider.clone(),
+            provider: media.source_provider.to_string(),
             provider_instance_name: media.provider_instance_name.clone(),
             position: media.position,
             playback_infos,

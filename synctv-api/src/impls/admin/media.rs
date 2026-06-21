@@ -12,6 +12,7 @@ use crate::impls::client::convert::{
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
 };
+use crate::impls::source_provider::proto_source_provider_filter;
 
 use super::{
     i64_count_to_usize, i64_to_i32_api, map_admin_media_sort, map_admin_playlist_sort,
@@ -118,7 +119,7 @@ impl AdminApiImpl {
                 })?),
             ),
             search: normalize_non_empty_filter(&req.search),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
+            source_provider: proto_source_provider_filter(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: req.dynamic_only,
             availability: map_resource_availability_filter(req.availability)?,
@@ -357,7 +358,7 @@ impl AdminApiImpl {
             let playlist_query = CorePlaylistListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
-                source_provider: normalize_non_empty_filter(&req.source_provider),
+                source_provider: proto_source_provider_filter(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 dynamic_only: None,
                 availability: map_resource_availability_filter(req.availability)?,
@@ -367,7 +368,7 @@ impl AdminApiImpl {
             let media_query = CoreMediaListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
-                source_provider: normalize_non_empty_filter(&req.source_provider),
+                source_provider: proto_source_provider_filter(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 availability: map_resource_availability_filter(req.availability)?,
                 sort_by: map_admin_media_sort(req.sort_by)?,
@@ -643,7 +644,7 @@ impl AdminApiImpl {
         let playlist_query = CorePlaylistListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
+            source_provider: proto_source_provider_filter(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: None,
             availability: map_resource_availability_filter(req.availability)?,
@@ -653,7 +654,7 @@ impl AdminApiImpl {
         let media_query = CoreMediaListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
+            source_provider: proto_source_provider_filter(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             availability: map_resource_availability_filter(req.availability)?,
             sort_by: map_admin_media_sort(req.sort_by)?,

@@ -127,6 +127,8 @@ pub mod room;
 pub mod room_member;
 pub mod room_settings;
 pub mod settings;
+pub mod source_config;
+pub mod source_config_convert;
 pub mod user;
 pub mod user_preferences;
 
@@ -177,6 +179,7 @@ pub use media::{
     PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackInfo, PlaybackLiveProxyMedia,
     PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackResult, PlaybackRtmpMedia,
     PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, ProviderTypeName, ProviderTypeNames,
+    SourceProvider,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
@@ -224,6 +227,13 @@ pub use room_member::{
 };
 pub use room_settings::RoomSettings;
 pub use settings::{get_default_settings, SettingsGroup};
+pub use source_config::{
+    AlistMediaSourceConfig, AlistPlaylistSourceConfig, BilibiliLiveSourceConfig,
+    BilibiliMediaSourceConfig, BilibiliPgcSourceConfig, BilibiliVideoSourceConfig,
+    DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
+    DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSourceConfig,
+    LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig, RtmpMediaSourceConfig,
+};
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
     UserRole, UserStatus,
@@ -331,5 +341,26 @@ mod tests {
             "updated_at"
         );
         assert_eq!(UserListSortBy::default(), UserListSortBy::CreatedAt);
+    }
+
+    #[test]
+    fn source_provider_round_trips_db_code_and_wire_name() {
+        const PROVIDERS: &[(SourceProvider, i16, &str)] = &[
+            (SourceProvider::DirectUrl, 1, "direct_url"),
+            (SourceProvider::Bilibili, 2, "bilibili"),
+            (SourceProvider::Alist, 3, "alist"),
+            (SourceProvider::Emby, 4, "emby"),
+            (SourceProvider::Rtmp, 5, "rtmp"),
+            (SourceProvider::LiveProxy, 6, "live_proxy"),
+        ];
+
+        for (provider, code, name) in PROVIDERS {
+            assert_eq!(provider.as_i16(), *code);
+            assert_eq!(i16::from(*provider), *code);
+            assert_eq!(SourceProvider::try_from(*code), Ok(*provider));
+            assert_eq!(provider.as_str(), *name);
+            assert_eq!(provider.to_string(), *name);
+            assert_eq!(name.parse::<SourceProvider>(), Ok(*provider));
+        }
     }
 }

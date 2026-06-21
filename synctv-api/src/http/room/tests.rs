@@ -532,9 +532,17 @@ fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() -> T
         "items": [
             {
                 "playlist_id": "playlist-1",
-                "source_provider": "yt-dlp",
+                "source_provider": "direct_url",
                 "provider_instance_name": "default",
-                "source_config": [1, 2, 3],
+                "source_config": {
+                    "direct_url": {
+                        "medias": [
+                            {
+                                "url": "https://example.com/video.mp4"
+                            }
+                        ]
+                    }
+                },
                 "name": "Example"
             }
         ]
@@ -613,16 +621,28 @@ fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
             "name":"Dynamic Folder",
             "parent_id":"playlist-root",
             "source_provider":"alist",
-            "source_config":{"path":"/tv"},
+            "source_config":{"alist":{"server_id":"alist-server","path":"/tv"}},
             "provider_instance_name":"alist-main"
         }"#,
     )?;
 
     assert_eq!(body.name, "Dynamic Folder");
     assert_eq!(body.parent_id, "playlist-root");
-    assert_eq!(body.source_provider, "alist");
-    let source_config: serde_json::Value = serde_json::from_slice(&body.source_config)?;
-    assert_eq!(source_config, serde_json::json!({"path":"/tv"}));
+    assert_eq!(
+        body.source_provider,
+        synctv_proto::source_config::SourceProvider::Alist as i32
+    );
+    let source_config = body
+        .source_config
+        .and_then(|config| config.provider)
+        .ok_or_else(|| test_error("source_config should be present"))?;
+    match source_config {
+        synctv_proto::source_config::playlist_source_config::Provider::Alist(config) => {
+            assert_eq!(config.server_id, "alist-server");
+            assert_eq!(config.path, "/tv");
+        }
+        other => return Err(test_error(format!("unexpected source_config: {other:?}"))),
+    }
     assert_eq!(body.provider_instance_name, "alist-main");
     Ok(())
 }

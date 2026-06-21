@@ -2233,6 +2233,38 @@ impl CliPlaybackStateUpdateType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum CliSourceProvider {
+    DirectUrl,
+    Bilibili,
+    Alist,
+    Emby,
+    Rtmp,
+    LiveProxy,
+}
+
+impl CliSourceProvider {
+    const fn to_core(self) -> synctv_core::models::SourceProvider {
+        match self {
+            Self::DirectUrl => synctv_core::models::SourceProvider::DirectUrl,
+            Self::Bilibili => synctv_core::models::SourceProvider::Bilibili,
+            Self::Alist => synctv_core::models::SourceProvider::Alist,
+            Self::Emby => synctv_core::models::SourceProvider::Emby,
+            Self::Rtmp => synctv_core::models::SourceProvider::Rtmp,
+            Self::LiveProxy => synctv_core::models::SourceProvider::LiveProxy,
+        }
+    }
+
+    fn to_proto(self) -> synctv_proto::source_config::SourceProvider {
+        self.to_core().into()
+    }
+
+    fn to_proto_i32(self) -> i32 {
+        self.to_proto() as i32
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct RoomPlaybackStateUpdateArgs {
     #[command(flatten)]
@@ -2373,8 +2405,8 @@ pub struct PlaylistListArgs {
     #[arg(long)]
     pub search: Option<String>,
 
-    #[arg(long)]
-    pub source_provider: Option<String>,
+    #[arg(long, value_enum)]
+    pub source_provider: Option<CliSourceProvider>,
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
@@ -2414,8 +2446,8 @@ pub struct PlaylistCreateArgs {
     #[arg(long)]
     pub parent_id: Option<String>,
 
-    #[arg(long)]
-    pub source_provider: Option<String>,
+    #[arg(long, value_enum)]
+    pub source_provider: Option<CliSourceProvider>,
 
     #[arg(long)]
     pub source_config_json: Option<String>,
@@ -2507,8 +2539,8 @@ pub struct MediaListArgs {
     #[arg(long)]
     pub search: Option<String>,
 
-    #[arg(long)]
-    pub source_provider: Option<String>,
+    #[arg(long, value_enum)]
+    pub source_provider: Option<CliSourceProvider>,
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
@@ -2555,8 +2587,8 @@ pub struct MediaAddArgs {
     #[arg(long)]
     pub playlist_id: Option<String>,
 
-    #[arg(long)]
-    pub source_provider: String,
+    #[arg(long, value_enum)]
+    pub source_provider: CliSourceProvider,
 
     #[arg(long)]
     pub provider_instance_name: Option<String>,
@@ -2753,8 +2785,8 @@ pub struct SystemStreamKickArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderAvailableArgs {
-    #[arg(long)]
-    pub provider_type: Option<String>,
+    #[arg(long, value_enum)]
+    pub provider_type: Option<CliSourceProvider>,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -2762,7 +2794,7 @@ pub struct ProviderAvailableArgs {
 
 #[derive(Debug, Args)]
 pub struct ProviderBackendsArgs {
-    pub provider_type: String,
+    pub provider_type: CliSourceProvider,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -2776,8 +2808,8 @@ pub struct ProviderListArgs {
     #[arg(long, default_value_t = 50)]
     pub page_size: i32,
 
-    #[arg(long)]
-    pub provider_type: Option<String>,
+    #[arg(long, value_enum)]
+    pub provider_type: Option<CliSourceProvider>,
 
     #[arg(long)]
     pub search: Option<String>,
@@ -2817,7 +2849,7 @@ pub struct ProviderAddArgs {
     pub insecure_tls: bool,
 
     #[arg(long = "provider", value_name = "PROVIDER_TYPE", required = true, num_args = 1..)]
-    pub providers: Vec<String>,
+    pub providers: Vec<CliSourceProvider>,
 
     /// Shared secret used to authenticate against a remote provider server
     #[arg(long)]
@@ -2854,7 +2886,7 @@ pub struct ProviderUpdateArgs {
     pub insecure_tls: Option<bool>,
 
     #[arg(long = "provider", value_name = "PROVIDER_TYPE")]
-    pub providers: Vec<String>,
+    pub providers: Vec<CliSourceProvider>,
 
     /// Replace the shared secret used to authenticate against a remote provider server
     #[arg(long, conflicts_with = "clear_jwt_secret")]
@@ -5224,9 +5256,7 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),
-                    source_provider:
-                        normalized_optional_cli_value(args.source_provider.as_deref(),)
-                            .unwrap_or_default(),
+                    source_provider: optional_source_provider_to_proto_i32(args.source_provider),
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
@@ -5256,6 +5286,10 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
         }
         PlaylistSubcommand::Create(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
+            let source_config = parse_optional_playlist_source_config_json(
+                args.source_provider,
+                args.source_config_json.as_deref(),
+            )?;
             let response = management_unary_call!(
                 session,
                 "create playlist",
@@ -5266,10 +5300,8 @@ async fn execute_playlist(playlist_command: PlaylistCommand) -> Result<()> {
                     name: args.name,
                     parent_id: normalized_optional_cli_value(args.parent_id.as_deref())
                         .unwrap_or_default(),
-                    source_provider:
-                        normalized_optional_cli_value(args.source_provider.as_deref(),)
-                            .unwrap_or_default(),
-                    source_config_json: raw_optional_bytes(args.source_config_json.as_deref()),
+                    source_provider: optional_source_provider_to_proto_i32(args.source_provider),
+                    source_config,
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
@@ -5349,9 +5381,7 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     page: args.page,
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),
-                    source_provider:
-                        normalized_optional_cli_value(args.source_provider.as_deref(),)
-                            .unwrap_or_default(),
+                    source_provider: optional_source_provider_to_proto_i32(args.source_provider),
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref(),
                     ),
@@ -5368,6 +5398,8 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
         }
         MediaSubcommand::Add(args) => {
             let session = connect_remote_access(&args.room.remote).await?;
+            let source_config =
+                parse_media_source_config_json(args.source_provider, &args.source_config_json)?;
             let response = management_unary_call!(
                 session,
                 "add media",
@@ -5377,11 +5409,11 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
-                    source_provider: args.source_provider,
+                    source_provider: args.source_provider.to_proto_i32(),
                     provider_instance_name: provider_instance_name_string(
                         args.provider_instance_name.as_deref()
                     ),
-                    source_config_json: args.source_config_json.into_bytes(),
+                    source_config: Some(source_config),
                     name: args.name.unwrap_or_default(),
                 }
             )?;
@@ -5396,7 +5428,13 @@ async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 management_proto::AddDirectUrlMediaRequest {
                     actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
-                    url: args.url,
+                    source_config: Some(
+                        synctv_core::models::DirectUrlMediaSourceConfig::single(
+                            args.url,
+                            Default::default(),
+                        )
+                        .into(),
+                    ),
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
                     name: args.name.unwrap_or_default(),
@@ -5506,8 +5544,7 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 "list available provider instances",
                 list_available_provider_instances,
                 synctv_proto::providers::common::ListAvailableProviderInstancesRequest {
-                    provider_type: normalized_optional_cli_value(args.provider_type.as_deref())
-                        .unwrap_or_default(),
+                    provider_type: optional_source_provider_to_proto_i32(args.provider_type),
                 }
             )?;
             args.remote.print_output(&response)
@@ -5519,7 +5556,7 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 "list provider backends",
                 list_provider_backends,
                 synctv_proto::providers::common::ListProviderBackendsRequest {
-                    provider_type: args.provider_type,
+                    provider_type: args.provider_type.to_proto_i32(),
                 }
             )?;
             args.remote.print_output(&response)
@@ -5533,8 +5570,7 @@ async fn execute_provider(provider_command: ProviderCommand) -> Result<()> {
                 synctv_proto::providers::common::ListProviderInstancesRequest {
                     page: args.page,
                     page_size: args.page_size,
-                    provider_type: normalized_optional_cli_value(args.provider_type.as_deref())
-                        .unwrap_or_default(),
+                    provider_type: optional_source_provider_to_proto_i32(args.provider_type),
                     search: args.search.unwrap_or_default(),
                     enabled: args.enabled,
                     tls: args.tls,
@@ -6621,6 +6657,46 @@ fn raw_optional_bytes(raw: Option<&str>) -> Vec<u8> {
         .map_or_else(Vec::new, ToOwned::to_owned)
 }
 
+fn parse_media_source_config_json(
+    provider: CliSourceProvider,
+    raw: &str,
+) -> Result<synctv_proto::source_config::MediaSourceConfig> {
+    let json: Value = parse_cli_json("media source_config", raw)?;
+    media_source_config_json_to_proto(provider, &json)
+}
+
+fn parse_optional_playlist_source_config_json(
+    provider: Option<CliSourceProvider>,
+    raw: Option<&str>,
+) -> Result<Option<synctv_proto::source_config::PlaylistSourceConfig>> {
+    match (provider, raw) {
+        (Some(provider), Some(raw)) => {
+            let json: Value = parse_cli_json("playlist source_config", raw)?;
+            playlist_source_config_json_to_proto(provider, &json).map(Some)
+        }
+        (None, Some(_)) => bail!("--source-provider is required with --source-config-json"),
+        (_, None) => Ok(None),
+    }
+}
+
+fn media_source_config_json_to_proto(
+    provider: CliSourceProvider,
+    json: &Value,
+) -> Result<synctv_proto::source_config::MediaSourceConfig> {
+    let config =
+        synctv_core::models::MediaSourceConfig::from_provider_json(provider.to_core(), json)?;
+    Ok(config.into())
+}
+
+fn playlist_source_config_json_to_proto(
+    provider: CliSourceProvider,
+    json: &Value,
+) -> Result<synctv_proto::source_config::PlaylistSourceConfig> {
+    let config =
+        synctv_core::models::PlaylistSourceConfig::from_provider_json(provider.to_core(), json)?;
+    Ok(config.into())
+}
+
 fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>
 where
     T: DeserializeOwned,
@@ -6655,10 +6731,18 @@ fn parse_setting_entries(entries: &[String]) -> Result<std::collections::HashMap
     Ok(settings)
 }
 
-fn normalized_provider_types(providers: &[String]) -> Vec<String> {
+fn optional_source_provider_to_proto_i32(provider: Option<CliSourceProvider>) -> i32 {
+    provider.map_or(
+        synctv_proto::source_config::SourceProvider::Unspecified as i32,
+        CliSourceProvider::to_proto_i32,
+    )
+}
+
+fn normalized_provider_types(providers: &[CliSourceProvider]) -> Vec<i32> {
     providers
         .iter()
-        .filter_map(|provider| normalized_optional_cli_value(Some(provider)))
+        .copied()
+        .map(CliSourceProvider::to_proto_i32)
         .collect()
 }
 

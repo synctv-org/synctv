@@ -29,6 +29,10 @@ use synctv_core::service::MediaService;
 #[cfg(test)]
 use super::convert::json_to_vec;
 use super::convert::try_playlist_path_node_to_proto;
+use super::convert::{
+    optional_proto_source_provider_to_core, proto_media_source_config_to_core_json,
+    proto_source_provider_to_core,
+};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
 use crate::playback_fanout::{PlaybackFanoutService, PreparedPlaybackStateFanout};
@@ -981,8 +985,8 @@ pub(crate) fn validate_dynamic_playlist_query_support(
     playlist: &Playlist,
     req: &synctv_proto::client::ListPlaylistItemsRequest,
 ) -> Result<bool, ApiError> {
-    if let Some(source_provider) = normalize_non_empty_filter(&req.source_provider) {
-        if playlist.source_provider.as_deref() != Some(source_provider.as_str()) {
+    if let Some(source_provider) = optional_proto_source_provider_to_core(req.source_provider)? {
+        if playlist.source_provider != Some(source_provider) {
             return Ok(false);
         }
     }
@@ -1063,12 +1067,15 @@ pub(crate) fn build_add_media_request(
         .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
         .transpose()?;
 
-    let source_config: serde_json::Value = if source_config.is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::from_slice(&source_config)
-            .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
-    };
+    let (config_provider, source_config) = proto_media_source_config_to_core_json(source_config)?;
+    let source_provider = proto_source_provider_to_core(source_provider)?;
+    if source_provider != config_provider {
+        return Err(ApiError::InvalidInput(format!(
+            "source_provider '{}' does not match source_config provider '{}'",
+            source_provider.as_str(),
+            config_provider.as_str()
+        )));
+    }
 
     let name = if name.is_empty() {
         DEFAULT_MEDIA_TITLE.to_string()
@@ -1800,7 +1807,7 @@ impl ClientApiImpl {
             let playlist_query = CorePlaylistListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
-                source_provider: normalize_non_empty_filter(&req.source_provider),
+                source_provider: optional_proto_source_provider_to_core(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 dynamic_only: None,
                 availability,
@@ -1810,7 +1817,7 @@ impl ClientApiImpl {
             let media_query = CoreMediaListQuery {
                 pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
                 search: normalize_non_empty_filter(&req.search),
-                source_provider: normalize_non_empty_filter(&req.source_provider),
+                source_provider: optional_proto_source_provider_to_core(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
                 availability,
                 sort_by: media_sort_by,
@@ -2095,7 +2102,7 @@ impl ClientApiImpl {
         let playlist_query = CorePlaylistListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
+            source_provider: optional_proto_source_provider_to_core(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             dynamic_only: None,
             availability,
@@ -2105,7 +2112,7 @@ impl ClientApiImpl {
         let media_query = CoreMediaListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
             search: normalize_non_empty_filter(&req.search),
-            source_provider: normalize_non_empty_filter(&req.source_provider),
+            source_provider: optional_proto_source_provider_to_core(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
             availability,
             sort_by: media_sort_by,
@@ -2296,7 +2303,6 @@ mod tests {
         validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };
     use chrono::Utc;
-    use serde_json::json;
     use synctv_core::models::{
         FileOwnershipProofRange, FileUploadSession, MediaId, NewStoredFile, Playlist, PlaylistId,
         RoomId, UserId,
@@ -2323,9 +2329,49 @@ mod tests {
         }
     }
 
+    fn alist_media_source_config(
+        path: &str,
+    ) -> Option<synctv_proto::source_config::MediaSourceConfig> {
+        Some(synctv_proto::source_config::MediaSourceConfig {
+            provider: Some(
+                synctv_proto::source_config::media_source_config::Provider::Alist(
+                    synctv_proto::source_config::AlistMediaSourceConfig {
+                        server_id: "alist-server".to_string(),
+                        path: path.to_string(),
+                        password: None,
+                    },
+                ),
+            ),
+        })
+    }
+
+    fn direct_url_media_source_config(
+        url: &str,
+    ) -> Option<synctv_proto::source_config::MediaSourceConfig> {
+        Some(synctv_proto::source_config::MediaSourceConfig {
+            provider: Some(
+                synctv_proto::source_config::media_source_config::Provider::DirectUrl(
+                    synctv_proto::source_config::DirectUrlMediaSourceConfig {
+                        medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
+                            name: String::new(),
+                            url: url.to_string(),
+                            headers: Default::default(),
+                            format: String::new(),
+                        }],
+                        default_media_index: None,
+                        subtitles: Vec::new(),
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
+                    },
+                ),
+            ),
+        })
+    }
+
     fn make_playlist(
         name: &str,
-        source_provider: Option<&str>,
+        source_provider: Option<synctv_core::models::SourceProvider>,
         provider_instance_name: Option<&str>,
     ) -> Playlist {
         Playlist {
@@ -2337,8 +2383,16 @@ mod tests {
             cover_file_reference_id: None,
             parent_id: None,
             position: 0.0,
-            source_provider: source_provider.map(str::to_string),
-            source_config: Some(json!({})),
+            source_provider,
+            source_config: source_provider.map(|provider| match provider {
+                synctv_core::models::SourceProvider::Alist => {
+                    synctv_core_testing::alist_directory_playlist_source_config(
+                        "alist-server",
+                        "/tv",
+                    )
+                }
+                _ => serde_json::Value::Null,
+            }),
             provider_instance_name: provider_instance_name.map(str::to_string),
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -2388,9 +2442,9 @@ mod tests {
         let err = require_error(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
-                source_config: br#"{"path":"/tv"}"#.to_vec(),
+                source_config: alist_media_source_config("/tv"),
                 name: String::new(),
                 description: String::new(),
             },
@@ -2407,9 +2461,9 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: Some(codec_ok(codec.encode_playlist_id(playlist_id))?),
-                source_provider: "alist".into(),
+                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                 provider_instance_name: "alist-main".into(),
-                source_config: br#"{"path":"/tv"}"#.to_vec(),
+                source_config: alist_media_source_config("/tv"),
                 name: "Episode 1".into(),
                 description: String::new(),
             },
@@ -2418,12 +2472,18 @@ mod tests {
 
         assert_eq!(request.playlist_id, Some(playlist_id));
         assert_eq!(request.name, "Episode 1");
-        assert_eq!(request.source_provider, "alist");
+        assert_eq!(
+            request.source_provider,
+            synctv_core::models::SourceProvider::Alist
+        );
         assert_eq!(
             request.provider_instance_name.as_deref(),
             Some("alist-main")
         );
-        assert_eq!(request.source_config, serde_json::json!({"path":"/tv"}));
+        assert_eq!(
+            request.source_config,
+            synctv_core_testing::alist_file_media_source_config("alist-server", "/tv")
+        );
         Ok(())
     }
 
@@ -2433,16 +2493,19 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: "direct_url".into(),
+                source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                 provider_instance_name: String::new(),
-                source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+                source_config: direct_url_media_source_config("https://example.com/video.mp4"),
                 name: "Example".into(),
                 description: String::new(),
             },
             &codec,
         ))?;
 
-        assert_eq!(request.source_provider, "direct_url");
+        assert_eq!(
+            request.source_provider,
+            synctv_core::models::SourceProvider::DirectUrl
+        );
         assert!(request.provider_instance_name.is_none());
         Ok(())
     }
@@ -2453,9 +2516,9 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: "alist".into(),
+                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                 provider_instance_name: "alist-main".into(),
-                source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#.to_vec(),
+                source_config: alist_media_source_config("/tv"),
                 name: String::new(),
                 description: String::new(),
             },
@@ -2473,9 +2536,9 @@ mod tests {
             synctv_proto::client::AddMediaBatchRequest {
                 items: vec![synctv_proto::client::AddMediaRequest {
                     playlist_id: Some("bad-playlist".into()),
-                    source_provider: "alist".into(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                     provider_instance_name: "alist-main".into(),
-                    source_config: br#"{"path":"/tv"}"#.to_vec(),
+                    source_config: alist_media_source_config("/tv"),
                     name: "Episode 1".into(),
                     description: String::new(),
                 }],
@@ -2494,10 +2557,9 @@ mod tests {
             synctv_proto::client::AddMediaBatchRequest {
                 items: vec![synctv_proto::client::AddMediaRequest {
                     playlist_id: Some(codec_ok(codec.encode_playlist_id(playlist_id))?),
-                    source_provider: "alist".into(),
+                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                     provider_instance_name: "alist-main".into(),
-                    source_config: br#"{"url":"https://example.com/video.mp4","path":"/tv"}"#
-                        .to_vec(),
+                    source_config: alist_media_source_config("/tv"),
                     name: String::new(),
                     description: String::new(),
                 }],
@@ -2510,7 +2572,7 @@ mod tests {
         assert_eq!(result.items[0].name, DEFAULT_MEDIA_TITLE);
         assert_eq!(
             result.items[0].source_config,
-            serde_json::json!({"url":"https://example.com/video.mp4","path":"/tv"})
+            synctv_core_testing::alist_file_media_source_config("alist-server", "/tv")
         );
         Ok(())
     }
@@ -2793,7 +2855,11 @@ mod tests {
 
     #[test]
     fn test_validate_dynamic_playlist_query_support_allows_search() -> TestResult {
-        let playlist = make_playlist("Dynamic Folder", Some("alist"), Some("alist-main"));
+        let playlist = make_playlist(
+            "Dynamic Folder",
+            Some(synctv_core::models::SourceProvider::Alist),
+            Some("alist-main"),
+        );
         let supported = api_ok(validate_dynamic_playlist_query_support(
             &playlist,
             &synctv_proto::client::ListPlaylistItemsRequest {
@@ -2802,7 +2868,7 @@ mod tests {
                 page: 1,
                 page_size: 20,
                 search: "alpha".to_string(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,

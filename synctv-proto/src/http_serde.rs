@@ -57,6 +57,287 @@ pub mod json_bytes {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
+enum SourceProviderJsonValue {
+    String(String),
+    Number(i32),
+}
+
+fn source_provider_name(value: i32) -> Option<&'static str> {
+    match crate::source_config::SourceProvider::try_from(value).ok()? {
+        crate::source_config::SourceProvider::Unspecified => Some(""),
+        crate::source_config::SourceProvider::DirectUrl => Some("direct_url"),
+        crate::source_config::SourceProvider::Bilibili => Some("bilibili"),
+        crate::source_config::SourceProvider::Alist => Some("alist"),
+        crate::source_config::SourceProvider::Emby => Some("emby"),
+        crate::source_config::SourceProvider::Rtmp => Some("rtmp"),
+        crate::source_config::SourceProvider::LiveProxy => Some("live_proxy"),
+    }
+}
+
+fn parse_source_provider_value<E>(value: SourceProviderJsonValue, field_name: &str) -> Result<i32, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        SourceProviderJsonValue::Number(value) => {
+            crate::source_config::SourceProvider::try_from(value).map_err(E::custom)?;
+            Ok(value)
+        }
+        SourceProviderJsonValue::String(value) => {
+            let provider = match value.trim().to_ascii_lowercase().as_str() {
+                "" | "unspecified" => crate::source_config::SourceProvider::Unspecified,
+                "direct_url" | "directurl" => crate::source_config::SourceProvider::DirectUrl,
+                "bilibili" => crate::source_config::SourceProvider::Bilibili,
+                "alist" => crate::source_config::SourceProvider::Alist,
+                "emby" => crate::source_config::SourceProvider::Emby,
+                "rtmp" => crate::source_config::SourceProvider::Rtmp,
+                "live_proxy" | "liveproxy" => crate::source_config::SourceProvider::LiveProxy,
+                other => {
+                    return Err(E::custom(format!("unknown {field_name}: {other}")));
+                }
+            };
+            Ok(provider as i32)
+        }
+    }
+}
+
+/// Generate a scalar + vec serde module pair for a `SourceProvider`-typed field.
+/// Both share [`source_provider_name`] / [`parse_source_provider_value`]; only
+/// the field name embedded in error messages differs per call.
+macro_rules! source_provider_serde {
+    ($scalar:ident, $vec:ident, $field:literal) => {
+        pub mod $scalar {
+            use serde::{ser::Error as _, Deserialize, Deserializer, Serializer};
+
+            pub fn serialize<S>(value: &i32, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let name = super::source_provider_name(*value)
+                    .ok_or_else(|| S::Error::custom(format!("unknown {}: {value}", $field)))?;
+                serializer.serialize_str(name)
+            }
+
+            pub fn deserialize<'de, D>(deserializer: D) -> Result<i32, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = super::SourceProviderJsonValue::deserialize(deserializer)?;
+                super::parse_source_provider_value(value, $field)
+            }
+        }
+
+        pub mod $vec {
+            use serde::{ser::Error as _, Deserialize, Deserializer, Serialize, Serializer};
+
+            pub fn serialize<S>(values: &[i32], serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let names = values
+                    .iter()
+                    .map(|value| {
+                        super::source_provider_name(*value).ok_or_else(|| {
+                            S::Error::custom(format!("unknown {}: {value}", $field))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, S::Error>>()?;
+                names.serialize(serializer)
+            }
+
+            pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<i32>, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                Vec::<super::SourceProviderJsonValue>::deserialize(deserializer)?
+                    .into_iter()
+                    .map(|value| super::parse_source_provider_value(value, $field))
+                    .collect()
+            }
+        }
+    };
+}
+
+source_provider_serde!(source_provider, source_provider_vec, "source_provider");
+source_provider_serde!(provider_type, provider_type_vec, "provider_type");
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BilibiliMediaSourceConfigDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    video: Option<crate::source_config::BilibiliVideoSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pgc: Option<crate::source_config::BilibiliPgcSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live: Option<crate::source_config::BilibiliLiveSourceConfig>,
+}
+
+impl TryFrom<BilibiliMediaSourceConfigDef> for crate::source_config::BilibiliMediaSourceConfig {
+    type Error = String;
+
+    fn try_from(value: BilibiliMediaSourceConfigDef) -> Result<Self, Self::Error> {
+        use crate::source_config::bilibili_media_source_config::Source;
+
+        let mut sources = [
+            value.video.map(Source::Video),
+            value.pgc.map(Source::Pgc),
+            value.live.map(Source::Live),
+        ]
+        .into_iter()
+        .flatten();
+        let source = sources
+            .next()
+            .ok_or_else(|| "bilibili source_config requires one source".to_string())?;
+        if sources.next().is_some() {
+            return Err("bilibili source_config accepts exactly one source".to_string());
+        }
+        Ok(Self {
+            source: Some(source),
+        })
+    }
+}
+
+impl From<crate::source_config::BilibiliMediaSourceConfig> for BilibiliMediaSourceConfigDef {
+    fn from(value: crate::source_config::BilibiliMediaSourceConfig) -> Self {
+        use crate::source_config::bilibili_media_source_config::Source;
+
+        let mut def = Self {
+            video: None,
+            pgc: None,
+            live: None,
+        };
+        match value.source {
+            Some(Source::Video(config)) => def.video = Some(config),
+            Some(Source::Pgc(config)) => def.pgc = Some(config),
+            Some(Source::Live(config)) => def.live = Some(config),
+            None => {}
+        }
+        def
+    }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaSourceConfigDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct_url: Option<crate::source_config::DirectUrlMediaSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bilibili: Option<crate::source_config::BilibiliMediaSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alist: Option<crate::source_config::AlistMediaSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    emby: Option<crate::source_config::EmbyMediaSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rtmp: Option<crate::source_config::RtmpMediaSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live_proxy: Option<crate::source_config::LiveProxyMediaSourceConfig>,
+}
+
+impl TryFrom<MediaSourceConfigDef> for crate::source_config::MediaSourceConfig {
+    type Error = String;
+
+    fn try_from(value: MediaSourceConfigDef) -> Result<Self, Self::Error> {
+        use crate::source_config::media_source_config::Provider;
+
+        let mut providers = [
+            value.direct_url.map(Provider::DirectUrl),
+            value.bilibili.map(Provider::Bilibili),
+            value.alist.map(Provider::Alist),
+            value.emby.map(Provider::Emby),
+            value.rtmp.map(Provider::Rtmp),
+            value.live_proxy.map(Provider::LiveProxy),
+        ]
+        .into_iter()
+        .flatten();
+        let provider = providers
+            .next()
+            .ok_or_else(|| "media source_config requires one provider".to_string())?;
+        if providers.next().is_some() {
+            return Err("media source_config accepts exactly one provider".to_string());
+        }
+        Ok(Self {
+            provider: Some(provider),
+        })
+    }
+}
+
+impl From<crate::source_config::MediaSourceConfig> for MediaSourceConfigDef {
+    fn from(value: crate::source_config::MediaSourceConfig) -> Self {
+        use crate::source_config::media_source_config::Provider;
+
+        let mut def = Self {
+            direct_url: None,
+            bilibili: None,
+            alist: None,
+            emby: None,
+            rtmp: None,
+            live_proxy: None,
+        };
+        match value.provider {
+            Some(Provider::DirectUrl(config)) => def.direct_url = Some(config),
+            Some(Provider::Bilibili(config)) => def.bilibili = Some(config),
+            Some(Provider::Alist(config)) => def.alist = Some(config),
+            Some(Provider::Emby(config)) => def.emby = Some(config),
+            Some(Provider::Rtmp(config)) => def.rtmp = Some(config),
+            Some(Provider::LiveProxy(config)) => def.live_proxy = Some(config),
+            None => {}
+        }
+        def
+    }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlaylistSourceConfigDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alist: Option<crate::source_config::AlistPlaylistSourceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    emby: Option<crate::source_config::EmbyPlaylistSourceConfig>,
+}
+
+impl TryFrom<PlaylistSourceConfigDef> for crate::source_config::PlaylistSourceConfig {
+    type Error = String;
+
+    fn try_from(value: PlaylistSourceConfigDef) -> Result<Self, Self::Error> {
+        use crate::source_config::playlist_source_config::Provider;
+
+        let mut providers = [
+            value.alist.map(Provider::Alist),
+            value.emby.map(Provider::Emby),
+        ]
+        .into_iter()
+        .flatten();
+        let provider = providers
+            .next()
+            .ok_or_else(|| "playlist source_config requires one provider".to_string())?;
+        if providers.next().is_some() {
+            return Err("playlist source_config accepts exactly one provider".to_string());
+        }
+        Ok(Self {
+            provider: Some(provider),
+        })
+    }
+}
+
+impl From<crate::source_config::PlaylistSourceConfig> for PlaylistSourceConfigDef {
+    fn from(value: crate::source_config::PlaylistSourceConfig) -> Self {
+        use crate::source_config::playlist_source_config::Provider;
+
+        let mut def = Self {
+            alist: None,
+            emby: None,
+        };
+        match value.provider {
+            Some(Provider::Alist(config)) => def.alist = Some(config),
+            Some(Provider::Emby(config)) => def.emby = Some(config),
+            None => {}
+        }
+        def
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
 enum Int64JsonValue {
     String(String),
     Number(i64),

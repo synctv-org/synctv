@@ -25,6 +25,7 @@ fn prost_config() -> tonic_prost_build::Config {
     config.extern_path(".synctv.admin", "::synctv_proto::admin");
     config.extern_path(".synctv.client", "::synctv_proto::client");
     config.extern_path(".synctv.common", "::synctv_proto::common");
+    config.extern_path(".synctv.source_config", "::synctv_proto::source_config");
     config.extern_path(".synctv.provider.alist", "::synctv_proto::providers::alist");
     config.extern_path(
         ".synctv.provider.bilibili",

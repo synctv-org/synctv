@@ -73,7 +73,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Media not found".to_string()))?;
-        if media.source_provider.trim() != synctv_core::provider::BilibiliProvider::NAME {
+        if media.source_provider != synctv_core::models::SourceProvider::Bilibili {
             return Err(ApiError::InvalidInput(
                 "Bilibili live danmaku requires Bilibili media".to_string(),
             ));
@@ -84,7 +84,7 @@ impl ClientApiImpl {
             .media_service()
             .providers_manager()
             .resolve_provider(
-                synctv_core::provider::BilibiliProvider::NAME,
+                synctv_core::models::SourceProvider::Bilibili,
                 media.provider_instance_name.as_deref(),
             )
             .await

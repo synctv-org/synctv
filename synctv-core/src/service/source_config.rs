@@ -84,20 +84,21 @@ mod tests {
     #[test]
     fn test_source_config_nested_structure_size() {
         let nested_config = serde_json::json!({
-            "playback_infos": {
-                "1080p": {
-                    "urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"],
+            "medias": [
+                {
+                    "name": "1080p",
+                    "url": "https://example.com/video1.mp4",
                     "headers": {
                         "Referer": "https://example.com",
                         "User-Agent": "Mozilla/5.0"
                     }
                 },
-                "720p": {
-                    "urls": ["https://example.com/video1-720.mp4"],
-                    "headers": {}
+                {
+                    "name": "720p",
+                    "url": "https://example.com/video1-720.mp4"
                 }
-            },
-            "default_mode": "1080p",
+            ],
+            "default_media_index": 0,
             "metadata": {
                 "title": "Test Video",
                 "duration": 3600

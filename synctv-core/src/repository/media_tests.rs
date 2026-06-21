@@ -1,6 +1,6 @@
 use super::*;
 use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
-use crate::models::{FromProviderParams, ProviderInstance};
+use crate::models::{FromProviderParams, ProviderInstance, SourceProvider};
 use crate::repository::ProviderInstanceRepository;
 use crate::test_helpers::{TestOptionExt, TestResultExt};
 use sqlx::Execute;
@@ -17,7 +17,9 @@ async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec![provider.to_string()],
+        providers: vec![provider
+            .parse::<SourceProvider>()
+            .checked("test provider should be known")],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -41,15 +43,17 @@ fn test_media_from_provider() {
         creator_id: Some(creator_id),
         name: "Test Video".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
 
     assert_eq!(media.name, "Test Video");
     assert!((media.position - 0.0).abs() < f64::EPSILON);
-    assert_eq!(media.source_provider, "direct_url");
+    assert_eq!(media.source_provider, SourceProvider::DirectUrl);
 }
 
 #[test]
@@ -133,7 +137,7 @@ fn test_media_from_direct_single_mode() {
     assert!((media.position - 5.0).abs() < f64::EPSILON);
     assert!(media.provider_instance_name.is_none());
     assert_eq!(
-        media.source_config["url"],
+        media.source_config["medias"][0]["url"],
         serde_json::json!("https://example.com/video.mp4")
     );
     assert!(media.source_config.get("playback_infos").is_none());
@@ -176,7 +180,7 @@ fn test_media_from_direct_multimode() {
     assert!((media.position - 10.0).abs() < f64::EPSILON);
     assert!(media.provider_instance_name.is_none());
     assert_eq!(
-        media.source_config["url"],
+        media.source_config["medias"][0]["url"],
         serde_json::json!("https://example.com/video.mp4")
     );
     assert!(media.source_config.get("playback_infos").is_none());
@@ -229,8 +233,10 @@ async fn test_create_and_get_media() {
         creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -299,8 +305,10 @@ async fn test_update_media() {
         creator_id: Some(owner.id),
         name: "Original Name".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -313,7 +321,8 @@ async fn test_update_media() {
     let mut updated = created.clone();
     updated.name = "Updated Name".to_string();
     updated.position = 5.0;
-    updated.source_config = serde_json::json!({"url": "https://example.com/changed.mp4"});
+    updated.source_config =
+        synctv_core_testing::direct_url_media_source_config("https://example.com/changed.mp4");
     updated.provider_instance_name = Some("changed-instance".to_string());
 
     let result = media_repo
@@ -376,8 +385,10 @@ async fn test_delete_media() {
         creator_id: Some(owner.id),
         name: "To Delete".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -457,8 +468,10 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
         creator_id: Some(owner.id),
         name: "Default Backend".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/default.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/default.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -468,8 +481,10 @@ async fn test_list_filtered_by_scope_matches_default_provider_instance_name() {
         creator_id: Some(owner.id),
         name: "Explicit Backend".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/explicit.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/explicit.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: Some("direct_url_remote".to_string()),
         position: 1.0,
     });
@@ -553,8 +568,10 @@ async fn test_create_batch() {
                 creator_id: Some(owner.id),
                 name: format!("Video {i}"),
                 description: String::new(),
-                source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
-                provider_name: "direct_url".to_string(),
+                source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                    "https://example.com/{i}.mp4"
+                )),
+                source_provider: SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 position: f64::from(i),
             })
@@ -641,8 +658,10 @@ async fn test_move_with_tx_reorders_scope() {
         creator_id: Some(owner.id),
         name: "Video 1".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 1024.0,
     });
@@ -652,8 +671,10 @@ async fn test_move_with_tx_reorders_scope() {
         creator_id: Some(owner.id),
         name: "Video 2".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 2048.0,
     });
@@ -746,8 +767,10 @@ async fn test_count_by_playlist() {
             creator_id: Some(owner.id),
             name: format!("Video {i}"),
             description: String::new(),
-            source_config: serde_json::json!({}),
-            provider_name: "direct_url".to_string(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
             position: f64::from(i),
         });
@@ -811,8 +834,10 @@ async fn test_get_playlist_paginated() {
             creator_id: Some(owner.id),
             name: format!("Video {i}"),
             description: String::new(),
-            source_config: serde_json::json!({}),
-            provider_name: "direct_url".to_string(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
             position: f64::from(i),
         });
@@ -891,8 +916,10 @@ async fn test_delete_batch() {
             creator_id: Some(owner.id),
             name: format!("Video {i}"),
             description: String::new(),
-            source_config: serde_json::json!({}),
-            provider_name: "direct_url".to_string(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
             position: f64::from(i),
         });
@@ -966,8 +993,10 @@ async fn test_get_by_ids() {
             creator_id: Some(owner.id),
             name: format!("Video {i}"),
             description: String::new(),
-            source_config: serde_json::json!({}),
-            provider_name: "direct_url".to_string(),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
             position: f64::from(i),
         });

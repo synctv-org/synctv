@@ -424,7 +424,10 @@ fn test_provider_path_injected_json_proto_requests_deserialize_without_injected_
         update_provider.endpoint.as_deref(),
         Some("https://provider.internal")
     );
-    assert_eq!(update_provider.providers, vec!["alist".to_string()]);
+    assert_eq!(
+        update_provider.providers,
+        vec![synctv_proto::source_config::SourceProvider::Alist as i32]
+    );
     Ok(())
 }
 

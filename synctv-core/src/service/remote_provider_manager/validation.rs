@@ -99,7 +99,7 @@ impl RemoteProviderManager {
         validate_provider_instance_name(&config.name).map_err(crate::Error::InvalidInput)?;
         config.parse_timeout().map_err(crate::Error::Internal)?;
         for provider in &config.providers {
-            if !Self::is_supported_remote_provider(provider) {
+            if !Self::is_supported_remote_provider(provider.as_str()) {
                 return Err(crate::Error::InvalidInput(format!(
                     "Remote provider instance '{}' declares unsupported provider '{}'; supported providers are: {}",
                     config.name,
@@ -167,7 +167,7 @@ impl RemoteProviderManager {
         config
             .providers
             .iter()
-            .any(|provider| Self::is_supported_remote_provider(provider))
+            .any(|provider| Self::is_supported_remote_provider(provider.as_str()))
     }
 
     fn is_supported_remote_provider(provider: &str) -> bool {

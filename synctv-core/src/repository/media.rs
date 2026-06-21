@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::{
     models::{
-        normalize_provider_instance_name, provider_type_code_from_name, Media, MediaId,
-        MediaListQuery, PageParams, PlaylistId, ProviderTypeName, RoomId, UserId,
+        normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
+        ProviderTypeName, RoomId, UserId,
     },
     Result,
 };
@@ -185,10 +185,6 @@ impl MediaRepository {
         builder.push(order_by);
     }
 
-    fn provider_type_code(provider: &str) -> Result<i16> {
-        provider_type_code_from_name(provider).map_err(crate::Error::InvalidInput)
-    }
-
     fn push_media_scope_filters(
         builder: &mut sqlx::QueryBuilder<sqlx::Postgres>,
         room_id: &RoomId,
@@ -215,7 +211,7 @@ impl MediaRepository {
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND m.source_provider = ");
-            builder.push_bind(Self::provider_type_code(source_provider)?);
+            builder.push_bind(source_provider.as_i16());
         }
         if let Some(provider_instance_name) = &query.provider_instance_name {
             if let Some(trimmed) = normalize_provider_instance_name(Some(provider_instance_name)) {
@@ -341,7 +337,7 @@ impl MediaRepository {
             media.name,
             media.description,
             media.position,
-            Self::provider_type_code(&media.source_provider)?,
+            media.source_provider.as_i16(),
             source_config_json,
             normalize_provider_instance_name(media.provider_instance_name.as_deref()),
             media.added_at
@@ -399,8 +395,8 @@ impl MediaRepository {
 
         let provider_codes = items
             .iter()
-            .map(|item| Self::provider_type_code(&item.source_provider))
-            .collect::<Result<Vec<_>>>()?;
+            .map(|item| item.source_provider.as_i16())
+            .collect::<Vec<_>>();
 
         let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "INSERT INTO media (playlist_id, room_id, creator_id, name, description, position,

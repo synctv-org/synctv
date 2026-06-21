@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -406,7 +407,7 @@ async fn create_dynamic_playlist(
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["alist".to_string()],
+        providers: vec![synctv_core::models::SourceProvider::Alist],
         enabled: true,
         created_at: now,
         updated_at: now,
@@ -425,8 +426,11 @@ async fn create_dynamic_playlist(
         cover_file_reference_id: None,
         parent_id: None,
         position: 0.0,
-        source_provider: Some("alist".to_string()),
-        source_config: Some(serde_json::json!({})),
+        source_provider: Some(synctv_core::models::SourceProvider::Alist),
+        source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+            provider_instance_name,
+            "/",
+        )),
         provider_instance_name: Some(provider_instance_name.to_string()),
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -655,7 +659,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
                 page: 1,
                 page_size: 50,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -832,13 +836,14 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         creator_id: Some(owner.id),
         name: "Signed Provider Media".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({
-            "url": "https://example.com/video.mp4",
-            "headers": {
-                "Authorization": "Bearer provider-token"
-            }
-        }),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config_with_headers(
+            "https://example.com/video.mp4",
+            HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer provider-token".to_string(),
+            )]),
+        ),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -1045,8 +1050,10 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         creator_id: Some(owner.id),
         name: "Transient Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({ "url": "https://example.com/video.mp4" }),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -1151,8 +1158,8 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
         creator_id: Some(owner.id),
         name: "Invalid Live Proxy Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({ "opaque": true }),
-        provider_name: "live_proxy".to_string(),
+        source_config: serde_json::json!({}),
+        source_provider: synctv_core::models::SourceProvider::LiveProxy,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -1209,7 +1216,9 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
 
     assert!(matches!(
         error,
-        synctv_api::impls::ApiError::InvalidInput(message) if message == "Missing url"
+        synctv_api::impls::ApiError::InvalidInput(message)
+            if message.contains("Failed to parse LiveProxy source config")
+                && message.contains("missing field `url`")
     ));
 }
 
@@ -1289,7 +1298,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
                 page: 1,
                 page_size: 50,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -1413,7 +1422,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
                 page: 1,
                 page_size: 50,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,

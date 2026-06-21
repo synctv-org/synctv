@@ -13,6 +13,10 @@ use synctv_core::service::{
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
 use crate::impls::admin::{validate_admin_auth, RequestContext, ValidatedAdmin};
+use crate::impls::source_provider::{
+    core_source_provider_vec_to_proto, proto_source_provider_filter,
+    proto_source_provider_required, proto_source_provider_vec,
+};
 use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -369,19 +373,20 @@ impl ProviderCommonApiImpl {
     ) -> Result<synctv_proto::providers::common::ProviderInstancesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
-        let mut instances = if req.provider_type.trim().is_empty() {
+        let provider_type = proto_source_provider_filter(req.provider_type)?;
+        let mut instances = if let Some(provider_type) = provider_type {
             self.provider_instance_manager
-                .list()
-                .await
-                .map_err(ApiError::from)?
-        } else {
-            self.provider_instance_manager
-                .find_instances_by_provider(&req.provider_type)
+                .find_instances_by_provider(provider_type.as_str())
                 .await
                 .map_err(ApiError::from)?
                 .into_iter()
                 .map(|instance| instance.name)
                 .collect()
+        } else {
+            self.provider_instance_manager
+                .list()
+                .await
+                .map_err(ApiError::from)?
         };
         instances.sort();
 
@@ -396,21 +401,22 @@ impl ProviderCommonApiImpl {
 
         let mut backends = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let provider_type = req.provider_type.as_str();
+        let provider_type = proto_source_provider_required(req.provider_type)?;
+        let provider_name = provider_type.as_str();
 
         if self
             .providers_manager
-            .get_by_type(provider_type)
+            .get_by_type(provider_name)
             .await
             .is_some()
         {
-            backends.push(provider_type.to_string());
-            seen.insert(provider_type.to_string());
+            backends.push(provider_name.to_string());
+            seen.insert(provider_name.to_string());
         }
 
         let mut remote_backends = self
             .provider_instance_manager
-            .find_instances_by_provider(provider_type)
+            .find_instances_by_provider(provider_name)
             .await
             .map_err(ApiError::from)?
             .into_iter()
@@ -438,7 +444,7 @@ impl ProviderCommonApiImpl {
                 defaultable_page_i32_to_u32(req.page),
                 defaultable_page_size_i32_to_u32(req.page_size, 100),
             ),
-            provider_type: normalize_non_empty_filter(&req.provider_type),
+            provider_type: proto_source_provider_filter(req.provider_type)?,
             search: normalize_non_empty_filter(&req.search),
             enabled: req.enabled,
             tls: req.tls,
@@ -490,7 +496,7 @@ impl ProviderCommonApiImpl {
             timeout_seconds: req.timeout_seconds,
             tls: req.tls,
             insecure_tls: req.insecure_tls,
-            providers: req.providers,
+            providers: proto_source_provider_vec(req.providers)?,
         });
 
         self.provider_instance_manager
@@ -574,7 +580,7 @@ impl ProviderCommonApiImpl {
             instance.timeout = ProviderInstance::timeout_string_from_seconds(timeout_seconds);
         }
         if !req.providers.is_empty() {
-            instance.providers = req.providers;
+            instance.providers = proto_source_provider_vec(req.providers)?;
         }
         if let Some(tls) = req.tls {
             instance.tls = tls;
@@ -810,7 +816,7 @@ fn provider_instance_to_proto(
         timeout_seconds,
         tls: instance.tls,
         insecure_tls: instance.insecure_tls,
-        providers: instance.providers,
+        providers: core_source_provider_vec_to_proto(&instance.providers),
         enabled: instance.enabled,
         status,
         created_at: instance.created_at.timestamp(),
@@ -1128,7 +1134,7 @@ mod tests {
                 timeout: "10s".to_string(),
                 tls: false,
                 insecure_tls: false,
-                providers: vec!["direct_url".to_string()],
+                providers: vec![synctv_core::models::SourceProvider::DirectUrl],
                 enabled: true,
                 created_at: now + Duration::seconds(i64::from(index)),
                 updated_at: now + Duration::seconds(i64::from(index)),
@@ -1142,7 +1148,7 @@ mod tests {
                 synctv_proto::providers::common::ListProviderInstancesRequest {
                     page: 0,
                     page_size: 0,
-                    provider_type: "direct_url".to_string(),
+                    provider_type: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     search: String::new(),
                     enabled: None,
                     tls: None,

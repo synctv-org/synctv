@@ -12,7 +12,7 @@ use synctv_core::{
         room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
         ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
-        RoomStatus, User, UserId, UserRole, UserStatus,
+        RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -100,7 +100,11 @@ async fn register_direct_url_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .create_provider(
+            "direct_url",
+            "direct_url",
+            &synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
+        )
         .await
     {
         std::panic::panic_any(format!("direct_url provider should register: {error:?}"));
@@ -141,8 +145,10 @@ fn make_media(
         name: name.to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         creator_id: Some(creator_id),
         cover_file_reference_id: None,
@@ -987,10 +993,10 @@ async fn test_leave_room_cleans_member_created_media_resources() {
                 playlist_id: Some(playlist.id),
                 name: "member media".to_string(),
                 description: String::new(),
-                source_provider: "direct_url".to_string(),
+                source_provider: SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 source_config: serde_json::json!({
-                    "url": "https://example.com/video.mp4"
+                    "medias": [{"url": "https://example.com/video.mp4"}]
                 }),
             },
         )
@@ -1103,10 +1109,10 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
                 playlist_id: Some(playlist.id),
                 name: "target media".to_string(),
                 description: String::new(),
-                source_provider: "direct_url".to_string(),
+                source_provider: SourceProvider::DirectUrl,
                 provider_instance_name: None,
                 source_config: serde_json::json!({
-                    "url": "https://example.com/kick.mp4"
+                    "medias": [{"url": "https://example.com/kick.mp4"}]
                 }),
             },
         )

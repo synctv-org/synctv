@@ -11,7 +11,7 @@ use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
     models::{
         normalize_provider_instance_name, FromProviderParams, Media, MediaId, PlaylistId, RoomId,
-        UserId,
+        SourceProvider, UserId,
     },
     provider::{
         provider_requires_credential_repo, store::ProviderStoreResolver, PlaybackResult,
@@ -69,8 +69,7 @@ pub struct AddMediaRequest {
     pub playlist_id: Option<PlaylistId>,
     pub name: String,
     pub description: String,
-    /// Declared provider type name (e.g. "direct_url", "bilibili", "alist").
-    pub source_provider: String,
+    pub source_provider: SourceProvider,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// `None` means use the default local instance for `source_provider`.
     pub provider_instance_name: Option<String>,
@@ -229,19 +228,12 @@ impl MediaService {
 
     async fn resolve_media_provider(
         &self,
-        source_provider: &str,
+        source_provider: SourceProvider,
         provider_instance_name: Option<&str>,
     ) -> Result<Arc<dyn crate::provider::MediaProvider>> {
-        let trimmed_provider = source_provider.trim();
-        if trimmed_provider.is_empty() {
-            return Err(Error::InvalidInput(
-                "source_provider is required".to_string(),
-            ));
-        }
-
         let provider = self
             .providers_manager
-            .resolve_provider(trimmed_provider, provider_instance_name)
+            .resolve_provider(source_provider, provider_instance_name)
             .await?;
 
         Ok(provider)
@@ -259,7 +251,7 @@ impl MediaService {
         &self,
         user_id: &UserId,
         room_id: &RoomId,
-        source_provider: &str,
+        source_provider: SourceProvider,
         provider_instance_name: Option<&str>,
         source_config: JsonValue,
         item_name: Option<&str>,
@@ -301,7 +293,6 @@ impl MediaService {
             self.resolve_media_provider(source_provider, bound_provider_instance.as_deref())
                 .await?
         };
-
         let ctx = self.build_provider_context(
             provider.name(),
             Some(user_id),
@@ -453,7 +444,7 @@ impl MediaService {
             .prepare_media_source(
                 &user_id,
                 &room_id,
-                &request.source_provider,
+                request.source_provider,
                 request.provider_instance_name.as_deref(),
                 request.source_config,
                 None,
@@ -480,7 +471,7 @@ impl MediaService {
             name: request.name.clone(),
             description: request.description.clone(),
             source_config: prepared_source.source_config,
-            provider_name: prepared_source.provider_name.clone(),
+            source_provider: request.source_provider,
             provider_instance_name: prepared_source.provider_instance_name.clone(),
             position,
         });
@@ -601,7 +592,7 @@ impl MediaService {
                 .prepare_media_source(
                     &user_id,
                     &room_id,
-                    &item.source_provider,
+                    item.source_provider,
                     item.provider_instance_name.as_deref(),
                     item.source_config.clone(),
                     Some(&item.name),
@@ -635,7 +626,7 @@ impl MediaService {
                 name: item.name,
                 description: item.description,
                 source_config: prepared_source.source_config,
-                provider_name: prepared_source.provider_name,
+                source_provider: item.source_provider,
                 provider_instance_name: prepared_source.provider_instance_name,
                 position: batch_media_position(index, start_position)?,
             });
@@ -962,7 +953,7 @@ impl MediaService {
                 };
                 let provider = self
                     .resolve_media_provider(
-                        &media.source_provider,
+                        media.source_provider,
                         media.provider_instance_name.as_deref(),
                     )
                     .await?;

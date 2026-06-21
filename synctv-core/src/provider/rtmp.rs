@@ -8,7 +8,7 @@ use super::{
     ProviderError, SourceConfig,
 };
 use crate::models::media::{PlaybackMediaProvider, PlaybackRtmpMedia};
-use crate::models::{MediaId, RoomId};
+use crate::models::{MediaId, RoomId, RtmpMediaSourceConfig};
 use crate::PublicIdCodec;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -25,6 +25,10 @@ const FORBIDDEN_URL_FIELDS: &[&str] = &[
     "stream_url",
     "external_url",
 ];
+
+fn parse_rtmp_source_config(source_config: &Value) -> Result<RtmpMediaSourceConfig, ProviderError> {
+    super::parse_source_config(source_config, "RTMP")
+}
 
 /// RTMP `MediaProvider`
 pub struct RtmpProvider {}
@@ -68,7 +72,9 @@ impl RtmpProvider {
         Ok(())
     }
 
-    fn validate_config_shape(source_config: &Value) -> Result<(), ProviderError> {
+    fn validate_config_shape(
+        source_config: &Value,
+    ) -> Result<RtmpMediaSourceConfig, ProviderError> {
         for field in ["room_id", "media_id"] {
             if source_config.get(field).is_some() {
                 return Err(ProviderError::InvalidConfig(format!(
@@ -77,7 +83,7 @@ impl RtmpProvider {
             }
         }
 
-        Ok(())
+        parse_rtmp_source_config(source_config)
     }
 }
 
@@ -138,7 +144,7 @@ impl MediaProvider for RtmpProvider {
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
         Self::validate_config_fields(source_config)?;
-        Self::validate_config_shape(source_config)?;
+        let _config = Self::validate_config_shape(source_config)?;
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
         let result = super::build_live_playback(*media_id, *room_id);
@@ -163,7 +169,7 @@ impl MediaProvider for RtmpProvider {
     ) -> Result<(), ProviderError> {
         let source_config = source_config.value();
         Self::validate_config_fields(source_config)?;
-        Self::validate_config_shape(source_config)?;
+        let _config = Self::validate_config_shape(source_config)?;
         Ok(())
     }
 }

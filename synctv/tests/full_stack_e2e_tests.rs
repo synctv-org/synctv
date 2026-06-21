@@ -2483,7 +2483,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--source-provider",
             "direct_url",
             "--source-config-json",
-            "{\"url\":\"https://cdn.example.com/cli-e2e.mp4\"}",
+            "{\"medias\":[{\"url\":\"https://cdn.example.com/cli-e2e.mp4\"}]}",
             "--name",
             "CLI E2E Media",
         ],
@@ -2560,7 +2560,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         page: 1,
         page_size: 50,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         dynamic_only: None,
         sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,
@@ -2589,7 +2589,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
         page: 1,
         page_size: 50,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -2617,11 +2617,17 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     assert_eq!(first_media.room_id, room_id);
     assert_eq!(first_media.id, media_two_id);
     assert_eq!(first_media.name, "CLI E2E Media Second");
-    assert_eq!(first_media.source_provider, "direct_url");
+    assert_eq!(
+        first_media.source_provider,
+        synctv_proto::source_config::SourceProvider::DirectUrl as i32
+    );
     assert_eq!(first_media.provider_instance_name, "");
     assert_eq!(second_media.id, media_one_id);
     assert_eq!(second_media.name, "CLI E2E Media");
-    assert_eq!(second_media.source_provider, "direct_url");
+    assert_eq!(
+        second_media.source_provider,
+        synctv_proto::source_config::SourceProvider::DirectUrl as i32
+    );
     assert_eq!(second_media.provider_instance_name, "");
 }
 
@@ -5144,8 +5150,7 @@ async fn full_stack_cli_provider_create_rejects_unsupported_provider_type() {
         String::from_utf8_lossy(&provider_add.stderr),
     );
     assert!(
-        String::from_utf8_lossy(&provider_add.stderr)
-            .contains("unsupported provider 'custom_local'"),
+        String::from_utf8_lossy(&provider_add.stderr).contains("invalid value 'custom_local'"),
         "stderr should explain unsupported provider type: {}",
         String::from_utf8_lossy(&provider_add.stderr)
     );
@@ -5251,7 +5256,7 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
             synctv_proto::providers::common::ListProviderInstancesRequest {
                 page: 1,
                 page_size: 50,
-                provider_type: "alist".to_string(),
+                provider_type: synctv_proto::source_config::SourceProvider::Alist as i32,
                 search: String::new(),
                 enabled: None,
                 tls: None,
@@ -7394,7 +7399,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         page: 1,
         page_size: 50,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -7426,7 +7431,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
                 page: 1,
                 page_size: 50,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -7745,7 +7750,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 page: 1,
                 page_size: 100,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -8334,7 +8339,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
                 page: 1,
                 page_size: 100,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -8659,7 +8664,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         page: 1,
         page_size: 50,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -8694,7 +8699,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
                 page: 1,
                 page_size: 50,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,

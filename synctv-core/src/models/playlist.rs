@@ -9,6 +9,7 @@ use serde_json::Value as JsonValue;
 use super::{
     id::{PlaylistId, RoomId, UserId},
     query::SortDirection,
+    SourceProvider,
 };
 
 sort_field_enum! {
@@ -28,7 +29,7 @@ sort_field_enum! {
 pub struct PlaylistListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
-    pub source_provider: Option<String>,
+    pub source_provider: Option<SourceProvider>,
     pub provider_instance_name: Option<String>,
     pub dynamic_only: Option<bool>,
     pub availability: Option<bool>,
@@ -67,10 +68,7 @@ pub struct Playlist {
     pub position: f64,
 
     // Dynamic folder fields
-    /// Provider type name for dynamic folders (e.g., "alist", "emby").
-    /// The database stores the corresponding numeric provider type code.
-    /// NULL means a static folder with manually added media.
-    pub source_provider: Option<String>,
+    pub source_provider: Option<SourceProvider>,
     pub source_config: Option<JsonValue>,
     pub provider_instance_name: Option<String>,
 
@@ -111,7 +109,7 @@ pub struct CreatePlaylistRequest {
     pub parent_id: Option<PlaylistId>,
 
     // Dynamic folder fields
-    pub source_provider: Option<String>,
+    pub source_provider: Option<SourceProvider>,
     pub source_config: Option<JsonValue>,
     pub provider_instance_name: Option<String>,
 }
@@ -147,7 +145,7 @@ mod tests {
     fn make_playlist(
         name: &str,
         parent_id: Option<PlaylistId>,
-        source_provider: Option<String>,
+        source_provider: Option<SourceProvider>,
     ) -> Playlist {
         Playlist {
             id: PlaylistId::expect_positive(1),
@@ -184,7 +182,7 @@ mod tests {
         let dynamic = make_playlist(
             "Alist Folder",
             Some(PlaylistId::expect_positive(2)),
-            Some("alist".to_string()),
+            Some(SourceProvider::Alist),
         );
         assert!(dynamic.is_dynamic());
         assert!(!dynamic.is_static());

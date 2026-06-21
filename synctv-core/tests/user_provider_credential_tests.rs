@@ -8,7 +8,10 @@ use chrono::{Duration, Utc};
 use serde_json::json;
 use synctv_core::{
     credential_encryption::CredentialEncryption,
-    models::{ProviderInstance, ProviderType, SignupMethod, User, UserId, UserProviderCredential},
+    models::{
+        ProviderInstance, ProviderType, SignupMethod, SourceProvider, User, UserId,
+        UserProviderCredential,
+    },
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
@@ -70,7 +73,11 @@ fn make_provider_instance(name: &str, providers: &[&str]) -> ProviderInstance {
         insecure_tls: false,
         providers: providers
             .iter()
-            .map(|provider| (*provider).to_string())
+            .map(|provider| {
+                provider
+                    .parse::<SourceProvider>()
+                    .checked("test provider should be known")
+            })
             .collect(),
         enabled: true,
         created_at: Utc::now(),

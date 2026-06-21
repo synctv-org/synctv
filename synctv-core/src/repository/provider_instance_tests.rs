@@ -89,7 +89,7 @@ async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_p
                 timeout: "10s".to_string(),
                 tls: false,
                 insecure_tls: false,
-                providers: vec!["alist".to_string()],
+                providers: vec![SourceProvider::Alist],
                 enabled: true,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),

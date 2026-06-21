@@ -860,7 +860,7 @@ mod tests {
                     timeout_seconds: 10,
                     tls: false,
                     insecure_tls: false,
-                    providers: vec![synctv_core::provider::BilibiliProvider::NAME.to_string()],
+                    providers: vec![synctv_core::models::SourceProvider::Bilibili],
                 },
             ))
             .await?;

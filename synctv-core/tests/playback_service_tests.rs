@@ -11,8 +11,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole,
-        UserStatus,
+        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, SourceProvider, User, UserId,
+        UserRole, UserStatus,
     },
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
@@ -107,8 +107,10 @@ async fn attach_test_media(
         name: "Playback Service Test Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -286,8 +288,10 @@ async fn test_switch_media_resets_position() {
         name: "Test Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -358,8 +362,10 @@ async fn test_switch_media_rejects_target() {
         name: "Standalone Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/standalone.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/standalone.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -422,8 +428,10 @@ async fn test_switch_media_rejects_inactive_creator() {
         name: "Inactive Creator Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/inactive.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/inactive.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -492,8 +500,10 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         name: "Clearable Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/clearable.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/clearable.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -718,8 +728,10 @@ async fn test_play_next_concurrent_playlist_modification() {
             name: format!("Video {i}"),
             description: String::new(),
             position: f64::from(i),
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({"url": format!("https://example.com/video{}.mp4", i)}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/video{i}.mp4"
+            )),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: Utc::now(),
@@ -804,8 +816,10 @@ async fn test_play_next_at_end_of_playlist() {
             name: format!("End Video {i}"),
             description: String::new(),
             position: f64::from(i),
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({"url": format!("https://example.com/end{}.mp4", i)}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/end{i}.mp4"
+            )),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: Utc::now(),
@@ -883,8 +897,10 @@ async fn test_play_next_with_loop_enabled() {
             name: format!("Loop Video {i}"),
             description: String::new(),
             position: f64::from(i),
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({"url": format!("https://example.com/loop{}.mp4", i)}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/loop{i}.mp4"
+            )),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: Utc::now(),
@@ -1086,8 +1102,10 @@ async fn test_state_consistency_after_mixed_operations() {
         name: "Mixed Test Video".to_string(),
         description: String::new(),
         position: 0.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({"url": "https://example.com/mixed.mp4"}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/mixed.mp4",
+        ),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),

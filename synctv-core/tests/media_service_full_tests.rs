@@ -10,7 +10,9 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    models::{Playlist, RoomMemberPermissionBits, User, UserId, UserRole, UserStatus},
+    models::{
+        Playlist, RoomMemberPermissionBits, SourceProvider, User, UserId, UserRole, UserStatus,
+    },
     provider::DynamicListQuery,
     repository::{ProviderInstanceRepository, UserRepository},
     service::{
@@ -214,9 +216,11 @@ async fn test_add_media_without_permission_denied() {
         playlist_id: Some(playlist.id),
         name: "Forbidden Video".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: serde_json::json!({"url": "https://example.com/vid.mp4"}),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/vid.mp4",
+        ),
     };
 
     let result = media_service.add_media(room.id, member.id, request).await;
@@ -262,9 +266,11 @@ async fn test_add_media_with_permission_succeeds() {
         playlist_id: Some(playlist.id),
         name: "Good Video".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: serde_json::json!({"url": "https://example.com/good.mp4"}),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/good.mp4",
+        ),
     };
 
     let result = media_service.add_media(room.id, creator.id, request).await;
@@ -305,10 +311,10 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
         playlist_id: Some(playlist.id),
         name: "Bilibili Video".to_string(),
         description: String::new(),
-        source_provider: "bilibili".to_string(),
+        source_provider: SourceProvider::Bilibili,
         provider_instance_name: None,
         source_config: serde_json::json!({
-            "type": "video",
+            "kind": "video",
             "bvid": "BV1GJ411x7gL",
             "cid": 12345,
             "credential_ref": {
@@ -358,13 +364,13 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
         playlist_id: Some(playlist.id),
         name: "Bilibili Missing Repo".to_string(),
         description: String::new(),
-        source_provider: "bilibili".to_string(),
+        source_provider: SourceProvider::Bilibili,
         provider_instance_name: None,
-        source_config: serde_json::json!({
-            "type": "video",
-            "bvid": "BV1GJ411x7gL",
-            "cid": 12345
-        }),
+        source_config: synctv_core_testing::bilibili_video_media_source_config(
+            "BV1GJ411x7gL",
+            12345,
+            false,
+        ),
     };
 
     let media = room_service
@@ -373,7 +379,7 @@ async fn test_add_media_with_bilibili_without_repo_allows_anonymous_playback() {
         .await
         .checked("Bilibili media should allow anonymous playback without credential repo");
 
-    assert_eq!(media.source_provider, "bilibili");
+    assert_eq!(media.source_provider, SourceProvider::Bilibili);
 }
 
 #[tokio::test]
@@ -410,11 +416,11 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
                 playlist_id: Some(playlist.id),
                 name: "Live Proxy Source".to_string(),
                 description: String::new(),
-                source_provider: "live_proxy".to_string(),
+                source_provider: SourceProvider::LiveProxy,
                 provider_instance_name: None,
-                source_config: serde_json::json!({
-                    "url": "http://127.0.0.1/live/source.flv"
-                }),
+                source_config: synctv_core_testing::live_proxy_pull_live_media_source_config(
+                    "http://127.0.0.1/live/source.flv",
+                ),
             },
         )
         .await
@@ -478,7 +484,7 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         name: "Alist Dynamic".to_string(),
         description: String::new(),
         parent_id: None,
-        source_provider: Some("alist".to_string()),
+        source_provider: Some(SourceProvider::Alist),
         source_config: Some(serde_json::json!({
             "path": "/media/library",
             "server_id": "alist-server"
@@ -535,7 +541,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         cover_file_reference_id: None,
         parent_id: None,
         position: 0.0,
-        source_provider: Some("alist".to_string()),
+        source_provider: Some(SourceProvider::Alist),
         source_config: Some(serde_json::json!({
             "path": "/media/library",
             "server_id": "alist-server"
@@ -608,9 +614,11 @@ async fn test_add_media_cross_room_playlist_rejected() {
         playlist_id: Some(playlist_b.id),
         name: "Cross Room Video".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: serde_json::json!({"url": "https://example.com/cross.mp4"}),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/cross.mp4",
+        ),
     };
 
     let result = media_service
@@ -654,10 +662,12 @@ async fn test_add_media_batch_over_100_rejected() {
         .map(|i| AddMediaRequest {
             playlist_id: Some(playlist.id),
             name: format!("Batch Video {i}"),
-                description: String::new(),
-            source_provider: "direct_url".to_string(),
+            description: String::new(),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
-            source_config: serde_json::json!({"url": format!("https://example.com/batch{}.mp4", i)}),
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/batch{i}.mp4"
+            )),
         })
         .collect();
 
@@ -744,9 +754,11 @@ async fn test_add_media_batch_exactly_100_accepted() {
             playlist_id: Some(playlist.id),
             name: format!("Video {i}"),
             description: String::new(),
-            source_provider: "direct_url".to_string(),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
-            source_config: serde_json::json!({"url": format!("https://example.com/v{}.mp4", i)}),
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/v{i}.mp4"
+            )),
         })
         .collect();
 
@@ -798,9 +810,11 @@ async fn test_add_media_batch_uses_batch_target_playlist() {
             playlist_id: Some(stray_playlist.id),
             name: format!("Targeted Video {i}"),
             description: String::new(),
-            source_provider: "direct_url".to_string(),
+            source_provider: SourceProvider::DirectUrl,
             provider_instance_name: None,
-            source_config: serde_json::json!({"url": format!("https://example.com/target{}.mp4", i)}),
+            source_config: synctv_core_testing::direct_url_media_source_config(format!(
+                "https://example.com/target{i}.mp4"
+            )),
         })
         .collect();
 
@@ -851,9 +865,11 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         playlist_id: Some(playlist.id),
         name: "Original Name".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: serde_json::json!({"url": "https://example.com/edit.mp4"}),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/edit.mp4",
+        ),
     };
     let media = media_service
         .add_media(room.id, creator.id, add_req)
@@ -949,8 +965,10 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         name: "Media".to_string(),
         description: String::new(),
         position: 1024.0,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/media.mp4",
+        ),
         provider_instance_name: None,
         creator_id: Some(owner.id),
         cover_file_reference_id: None,
@@ -1016,8 +1034,10 @@ async fn test_move_media_reorders_using_anchor_positions() {
             name: "Media 1".to_string(),
             description: String::new(),
             position: 1024.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/media-1.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
@@ -1035,8 +1055,10 @@ async fn test_move_media_reorders_using_anchor_positions() {
             name: "Media 2".to_string(),
             description: String::new(),
             position: 2048.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/media-2.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
@@ -1112,8 +1134,10 @@ async fn test_move_media_batch_preserves_request_order() {
         name: name.to_string(),
         description: String::new(),
         position,
-        source_provider: "direct_url".to_string(),
-        source_config: serde_json::json!({}),
+        source_provider: SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(format!(
+            "https://example.com/{name}.mp4"
+        )),
         provider_instance_name: None,
         creator_id: Some(owner.id),
         cover_file_reference_id: None,
@@ -1226,8 +1250,10 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             name: "Move Me".to_string(),
             description: String::new(),
             position: 1024.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/move-me.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
@@ -1245,8 +1271,10 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             name: "Already There".to_string(),
             description: String::new(),
             position: 1024.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/already-there.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
@@ -1338,8 +1366,10 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             name: "A".to_string(),
             description: String::new(),
             position: 1024.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/a.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
@@ -1357,8 +1387,10 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             name: "B".to_string(),
             description: String::new(),
             position: 2048.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({}),
+            source_provider: SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/b.mp4",
+            ),
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,

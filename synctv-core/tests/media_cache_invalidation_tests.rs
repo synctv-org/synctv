@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
     models::{
-        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus, User,
-        UserId, UserRole, UserStatus,
+        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus,
+        SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
@@ -150,7 +150,7 @@ async fn setup_media_edit_fixture(
         timeout: "30".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["direct_url".to_string()],
+        providers: vec![SourceProvider::DirectUrl],
         enabled: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -210,11 +210,11 @@ async fn test_edit_media_sends_notification() {
         playlist_id: Some(fixture.playlist.id),
         name: "Test Media".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: json!({
-            "url": "https://example.com/video.mp4"
-        }),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
     };
 
     let media = ok(
@@ -285,11 +285,11 @@ async fn test_edit_media_without_notification_service_succeeds() {
         playlist_id: Some(fixture.playlist.id),
         name: "Test Media".to_string(),
         description: String::new(),
-        source_provider: "direct_url".to_string(),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: json!({
-            "url": "https://example.com/video.mp4"
-        }),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
     };
 
     let media = ok(

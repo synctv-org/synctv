@@ -13,6 +13,7 @@ pub mod postgres;
 pub mod redis;
 pub mod result;
 pub mod services;
+pub mod source_config;
 
 pub(crate) fn test_temp_dir() -> PathBuf {
     let path = std::env::temp_dir();
@@ -49,4 +50,10 @@ pub use services::{
     create_test_token_blacklist_store_service, create_test_user_service, failing_redis_runtime,
     opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
     opaque_register_user_with_client_ip,
+};
+pub use source_config::{
+    alist_directory_playlist_source_config, alist_file_media_source_config,
+    bilibili_video_media_source_config, direct_url_media_source_config,
+    direct_url_media_source_config_with_headers, live_proxy_pull_live_media_source_config,
+    rtmp_managed_live_media_source_config,
 };

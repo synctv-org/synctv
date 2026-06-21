@@ -518,8 +518,10 @@ mod tests {
             name: "demo".to_string(),
             description: String::new(),
             position: 1024.0,
-            source_provider: "direct_url".to_string(),
-            source_config: serde_json::json!({ "url": "https://example.test/video.mp4" }),
+            source_provider: synctv_core::models::SourceProvider::DirectUrl,
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.test/video.mp4",
+            ),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: chrono::Utc::now(),

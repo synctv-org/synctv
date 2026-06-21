@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use synctv_core::models::{
-    FromProviderParams, Media, MediaId, Playlist, PlaylistId, RoomMember, RoomRole,
+    FromProviderParams, Media, MediaId, Playlist, PlaylistId, RoomMember, RoomRole, SourceProvider,
 };
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
@@ -75,8 +75,10 @@ async fn attach_test_media(
         creator_id: Some(owner_id),
         name: "Playback Repository Test Video".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
-        provider_name: "direct_url".to_string(),
+        source_config: synctv_core_testing::direct_url_media_source_config(
+            "https://example.com/video.mp4",
+        ),
+        source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
     });
@@ -311,8 +313,10 @@ async fn test_find_playback_for_creator_locks_rows_until_transaction_commit() {
                 name: "Creator Lock Media".to_string(),
                 description: String::new(),
                 position: 0.0,
-                source_provider: "direct_url".to_string(),
-                source_config: serde_json::json!({"url": "https://example.com/creator-lock.mp4"}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/creator-lock.mp4",
+                ),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -428,8 +432,10 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
                 name: "Room B Media".to_string(),
                 description: String::new(),
                 position: 0.0,
-                source_provider: "direct_url".to_string(),
-                source_config: serde_json::json!({"url": "https://example.com/room-b.mp4"}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/room-b.mp4",
+                ),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -510,8 +516,10 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
                 name: "Room Delete Media".to_string(),
                 description: String::new(),
                 position: 0.0,
-                source_provider: "direct_url".to_string(),
-                source_config: serde_json::json!({"url": "https://example.com/delete-media.mp4"}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/delete-media.mp4",
+                ),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),
@@ -613,8 +621,10 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
                 name: "Room Playlist Media".to_string(),
                 description: String::new(),
                 position: 0.0,
-                source_provider: "direct_url".to_string(),
-                source_config: serde_json::json!({"url": "https://example.com/delete-playlist.mp4"}),
+                source_provider: SourceProvider::DirectUrl,
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/delete-playlist.mp4",
+                ),
                 provider_instance_name: None,
                 cover_file_reference_id: None,
                 added_at: Utc::now(),

@@ -5,7 +5,6 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Utc;
-use serde_json::json;
 use synctv_api::impls::ClientApiImpl;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
@@ -92,8 +91,10 @@ fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) 
         name: name.to_string(),
         description: String::new(),
         position: f64::from(position),
-        source_provider: "direct_url".to_string(),
-        source_config: json!({ "url": format!("https://example.com/{name}.mp4") }),
+        source_provider: synctv_core::models::SourceProvider::DirectUrl,
+        source_config: synctv_core_testing::direct_url_media_source_config(format!(
+            "https://example.com/{name}.mp4"
+        )),
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: now,
@@ -264,7 +265,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
                 page: 1,
                 page_size: 20,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -376,7 +377,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 page: 1,
                 page_size: 1,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -404,7 +405,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
                 page: 2,
                 page_size: 1,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -448,7 +449,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
         page: 1,
         page_size: 20,
         search: String::new(),
-        source_provider: String::new(),
+        source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         sort_by: synctv_proto::client::MediaListSortBy::Position as i32,
         sort_direction: synctv_proto::client::SortDirection::Asc as i32,
@@ -525,7 +526,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
                 page: 1,
                 page_size: 20,
                 search: String::new(),
-                source_provider: String::new(),
+                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 dynamic_only: None,
                 sort_by: synctv_proto::client::PlaylistListSortBy::Position as i32,

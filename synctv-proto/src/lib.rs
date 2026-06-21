@@ -64,6 +64,17 @@ pub mod common {
     ));
 }
 
+// Provider source configuration contracts
+#[allow(clippy::large_enum_variant)]
+#[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+#[allow(clippy::pedantic)]
+pub mod source_config {
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.source_config.rs"
+    ));
+}
+
 // Client API
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -210,6 +221,58 @@ mod tests {
 
     fn validation_error_text(error: &prost_protovalidate::Error) -> String {
         error.to_string()
+    }
+
+    fn direct_url_media_source_config(
+        url: &str,
+    ) -> Option<crate::source_config::MediaSourceConfig> {
+        Some(crate::source_config::MediaSourceConfig {
+            provider: Some(
+                crate::source_config::media_source_config::Provider::DirectUrl(
+                    crate::source_config::DirectUrlMediaSourceConfig {
+                        medias: vec![crate::source_config::DirectUrlMediaResourceConfig {
+                            name: String::new(),
+                            url: url.to_string(),
+                            headers: Default::default(),
+                            format: String::new(),
+                        }],
+                        default_media_index: None,
+                        subtitles: Vec::new(),
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
+                    },
+                ),
+            ),
+        })
+    }
+
+    fn alist_media_source_config(path: &str) -> Option<crate::source_config::MediaSourceConfig> {
+        Some(crate::source_config::MediaSourceConfig {
+            provider: Some(crate::source_config::media_source_config::Provider::Alist(
+                crate::source_config::AlistMediaSourceConfig {
+                    server_id: "alist-main".to_string(),
+                    path: path.to_string(),
+                    password: None,
+                },
+            )),
+        })
+    }
+
+    fn alist_playlist_source_config(
+        path: &str,
+    ) -> Option<crate::source_config::PlaylistSourceConfig> {
+        Some(crate::source_config::PlaylistSourceConfig {
+            provider: Some(
+                crate::source_config::playlist_source_config::Provider::Alist(
+                    crate::source_config::AlistPlaylistSourceConfig {
+                        server_id: "alist-main".to_string(),
+                        path: path.to_string(),
+                        password: None,
+                    },
+                ),
+            ),
+        })
     }
 
     // Verifies encode -> decode produces identical messages for critical types.
@@ -806,30 +869,37 @@ mod tests {
 
     #[test]
     fn http_json_create_playlist_request_accepts_object_source_config() {
-        let json =
-            r#"{"name":"Season 1","source_provider":"alist","source_config":{"path":"/tv"}}"#;
+        let json = r#"{"name":"Season 1","source_provider":"alist","source_config":{"alist":{"server_id":"alist-main","path":"/tv"}}}"#;
 
         let decoded: crate::client::CreatePlaylistRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
         assert_eq!(decoded.name, "Season 1");
-        assert_eq!(decoded.source_provider, "alist");
-        let config_json: serde_json::Value = serde_json::from_slice(&decoded.source_config)
-            .expect("source_config bytes should contain JSON");
-        assert_eq!(config_json, serde_json::json!({"path":"/tv"}));
+        assert_eq!(
+            decoded.source_provider,
+            crate::source_config::SourceProvider::Alist as i32
+        );
+        assert_eq!(decoded.source_config, alist_playlist_source_config("/tv"));
+
+        let encoded = serde_json::to_value(&decoded).expect("request should serialize");
+        assert_eq!(
+            encoded["source_config"],
+            serde_json::json!({
+                "alist": {
+                    "server_id": "alist-main",
+                    "path": "/tv",
+                    "password": null
+                }
+            })
+        );
     }
 
     #[test]
-    fn http_json_create_playlist_request_preserves_array_source_config() {
+    fn http_json_create_playlist_request_rejects_untyped_source_config() {
         let json = r#"{"name":"Season 1","source_provider":"alist","source_config":[1,2,3]}"#;
 
-        let decoded: crate::client::CreatePlaylistRequest =
-            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
-
-        assert_eq!(decoded.source_config, br"[1,2,3]".to_vec());
-        let config_json: serde_json::Value = serde_json::from_slice(&decoded.source_config)
-            .expect("source_config bytes should contain JSON");
-        assert_eq!(config_json, serde_json::json!([1, 2, 3]));
+        serde_json::from_str::<crate::client::CreatePlaylistRequest>(json)
+            .expect_err("source_config requires a typed provider object");
     }
 
     #[test]
@@ -1665,7 +1735,7 @@ mod tests {
             page: -1,
             page_size: 101,
             search: String::new(),
-            source_provider: String::new(),
+            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             dynamic_only: None,
             sort_by: 99,
@@ -1678,7 +1748,7 @@ mod tests {
             page: -1,
             page_size: 101,
             search: String::new(),
-            source_provider: String::new(),
+            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             sort_by: 99,
             sort_direction: 99,
@@ -1702,7 +1772,7 @@ mod tests {
             page: 0,
             page_size: 0,
             search: String::new(),
-            source_provider: String::new(),
+            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             dynamic_only: Some(true),
             sort_by: crate::client::PlaylistListSortBy::Unspecified as i32,
@@ -1717,7 +1787,7 @@ mod tests {
             page: 0,
             page_size: 0,
             search: String::new(),
-            source_provider: String::new(),
+            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             sort_by: crate::client::MediaListSortBy::Unspecified as i32,
             sort_direction: crate::client::SortDirection::Unspecified as i32,
@@ -1732,7 +1802,7 @@ mod tests {
         let provider_instances = crate::providers::common::ListProviderInstancesRequest {
             page: -1,
             page_size: 101,
-            provider_type: String::new(),
+            provider_type: crate::source_config::SourceProvider::Unspecified as i32,
             search: String::new(),
             enabled: None,
             tls: None,
@@ -1815,7 +1885,7 @@ mod tests {
         crate::validate(&crate::providers::common::ListProviderInstancesRequest {
             page: 0,
             page_size: 0,
-            provider_type: "alist".into(),
+            provider_type: crate::source_config::SourceProvider::Alist as i32,
             search: "edge".into(),
             enabled: Some(true),
             tls: Some(true),
@@ -1940,8 +2010,8 @@ mod tests {
             &crate::validate(&crate::client::CreatePlaylistRequest {
                 name: "a".repeat(256),
                 parent_id: String::new(),
-                source_provider: "alist".into(),
-                source_config: Vec::new(),
+                source_provider: crate::source_config::SourceProvider::Alist as i32,
+                source_config: None,
                 provider_instance_name: String::new(),
                 description: String::new(),
             })
@@ -1959,8 +2029,8 @@ mod tests {
         crate::validate(&crate::client::CreatePlaylistRequest {
             name: "Dynamic".into(),
             parent_id: String::new(),
-            source_provider: "alist".into(),
-            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            source_provider: crate::source_config::SourceProvider::Alist as i32,
+            source_config: alist_playlist_source_config("/tv"),
             provider_instance_name: String::new(),
             description: String::new(),
         })
@@ -2053,9 +2123,9 @@ mod tests {
     fn validate_add_media_request_allows_missing_provider_instance_for_default_provider() {
         crate::validate(&crate::client::AddMediaRequest {
             playlist_id: None,
-            source_provider: "alist".into(),
+            source_provider: crate::source_config::SourceProvider::Alist as i32,
             provider_instance_name: String::new(),
-            source_config: br#"{"path":"/tv"}"#.to_vec(),
+            source_config: alist_media_source_config("/tv"),
             name: String::new(),
             description: String::new(),
         })
@@ -2067,9 +2137,9 @@ mod tests {
         let error = validation_error_text(
             &crate::validate(&crate::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: String::new(),
+                source_provider: crate::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
-                source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+                source_config: direct_url_media_source_config("https://example.com/video.mp4"),
                 name: "a".repeat(501),
                 description: String::new(),
             })
@@ -2083,9 +2153,9 @@ mod tests {
     fn validate_add_media_batch_request_rejects_too_many_items() {
         let template = crate::client::AddMediaRequest {
             playlist_id: None,
-            source_provider: String::new(),
+            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
-            source_config: br#"{"url":"https://example.com/video.mp4"}"#.to_vec(),
+            source_config: direct_url_media_source_config("https://example.com/video.mp4"),
             name: String::new(),
             description: String::new(),
         };
@@ -2360,14 +2430,20 @@ mod tests {
         let decoded: crate::providers::common::ListAvailableProviderInstancesRequest =
             serde_json::from_str(r"{}")
                 .expect("Provider available instances query should allow omitted provider type");
-        assert!(decoded.provider_type.is_empty());
+        assert_eq!(
+            decoded.provider_type,
+            crate::source_config::SourceProvider::Unspecified as i32
+        );
 
         let decoded: crate::providers::common::ListProviderInstancesRequest =
             serde_json::from_str(r"{}")
                 .expect("Provider instances query should allow omitted filters");
         assert_eq!(decoded.page, 0);
         assert_eq!(decoded.page_size, 0);
-        assert!(decoded.provider_type.is_empty());
+        assert_eq!(
+            decoded.provider_type,
+            crate::source_config::SourceProvider::Unspecified as i32
+        );
         assert!(decoded.search.is_empty());
         assert_eq!(decoded.enabled, None);
         assert_eq!(decoded.tls, None);

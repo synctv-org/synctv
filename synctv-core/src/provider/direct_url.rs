@@ -8,11 +8,12 @@ use super::{
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::media::{
-    PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
+    PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
+use crate::models::DirectUrlMediaSourceConfig;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -148,25 +149,12 @@ impl DirectUrlProvider {
         Ok(parsed)
     }
 
-    fn playback_cache_key(config: &DirectUrlSourceConfig) -> String {
+    fn playback_cache_key(config: &DirectUrlMediaSourceConfig) -> String {
         use sha2::{Digest, Sha256};
 
         let mut hasher = Sha256::new();
-        hasher.update(config.url.as_bytes());
-        hasher.update(b"\0");
-        let mut header_entries: Vec<_> = config.headers.iter().collect();
-        header_entries.sort_unstable_by(|(left_name, left_value), (right_name, right_value)| {
-            left_name
-                .cmp(right_name)
-                .then_with(|| left_value.cmp(right_value))
-        });
-
-        for (name, value) in header_entries {
-            hasher.update(name.as_bytes());
-            hasher.update(b"=");
-            hasher.update(value.as_bytes());
-            hasher.update(b"\0");
-        }
+        let bytes = serde_json::to_vec(config).unwrap_or_default();
+        hasher.update(bytes);
 
         let cache_key_suffix: String = hex::encode(hasher.finalize()).chars().take(16).collect();
         format!("playback:{cache_key_suffix}")
@@ -179,20 +167,38 @@ impl Default for DirectUrlProvider {
     }
 }
 
-/// `DirectUrl` source configuration
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct DirectUrlSourceConfig {
-    url: String,
-    #[serde(default)]
-    headers: HashMap<String, String>,
-}
-
-impl TryFrom<&Value> for DirectUrlSourceConfig {
+impl TryFrom<&Value> for DirectUrlMediaSourceConfig {
     type Error = ProviderError;
 
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        super::parse_source_config(value, "DirectUrl")
+        super::reject_source_config_provider_instance_name(value, "DirectUrl")?;
+        let config: DirectUrlMediaSourceConfig = super::parse_source_config(value, "DirectUrl")?;
+        if config.medias.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl source_config.medias must contain at least one media".to_string(),
+            ));
+        }
+
+        let check_index = |index: Option<usize>, len: usize, field: &str| {
+            match index {
+                Some(index) if index >= len => Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl {field} {index} is out of bounds"
+                ))),
+                _ => Ok(()),
+            }
+        };
+        check_index(config.default_media_index, config.medias.len(), "default_media_index")?;
+        check_index(
+            config.default_subtitle_index,
+            config.subtitles.len(),
+            "default_subtitle_index",
+        )?;
+        check_index(
+            config.default_danmaku_index,
+            config.danmakus.len(),
+            "default_danmaku_index",
+        )?;
+        Ok(config)
     }
 }
 
@@ -430,13 +436,19 @@ impl MediaProvider for DirectUrlProvider {
     ) -> Result<(), ProviderError> {
         super::reject_source_config_provider_instance_name(source_config.value(), "DirectUrl")?;
 
-        let config = DirectUrlSourceConfig::try_from(source_config.value())?;
-
-        Self::validate_source_url(&config.url, &self.ssrf_guard)?;
-
-        // Validate custom headers: reject forbidden header names that could be
-        // used for request smuggling or credential injection.
-        Self::validate_headers(&config.headers)?;
+        let config = DirectUrlMediaSourceConfig::try_from(source_config.value())?;
+        for media in &config.medias {
+            Self::validate_source_url(&media.url, &self.ssrf_guard)?;
+            Self::validate_headers(&media.headers)?;
+        }
+        for subtitle in &config.subtitles {
+            Self::validate_source_url(&subtitle.url, &self.ssrf_guard)?;
+            Self::validate_headers(&subtitle.headers)?;
+        }
+        for danmaku in &config.danmakus {
+            Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
+            Self::validate_headers(&danmaku.headers)?;
+        }
 
         Ok(())
     }
@@ -448,8 +460,16 @@ impl MediaProvider for DirectUrlProvider {
     ) -> Result<PlaybackResult, ProviderError> {
         super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
 
-        let config = DirectUrlSourceConfig::try_from(source_config)?;
-        Self::validate_source_url(&config.url, &self.ssrf_guard)?;
+        let config = DirectUrlMediaSourceConfig::try_from(source_config)?;
+        for media in &config.medias {
+            Self::validate_source_url(&media.url, &self.ssrf_guard)?;
+        }
+        for subtitle in &config.subtitles {
+            Self::validate_source_url(&subtitle.url, &self.ssrf_guard)?;
+        }
+        for danmaku in &config.danmakus {
+            Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
+        }
 
         let cache_key = Self::playback_cache_key(&config);
         let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
@@ -471,26 +491,92 @@ impl MediaProvider for DirectUrlProvider {
             }
         }
 
-        let format = Self::detect_format(&config.url);
+        let first_media = config
+            .medias
+            .first()
+            .ok_or_else(|| ProviderError::InvalidConfig("DirectUrl medias is empty".to_string()))?;
+        let format = if first_media.format.is_empty() {
+            Self::detect_format(&first_media.url)
+        } else {
+            first_media.format.clone()
+        };
 
         let mut playback_infos = HashMap::new();
         playback_infos.insert(
             "direct".to_string(),
             PlaybackInfo {
-                medias: vec![playback_media(
-                    "Direct".to_string(),
-                    format.clone(),
-                    None,
-                    PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
-                        url: config.url.clone(),
-                        headers: config.headers,
-                    }),
-                )],
-                default_media_index: None,
-                subtitles: Vec::new(),
-                default_subtitle_index: None,
-                danmakus: Vec::new(),
-                default_danmaku_index: None,
+                medias: config
+                    .medias
+                    .iter()
+                    .enumerate()
+                    .map(|(index, media)| {
+                        let format = if media.format.is_empty() {
+                            Self::detect_format(&media.url)
+                        } else {
+                            media.format.clone()
+                        };
+                        let name = if media.name.is_empty() {
+                            format!("Direct {}", index + 1)
+                        } else {
+                            media.name.clone()
+                        };
+                        playback_media(
+                            name,
+                            format,
+                            None,
+                            PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::Direct {
+                                url: media.url.clone(),
+                                headers: media.headers.clone(),
+                            }),
+                        )
+                    })
+                    .collect(),
+                default_media_index: config.default_media_index,
+                subtitles: config
+                    .subtitles
+                    .iter()
+                    .enumerate()
+                    .map(|(index, subtitle)| PlaybackSubtitle {
+                        name: if subtitle.name.is_empty() {
+                            format!("Subtitle {}", index + 1)
+                        } else {
+                            subtitle.name.clone()
+                        },
+                        language: if subtitle.language.is_empty() {
+                            "und".to_string()
+                        } else {
+                            subtitle.language.clone()
+                        },
+                        format: if subtitle.format.is_empty() {
+                            Self::detect_format(&subtitle.url)
+                        } else {
+                            subtitle.format.clone()
+                        },
+                        provider: PlaybackSubtitleProvider::External(PlaybackExternalSubtitle {
+                            url: subtitle.url.clone(),
+                            headers: subtitle.headers.clone(),
+                        }),
+                    })
+                    .collect(),
+                default_subtitle_index: config.default_subtitle_index,
+                danmakus: config
+                    .danmakus
+                    .iter()
+                    .enumerate()
+                    .map(|(index, danmaku)| PlaybackDanmaku {
+                        name: if danmaku.name.is_empty() {
+                            format!("Danmaku {}", index + 1)
+                        } else {
+                            danmaku.name.clone()
+                        },
+                        format: danmaku.format.clone(),
+                        provider: PlaybackDanmakuProvider::External(PlaybackExternalDanmaku {
+                            url: danmaku.url.clone(),
+                            headers: danmaku.headers.clone(),
+                        }),
+                    })
+                    .collect(),
+                default_danmaku_index: config.default_danmaku_index,
             },
         );
 
@@ -498,7 +584,7 @@ impl MediaProvider for DirectUrlProvider {
         metadata.insert("format".to_string(), json!(format));
         metadata.insert("is_live".to_string(), json!(false));
 
-        if let Some(filename) = config.url.split('/').next_back() {
+        if let Some(filename) = first_media.url.split('/').next_back() {
             metadata.insert("filename".to_string(), json!(filename));
         }
 

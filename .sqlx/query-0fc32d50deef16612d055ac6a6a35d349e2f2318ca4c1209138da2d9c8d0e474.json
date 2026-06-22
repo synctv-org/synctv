@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT EXISTS(SELECT 1 FROM file_objects WHERE storage_backend = $1 AND object_key = $2)",
+  "query": "\n            SELECT deleting_at IS NOT NULL\n            FROM file_objects\n            WHERE storage_backend = $1 AND object_key = $2\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "exists",
+        "name": "?column?",
         "type_info": "Bool",
         "origin": "Expression"
       }
@@ -20,5 +20,5 @@
       null
     ]
   },
-  "hash": "d0b90c886ad8b40d33d588745aa92478c4048196bcd09409da2174c208a4c73e"
+  "hash": "0fc32d50deef16612d055ac6a6a35d349e2f2318ca4c1209138da2d9c8d0e474"
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH ranked AS (\n                    SELECT id,\n                           created_at,\n                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn\n                    FROM chat_messages\n                ),\n                candidates AS (\n                    SELECT id, created_at\n                    FROM ranked\n                    WHERE rn > $1\n                )\n                DELETE FROM chat_messages m\n                USING candidates c\n                WHERE m.id = c.id AND m.created_at = c.created_at\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0aaae56da047351e38253cc33a0dab800092399b980c7032853174d4762d2e0c"
+}

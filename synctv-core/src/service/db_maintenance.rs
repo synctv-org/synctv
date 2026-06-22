@@ -18,7 +18,6 @@ use super::{
     cleanup::CleanupConfig, cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
     SettingsRegistry,
 };
-use crate::models::ChatAttachment;
 use crate::repository::FileStorageRepository;
 use crate::service::partitioning::u32_to_i32;
 use crate::Result as CoreResult;
@@ -163,95 +162,19 @@ impl DatabaseMaintenanceService {
     /// filter maps directly to daily partitions.
     pub async fn run_cleanup_old_chat_messages(&self) -> CoreResult<()> {
         let retention_days = self.chat_message_retention_days()?;
-        let interval = format!("{retention_days} days");
-
-        let attachments = if let Some(storage) = &self.file_storage_service {
-            let attachments = sqlx::query_as!(
-                ChatAttachment,
-                r#"
-                SELECT i.id,
-                       i.kind AS "kind!: crate::models::ChatAttachmentKind",
-                       i.room_id AS "room_id!: crate::models::RoomId",
-                       i.message_id,
-                       i.message_created_at,
-                       i.filename,
-                       i.storage_backend,
-                       i.object_key,
-                       i.url,
-                       i.mime_type,
-                       i.size_bytes,
-                       i.width,
-                       i.height,
-                       i.metadata AS "metadata!: serde_json::Value",
-                       i.created_at,
-                       NULL::TEXT AS "reuse_token?",
-                       NULL::TIMESTAMPTZ AS "reuse_expires_at?"
-                FROM chat_message_attachments i
-                INNER JOIN chat_messages m
-                    ON m.id = i.message_id AND m.created_at = i.message_created_at
-                WHERE m.created_at <= NOW() - $1::text::interval
-                ORDER BY m.created_at, m.id, i.created_at
-                "#,
-                interval,
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            if attachments.is_empty() {
-                None
-            } else {
-                Some((storage.clone(), attachments))
-            }
-        } else {
-            None
-        };
-
-        let result = sqlx::query!(
-            "DELETE FROM chat_messages WHERE created_at <= NOW() - $1::text::interval",
-            interval,
+        let deleted = cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            self.file_storage_service.as_ref(),
+            cleanup_ops::ChatMessageCleanupScope::Retention { retention_days },
+            FileStorageCleanupOrigin::RetentionExpired,
+            "old message purge",
         )
-        .execute(&self.pool)
         .await?;
-
-        let deleted = result.rows_affected();
         if deleted > 0 {
             info!(
                 deleted,
                 retention_days, "Old chat message cleanup completed"
             );
-        }
-
-        if let Some((storage, attachments)) = attachments {
-            let file_references = attachments
-                .iter()
-                .map(crate::models::ChatAttachment::file_reference_target)
-                .collect::<Vec<_>>();
-            if let Err(error) = storage
-                .delete_files(FileStorageCleanupOrigin::RetentionExpired, &file_references)
-                .await
-            {
-                warn!(
-                    error = %error,
-                    deleted,
-                    retention_days,
-                    "Chat attachment cleanup after old message purge failed"
-                );
-                if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::RetentionExpired.as_str(),
-                        &file_references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await
-                {
-                    warn!(
-                        error = %enqueue_error,
-                        deleted,
-                        retention_days,
-                        "Failed to enqueue chat attachment cleanup retry after old message purge"
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -304,11 +227,10 @@ impl DatabaseMaintenanceService {
         for job in jobs {
             record_file_cleanup_job_metric("claimed", &job.origin, &job.storage_backend);
             let file_reference = job.reference_target();
+            let delete_origin = FileStorageCleanupOrigin::parse(&job.origin)
+                .unwrap_or(FileStorageCleanupOrigin::CleanupRetry);
             match storage
-                .delete_files(
-                    FileStorageCleanupOrigin::CleanupRetry,
-                    std::slice::from_ref(&file_reference),
-                )
+                .delete_files(delete_origin, std::slice::from_ref(&file_reference))
                 .await
             {
                 Ok(()) => {

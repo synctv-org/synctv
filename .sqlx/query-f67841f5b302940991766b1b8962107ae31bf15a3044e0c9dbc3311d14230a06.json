@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                   created_at, validated_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND content_manifest_sha256 = $2\n              AND size_bytes = $3\n            ORDER BY validated_at DESC NULLS LAST, created_at ASC\n            LIMIT 1\n            ",
+  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                   created_at, validated_at, deleting_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND object_key = $2\n              AND deleting_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
@@ -90,13 +90,23 @@
             "name": "validated_at"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleting_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "deleting_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Text",
-        "Text",
-        "Int8"
+        "Text"
       ]
     },
     "nullable": [
@@ -107,8 +117,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "f7edcac7ca48654492c4ea2303341febf21974702a4725c845e6f95cec7c216f"
+  "hash": "f67841f5b302940991766b1b8962107ae31bf15a3044e0c9dbc3311d14230a06"
 }

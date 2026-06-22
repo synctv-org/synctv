@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                   created_at, validated_at\n            FROM file_objects\n            WHERE storage_backend = $1 AND object_key = $2\n            ",
+  "query": "\n            SELECT o.storage_backend, o.object_key, o.mime_type, o.size_bytes,\n                   o.content_manifest_sha256,\n                   o.metadata AS \"metadata!: serde_json::Value\",\n                   o.created_at, o.validated_at, o.deleting_at\n            FROM file_objects o\n            WHERE o.created_at < CURRENT_TIMESTAMP - ($1::BIGINT * INTERVAL '1 second')\n              AND o.deleting_at IS NULL\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM file_references r\n                  WHERE r.storage_backend = o.storage_backend\n                    AND r.object_key = o.object_key\n                    AND r.released_at IS NULL\n              )\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM file_object_variants v\n                  WHERE v.storage_backend = o.storage_backend\n                    AND v.object_key = o.object_key\n                    AND v.is_original = FALSE\n              )\n            ORDER BY o.created_at ASC, o.storage_backend ASC, o.object_key ASC\n            LIMIT $2\n            ",
   "describe": {
     "columns": [
       {
@@ -90,12 +90,23 @@
             "name": "validated_at"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleting_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "deleting_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text"
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -106,8 +117,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "51b222bd7d468b807f66fdb69311d9155706859ff0cdc23ac2864f797686c729"
+  "hash": "4aad785e9532022b547d5f6e2085327aeb88093acd6aefa5336d4a770a8126e3"
 }

@@ -21,12 +21,26 @@ use synctv_core_testing::{create_test_pool, ok};
 struct RecordingFileStorageService {
     deleted_object_keys: Mutex<Vec<String>>,
     deleted_origins: Mutex<Vec<String>>,
+    repository: Option<Arc<FileStorageRepository>>,
+}
+
+impl RecordingFileStorageService {
+    fn with_repository(repository: Arc<FileStorageRepository>) -> Self {
+        Self {
+            repository: Some(repository),
+            ..Self::default()
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl FileStorageService for RecordingFileStorageService {
     fn backend_name(&self) -> &'static str {
         "test-storage"
+    }
+
+    fn repository(&self) -> Option<Arc<FileStorageRepository>> {
+        self.repository.clone()
     }
 
     async fn create_upload_session(
@@ -63,12 +77,26 @@ impl FileStorageService for RecordingFileStorageService {
     }
 }
 
-struct FailingFileStorageService;
+struct FailingFileStorageService {
+    repository: Option<Arc<FileStorageRepository>>,
+}
+
+impl FailingFileStorageService {
+    fn with_repository(repository: Arc<FileStorageRepository>) -> Self {
+        Self {
+            repository: Some(repository),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl FileStorageService for FailingFileStorageService {
     fn backend_name(&self) -> &'static str {
         "test-storage"
+    }
+
+    fn repository(&self) -> Option<Arc<FileStorageRepository>> {
+        self.repository.clone()
     }
 
     async fn create_upload_session(
@@ -113,7 +141,8 @@ fn maintenance_with_storage(
 #[ignore = "Requires Docker"]
 async fn old_chat_message_cleanup_deletes_image_objects() {
     let (_container, pool) = create_test_pool().await;
-    let storage = Arc::new(RecordingFileStorageService::default());
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage = Arc::new(RecordingFileStorageService::with_repository(repository));
 
     let user = create_test_user(&pool).await;
     let room = create_test_room(user.id);
@@ -144,21 +173,18 @@ async fn old_chat_message_cleanup_deletes_image_objects() {
         "old chat cleanup should succeed",
     );
 
-    let deleted_object_keys = ok(
+    assert!(ok(
         storage.deleted_object_keys.lock(),
         "deleted object key recorder lock should be acquired",
     )
-    .clone();
-    assert_eq!(
-        deleted_object_keys,
-        vec!["normalized/raw/cleanup-image.webp".to_string()]
+    .is_empty());
+    let due = ok(
+        FileStorageRepository::new(pool.clone())
+            .count_due_cleanup_jobs()
+            .await,
+        "due cleanup job count should be queryable",
     );
-    let deleted_origins = ok(
-        storage.deleted_origins.lock(),
-        "deleted origin recorder lock should be acquired",
-    )
-    .clone();
-    assert_eq!(deleted_origins, vec!["retention_expired".to_string()]);
+    assert_eq!(due, 1);
 
     let message_exists = ok(
         sqlx::query_scalar!(
@@ -198,8 +224,13 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
         "chat message should be inserted",
     );
 
-    let failing_service =
-        maintenance_with_storage(pool.clone(), Arc::new(FailingFileStorageService));
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let failing_service = maintenance_with_storage(
+        pool.clone(),
+        Arc::new(FailingFileStorageService::with_repository(
+            repository.clone(),
+        )),
+    );
     ok(
         failing_service.run_cleanup_old_chat_messages().await,
         "old chat cleanup should succeed even when object cleanup fails",
@@ -244,7 +275,7 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
         "deleted origin recorder lock should be acquired",
     )
     .clone();
-    assert_eq!(deleted_origins, vec!["cleanup_retry".to_string()]);
+    assert_eq!(deleted_origins, vec!["retention_expired".to_string()]);
 
     let completed = ok(
         sqlx::query_scalar!(
@@ -270,8 +301,10 @@ async fn failed_old_file_cleanup_is_persisted_and_retried() {
 #[ignore = "Requires Docker"]
 async fn expired_file_reference_cleanup_releases_reference() {
     let (_container, pool) = create_test_pool().await;
-    let storage = Arc::new(RecordingFileStorageService::default());
-    let repository = FileStorageRepository::new(pool.clone());
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage = Arc::new(RecordingFileStorageService::with_repository(
+        repository.clone(),
+    ));
     ok(
         repository
             .upsert_object(UpsertFileObject {
@@ -308,22 +341,82 @@ async fn expired_file_reference_cleanup_releases_reference() {
     );
 
     assert_eq!(released, 1);
-    assert_eq!(
-        ok(
-            storage.deleted_object_keys.lock(),
-            "deleted object key recorder lock should be acquired"
-        )
-        .clone(),
-        vec!["database/files/expired.webp".to_string()]
+    assert!(ok(
+        storage.deleted_object_keys.lock(),
+        "deleted object key recorder lock should be acquired"
+    )
+    .is_empty());
+    let due = ok(
+        FileStorageRepository::new(pool.clone())
+            .count_due_cleanup_jobs()
+            .await,
+        "due cleanup job count should be queryable",
     );
-    assert_eq!(
-        ok(
-            storage.deleted_origins.lock(),
-            "deleted origin recorder lock should be acquired"
-        )
-        .clone(),
-        vec!["reference_expired".to_string()]
+    assert_eq!(due, 1);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn unreferenced_file_cleanup_accepts_long_object_keys() {
+    let (_container, pool) = create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage = Arc::new(RecordingFileStorageService::with_repository(
+        repository.clone(),
+    ));
+    let object_key = format!("database/files/{}.webp", "x".repeat(512));
+    ok(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "database",
+                object_key: &object_key,
+                mime_type: "image/webp",
+                size_bytes: 7,
+                content_manifest_sha256: &"b".repeat(64),
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        "long-key object should be registered",
     );
+    ok(
+        sqlx::query!(
+            "UPDATE file_objects SET created_at = CURRENT_TIMESTAMP - INTERVAL '2 days' WHERE storage_backend = $1 AND object_key = $2",
+            "database",
+            &object_key,
+        )
+        .execute(&pool)
+        .await,
+        "object should be aged",
+    );
+
+    let service = maintenance_with_storage(pool.clone(), storage.clone());
+    let scheduled = ok(
+        service.run_cleanup_unreferenced_file_objects().await,
+        "unreferenced file cleanup should succeed",
+    );
+
+    assert_eq!(scheduled, 1);
+    assert!(ok(
+        storage.deleted_object_keys.lock(),
+        "deleted object key recorder lock should be acquired"
+    )
+    .is_empty());
+    let job = ok(
+        sqlx::query!(
+            r#"
+            SELECT reference_kind, reference_id
+            FROM file_cleanup_jobs
+            WHERE storage_backend = $1 AND object_key = $2 AND completed_at IS NULL
+            "#,
+            "database",
+            &object_key,
+        )
+        .fetch_one(&pool)
+        .await,
+        "cleanup job should be queryable",
+    );
+    assert_eq!(job.reference_kind, "unreferenced_file");
+    assert!(job.reference_id.len() <= 256);
+    assert_ne!(job.reference_id, object_key);
 }
 
 async fn create_test_user(pool: &sqlx::PgPool) -> User {

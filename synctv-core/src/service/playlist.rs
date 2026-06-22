@@ -963,7 +963,7 @@ impl PlaylistService {
                 || old_reference.object_key != file.object_key
             {
                 storage
-                    .delete_files(
+                    .schedule_delete_files(
                         FileStorageCleanupOrigin::ReferenceReleased,
                         &[old_reference],
                     )
@@ -1014,7 +1014,7 @@ impl PlaylistService {
             (self.file_storage_service.as_ref(), old_reference)
         {
             storage
-                .delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
+                .schedule_delete_files(FileStorageCleanupOrigin::ReferenceReleased, &[reference])
                 .await?;
         }
 

@@ -1,10 +1,21 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO file_objects (\n                storage_backend, object_key, mime_type, size_bytes,\n                content_manifest_sha256, metadata, validated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, NULL)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,\n                metadata = EXCLUDED.metadata,\n                validated_at = NULL\n            RETURNING storage_backend, object_key, mime_type, size_bytes,\n                      content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                      created_at, validated_at\n            ",
+  "query": "\n            SELECT r.id AS file_reference_id,\n                   o.storage_backend,\n                   o.object_key,\n                   o.mime_type,\n                   o.size_bytes,\n                   o.content_manifest_sha256,\n                   r.metadata AS \"metadata!: serde_json::Value\",\n                   o.created_at,\n                   o.validated_at\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            WHERE r.id = $1\n              AND r.released_at IS NULL\n              AND o.deleting_at IS NULL\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "file_reference_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
         "name": "storage_backend",
         "type_info": "Text",
         "origin": {
@@ -15,7 +26,7 @@
         }
       },
       {
-        "ordinal": 1,
+        "ordinal": 2,
         "name": "object_key",
         "type_info": "Text",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "mime_type",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "size_bytes",
         "type_info": "Int8",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "content_manifest_sha256",
         "type_info": "Text",
         "origin": {
@@ -59,18 +70,18 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "metadata!: serde_json::Value",
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "file_objects",
+            "table": "file_references",
             "name": "metadata"
           }
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "validated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -94,12 +105,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Text",
-        "Text",
-        "Int8",
-        "Text",
-        "Jsonb"
+        "Int8"
       ]
     },
     "nullable": [
@@ -110,8 +116,9 @@
       false,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "ab0811ba095df9e084338a19f10d06905835679478269bee8b4ada020277c87a"
+  "hash": "7b08aab9e9c142b6b9371226d684fe07d0c910d284d7d17f196f90aee613e81c"
 }

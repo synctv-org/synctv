@@ -1044,7 +1044,7 @@ impl RoomService {
         };
 
         if let Err(error) = storage
-            .delete_files(FileStorageCleanupOrigin::ReferenceReleased, references)
+            .schedule_delete_files(FileStorageCleanupOrigin::ReferenceReleased, references)
             .await
         {
             tracing::warn!(

@@ -1,21 +1,10 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS file_reference_id,\n                   o.storage_backend,\n                   o.object_key,\n                   o.mime_type,\n                   o.size_bytes,\n                   o.content_manifest_sha256,\n                   r.metadata AS \"metadata!: serde_json::Value\",\n                   o.created_at,\n                   o.validated_at\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            WHERE r.reference_kind = $1\n              AND r.reference_id = $2\n              AND r.released_at IS NULL\n            ORDER BY r.updated_at DESC, r.id DESC\n            LIMIT 1\n            ",
+  "query": "\n            INSERT INTO file_objects (\n                storage_backend, object_key, mime_type, size_bytes,\n                content_manifest_sha256, metadata, validated_at, deleting_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,\n                metadata = EXCLUDED.metadata,\n                validated_at = NULL,\n                deleting_at = NULL\n            WHERE file_objects.deleting_at IS NULL\n            RETURNING storage_backend, object_key, mime_type, size_bytes,\n                      content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                      created_at, validated_at, deleting_at\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "file_reference_id",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "file_references",
-            "name": "id"
-          }
-        }
-      },
-      {
-        "ordinal": 1,
         "name": "storage_backend",
         "type_info": "Text",
         "origin": {
@@ -26,7 +15,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 1,
         "name": "object_key",
         "type_info": "Text",
         "origin": {
@@ -37,7 +26,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 2,
         "name": "mime_type",
         "type_info": "Text",
         "origin": {
@@ -48,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "size_bytes",
         "type_info": "Int8",
         "origin": {
@@ -59,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "content_manifest_sha256",
         "type_info": "Text",
         "origin": {
@@ -70,18 +59,18 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 5,
         "name": "metadata!: serde_json::Value",
         "type_info": "Jsonb",
         "origin": {
           "Table": {
-            "table": "file_references",
+            "table": "file_objects",
             "name": "metadata"
           }
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 6,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "validated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -101,12 +90,27 @@
             "name": "validated_at"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleting_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "deleting_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Text",
-        "Text"
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Jsonb"
       ]
     },
     "nullable": [
@@ -117,9 +121,9 @@
       false,
       false,
       false,
-      false,
+      true,
       true
     ]
   },
-  "hash": "5ea789ac340487b0da0c0c9aceb8ffbdc3460abd4fca365ad34dd276e5350346"
+  "hash": "b1adfc026825cdf22f949c0dc4b338697ebe8d81655092be8c77cec67c5d7eed"
 }

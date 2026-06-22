@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT i.id,\n                       i.kind AS \"kind!: crate::models::ChatAttachmentKind\",\n                       i.room_id AS \"room_id!: crate::models::RoomId\",\n                       i.message_id,\n                       i.message_created_at,\n                       i.filename,\n                       i.storage_backend,\n                       i.object_key,\n                       i.url,\n                       i.mime_type,\n                       i.size_bytes,\n                       i.width,\n                       i.height,\n                       i.metadata AS \"metadata!: serde_json::Value\",\n                       i.created_at,\n                       NULL::TEXT AS \"reuse_token?\",\n                       NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n                FROM chat_message_attachments i\n                INNER JOIN chat_messages m\n                    ON m.id = i.message_id AND m.created_at = i.message_created_at\n                WHERE m.created_at <= NOW() - $1::text::interval\n                ORDER BY m.created_at, m.id, i.created_at\n                ",
+  "query": "\n                SELECT i.id,\n                       i.kind AS \"kind!: crate::models::ChatAttachmentKind\",\n                       i.room_id AS \"room_id!: crate::models::RoomId\",\n                       i.message_id,\n                       i.message_created_at,\n                       i.filename,\n                       i.storage_backend,\n                       i.object_key,\n                       i.url,\n                       i.mime_type,\n                       i.size_bytes,\n                       i.width,\n                       i.height,\n                       i.metadata AS \"metadata!: serde_json::Value\",\n                       i.created_at,\n                       NULL::TEXT AS \"reuse_token?\",\n                       NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n                FROM chat_message_attachments i\n                INNER JOIN chat_messages m\n                    ON m.id = i.message_id AND m.created_at = i.message_created_at\n                WHERE m.created_at <= NOW() - make_interval(days => $1)\n                ORDER BY m.created_at, m.id, i.created_at\n                ",
   "describe": {
     "columns": [
       {
@@ -183,7 +183,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Int4"
       ]
     },
     "nullable": [
@@ -206,5 +206,5 @@
       null
     ]
   },
-  "hash": "20b81b761e71147f3afe99fc6b8e91238501bc8aaa605b083fa8920021b641ee"
+  "hash": "49ffcc4403439675737e64e5a5b7c20f7f9bf34cf82c05b0b045e610c1eb714e"
 }

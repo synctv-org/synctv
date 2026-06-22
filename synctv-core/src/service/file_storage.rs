@@ -489,6 +489,19 @@ impl FileStorageCleanupOrigin {
             Self::UnreferencedObject => "unreferenced_object",
         }
     }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "reference_released" => Some(Self::ReferenceReleased),
+            "reference_expired" => Some(Self::ReferenceExpired),
+            "retention_expired" => Some(Self::RetentionExpired),
+            "reference_cap_exceeded" => Some(Self::ReferenceCapExceeded),
+            "cleanup_retry" => Some(Self::CleanupRetry),
+            "unreferenced_object" => Some(Self::UnreferencedObject),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -616,6 +629,24 @@ pub trait FileStorageService: Send + Sync {
         _files: &[FileReferenceTarget],
     ) -> Result<()> {
         Ok(())
+    }
+
+    async fn schedule_delete_files(
+        &self,
+        origin: FileStorageCleanupOrigin,
+        files: &[FileReferenceTarget],
+    ) -> Result<()> {
+        let Some(repository) = self.repository() else {
+            return self.delete_files(origin, files).await;
+        };
+        repository
+            .release_references_and_enqueue_cleanup_jobs(
+                origin.as_str(),
+                files,
+                &serde_json::Value::Object(Default::default()),
+                "scheduled for asynchronous deletion",
+            )
+            .await
     }
 
     async fn cleanup_expired_upload_session(

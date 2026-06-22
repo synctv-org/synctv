@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO file_objects (\n                storage_backend, object_key, mime_type, size_bytes,\n                content_manifest_sha256, metadata, validated_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,\n                metadata = EXCLUDED.metadata,\n                validated_at = CURRENT_TIMESTAMP\n            RETURNING storage_backend, object_key, mime_type, size_bytes,\n                      content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                      created_at, validated_at\n            ",
+  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                   created_at, validated_at, deleting_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND content_manifest_sha256 = $2\n              AND size_bytes = $3\n              AND deleting_at IS NULL\n            ORDER BY validated_at DESC NULLS LAST, created_at ASC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -90,16 +90,24 @@
             "name": "validated_at"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleting_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "deleting_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Text",
         "Text",
-        "Text",
-        "Int8",
-        "Text",
-        "Jsonb"
+        "Int8"
       ]
     },
     "nullable": [
@@ -110,8 +118,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "be25e33f665dd1f2cc85af9b40e4b11b564eacbca3768e619923df89ecd44930"
+  "hash": "48cca5ce8e3b61801a94c8ffe62303598695889800f7744eb21b6085b91a5d24"
 }

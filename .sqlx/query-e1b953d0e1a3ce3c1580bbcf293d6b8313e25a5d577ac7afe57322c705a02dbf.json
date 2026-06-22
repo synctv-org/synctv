@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, object_key, mime_type, size_bytes,\n                   content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                   created_at, validated_at\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND content_manifest_sha256 = $2\n              AND size_bytes = $3\n              AND validated_at IS NOT NULL\n            ORDER BY created_at ASC\n            LIMIT 1\n            ",
+  "query": "\n            INSERT INTO file_objects (\n                storage_backend, object_key, mime_type, size_bytes,\n                content_manifest_sha256, metadata, validated_at, deleting_at\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, NULL)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                content_manifest_sha256 = EXCLUDED.content_manifest_sha256,\n                metadata = EXCLUDED.metadata,\n                validated_at = CURRENT_TIMESTAMP,\n                deleting_at = NULL\n            WHERE file_objects.deleting_at IS NULL\n            RETURNING storage_backend, object_key, mime_type, size_bytes,\n                      content_manifest_sha256, metadata AS \"metadata!: serde_json::Value\",\n                      created_at, validated_at, deleting_at\n            ",
   "describe": {
     "columns": [
       {
@@ -90,13 +90,27 @@
             "name": "validated_at"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleting_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "deleting_at"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
         "Text",
         "Text",
-        "Int8"
+        "Text",
+        "Int8",
+        "Text",
+        "Jsonb"
       ]
     },
     "nullable": [
@@ -107,8 +121,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "de9a7ee163162f3307b2ba103530cf33b16fd9a31cade033da924993d1932220"
+  "hash": "e1b953d0e1a3ce3c1580bbcf293d6b8313e25a5d577ac7afe57322c705a02dbf"
 }

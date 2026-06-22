@@ -148,6 +148,7 @@ pub struct FileObject {
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
+    pub deleting_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

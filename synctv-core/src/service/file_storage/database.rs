@@ -834,42 +834,31 @@ impl FileStorageService for DatabaseFileStorageService {
             crate::metrics::file_storage::FILE_OBJECT_DELETE_ATTEMPTS
                 .with_label_values(&[origin_label, &file.storage_backend])
                 .inc();
-            self.repository
-                .release_reference(
-                    &file.reference_kind,
-                    &file.reference_id,
+            let delete_claimed = self
+                .repository
+                .claim_object_for_delete(
                     &file.storage_backend,
                     &file.object_key,
+                    &file.reference_kind,
+                    &file.reference_id,
+                    origin == FileStorageCleanupOrigin::UnreferencedObject,
                 )
                 .await?;
-            let active_reference_count = if origin == FileStorageCleanupOrigin::UnreferencedObject {
-                self.repository
-                    .object_reference_count_excluding_kind(
-                        &file.storage_backend,
-                        &file.object_key,
-                        super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
-                    )
-                    .await?
-            } else {
-                self.repository
-                    .object_reference_count(&file.storage_backend, &file.object_key)
-                    .await?
-            };
-            if active_reference_count > 0 {
+            if !delete_claimed {
                 continue;
             }
             let derived_variants = self
                 .repository
                 .list_derived_object_variants(&file.storage_backend, &file.object_key)
                 .await?;
-            let derived_object_keys = derived_variants
+            let derived_objects = derived_variants
                 .into_iter()
-                .map(|variant| variant.object_key)
+                .map(|variant| (variant.storage_backend, variant.object_key))
                 .collect::<Vec<_>>();
-            for object_key in &derived_object_keys {
+            for (storage_backend, object_key) in &derived_objects {
                 if let Err(error) = self
                     .repository
-                    .delete_blob(&self.storage_backend, object_key)
+                    .delete_blob(storage_backend, object_key)
                     .await
                 {
                     crate::metrics::file_storage::FILE_OBJECT_DELETE_FAILURES
@@ -878,9 +867,9 @@ impl FileStorageService for DatabaseFileStorageService {
                     return Err(error);
                 }
             }
-            for object_key in derived_object_keys {
+            for (storage_backend, object_key) in derived_objects {
                 self.repository
-                    .delete_object(&file.storage_backend, &object_key)
+                    .delete_object(&storage_backend, &object_key)
                     .await?;
             }
             if let Err(error) = self

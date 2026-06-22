@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT r.id AS file_reference_id,\n                   o.storage_backend,\n                   o.object_key,\n                   o.mime_type,\n                   o.size_bytes,\n                   o.content_manifest_sha256,\n                   r.metadata AS \"metadata!: serde_json::Value\",\n                   o.created_at,\n                   o.validated_at\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            WHERE r.id = $1\n              AND r.released_at IS NULL\n            ",
+  "query": "\n            SELECT r.id AS file_reference_id,\n                   o.storage_backend,\n                   o.object_key,\n                   o.mime_type,\n                   o.size_bytes,\n                   o.content_manifest_sha256,\n                   r.metadata AS \"metadata!: serde_json::Value\",\n                   o.created_at,\n                   o.validated_at\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            WHERE r.reference_kind = $1\n              AND r.reference_id = $2\n              AND r.released_at IS NULL\n              AND o.deleting_at IS NULL\n            ORDER BY r.updated_at DESC, r.id DESC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -105,7 +105,8 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
@@ -120,5 +121,5 @@
       true
     ]
   },
-  "hash": "2e5d8c8d483ff6abdfa7039d446fa359a7576cc720a10cd3d92e492d856e7708"
+  "hash": "7d5aa189817cdf34ff3ba829c962408be3c5aea1cd2c2869504c9ad5f91d21ea"
 }

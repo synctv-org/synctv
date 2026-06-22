@@ -1,7 +1,8 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures::TryStreamExt;
 use sha2::{Digest, Sha256};
+use tokio::time::timeout;
 
 use super::*;
 use crate::{
@@ -1879,6 +1880,276 @@ async fn database_storage_delete_uses_configured_backend_name() {
         repository
             .object_exists("primary_db", "database/users/avatars/file.webp")
             .await,
+        "object lookup should succeed"
+    ));
+}
+
+#[tokio::test]
+async fn database_storage_schedules_reference_delete_before_physical_cleanup() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let storage = DatabaseFileStorageService::new(
+        "primary_db",
+        repository.clone(),
+        "test-file-storage-secret",
+    );
+    let file = FileReferenceTarget {
+        storage_backend: "primary_db".to_string(),
+        object_key: "database/users/avatars/scheduled.webp".to_string(),
+        reference_kind: "user_avatar".to_string(),
+        reference_id: "user:1".to_string(),
+    };
+    upsert_uncompressed_blob(
+        repository.as_ref(),
+        &file.storage_backend,
+        &file.object_key,
+        "image/webp",
+        b"avatar",
+    )
+    .await;
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    ok(
+        FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            &file.storage_backend,
+            &file.object_key,
+            &file.reference_kind,
+            &file.reference_id,
+            None,
+            &serde_json::Value::Object(Default::default()),
+        )
+        .await,
+        "reference should insert",
+    );
+    ok(tx.commit().await, "transaction should commit");
+
+    ok(
+        storage
+            .schedule_delete_files(
+                FileStorageCleanupOrigin::ReferenceReleased,
+                std::slice::from_ref(&file),
+            )
+            .await,
+        "delete should be scheduled",
+    );
+
+    assert_eq!(
+        ok(
+            repository
+                .object_reference_count(&file.storage_backend, &file.object_key)
+                .await,
+            "reference count should load",
+        ),
+        0
+    );
+    assert!(ok(
+        repository
+            .object_exists(&file.storage_backend, &file.object_key)
+            .await,
+        "object lookup should succeed"
+    ));
+    assert!(ok(
+        repository
+            .blob_exists(&file.storage_backend, &file.object_key)
+            .await,
+        "blob lookup should succeed"
+    ));
+
+    let jobs = ok(
+        repository.claim_due_cleanup_jobs(10, "test").await,
+        "cleanup job should claim",
+    );
+    assert_eq!(jobs.len(), 1);
+    let claimed = jobs[0].reference_target();
+    assert_eq!(claimed.storage_backend, file.storage_backend);
+    assert_eq!(claimed.object_key, file.object_key);
+    assert_eq!(claimed.reference_kind, file.reference_kind);
+    assert_eq!(claimed.reference_id, file.reference_id);
+
+    let claimed_for_delete = ok(
+        repository
+            .claim_object_for_delete(
+                &file.storage_backend,
+                &file.object_key,
+                &file.reference_kind,
+                &file.reference_id,
+                false,
+            )
+            .await,
+        "object delete should be claimable",
+    );
+    assert!(claimed_for_delete);
+    assert!(ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT deleting_at IS NOT NULL
+            FROM file_objects
+            WHERE storage_backend = $1 AND object_key = $2
+            "#,
+            &file.storage_backend,
+            &file.object_key,
+        )
+        .fetch_one(&pool)
+        .await,
+        "deleting flag should load"
+    )
+    .unwrap_or_default());
+
+    ok(
+        storage
+            .delete_files(
+                FileStorageCleanupOrigin::CleanupRetry,
+                std::slice::from_ref(&file),
+            )
+            .await,
+        "retry delete should remove object bytes",
+    );
+    ok(
+        repository.complete_cleanup_job(jobs[0].id).await,
+        "cleanup job should complete",
+    );
+    assert!(!ok(
+        repository
+            .object_exists(&file.storage_backend, &file.object_key)
+            .await,
+        "object lookup should succeed"
+    ));
+}
+
+#[tokio::test]
+async fn deleting_file_object_cannot_be_reused_or_referenced() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let object_key = "database/chat/attachments/deleting.webp";
+    let checksum = hex::encode(Sha256::digest(b"deleting"));
+    ok(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "primary_db",
+                object_key,
+                mime_type: "image/webp",
+                size_bytes: 8,
+                content_manifest_sha256: &checksum,
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        "object should insert",
+    );
+
+    let claimed_for_delete = ok(
+        repository
+            .claim_object_for_delete(
+                "primary_db",
+                object_key,
+                "unreferenced_file",
+                object_key,
+                true,
+            )
+            .await,
+        "object delete should be claimable",
+    );
+    assert!(claimed_for_delete);
+    assert!(ok(
+        repository
+            .get_object_by_manifest("primary_db", &checksum, 8)
+            .await,
+        "manifest lookup should succeed"
+    )
+    .is_none());
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    assert!(ok(
+        FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            "primary_db",
+            object_key,
+            "chat_message_attachment",
+            "message:1",
+            None,
+            &serde_json::Value::Object(Default::default()),
+        )
+        .await,
+        "reference insert should skip deleting object"
+    )
+    .is_none());
+    ok(tx.rollback().await, "transaction should rollback");
+    assert!(matches!(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "primary_db",
+                object_key,
+                mime_type: "image/webp",
+                size_bytes: 8,
+                content_manifest_sha256: &checksum,
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn insert_reference_blocks_delete_claim_until_reference_is_counted() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool.clone()));
+    let object_key = "database/chat/attachments/locked.webp";
+    let checksum = hex::encode(Sha256::digest(b"locked"));
+    ok(
+        repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: "primary_db",
+                object_key,
+                mime_type: "image/webp",
+                size_bytes: 6,
+                content_manifest_sha256: &checksum,
+                metadata: &serde_json::Value::Object(Default::default()),
+            })
+            .await,
+        "object should insert",
+    );
+
+    let mut tx = ok(pool.begin().await, "transaction should begin");
+    let inserted = ok(
+        FileStorageRepository::insert_reference_in_tx(
+            &mut tx,
+            "primary_db",
+            object_key,
+            "chat_message_attachment",
+            "message:locked",
+            None,
+            &serde_json::Value::Object(Default::default()),
+        )
+        .await,
+        "reference should insert",
+    );
+    assert!(inserted.is_some());
+
+    let delete_repository = repository.clone();
+    let mut delete_task = tokio::spawn(async move {
+        delete_repository
+            .claim_object_for_delete(
+                "primary_db",
+                object_key,
+                "unreferenced_file",
+                "sha256:locked",
+                false,
+            )
+            .await
+    });
+
+    assert!(
+        timeout(Duration::from_millis(100), &mut delete_task)
+            .await
+            .is_err(),
+        "delete claim should wait for the reference transaction"
+    );
+    ok(tx.commit().await, "reference transaction should commit");
+    let delete_claimed = ok(
+        ok(delete_task.await, "delete task should join"),
+        "delete claim should complete",
+    );
+    assert!(!delete_claimed);
+    assert!(ok(
+        repository.object_exists("primary_db", object_key).await,
         "object lookup should succeed"
     ));
 }

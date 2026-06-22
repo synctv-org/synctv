@@ -1149,7 +1149,7 @@ impl ChatService {
                 .collect::<Vec<_>>();
             if let Err(error) = self
                 .file_storage_service
-                .delete_files(
+                .schedule_delete_files(
                     FileStorageCleanupOrigin::ReferenceReleased,
                     &attachment_file_references,
                 )
@@ -1159,26 +1159,8 @@ impl ChatService {
                     room_id = %request.room_id,
                     message_id = %request.message_id,
                     error = %error,
-                    "chat attachment cleanup failed after message deletion"
+                    "chat attachment cleanup scheduling failed after message deletion"
                 );
-                if let Err(enqueue_error) = crate::repository::FileStorageRepository::new(
-                    self.chat_repository.pool().clone(),
-                )
-                .enqueue_cleanup_jobs(
-                    FileStorageCleanupOrigin::ReferenceReleased.as_str(),
-                    &attachment_file_references,
-                    &serde_json::Value::Object(Default::default()),
-                    &error.to_string(),
-                )
-                .await
-                {
-                    warn!(
-                        room_id = %request.room_id,
-                        message_id = %request.message_id,
-                        error = %enqueue_error,
-                        "failed to enqueue chat attachment cleanup retry after message deletion"
-                    );
-                }
             }
         }
 
@@ -1496,16 +1478,21 @@ impl ChatService {
     /// # Returns
     /// Number of messages deleted
     pub async fn cleanup_room_messages(&self, room_id: &RoomId, max_messages: u64) -> Result<u64> {
-        // If max_messages is 0, no cleanup needed (unlimited)
         if max_messages == 0 {
             return Ok(0);
         }
 
-        // Cleanup old messages
-        let deleted = self
-            .chat_repository
-            .cleanup_old_messages(room_id, max_messages_to_keep_count(max_messages)?)
-            .await?;
+        let deleted = super::cleanup_ops::cleanup_chat_messages_with_files(
+            self.chat_repository.pool(),
+            Some(&self.file_storage_service),
+            super::cleanup_ops::ChatMessageCleanupScope::RoomCap {
+                room_id: *room_id,
+                keep_count: max_messages_to_keep_count(max_messages)?,
+            },
+            FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "room cap purge",
+        )
+        .await?;
 
         if deleted > 0 {
             debug!(
@@ -1539,19 +1526,21 @@ impl ChatService {
         max_messages: u64,
         activity_window_minutes: i32,
     ) -> Result<u64> {
-        // If max_messages is 0, no cleanup needed (unlimited)
         if max_messages == 0 {
             return Ok(0);
         }
 
-        // Use optimized batch cleanup (single SQL query for all rooms)
-        let deleted = self
-            .chat_repository
-            .cleanup_all_rooms(
-                max_messages_to_keep_count(max_messages)?,
+        let deleted = super::cleanup_ops::cleanup_chat_messages_with_files(
+            self.chat_repository.pool(),
+            Some(&self.file_storage_service),
+            super::cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
+                keep_count: max_messages_to_keep_count(max_messages)?,
                 activity_window_minutes,
-            )
-            .await?;
+            },
+            FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "active-room cap purge",
+        )
+        .await?;
 
         if deleted > 0 {
             debug!(

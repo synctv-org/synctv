@@ -201,6 +201,27 @@ impl FileStorageService for RoutedFileStorageService {
         Ok(())
     }
 
+    async fn schedule_delete_files(
+        &self,
+        origin: FileStorageCleanupOrigin,
+        files: &[FileReferenceTarget],
+    ) -> Result<()> {
+        let mut by_backend: HashMap<&str, Vec<FileReferenceTarget>> = HashMap::new();
+        for file in files {
+            by_backend
+                .entry(file.storage_backend.as_str())
+                .or_default()
+                .push(file.clone());
+        }
+        for (backend_name, backend_files) in by_backend {
+            self.registry
+                .backend(backend_name)?
+                .schedule_delete_files(origin, &backend_files)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn cleanup_expired_upload_session(
         &self,
         session: crate::models::FileUploadSessionRecord,

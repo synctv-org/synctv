@@ -291,19 +291,21 @@ impl FileStorageRepository {
             r#"
             INSERT INTO file_objects (
                 storage_backend, object_key, mime_type, size_bytes,
-                content_manifest_sha256, metadata, validated_at
+                content_manifest_sha256, metadata, validated_at, deleting_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, NULL)
             ON CONFLICT (storage_backend, object_key)
             DO UPDATE SET
                 mime_type = EXCLUDED.mime_type,
                 size_bytes = EXCLUDED.size_bytes,
                 content_manifest_sha256 = EXCLUDED.content_manifest_sha256,
                 metadata = EXCLUDED.metadata,
-                validated_at = CURRENT_TIMESTAMP
+                validated_at = CURRENT_TIMESTAMP,
+                deleting_at = NULL
+            WHERE file_objects.deleting_at IS NULL
             RETURNING storage_backend, object_key, mime_type, size_bytes,
                       content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
-                      created_at, validated_at
+                      created_at, validated_at, deleting_at
             "#,
             object.storage_backend,
             object.object_key,
@@ -312,9 +314,11 @@ impl FileStorageRepository {
             object.content_manifest_sha256.trim().to_ascii_lowercase(),
             object.metadata,
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(object)
+        object.ok_or_else(|| {
+            Error::Conflict("file object is already scheduled for deletion".to_string())
+        })
     }
 
     pub async fn upsert_pending_object(&self, object: UpsertFileObject<'_>) -> Result<FileObject> {
@@ -330,19 +334,21 @@ impl FileStorageRepository {
             r#"
             INSERT INTO file_objects (
                 storage_backend, object_key, mime_type, size_bytes,
-                content_manifest_sha256, metadata, validated_at
+                content_manifest_sha256, metadata, validated_at, deleting_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, NULL)
+            VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL)
             ON CONFLICT (storage_backend, object_key)
             DO UPDATE SET
                 mime_type = EXCLUDED.mime_type,
                 size_bytes = EXCLUDED.size_bytes,
                 content_manifest_sha256 = EXCLUDED.content_manifest_sha256,
                 metadata = EXCLUDED.metadata,
-                validated_at = NULL
+                validated_at = NULL,
+                deleting_at = NULL
+            WHERE file_objects.deleting_at IS NULL
             RETURNING storage_backend, object_key, mime_type, size_bytes,
                       content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
-                      created_at, validated_at
+                      created_at, validated_at, deleting_at
             "#,
             object.storage_backend,
             object.object_key,
@@ -351,9 +357,11 @@ impl FileStorageRepository {
             object.content_manifest_sha256.trim().to_ascii_lowercase(),
             object.metadata,
         )
-        .fetch_one(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(object)
+        object.ok_or_else(|| {
+            Error::Conflict("file object is already scheduled for deletion".to_string())
+        })
     }
 
     pub async fn get_object(
@@ -366,9 +374,11 @@ impl FileStorageRepository {
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
                    content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
-                   created_at, validated_at
+                   created_at, validated_at, deleting_at
             FROM file_objects
-            WHERE storage_backend = $1 AND object_key = $2
+            WHERE storage_backend = $1
+              AND object_key = $2
+              AND deleting_at IS NULL
             "#,
             storage_backend,
             object_key,
@@ -390,12 +400,13 @@ impl FileStorageRepository {
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
                    content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
-                   created_at, validated_at
+                   created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
               AND content_manifest_sha256 = $2
               AND size_bytes = $3
               AND validated_at IS NOT NULL
+              AND deleting_at IS NULL
             ORDER BY created_at ASC
             LIMIT 1
             "#,
@@ -420,11 +431,12 @@ impl FileStorageRepository {
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
                    content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
-                   created_at, validated_at
+                   created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
               AND content_manifest_sha256 = $2
               AND size_bytes = $3
+              AND deleting_at IS NULL
             ORDER BY validated_at DESC NULLS LAST, created_at ASC
             LIMIT 1
             "#,
@@ -452,7 +464,9 @@ impl FileStorageRepository {
             r#"
             UPDATE file_objects
             SET metadata = $3
-            WHERE storage_backend = $1 AND object_key = $2
+            WHERE storage_backend = $1
+              AND object_key = $2
+              AND deleting_at IS NULL
             "#,
             storage_backend,
             object_key,
@@ -472,7 +486,9 @@ impl FileStorageRepository {
             r#"
             UPDATE file_objects
             SET validated_at = CURRENT_TIMESTAMP
-            WHERE storage_backend = $1 AND object_key = $2
+            WHERE storage_backend = $1
+              AND object_key = $2
+              AND deleting_at IS NULL
             "#,
             storage_backend,
             object_key,
@@ -763,7 +779,7 @@ impl FileStorageRepository {
 
     pub async fn object_exists(&self, storage_backend: &str, object_key: &str) -> Result<bool> {
         let exists = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM file_objects WHERE storage_backend = $1 AND object_key = $2)",
+            "SELECT EXISTS(SELECT 1 FROM file_objects WHERE storage_backend = $1 AND object_key = $2 AND deleting_at IS NULL)",
             storage_backend,
             object_key,
         )
@@ -781,6 +797,7 @@ impl FileStorageRepository {
                 WHERE storage_backend = $1
                   AND object_key = $2
                   AND validated_at IS NOT NULL
+                  AND deleting_at IS NULL
             )
             "#,
             storage_backend,
@@ -834,6 +851,106 @@ impl FileStorageRepository {
         scalar_value(count, "file reference COUNT excluding kind")
     }
 
+    pub async fn claim_object_for_delete(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        reference_kind: &str,
+        reference_id: &str,
+        ignore_completed_upload_session_references: bool,
+    ) -> Result<bool> {
+        validate_file_reference_fields(
+            storage_backend,
+            object_key,
+            reference_kind,
+            reference_id,
+            &serde_json::Value::Object(Default::default()),
+        )?;
+
+        let mut tx = self.pool.begin().await?;
+        let object_locked = sqlx::query!(
+            r#"
+            SELECT storage_backend
+            FROM file_objects
+            WHERE storage_backend = $1
+              AND object_key = $2
+            FOR UPDATE
+            "#,
+            storage_backend,
+            object_key,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if object_locked.is_none() {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE file_references
+            SET released_at = COALESCE(released_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE reference_kind = $1
+              AND reference_id = $2
+              AND storage_backend = $3
+              AND object_key = $4
+            "#,
+            reference_kind,
+            reference_id,
+            storage_backend,
+            object_key,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let active_reference_count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM file_references
+            WHERE storage_backend = $1
+              AND object_key = $2
+              AND released_at IS NULL
+              AND (
+                  $3::BOOLEAN = FALSE
+                  OR reference_kind <> 'file_upload_session'
+                  OR NOT EXISTS (
+                      SELECT 1
+                      FROM file_upload_sessions s
+                      WHERE s.storage_backend = file_references.storage_backend
+                        AND s.object_key = file_references.object_key
+                        AND (s.metadata->>'public_file_id') = file_references.reference_id
+                        AND s.completed_at IS NOT NULL
+                  )
+              )
+            "#,
+            storage_backend,
+            object_key,
+            ignore_completed_upload_session_references,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if scalar_value(active_reference_count, "file reference COUNT")? > 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+
+        sqlx::query!(
+            r#"
+            UPDATE file_objects
+            SET deleting_at = COALESCE(deleting_at, CURRENT_TIMESTAMP)
+            WHERE storage_backend = $1
+              AND object_key = $2
+            "#,
+            storage_backend,
+            object_key,
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn insert_reference_in_tx(
         tx: &mut Transaction<'_, Postgres>,
         storage_backend: &str,
@@ -850,17 +967,21 @@ impl FileStorageRepository {
             reference_id,
             metadata,
         )?;
-        let object_registered = sqlx::query_scalar!(
-            "SELECT EXISTS(SELECT 1 FROM file_objects WHERE storage_backend = $1 AND object_key = $2)",
+        let object_locked = sqlx::query!(
+            r#"
+            SELECT storage_backend
+            FROM file_objects
+            WHERE storage_backend = $1
+              AND object_key = $2
+              AND deleting_at IS NULL
+            FOR KEY SHARE
+            "#,
             storage_backend,
             object_key,
         )
-        .fetch_one(&mut **tx)
+        .fetch_optional(&mut **tx)
         .await?;
-        let object_registered = object_registered.ok_or_else(|| {
-            Error::Internal("file object registration EXISTS query returned NULL".to_string())
-        })?;
-        if !object_registered {
+        if object_locked.is_none() {
             return Ok(None);
         }
         let reference_id_row = sqlx::query!(
@@ -932,6 +1053,7 @@ impl FileStorageRepository {
              AND o.object_key = r.object_key
             WHERE r.id = $1
               AND r.released_at IS NULL
+              AND o.deleting_at IS NULL
             "#,
             id,
         )
@@ -975,6 +1097,7 @@ impl FileStorageRepository {
             WHERE r.reference_kind = $1
               AND r.reference_id = $2
               AND r.released_at IS NULL
+              AND o.deleting_at IS NULL
             ORDER BY r.updated_at DESC, r.id DESC
             LIMIT 1
             "#,
@@ -1010,6 +1133,7 @@ impl FileStorageRepository {
             WHERE r.reference_kind = $1
               AND r.reference_id = $2
               AND r.released_at IS NULL
+              AND o.deleting_at IS NULL
             ORDER BY r.updated_at DESC, r.id DESC
             LIMIT 1
             "#,
@@ -1666,9 +1790,10 @@ impl FileStorageRepository {
             SELECT o.storage_backend, o.object_key, o.mime_type, o.size_bytes,
                    o.content_manifest_sha256,
                    o.metadata AS "metadata!: serde_json::Value",
-                   o.created_at, o.validated_at
+                   o.created_at, o.validated_at, o.deleting_at
             FROM file_objects o
             WHERE o.created_at < CURRENT_TIMESTAMP - ($1::BIGINT * INTERVAL '1 second')
+              AND o.deleting_at IS NULL
               AND NOT EXISTS (
                   SELECT 1
                   FROM file_references r
@@ -1771,6 +1896,82 @@ impl FileStorageRepository {
                 &file.reference_id,
                 metadata,
                 error,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn release_references_and_enqueue_cleanup_jobs(
+        &self,
+        origin: &str,
+        files: &[FileReferenceTarget],
+        metadata: &serde_json::Value,
+        reason: &str,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        validate_required_text(origin, "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS)?;
+        if !metadata.is_object() {
+            return Err(Error::InvalidInput(
+                "file cleanup metadata must be a JSON object".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for file in files {
+            validate_file_reference_fields(
+                &file.storage_backend,
+                &file.object_key,
+                &file.reference_kind,
+                &file.reference_id,
+                metadata,
+            )?;
+            sqlx::query!(
+                r#"
+                UPDATE file_references
+                SET released_at = COALESCE(released_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE reference_kind = $1
+                  AND reference_id = $2
+                  AND storage_backend = $3
+                  AND object_key = $4
+                "#,
+                &file.reference_kind,
+                &file.reference_id,
+                &file.storage_backend,
+                &file.object_key,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query!(
+                r#"
+                INSERT INTO file_cleanup_jobs (
+                    origin, storage_backend, object_key, reference_kind,
+                    reference_id, metadata, last_error
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (reference_kind, reference_id, storage_backend, object_key)
+                DO UPDATE SET
+                    origin = EXCLUDED.origin,
+                    metadata = EXCLUDED.metadata,
+                    last_error = EXCLUDED.last_error,
+                    next_attempt_at = CURRENT_TIMESTAMP,
+                    locked_at = NULL,
+                    locked_by = NULL,
+                    completed_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+                origin,
+                &file.storage_backend,
+                &file.object_key,
+                &file.reference_kind,
+                &file.reference_id,
+                metadata,
+                reason,
             )
             .execute(&mut *tx)
             .await?;

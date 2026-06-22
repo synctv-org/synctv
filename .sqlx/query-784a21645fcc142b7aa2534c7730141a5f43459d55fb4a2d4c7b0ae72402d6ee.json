@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE file_objects SET created_at = CURRENT_TIMESTAMP - INTERVAL '2 days' WHERE storage_backend = $1 AND object_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "784a21645fcc142b7aa2534c7730141a5f43459d55fb4a2d4c7b0ae72402d6ee"
+}

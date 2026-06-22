@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT storage_backend\n            FROM file_objects\n            WHERE storage_backend = $1\n              AND object_key = $2\n              AND deleting_at IS NULL\n            FOR KEY SHARE\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_objects",
+            "name": "storage_backend"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ccb6fab46d9f383f69f583cf33d0d8137677c5b442ea10b83dbebe048815488a"
+}

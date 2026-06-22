@@ -23,11 +23,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{
-    cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck, SettingsRegistry,
-};
+use super::{cleanup_ops, FileStorageService, LeaderCheck, SettingsRegistry};
 use crate::service::partitioning::u32_to_i32;
-use crate::{models::ChatAttachment, repository::FileStorageRepository, InternalExt, Result};
+use crate::{InternalExt, Result};
 
 const DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
 
@@ -598,120 +596,14 @@ impl CleanupService {
     ///
     /// Uses window functions for efficient batch cleanup across all rooms.
     async fn cleanup_chat_messages(&self, keep_count: i64) -> Result<u64> {
-        if keep_count <= 0 {
-            return Ok(0);
-        }
-
-        let attachments = if let Some(storage) = &self.file_storage_service {
-            let attachments = sqlx::query_as!(
-                ChatAttachment,
-                r#"
-                WITH ranked AS (
-                    SELECT id, created_at,
-                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
-                    FROM chat_messages
-                ),
-                candidates AS (
-                    SELECT id, created_at
-                    FROM ranked
-                    WHERE rn > $1
-                )
-                SELECT i.id,
-                       i.kind AS "kind!: crate::models::ChatAttachmentKind",
-                       i.room_id AS "room_id!: crate::models::RoomId",
-                       i.message_id,
-                       i.message_created_at,
-                       i.filename,
-                       i.storage_backend,
-                       i.object_key,
-                       i.url,
-                       i.mime_type,
-                       i.size_bytes,
-                       i.width,
-                       i.height,
-                       i.metadata AS "metadata!: serde_json::Value",
-                       i.created_at,
-                       NULL::TEXT AS "reuse_token?",
-                       NULL::TIMESTAMPTZ AS "reuse_expires_at?"
-                FROM chat_message_attachments i
-                INNER JOIN candidates c
-                    ON c.id = i.message_id AND c.created_at = i.message_created_at
-                ORDER BY i.message_created_at, i.message_id, i.created_at
-                "#,
-                keep_count,
-            )
-            .fetch_all(&self.pool)
-            .await
-            .internal_with_err("Failed to collect chat attachment cleanup candidates")?;
-            if attachments.is_empty() {
-                None
-            } else {
-                Some((storage.clone(), attachments))
-            }
-        } else {
-            None
-        };
-
-        let result = sqlx::query!(
-            r"
-            WITH ranked AS (
-                    SELECT id,
-                           created_at,
-                           ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC, id DESC) AS rn
-                    FROM chat_messages
-            ),
-            candidates AS (
-                SELECT id, created_at
-                FROM ranked
-                WHERE rn > $1
-            )
-            DELETE FROM chat_messages m
-            USING candidates c
-            WHERE m.id = c.id AND m.created_at = c.created_at
-            ",
-            keep_count
+        cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            self.file_storage_service.as_ref(),
+            cleanup_ops::ChatMessageCleanupScope::AllRoomsCap { keep_count },
+            super::FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "per-room cap purge",
         )
-        .execute(&self.pool)
         .await
-        .internal_with_err("Failed to cleanup chat messages")?;
-
-        if let Some((storage, attachments)) = attachments {
-            let file_references = attachments
-                .iter()
-                .map(crate::models::ChatAttachment::file_reference_target)
-                .collect::<Vec<_>>();
-            if let Err(error) = storage
-                .delete_files(
-                    FileStorageCleanupOrigin::ReferenceCapExceeded,
-                    &file_references,
-                )
-                .await
-            {
-                warn!(
-                    error = %error,
-                    deleted = result.rows_affected(),
-                    keep_count,
-                    "Chat attachment cleanup after per-room cap purge failed"
-                );
-                if let Err(enqueue_error) = FileStorageRepository::new(self.pool.clone())
-                    .enqueue_cleanup_jobs(
-                        FileStorageCleanupOrigin::ReferenceCapExceeded.as_str(),
-                        &file_references,
-                        &serde_json::Value::Object(Default::default()),
-                        &error.to_string(),
-                    )
-                    .await
-                {
-                    warn!(
-                        error = %enqueue_error,
-                        keep_count,
-                        "Failed to enqueue chat attachment cleanup retry after per-room cap purge"
-                    );
-                }
-            }
-        }
-
-        Ok(result.rows_affected())
     }
 
     /// Start the periodic cleanup background task

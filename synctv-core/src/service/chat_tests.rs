@@ -2437,6 +2437,109 @@ async fn deleting_attachment_message_releases_attachment_objects() {
 }
 
 #[tokio::test]
+async fn cleanup_all_rooms_releases_attachment_objects() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let username_cache =
+        UsernameCache::local_only("test:chat:cleanup-attachments:".to_string(), 100, 60);
+    let storage = Arc::new(RecordingFileStorageService::default());
+    let service =
+        test_chat_service_with_file_storage(&pool, username_cache.clone(), storage.clone());
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let user = ok(
+        user_repository
+            .create(&User::new(
+                "chat_cleanup_attachment_user".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "user should be created",
+    );
+    ok(
+        username_cache.set(&user.id, &user.username).await,
+        "username cache should write",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only(
+                    "test:chat:cleanup-attachments:room:".to_string(),
+                    100,
+                    60,
+                ),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Cleanup Attachment Room".to_string(),
+                String::new(),
+                user.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    let repository = FileStorageRepository::new(pool.clone());
+    for attachment_id in ["cleanup-old", "cleanup-new"] {
+        ok(
+            repository
+                .upsert_object(UpsertFileObject {
+                    storage_backend: "test-storage",
+                    object_key: &format!("submitted/{attachment_id}"),
+                    mime_type: "image/webp",
+                    size_bytes: 123,
+                    content_manifest_sha256: &hex::encode(Sha256::digest(attachment_id.as_bytes())),
+                    metadata: &serde_json::Value::Object(Default::default()),
+                })
+                .await,
+            "attachment object should be registered",
+        );
+        ok(
+            service
+                .send_message_event(SendChatMessage {
+                    room_id: room.id,
+                    user_id: user.id,
+                    client_message_id: Some(format!("{attachment_id}-client-id")),
+                    content: String::new(),
+                    message_type: ChatMessageType::Attachment,
+                    reply_to_message_id: None,
+                    metadata: serde_json::Value::Object(Default::default()),
+                    attachments: vec![SubmittedFileReference {
+                        id: attachment_id.to_string(),
+                        kind: crate::models::SubmittedFileReferenceKind::Upload,
+                    }],
+                    mentions: Vec::new(),
+                })
+                .await,
+            "attachment message should be stored",
+        );
+    }
+
+    let deleted = ok(
+        service.cleanup_all_rooms(1, 10).await,
+        "cleanup should succeed",
+    );
+    assert_eq!(deleted, 1);
+    let deleted_object_keys = ok(
+        storage.deleted_object_keys.lock(),
+        "deleted object keys lock",
+    )
+    .clone();
+    assert_eq!(
+        deleted_object_keys,
+        vec!["submitted/cleanup-old".to_string()]
+    );
+    let deleted_origins = ok(storage.deleted_origins.lock(), "deleted origins lock").clone();
+    assert_eq!(deleted_origins, vec!["reference_cap_exceeded".to_string()]);
+}
+
+#[tokio::test]
 async fn concurrent_idempotent_send_returns_existing_created_event() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let username_cache =

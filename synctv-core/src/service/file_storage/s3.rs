@@ -1288,48 +1288,37 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .with_label_values(&[origin_label, &file.storage_backend])
                 .inc();
             if let Some(repository) = self.repository.as_ref() {
-                repository
-                    .release_reference(
-                        &file.reference_kind,
-                        &file.reference_id,
+                let delete_claimed = repository
+                    .claim_object_for_delete(
                         &file.storage_backend,
                         &file.object_key,
+                        &file.reference_kind,
+                        &file.reference_id,
+                        origin == FileStorageCleanupOrigin::UnreferencedObject,
                     )
                     .await?;
-                let active_reference_count =
-                    if origin == FileStorageCleanupOrigin::UnreferencedObject {
-                        repository
-                            .object_reference_count_excluding_kind(
-                                &file.storage_backend,
-                                &file.object_key,
-                                super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
-                            )
-                            .await?
-                    } else {
-                        repository
-                            .object_reference_count(&file.storage_backend, &file.object_key)
-                            .await?
-                    };
-                if active_reference_count > 0 {
+                if !delete_claimed {
                     continue;
                 }
             }
-            let mut object_keys = Vec::new();
+            let mut objects = Vec::new();
             if let Some(repository) = self.repository.as_ref() {
                 let derived_variants = repository
                     .list_derived_object_variants(&file.storage_backend, &file.object_key)
                     .await?;
-                object_keys.extend(
+                objects.extend(
                     derived_variants
                         .into_iter()
-                        .map(|variant| variant.object_key),
+                        .map(|variant| (variant.storage_backend, variant.object_key)),
                 );
             }
-            object_keys.push(file.object_key.clone());
-            for object_key in &object_keys {
+            objects.push((file.storage_backend.clone(), file.object_key.clone()));
+            let mut file_delete_failed = false;
+            for (_, object_key) in &objects {
                 match self.operator.delete(object_key).await {
                     Ok(()) => {}
                     Err(error) => {
+                        file_delete_failed = true;
                         failed_count += 1;
                         last_error = Some(error.to_string());
                         crate::metrics::file_storage::FILE_OBJECT_DELETE_FAILURES
@@ -1343,13 +1332,16 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     }
                 }
             }
+            if file_delete_failed {
+                continue;
+            }
             if let Some(repository) = self.repository.as_ref() {
-                for object_key in object_keys
+                for (storage_backend, object_key) in objects
                     .iter()
-                    .filter(|object_key| *object_key != &file.object_key)
+                    .filter(|(_, object_key)| object_key != &file.object_key)
                 {
                     repository
-                        .delete_object(&file.storage_backend, object_key)
+                        .delete_object(storage_backend, object_key)
                         .await?;
                 }
                 repository

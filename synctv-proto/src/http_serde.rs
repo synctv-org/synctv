@@ -74,7 +74,10 @@ fn source_provider_name(value: i32) -> Option<&'static str> {
     }
 }
 
-fn parse_source_provider_value<E>(value: SourceProviderJsonValue, field_name: &str) -> Result<i32, E>
+fn parse_source_provider_value<E>(
+    value: SourceProviderJsonValue,
+    field_name: &str,
+) -> Result<i32, E>
 where
     E: serde::de::Error,
 {
@@ -137,9 +140,8 @@ macro_rules! source_provider_serde {
                 let names = values
                     .iter()
                     .map(|value| {
-                        super::source_provider_name(*value).ok_or_else(|| {
-                            S::Error::custom(format!("unknown {}: {value}", $field))
-                        })
+                        super::source_provider_name(*value)
+                            .ok_or_else(|| S::Error::custom(format!("unknown {}: {value}", $field)))
                     })
                     .collect::<Result<Vec<_>, S::Error>>()?;
                 names.serialize(serializer)

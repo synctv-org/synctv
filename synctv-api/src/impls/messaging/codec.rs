@@ -792,6 +792,11 @@ pub(crate) fn core_chat_attachment_to_proto(
         reuse_expires_at: attachment
             .reuse_expires_at
             .map(|expires_at| expires_at.timestamp()),
+        variants: crate::impls::client::convert::file_object_variants_from_metadata(
+            &attachment.metadata,
+            "chat attachment",
+        )
+        .map_err(|error| error.to_string())?,
     })
 }
 
@@ -847,6 +852,9 @@ pub(crate) fn chat_attachment_kind_to_proto(
         }
         synctv_core::models::ChatAttachmentKind::Image => {
             synctv_proto::client::ChatAttachmentKind::Image
+        }
+        synctv_core::models::ChatAttachmentKind::Audio => {
+            synctv_proto::client::ChatAttachmentKind::Audio
         }
     }
 }

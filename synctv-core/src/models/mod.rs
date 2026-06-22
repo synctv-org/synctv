@@ -156,15 +156,16 @@ pub use email_token::EmailTokenType;
 pub use file_storage::{
     CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
     CreateFileUploadSession, FileBlob, FileBlobCompression, FileBlobPart, FileByteRange,
-    FileCleanupJob, FileObject, FileObjectData, FileObjectDownload, FileObjectMetadata,
-    FileOwnershipProofRange, FileRangeRequest, FileReferenceTarget, FileUploadManifestPart,
-    FileUploadPartUrl, FileUploadPlan, FileUploadPlanPart, FileUploadPolicy, FileUploadRange,
-    FileUploadSession, FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionPart,
+    FileCleanupJob, FileObject, FileObjectData, FileObjectDownload, FileObjectGroup,
+    FileObjectMetadata, FileObjectVariant, FileOwnershipProofRange, FileRangeRequest,
+    FileReferenceTarget, FileUploadManifestPart, FileUploadPartUrl, FileUploadPlan,
+    FileUploadPlanPart, FileUploadPolicy, FileUploadRange, FileUploadSession,
+    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionPart,
     FileUploadSessionRecord, GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
     StoredFileReference, SubmittedFileReference, SubmittedFileReferenceKind,
-    FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-    FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS,
-    FILE_STORAGE_BACKEND_MAX_CHARS,
+    FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_GENERATED_VARIANTS_METADATA_KEY, FILE_ID_MAX_CHARS,
+    FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
+    FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
 };
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,

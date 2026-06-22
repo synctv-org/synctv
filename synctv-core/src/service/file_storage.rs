@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
@@ -6,6 +6,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncRead, AsyncSeek};
 
 use crate::{
     models::{
@@ -15,15 +16,22 @@ use crate::{
         FileUploadPlan, FileUploadPlanPart, FileUploadRange, FileUploadSessionCreateResult,
         GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
         SubmittedFileReference, SubmittedFileReferenceKind, UserId,
+        FILE_GENERATED_VARIANTS_METADATA_KEY,
     },
     repository::FileStorageRepository,
     Error, Result,
 };
 
+mod audio_processing;
 mod database;
+mod media_processing;
+mod read_seek;
 mod routing;
 mod s3;
 mod validation;
+pub(crate) use media_processing::{
+    attach_variants_to_chat_attachments, process_file_variants_for_object,
+};
 pub use routing::{FileStorageBackendRegistry, RoutedFileStorageService};
 #[cfg(test)]
 use s3::presigned_upload_headers;
@@ -45,12 +53,13 @@ const FILE_SESSION_METADATA_FILENAME_KEY: &str = "filename";
 const FILE_SESSION_METADATA_WIDTH_KEY: &str = "width";
 const FILE_SESSION_METADATA_HEIGHT_KEY: &str = "height";
 const FILE_SESSION_METADATA_USER_METADATA_KEY: &str = "metadata";
+const FILE_SESSION_METADATA_UPLOAD_POLICY_KEY: &str = "upload_policy";
 const FILE_SESSION_METADATA_MANIFEST_PARTS_KEY: &str = "manifest_parts";
 const FILE_SESSION_METADATA_OWNERSHIP_PROOF_VERIFIED_KEY: &str = "ownership_proof_verified";
 const FILE_OWNERSHIP_PROOF_ALGORITHM: &str = "synctv-file-ownership-proof-v1";
 const FILE_OWNERSHIP_PROOF_RANGE_COUNT: usize = 3;
 const FILE_OWNERSHIP_PROOF_RANGE_BYTES: i32 = 1024;
-const FILE_UPLOAD_SESSION_REFERENCE_KIND: &str = "file_upload_session";
+pub(super) const FILE_UPLOAD_SESSION_REFERENCE_KIND: &str = "file_upload_session";
 const FILE_UPLOAD_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_KIND: &str = "synctv-file-reuse-grant";
@@ -100,6 +109,97 @@ pub(super) fn file_blob_to_download(blob: FileBlob) -> FileObjectDownload {
         metadata,
         stream: futures::stream::once(async move { Ok(data) }).boxed(),
     }
+}
+
+pub trait FileObjectReadSeek: AsyncRead + AsyncSeek + Send + Unpin {}
+
+impl<T> FileObjectReadSeek for T where T: AsyncRead + AsyncSeek + Send + Unpin {}
+
+pub type FileObjectReader = Box<dyn FileObjectReadSeek>;
+
+pub(crate) fn file_blob_to_reader(blob: FileBlob) -> FileObjectReader {
+    Box::new(Cursor::new(blob.data))
+}
+
+pub(crate) fn merge_file_variants_metadata(
+    metadata: &serde_json::Value,
+    variants: &[crate::models::FileObjectVariant],
+) -> Result<serde_json::Value> {
+    let mut metadata = metadata.clone();
+    let object = metadata
+        .as_object_mut()
+        .ok_or_else(|| Error::InvalidInput("file metadata must be a JSON object".to_string()))?;
+    object.insert(
+        FILE_GENERATED_VARIANTS_METADATA_KEY.to_string(),
+        serde_json::to_value(variants)?,
+    );
+    Ok(metadata)
+}
+
+pub(crate) async fn complete_uploaded_file_object(
+    storage: &dyn FileStorageService,
+    repository: &FileStorageRepository,
+    object: &mut FileBlob,
+    upload_policy: &crate::models::FileUploadPolicy,
+) -> Result<()> {
+    if object
+        .mime_type
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("audio/")
+    {
+        let reader = storage
+            .get_object_reader_by_key(&object.storage_backend, &object.object_key)
+            .await?;
+        let audio = audio_processing::validate_audio_object_reader(
+            upload_policy,
+            object.mime_type.clone(),
+            object.size_bytes,
+            reader,
+        )
+        .await?
+        .ok_or_else(|| Error::InvalidInput("audio metadata was not found".to_string()))?;
+        let metadata = object.metadata.as_object_mut().ok_or_else(|| {
+            Error::InvalidInput("file metadata must be a JSON object".to_string())
+        })?;
+        metadata.insert(
+            "duration_seconds".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(audio.duration_seconds)),
+        );
+        metadata.insert(
+            "bitrate_bps".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(audio.bitrate_bps)),
+        );
+        if let Some(sample_rate_hz) = audio.sample_rate_hz {
+            metadata.insert(
+                "sample_rate_hz".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(sample_rate_hz)),
+            );
+        }
+        if let Some(channels) = audio.channels {
+            metadata.insert(
+                "channels".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(channels)),
+            );
+        }
+        repository
+            .update_object_metadata(
+                &object.storage_backend,
+                &object.object_key,
+                &object.metadata,
+            )
+            .await?;
+    }
+    let variants = storage
+        .process_object_variants(
+            &object.storage_backend,
+            &object.object_key,
+            &upload_policy.database_object_route_prefix,
+            upload_policy,
+        )
+        .await?;
+    object.metadata = merge_file_variants_metadata(&object.metadata, &variants)?;
+    Ok(())
 }
 
 pub(super) async fn collect_file_object_download(
@@ -280,17 +380,17 @@ pub(super) fn validate_upload_range(
         || part_size_bytes <= 0
     {
         return Err(Error::InvalidInput(
-            "file upload content range is invalid".to_string(),
+            "file upload part range is invalid".to_string(),
         ));
     }
     if range.size_bytes() != payload_len_i64(data_len)? {
         return Err(Error::InvalidInput(
-            "file upload content range does not match payload size".to_string(),
+            "file upload part range does not match payload size".to_string(),
         ));
     }
     if range.start % part_size_bytes != 0 {
         return Err(Error::InvalidInput(
-            "file upload content range must start at a part boundary".to_string(),
+            "file upload part range must start at a part boundary".to_string(),
         ));
     }
     let final_byte = range.total_size - 1;
@@ -518,6 +618,13 @@ pub trait FileStorageService: Send + Sync {
         Ok(())
     }
 
+    async fn cleanup_expired_upload_session(
+        &self,
+        _session: crate::models::FileUploadSessionRecord,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn store_upload_object(
         &self,
         encoded_object_key: &str,
@@ -563,6 +670,49 @@ pub trait FileStorageService: Send + Sync {
 
     async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
         self.get_object(request).await.map(file_blob_to_download)
+    }
+
+    async fn get_object_by_key(
+        &self,
+        _storage_backend: &str,
+        _object_key: &str,
+    ) -> Result<FileBlob> {
+        Err(Error::InvalidInput(
+            "direct file object reads are not supported by this storage backend".to_string(),
+        ))
+    }
+
+    async fn get_object_reader_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<FileObjectReader> {
+        self.get_object_by_key(storage_backend, object_key)
+            .await
+            .map(file_blob_to_reader)
+    }
+
+    async fn put_object_by_key(
+        &self,
+        _storage_backend: &str,
+        _object_key: &str,
+        _mime_type: &str,
+        _data: Vec<u8>,
+        _metadata: serde_json::Value,
+    ) -> Result<FileBlob> {
+        Err(Error::InvalidInput(
+            "direct file object writes are not supported by this storage backend".to_string(),
+        ))
+    }
+
+    async fn process_object_variants(
+        &self,
+        _storage_backend: &str,
+        _object_key: &str,
+        _database_object_route_prefix: &str,
+        _upload_policy: &crate::models::FileUploadPolicy,
+    ) -> Result<Vec<crate::models::FileObjectVariant>> {
+        Ok(Vec::new())
     }
 }
 
@@ -795,6 +945,7 @@ pub(super) struct UploadSessionMetadataInput<'a> {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub metadata: serde_json::Value,
+    pub upload_policy: &'a crate::models::FileUploadPolicy,
 }
 
 pub(super) fn upload_session_metadata(input: UploadSessionMetadataInput<'_>) -> serde_json::Value {
@@ -847,6 +998,11 @@ pub(super) fn upload_session_metadata(input: UploadSessionMetadataInput<'_>) -> 
         FILE_SESSION_METADATA_USER_METADATA_KEY.to_string(),
         input.metadata,
     );
+    object.insert(
+        FILE_SESSION_METADATA_UPLOAD_POLICY_KEY.to_string(),
+        serde_json::to_value(input.upload_policy)
+            .expect("FileUploadPolicy serialization should be infallible"),
+    );
     serde_json::Value::Object(object)
 }
 
@@ -876,6 +1032,18 @@ pub(super) fn upload_session_public_file_id(metadata: &serde_json::Value) -> Res
         FILE_SESSION_METADATA_PUBLIC_ID_KEY,
         "file upload session metadata",
     )
+}
+
+pub(super) fn upload_session_policy(
+    metadata: &serde_json::Value,
+) -> Result<crate::models::FileUploadPolicy> {
+    let policy = metadata
+        .get(FILE_SESSION_METADATA_UPLOAD_POLICY_KEY)
+        .cloned()
+        .ok_or_else(|| Error::InvalidInput("file upload session policy is missing".to_string()))?;
+    serde_json::from_value(policy).map_err(|error| {
+        Error::InvalidInput(format!("file upload session policy is invalid: {error}"))
+    })
 }
 
 struct UploadSessionPublicFields {
@@ -918,6 +1086,12 @@ fn upload_session_metadata_public_fields(
         height,
         metadata: user_metadata,
     })
+}
+
+pub(super) fn upload_session_object_metadata(
+    metadata: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    upload_session_metadata_public_fields(metadata).map(|fields| fields.metadata)
 }
 
 pub(super) fn upload_session_record_to_new_file(

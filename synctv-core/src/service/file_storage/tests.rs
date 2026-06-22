@@ -6,9 +6,9 @@ use sha2::{Digest, Sha256};
 use super::*;
 use crate::{
     models::{
-        CompleteFileUploadPart, CompleteFileUploadSession, FileByteRange, FileRangeRequest,
-        FileUploadPolicy, FileUploadRange, FileUploadSession, GetFileObject, StoreFileUpload,
-        StoreFileUploadResult,
+        CompleteFileUploadPart, CompleteFileUploadSession, FileByteRange, FileObjectVariant,
+        FileRangeRequest, FileUploadPolicy, FileUploadRange, FileUploadSession, GetFileObject,
+        StoreFileUpload, StoreFileUploadResult, FILE_GENERATED_VARIANTS_METADATA_KEY,
     },
     repository::{FileStorageRepository, UpsertFileObject},
     service::file_upload_policies::{chat_attachment_upload_policy, user_avatar_upload_policy},
@@ -125,6 +125,8 @@ fn upload_request(input: UploadRequestInput<'_>) -> (CreateFileUploadSession, St
             size_bytes: payload_size(input.payload),
             width: input.width,
             height: input.height,
+            duration_seconds: None,
+            bitrate_bps: None,
             parts,
             metadata: input.metadata,
             policy: input.policy,
@@ -172,6 +174,12 @@ fn oversized_test_upload_policy() -> FileUploadPolicy {
         max_size_bytes: i64::try_from(MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES)
             .expect("part cap should fit")
             + 1,
+        max_width: None,
+        max_height: None,
+        require_image_dimensions: false,
+        max_audio_duration_seconds: None,
+        max_audio_bitrate_bps: None,
+        require_audio_metadata: false,
         allowed_mime_prefixes: Vec::new(),
         allowed_mime_types: vec!["application/pdf".to_string()],
         storage_namespace: "test/files".to_string(),
@@ -183,11 +191,21 @@ fn large_test_upload_policy(max_size_bytes: i64, mime_type: &str) -> FileUploadP
     FileUploadPolicy {
         kind: "test_file".to_string(),
         max_size_bytes,
+        max_width: None,
+        max_height: None,
+        require_image_dimensions: false,
+        max_audio_duration_seconds: None,
+        max_audio_bitrate_bps: None,
+        require_audio_metadata: false,
         allowed_mime_prefixes: Vec::new(),
         allowed_mime_types: vec![mime_type.to_string()],
         storage_namespace: "test/files".to_string(),
         database_object_route_prefix: "/api/test/file-objects".to_string(),
     }
+}
+
+fn generic_binary_upload_policy(max_size_bytes: i64) -> FileUploadPolicy {
+    large_test_upload_policy(max_size_bytes, "application/pdf")
 }
 
 async fn upsert_uncompressed_blob(
@@ -279,6 +297,97 @@ fn backend_object_read_url_parts(
         "backend object url should build",
     );
     object_url_parts(&object_url)
+}
+
+fn jpeg_test_image(width: u32, height: u32) -> Vec<u8> {
+    let mut image = image::RgbImage::new(width, height);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let value = if (x / 16 + y / 16) % 2 == 0 { 220 } else { 24 };
+        *pixel = image::Rgb([
+            u8::try_from((x * 255) / width.max(1)).expect("red channel should fit"),
+            u8::try_from((y * 255) / height.max(1)).expect("green channel should fit"),
+            value,
+        ]);
+    }
+    let mut out = Vec::new();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 95);
+    ok(
+        encoder.encode_image(&image),
+        "test jpeg image should encode",
+    );
+    out
+}
+
+fn png_header_test_image(width: u32, height: u32, padded_size: usize) -> Vec<u8> {
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffff_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                let mask = 0_u32.wrapping_sub(crc & 1);
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    out.extend_from_slice(&13_u32.to_be_bytes());
+    out.extend_from_slice(b"IHDR");
+    out.extend_from_slice(&ihdr);
+    let mut crc_input = Vec::with_capacity(17);
+    crc_input.extend_from_slice(b"IHDR");
+    crc_input.extend_from_slice(&ihdr);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    let idat = [0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01];
+    out.extend_from_slice(
+        &u32::try_from(idat.len())
+            .expect("idat size should fit")
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(b"IDAT");
+    out.extend_from_slice(&idat);
+    let mut crc_input = Vec::with_capacity(4 + idat.len());
+    crc_input.extend_from_slice(b"IDAT");
+    crc_input.extend_from_slice(&idat);
+    out.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+    out.extend_from_slice(&0_u32.to_be_bytes());
+    out.extend_from_slice(b"IEND");
+    out.extend_from_slice(&0xae42_6082_u32.to_be_bytes());
+    out.resize(padded_size.max(out.len()), 0);
+    out
+}
+
+fn wav_test_audio(duration_seconds: u32, sample_rate_hz: u32, channels: u16) -> Vec<u8> {
+    let bits_per_sample = 16_u16;
+    let bytes_per_sample = u32::from(bits_per_sample / 8);
+    let frame_count = duration_seconds * sample_rate_hz;
+    let data_size = frame_count * u32::from(channels) * bytes_per_sample;
+    let byte_rate = sample_rate_hz * u32::from(channels) * bytes_per_sample;
+    let block_align = channels * (bits_per_sample / 8);
+    let mut out = Vec::with_capacity(44 + usize::try_from(data_size).expect("wav size should fit"));
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data_size).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate_hz.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&bits_per_sample.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_size.to_le_bytes());
+    out.resize(
+        out.len() + usize::try_from(data_size).expect("wav size should fit"),
+        0,
+    );
+    out
 }
 
 #[test]
@@ -470,7 +579,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
     );
 
     let payload = b"avatar";
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(payload));
     let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     let session = ok(
         routed
@@ -479,11 +588,13 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -494,7 +605,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
         session.upload_url.as_deref(),
         "database upload url should be returned",
     );
-    assert!(object_url.starts_with("/api/user/avatar-objects/"));
+    assert!(object_url.starts_with("/api/test/file-objects/"));
 
     let (encoded_upload_session_key, _) = object_url_parts(object_url);
     let upload_token = some(
@@ -510,7 +621,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
             .store_upload_object(
                 &encoded_upload_session_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.to_vec(),
             )
             .await,
@@ -530,7 +641,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
         "routed storage should read by token backend",
     );
     assert_eq!(loaded.storage_backend, "database");
-    assert_eq!(loaded.mime_type, "image/png");
+    assert_eq!(loaded.mime_type, "application/pdf");
     assert_eq!(loaded.content_manifest_sha256, content_manifest_sha256);
     assert_eq!(loaded.data, payload);
 }
@@ -542,7 +653,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
     let storage =
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = vec![b'a'; 4096];
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (parts, content_manifest_sha256) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
@@ -551,11 +662,13 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -581,7 +694,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.clone(),
             )
             .await,
@@ -652,6 +765,8 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
                 width: None,
                 height: None,
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -700,7 +815,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
         FileBlobCompression::Lz4,
     );
     let payload = vec![b'b'; 4096];
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (parts, content_manifest_sha256) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
@@ -709,11 +824,13 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -738,7 +855,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.clone(),
             )
             .await,
@@ -784,6 +901,498 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     );
     assert_eq!(loaded.compression, FileBlobCompression::None);
     assert_eq!(loaded.data, payload);
+}
+
+#[tokio::test]
+async fn database_storage_generates_useful_image_variants() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = jpeg_test_image(1800, 1200);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "rooms/1/chat/attachments",
+        client_file_id: "chat-image-variants",
+        filename: Some("image.jpg"),
+        mime_type: "image/jpeg",
+        payload: &payload,
+        width: Some(1800),
+        height: Some(1200),
+        metadata: serde_json::json!({"variants": "client-value"}),
+        policy: chat_attachment_upload_policy(),
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "upload session should be created",
+        ),
+        "image variant upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let result = ok(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key,
+                upload_token,
+                content_type: Some("image/jpeg".to_string()),
+                range: None,
+                data: payload,
+            })
+            .await,
+        "upload should store",
+    );
+    let StoreFileUploadResult::Complete(blob) = result else {
+        panic!("single-part image upload should complete");
+    };
+    let variants: Vec<FileObjectVariant> = ok(
+        serde_json::from_value(
+            blob.metadata
+                .get(FILE_GENERATED_VARIANTS_METADATA_KEY)
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        ),
+        "image variants metadata should parse",
+    );
+
+    assert!(variants.iter().any(|variant| variant.is_original));
+    assert_eq!(
+        blob.metadata
+            .get("variants")
+            .and_then(serde_json::Value::as_str),
+        Some("client-value")
+    );
+    assert!(variants.iter().any(|variant| {
+        !variant.is_original
+            && variant.lossy
+            && variant.width.is_some_and(|width| width <= 1280)
+            && variant.size_bytes < blob.size_bytes
+            && variant
+                .url
+                .as_deref()
+                .is_some_and(|url| url.starts_with("/api/chat/attachment-objects/"))
+    }));
+
+    let variants_after_reprocess = ok(
+        storage
+            .process_object_variants(
+                &blob.storage_backend,
+                &blob.object_key,
+                "/api/chat/attachment-objects",
+                &chat_attachment_upload_policy(),
+            )
+            .await,
+        "image variants should process idempotently",
+    );
+    assert_eq!(
+        variants_after_reprocess.len(),
+        variants.len(),
+        "reprocessing should update the same variant group"
+    );
+    let original_groups = variants_after_reprocess
+        .iter()
+        .map(|variant| variant.group_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(original_groups.len(), 1);
+}
+
+#[tokio::test]
+async fn image_processing_rejects_actual_dimensions_over_policy() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = jpeg_test_image(1800, 1200);
+    let mut policy = user_avatar_upload_policy();
+    policy.max_width = Some(512);
+    policy.max_height = Some(512);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "users/1/avatars",
+        client_file_id: "avatar-actual-dimensions",
+        filename: Some("avatar.jpg"),
+        mime_type: "image/jpeg",
+        payload: &payload,
+        width: Some(256),
+        height: Some(256),
+        metadata: serde_json::json!({"width": 256, "height": 256}),
+        policy,
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "upload session should be created from declared dimensions",
+        ),
+        "avatar upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let upload_err = err(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token,
+                content_type: Some("image/jpeg".to_string()),
+                range: None,
+                data: payload,
+            })
+            .await,
+        "actual dimensions should be enforced during finalization",
+    );
+    assert!(matches!(
+        upload_err,
+        Error::InvalidInput(message) if message.contains("width") || message.contains("height")
+    ));
+    let reference = ok(
+        submitted_file_reference_from_session_file(&session.file),
+        "session reference should build",
+    );
+    let prepare_err = err(
+        storage
+            .prepare_submitted_files(
+                FileStorageContext {
+                    user_id: UserId::expect_positive(1),
+                    storage_scope: "users/1/avatars",
+                    database_object_route_prefix: "/api/user/avatar-objects",
+                    client_request_id: None,
+                },
+                vec![reference],
+            )
+            .await,
+        "invalid upload reference should be unusable",
+    );
+    assert!(matches!(
+        prepare_err,
+        Error::InvalidInput(message) if message.contains("file reference was not found")
+    ));
+}
+
+#[tokio::test]
+async fn large_image_finalization_probes_dimensions_before_variant_size_guard() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = png_header_test_image(1800, 1200, 21 * 1024 * 1024);
+    let mut policy = chat_attachment_upload_policy();
+    policy.max_width = Some(512);
+    policy.max_height = Some(512);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "rooms/1/chat/attachments",
+        client_file_id: "chat-large-image-dimensions",
+        filename: Some("large.png"),
+        mime_type: "image/png",
+        payload: &payload,
+        width: Some(256),
+        height: Some(256),
+        metadata: serde_json::Value::Object(Default::default()),
+        policy,
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "large image upload session should be created",
+        ),
+        "large image upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let part_size = usize::try_from(session.part_size_bytes).expect("part size should fit");
+    let part_count = payload.chunks(part_size).count();
+    let mut upload_err = None;
+    for (index, chunk) in payload.chunks(part_size).enumerate() {
+        let start = i64::try_from(index * part_size).expect("part start should fit");
+        let end_inclusive = start + payload_size(chunk) - 1;
+        let result = storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token: upload_token.clone(),
+                content_type: Some("image/png".to_string()),
+                range: Some(FileUploadRange {
+                    start,
+                    end_inclusive,
+                    total_size: payload_size(&payload),
+                }),
+                data: chunk.to_vec(),
+            })
+            .await;
+        if index + 1 == part_count {
+            upload_err = Some(err(
+                result,
+                "large image dimensions should be probed before skipping variants",
+            ));
+        } else {
+            ok(result, "large image part should upload before finalization");
+        }
+    }
+    let upload_err = some(upload_err, "large image upload should reach final part");
+    match upload_err {
+        Error::InvalidInput(message) if message.contains("width") || message.contains("height") => {
+        }
+        other => panic!("expected dimension error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn audio_processing_records_actual_duration_and_bitrate() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = wav_test_audio(2, 8_000, 1);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "rooms/1/chat/attachments",
+        client_file_id: "chat-audio-1",
+        filename: Some("voice.wav"),
+        mime_type: "audio/wav",
+        payload: &payload,
+        width: None,
+        height: None,
+        metadata: serde_json::Value::Object(Default::default()),
+        policy: chat_attachment_upload_policy(),
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "audio upload session should be created",
+        ),
+        "audio upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let result = ok(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key,
+                upload_token,
+                content_type: Some("audio/wav".to_string()),
+                range: None,
+                data: payload,
+            })
+            .await,
+        "audio upload should store",
+    );
+    let StoreFileUploadResult::Complete(blob) = result else {
+        panic!("single-part audio upload should complete");
+    };
+    assert_eq!(
+        blob.metadata
+            .get("duration_seconds")
+            .and_then(serde_json::Value::as_i64),
+        Some(2)
+    );
+    assert!(
+        blob.metadata
+            .get("bitrate_bps")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|bitrate| bitrate > 0),
+        "audio bitrate should be recorded"
+    );
+}
+
+#[tokio::test]
+async fn audio_processing_rejects_actual_duration_over_policy() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = wav_test_audio(2, 8_000, 1);
+    let mut policy = chat_attachment_upload_policy();
+    policy.max_audio_duration_seconds = Some(1);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "rooms/1/chat/attachments",
+        client_file_id: "chat-audio-too-long",
+        filename: Some("voice.wav"),
+        mime_type: "audio/wav",
+        payload: &payload,
+        width: None,
+        height: None,
+        metadata: serde_json::Value::Object(Default::default()),
+        policy,
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "audio upload session should be created",
+        ),
+        "audio upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let upload_err = err(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token,
+                content_type: Some("audio/wav".to_string()),
+                range: None,
+                data: payload,
+            })
+            .await,
+        "actual audio duration should be enforced during finalization",
+    );
+    assert!(matches!(
+        upload_err,
+        Error::InvalidInput(message) if message.contains("duration")
+    ));
+    let reference = ok(
+        submitted_file_reference_from_session_file(&session.file),
+        "session reference should build",
+    );
+    let prepare_err = err(
+        storage
+            .prepare_submitted_files(
+                FileStorageContext {
+                    user_id: UserId::expect_positive(1),
+                    storage_scope: "rooms/1/chat/attachments",
+                    database_object_route_prefix: "/api/chat/attachment-objects",
+                    client_request_id: None,
+                },
+                vec![reference],
+            )
+            .await,
+        "invalid audio upload reference should be unusable",
+    );
+    assert!(matches!(
+        prepare_err,
+        Error::InvalidInput(message) if message.contains("file reference was not found")
+    ));
+}
+
+#[tokio::test]
+async fn derived_image_variants_follow_original_cleanup_lifecycle() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage =
+        DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
+    let payload = jpeg_test_image(1800, 1200);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "rooms/1/chat/attachments",
+        client_file_id: "chat-image-cleanup",
+        filename: Some("image.jpg"),
+        mime_type: "image/jpeg",
+        payload: &payload,
+        width: Some(1800),
+        height: Some(1200),
+        metadata: serde_json::json!({"width": 1800, "height": 1200}),
+        policy: chat_attachment_upload_policy(),
+    });
+    let session = expect_upload_session(
+        ok(
+            storage.create_upload_session(request).await,
+            "upload session should be created",
+        ),
+        "image variant cleanup upload",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let result = ok(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key,
+                upload_token,
+                content_type: Some("image/jpeg".to_string()),
+                range: None,
+                data: payload,
+            })
+            .await,
+        "upload should store",
+    );
+    let StoreFileUploadResult::Complete(blob) = result else {
+        panic!("single-part image upload should complete");
+    };
+    let variants: Vec<FileObjectVariant> = ok(
+        serde_json::from_value(
+            blob.metadata
+                .get(FILE_GENERATED_VARIANTS_METADATA_KEY)
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+        ),
+        "image variants metadata should parse",
+    );
+    let derived_variant = variants
+        .iter()
+        .find(|variant| !variant.is_original)
+        .expect("derived variant should exist");
+
+    let unreferenced = ok(
+        repository.list_unreferenced_objects(1, 100).await,
+        "unreferenced objects should list",
+    );
+    assert!(
+        unreferenced
+            .iter()
+            .all(|object| object.object_key != derived_variant.object_key),
+        "derived variants should not be cleanup roots"
+    );
+
+    ok(
+        storage
+            .delete_files(
+                FileStorageCleanupOrigin::UnreferencedObject,
+                &[FileReferenceTarget {
+                    storage_backend: blob.storage_backend.clone(),
+                    object_key: blob.object_key.clone(),
+                    reference_kind: "unreferenced_file".to_string(),
+                    reference_id: blob.object_key.clone(),
+                }],
+            )
+            .await,
+        "original delete should delete derived variants",
+    );
+    assert!(!ok(
+        repository
+            .object_exists(&blob.storage_backend, &derived_variant.object_key)
+            .await,
+        "derived object lookup should succeed"
+    ));
 }
 
 #[tokio::test]
@@ -861,7 +1470,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
     let storage =
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(payload));
     let (parts, _) = single_part_manifest_for_payload(payload);
     let session = ok(
         storage
@@ -870,11 +1479,13 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::json!({"blurhash": "abc"}),
                 policy,
             })
@@ -901,7 +1512,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.to_vec(),
             )
             .await,
@@ -939,13 +1550,13 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
     let storage =
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(payload));
     let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/users/avatars/avatar.png",
-        "image/png",
+        "database/users/avatars/avatar.pdf",
+        "application/pdf",
         payload,
     )
     .await;
@@ -957,11 +1568,13 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::json!({"blurhash": "abc"}),
                 policy,
             })
@@ -1027,13 +1640,13 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
     let storage =
         DatabaseFileStorageService::new("database", repository.clone(), "test-file-storage-secret");
     let payload = b"avatar";
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(payload));
     let (parts, content_manifest_sha256) = single_part_manifest_for_payload(payload);
     upsert_uncompressed_blob(
         repository.as_ref(),
         "database",
-        "database/users/avatars/shared.png",
-        "image/png",
+        "database/users/avatars/shared.pdf",
+        "application/pdf",
         payload,
     )
     .await;
@@ -1045,10 +1658,12 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-proof-1".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: parts.clone(),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: policy.clone(),
@@ -1063,11 +1678,13 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-proof-2".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -1470,7 +2087,7 @@ async fn database_storage_skips_compression_below_threshold() {
         },
     );
     let payload = vec![b'a'; 4096];
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (parts, _) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
@@ -1479,11 +2096,13 @@ async fn database_storage_skips_compression_below_threshold() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-small".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -1506,7 +2125,7 @@ async fn database_storage_skips_compression_below_threshold() {
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.clone(),
             )
             .await,
@@ -1551,7 +2170,7 @@ async fn database_storage_skips_low_savings_compression() {
         },
     );
     let payload = vec![b'a'; 4096];
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (parts, _) = single_part_manifest_for_payload(&payload);
     let session = ok(
         storage
@@ -1560,11 +2179,13 @@ async fn database_storage_skips_low_savings_compression() {
                 storage_scope: "users/1/avatars".to_string(),
                 client_file_id: Some("avatar-low-savings".to_string()),
                 filename: None,
-                mime_type: "image/png".to_string(),
+                mime_type: "application/pdf".to_string(),
                 size_bytes: payload_size(&payload),
                 width: Some(16),
                 height: Some(16),
                 parts,
+                duration_seconds: None,
+                bitrate_bps: None,
                 metadata: serde_json::Value::Object(Default::default()),
                 policy,
             })
@@ -1587,7 +2208,7 @@ async fn database_storage_skips_low_savings_compression() {
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/png"),
+                Some("application/pdf"),
                 payload.clone(),
             )
             .await,
@@ -1631,13 +2252,13 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         },
     );
     let payload = vec![b'x'; 12 * 1024 * 1024];
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-resumable",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -1668,7 +2289,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
             .store_upload(StoreFileUpload {
                 encoded_object_key: encoded_object_key.clone(),
                 upload_token: upload_token.to_string(),
-                content_type: Some("image/png".to_string()),
+                content_type: Some("application/pdf".to_string()),
                 range: Some(FileUploadRange {
                     start: 0,
                     end_inclusive: session.part_size_bytes - 1,
@@ -1694,7 +2315,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-resumable-retry",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -1714,7 +2335,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
             .store_upload(StoreFileUpload {
                 encoded_object_key: encoded_object_key.clone(),
                 upload_token: upload_token.to_string(),
-                content_type: Some("image/png".to_string()),
+                content_type: Some("application/pdf".to_string()),
                 range: Some(FileUploadRange {
                     start: session.part_size_bytes,
                     end_inclusive: payload_size(&payload) - 1,
@@ -1758,7 +2379,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
             .await,
         "temporary object should load",
     );
-    assert!(!temporary_object_exists);
+    assert!(temporary_object_exists);
     let permanent_blob_parts = ok(
         repository
             .list_blob_parts("database", &blob.object_key)
@@ -1806,6 +2427,111 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
 }
 
 #[tokio::test]
+async fn database_storage_cleans_expired_partial_upload_session() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let storage = DatabaseFileStorageService::new_with_compression_config(
+        "database",
+        repository.clone(),
+        "test-file-storage-secret",
+        DatabaseFileStorageCompressionConfig {
+            algorithm: FileBlobCompression::None,
+            ..Default::default()
+        },
+    );
+    let mut payload = Vec::with_capacity(12 * 1024 * 1024);
+    payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    payload.extend(vec![b'b'; 4 * 1024 * 1024]);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "users/1/avatars",
+        client_file_id: "avatar-expired-partial",
+        filename: None,
+        mime_type: "application/pdf",
+        payload: &payload,
+        width: Some(16),
+        height: Some(16),
+        metadata: serde_json::Value::Object(Default::default()),
+        policy: generic_binary_upload_policy(payload_size(&payload)),
+    });
+    let session = ok(
+        storage.create_upload_session(request).await,
+        "upload session should be created",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let part_size = usize::try_from(session.part_size_bytes).expect("part size should fit");
+    ok(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token,
+                content_type: Some("application/pdf".to_string()),
+                range: Some(FileUploadRange {
+                    start: 0,
+                    end_inclusive: session.part_size_bytes - 1,
+                    total_size: payload_size(&payload),
+                }),
+                data: payload[..part_size].to_vec(),
+            })
+            .await,
+        "first upload part should store",
+    );
+    let upload_session_key =
+        decode_database_file_object_key(&session.encoded_object_key).expect("session key decodes");
+    ok(
+        sqlx::query!(
+            "UPDATE file_upload_sessions SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE storage_backend = $1 AND upload_session_key = $2",
+            "database",
+            &upload_session_key,
+        )
+        .execute(repository.pool())
+        .await,
+        "session should expire",
+    );
+    let expired = some(
+        ok(
+            repository.list_expired_upload_sessions(10).await,
+            "expired sessions should list",
+        )
+        .into_iter()
+        .find(|session| session.upload_session_key == upload_session_key),
+        "expired session should be found",
+    );
+    assert!(ok(
+        storage.cleanup_expired_upload_session(expired).await,
+        "expired session should clean"
+    ));
+    assert!(ok(
+        repository
+            .list_blob_parts("database", &upload_session_key)
+            .await,
+        "temporary parts should load"
+    )
+    .is_empty());
+    assert!(ok(
+        repository
+            .get_upload_session("database", &upload_session_key)
+            .await,
+        "upload session should load"
+    )
+    .is_none());
+    assert!(!ok(
+        repository
+            .object_exists("database", &session.file.object_key)
+            .await,
+        "pending object lookup should succeed"
+    ));
+}
+
+#[tokio::test]
 async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
@@ -1822,13 +2548,13 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
     let mut payload = Vec::with_capacity(12 * 1024 * 1024);
     payload.extend(vec![b'a'; 8 * 1024 * 1024]);
     payload.extend(vec![b'b'; 4 * 1024 * 1024]);
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-stream",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -1859,7 +2585,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
                 .store_upload(StoreFileUpload {
                     encoded_object_key: encoded_object_key.clone(),
                     upload_token: upload_token.to_string(),
-                    content_type: Some("image/png".to_string()),
+                    content_type: Some("application/pdf".to_string()),
                     range: Some(FileUploadRange {
                         start,
                         end_inclusive: start + payload_size(chunk) - 1,
@@ -1916,14 +2642,14 @@ async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope(
         },
     );
     let payload = vec![b'f'; 12 * 1024 * 1024];
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let make_request = |user_id, storage_scope, client_file_id| {
         upload_request(UploadRequestInput {
             user_id,
             storage_scope,
             client_file_id,
             filename: None,
-            mime_type: "image/png",
+            mime_type: "application/pdf",
             payload: &payload,
             width: Some(16),
             height: Some(16),
@@ -1997,13 +2723,13 @@ async fn database_storage_multipart_stores_manifest_identity() {
     let mut payload = Vec::with_capacity(12 * 1024 * 1024);
     payload.extend(vec![b'a'; 8 * 1024 * 1024]);
     payload.extend(vec![b'b'; 4 * 1024 * 1024]);
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-multipart-checksum",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2035,7 +2761,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
                 .store_upload(StoreFileUpload {
                     encoded_object_key: encoded_object_key.clone(),
                     upload_token: upload_token.to_string(),
-                    content_type: Some("image/png".to_string()),
+                    content_type: Some("application/pdf".to_string()),
                     range: Some(FileUploadRange {
                         start,
                         end_inclusive,
@@ -2099,13 +2825,13 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
         },
     );
     let payload = vec![b'r'; 12 * 1024 * 1024];
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-range",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2137,7 +2863,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
                 .store_upload(StoreFileUpload {
                     encoded_object_key: encoded_object_key.clone(),
                     upload_token: upload_token.to_string(),
-                    content_type: Some("image/png".to_string()),
+                    content_type: Some("application/pdf".to_string()),
                     range: Some(FileUploadRange {
                         start,
                         end_inclusive,
@@ -2206,13 +2932,13 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
     .with_operator(operator.clone())
     .with_test_multipart_upload_id("test-upload-id");
     let payload = vec![b's'; 5 * 1024 * 1024];
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-resumable",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2224,7 +2950,7 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
         "upload session should be created",
     );
     assert!(session.upload_url.as_deref().is_some_and(|url| {
-        url.starts_with("/api/user/avatar-objects/") && url.contains("?token=")
+        url.starts_with("/api/test/file-objects/") && url.contains("?token=")
     }));
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
     assert_eq!(
@@ -2232,7 +2958,7 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
             .upload_headers
             .get("content-type")
             .map(String::as_str),
-        Some("image/png")
+        Some("application/pdf")
     );
     assert!(session
         .upload_headers
@@ -2281,7 +3007,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
     ok(
         operator
             .write_with(object_key, payload.clone())
-            .content_type("image/png")
+            .content_type("application/pdf")
             .await,
         "S3 object should be written",
     );
@@ -2291,7 +3017,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
             .upsert_object(UpsertFileObject {
                 storage_backend: "s3_public",
                 object_key,
-                mime_type: "image/png",
+                mime_type: "application/pdf",
                 size_bytes: payload_size(&payload),
                 content_manifest_sha256: &content_manifest_sha256,
                 metadata: &serde_json::Value::Object(Default::default()),
@@ -2318,7 +3044,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
     assert_eq!(download.metadata.range, Some(requested));
     assert_eq!(download.metadata.size_bytes, requested.size_bytes());
     assert_eq!(download.metadata.total_size_bytes, payload_size(&payload));
-    assert_eq!(download.metadata.mime_type, "image/png");
+    assert_eq!(download.metadata.mime_type, "application/pdf");
     let chunks = ok(
         download.stream.try_collect::<Vec<_>>().await,
         "S3 stream should read",
@@ -2360,13 +3086,13 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     .with_operator(operator.clone())
     .with_test_multipart_upload_id("test-upload-id");
     let payload = b"s3-completed-object".to_vec();
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-complete",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2381,7 +3107,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     ok(
         operator
             .write_with(&session.file.object_key, payload.clone())
-            .content_type("image/png")
+            .content_type("application/pdf")
             .await,
         "completed S3 object should be written",
     );
@@ -2424,7 +3150,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     ));
     let read_url = ok(
         database_file_object_url(
-            "/api/user/avatar-objects",
+            "/api/test/file-objects",
             "s3_public",
             &session.file.object_key,
             "test-file-storage-secret",
@@ -2494,13 +3220,13 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
     let mut payload = Vec::with_capacity(12 * 1024 * 1024);
     payload.extend(vec![b'a'; 8 * 1024 * 1024]);
     payload.extend(vec![b'b'; 4 * 1024 * 1024]);
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-server-mediated",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2527,7 +3253,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
             .store_upload(StoreFileUpload {
                 encoded_object_key: session.encoded_object_key.clone(),
                 upload_token: upload_token.clone(),
-                content_type: Some("image/png".to_string()),
+                content_type: Some("application/pdf".to_string()),
                 range: Some(FileUploadRange {
                     start: 0,
                     end_inclusive: session.part_size_bytes - 1,
@@ -2554,7 +3280,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
             .store_upload(StoreFileUpload {
                 encoded_object_key: session.encoded_object_key.clone(),
                 upload_token,
-                content_type: Some("image/png".to_string()),
+                content_type: Some("application/pdf".to_string()),
                 range: Some(FileUploadRange {
                     start: session.part_size_bytes,
                     end_inclusive: payload_size(&payload) - 1,
@@ -2581,6 +3307,85 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
         "completed S3 object should be stored",
     );
     assert_eq!(loaded.to_vec(), payload);
+}
+
+#[tokio::test]
+async fn s3_storage_rejects_part_outside_declared_manifest() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        opendal::Operator::new(opendal::services::Memory::default())
+            .map(opendal::OperatorBuilder::finish),
+        "memory operator should build",
+    );
+    let storage = ok(
+        S3CompatibleFileStorageService::new_with_repository(
+            S3FileStorageConfig {
+                endpoint: "http://s3.invalid".to_string(),
+                access_key_id: "test-access-key".to_string(),
+                secret_access_key: "test-secret-key".to_string(),
+                bucket: "synctv-test".to_string(),
+                region: "us-east-1".to_string(),
+                base_path: "files".to_string(),
+                public_base_url: Some("https://cdn.example.test".to_string()),
+                upload_expires_seconds: 900,
+                storage_backend: "s3_public".to_string(),
+                upload_token_secret: "test-file-storage-secret".to_string(),
+            },
+            Some(repository),
+        ),
+        "s3 storage should build",
+    )
+    .with_operator(operator)
+    .with_test_multipart_upload_id("test-upload-id");
+    let mut payload = Vec::with_capacity(12 * 1024 * 1024);
+    payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    payload.extend(vec![b'b'; 4 * 1024 * 1024]);
+    let (request, _) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "users/1/avatars",
+        client_file_id: "avatar-s3-out-of-bounds",
+        filename: None,
+        mime_type: "application/pdf",
+        payload: &payload,
+        width: Some(16),
+        height: Some(16),
+        metadata: serde_json::Value::Object(Default::default()),
+        policy: generic_binary_upload_policy(payload_size(&payload)),
+    });
+    let session = ok(
+        storage.create_upload_session(request).await,
+        "upload session should be created",
+    );
+    let upload_token = some(
+        session
+            .file
+            .metadata
+            .get(FILE_UPLOAD_TOKEN_KEY)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        "upload token should exist",
+    );
+    let err = err(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token,
+                content_type: Some("application/pdf".to_string()),
+                range: Some(FileUploadRange {
+                    start: session.part_size_bytes,
+                    end_inclusive: payload_size(&payload) + 1024,
+                    total_size: payload_size(&payload),
+                }),
+                data: vec![b'x'; 2048],
+            })
+            .await,
+        "out-of-manifest S3 part should be rejected",
+    );
+    assert!(matches!(
+        err,
+        Error::InvalidInput(message) if message.contains("upload part")
+    ));
 }
 
 #[tokio::test]
@@ -2615,13 +3420,13 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
     let mut payload = Vec::with_capacity(12 * 1024 * 1024);
     payload.extend(vec![b'a'; 8 * 1024 * 1024]);
     payload.extend(vec![b'b'; 4 * 1024 * 1024]);
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (first_request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-session-a",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2637,7 +3442,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         storage_scope: "users/2/avatars",
         client_file_id: "avatar-s3-session-b",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2679,7 +3484,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
             .store_upload(StoreFileUpload {
                 encoded_object_key: first_session.encoded_object_key.clone(),
                 upload_token,
-                content_type: Some("image/png".to_string()),
+                content_type: Some("application/pdf".to_string()),
                 range: Some(FileUploadRange {
                     start: 0,
                     end_inclusive: first_session.part_size_bytes - 1,
@@ -2749,13 +3554,13 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     let expected_payload = b"declared-s3-object".to_vec();
     let actual_payload = b"tampered-s3-object".to_vec();
     assert_eq!(expected_payload.len(), actual_payload.len());
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&expected_payload));
     let (request, expected_content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-checksum-mismatch",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &expected_payload,
         width: Some(16),
         height: Some(16),
@@ -2770,7 +3575,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     ok(
         operator
             .write_with(&session.file.object_key, actual_payload)
-            .content_type("image/png")
+            .content_type("application/pdf")
             .await,
         "tampered S3 object should be written",
     );
@@ -2847,13 +3652,13 @@ async fn s3_public_constructor_requires_repository_for_upload_session() {
     )
     .with_operator(operator.clone());
     let payload = b"direct-s3-upload".to_vec();
-    let policy = user_avatar_upload_policy();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-direct",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2902,13 +3707,13 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     let mut payload = Vec::with_capacity(12 * 1024 * 1024);
     payload.extend(vec![b'a'; 8 * 1024 * 1024]);
     payload.extend(vec![b'b'; 4 * 1024 * 1024]);
-    let policy = large_test_upload_policy(payload_size(&payload), "image/png");
+    let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
         storage_scope: "users/1/avatars",
         client_file_id: "avatar-s3-staged-complete",
         filename: None,
-        mime_type: "image/png",
+        mime_type: "application/pdf",
         payload: &payload,
         width: Some(16),
         height: Some(16),
@@ -2922,7 +3727,7 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     ok(
         operator
             .write_with(&session.file.object_key, payload.clone())
-            .content_type("image/png")
+            .content_type("application/pdf")
             .await,
         "completed S3 object should be written",
     );

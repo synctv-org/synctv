@@ -30,12 +30,13 @@ use crate::{
         optional_file_storage_public_url, optional_payload_bool, payload_len_i64,
         register_upload_session_reference, strip_internal_file_metadata, upload_manifest_metadata,
         upload_manifest_parts_from_metadata, upload_media_type, upload_session_metadata,
-        upload_session_metadata_with_manifest, upload_session_parts_progress,
-        upload_session_progress, upload_session_public_file_id,
-        validate_create_file_upload_session, validate_database_file_read_token,
-        validate_database_file_upload_token, validate_file_mime_type, validate_file_reuse_grant,
-        validate_s3_file_storage_config, validate_stored_files, validate_upload_range,
-        validated_upload_manifest, CreateFileReuseGrant, FileReuseGrant, FileStorageCleanupOrigin,
+        upload_session_metadata_with_manifest, upload_session_object_metadata,
+        upload_session_parts_progress, upload_session_policy, upload_session_progress,
+        upload_session_public_file_id, validate_create_file_upload_session,
+        validate_database_file_read_token, validate_database_file_upload_token,
+        validate_file_mime_type, validate_file_reuse_grant, validate_s3_file_storage_config,
+        validate_stored_files, validate_upload_range, validated_upload_manifest,
+        CreateFileReuseGrant, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
         FileStorageContext, FileStorageService, UploadSessionMetadataInput,
         ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
     },
@@ -299,6 +300,41 @@ impl S3CompatibleFileStorageService {
             let text = response.text().await.unwrap_or_default();
             return Err(Error::InvalidInput(format!(
                 "failed to complete S3 multipart upload: {status} {text}"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn abort_s3_multipart_upload(&self, object_key: &str, upload_id: &str) -> Result<()> {
+        #[cfg(test)]
+        if self.test_multipart_upload_id.is_some() {
+            let _ = (object_key, upload_id);
+            return Ok(());
+        }
+
+        let url = self.s3_url(object_key, &[("uploadId", upload_id)])?;
+        let date = Utc::now();
+        let body_hash = hex::encode(Sha256::digest([]));
+        let mut headers = BTreeMap::new();
+        headers.insert("x-amz-content-sha256".to_string(), body_hash.clone());
+        headers.insert("x-amz-date".to_string(), amz_datetime(date));
+        let auth = self.authorization_header("DELETE", &url, &headers, date, &body_hash)?;
+        let response = self
+            .http_client
+            .delete(url)
+            .header("x-amz-content-sha256", body_hash)
+            .header("x-amz-date", amz_datetime(date))
+            .header(header::AUTHORIZATION, auth)
+            .send()
+            .await
+            .map_err(|error| {
+                Error::Internal(format!("failed to abort S3 multipart upload: {error}"))
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(Error::Internal(format!(
+                "failed to abort S3 multipart upload: {status} {text}"
             )));
         }
         Ok(())
@@ -786,33 +822,56 @@ impl S3CompatibleFileStorageService {
                 "file manifest does not match uploaded parts".to_string(),
             ));
         }
-        self.repository()?
-            .upsert_object(UpsertFileObject {
+        let repository = self.repository()?;
+        let upload_policy = upload_session_policy(&session.metadata)?;
+        let metadata = upload_session_object_metadata(&session.metadata)?;
+        repository
+            .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.config.storage_backend,
                 object_key: &session.object_key,
                 mime_type: &session.mime_type,
                 size_bytes: session.size_bytes,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &metadata,
             })
             .await?;
-        self.repository()?
+        let mut blob = FileBlob {
+            storage_backend: self.config.storage_backend.clone(),
+            object_key: session.object_key.clone(),
+            mime_type: session.mime_type.clone(),
+            size_bytes: session.size_bytes,
+            total_size_bytes: session.size_bytes,
+            content_manifest_sha256: content_manifest_sha256.clone(),
+            compression: FileBlobCompression::None,
+            range: None,
+            data: Vec::new(),
+            metadata,
+            created_at: Utc::now(),
+        };
+        if let Err(error) =
+            super::complete_uploaded_file_object(self, repository, &mut blob, &upload_policy).await
+        {
+            self.delete_invalid_upload_object(&session.object_key, "media_validation_failed")
+                .await;
+            repository
+                .delete_upload_session_parts(
+                    &self.config.storage_backend,
+                    &session.upload_session_key,
+                )
+                .await?;
+            repository
+                .delete_object(&self.config.storage_backend, &session.object_key)
+                .await?;
+            return Err(error);
+        }
+        repository
+            .mark_object_validated(&self.config.storage_backend, &session.object_key)
+            .await?;
+        repository
             .complete_upload_session(&self.config.storage_backend, &session.upload_session_key)
             .await?;
         Ok(CompleteFileUploadSessionResult {
-            object: Some(FileBlob {
-                storage_backend: self.config.storage_backend.clone(),
-                object_key: session.object_key.clone(),
-                mime_type: session.mime_type.clone(),
-                size_bytes: session.size_bytes,
-                total_size_bytes: session.size_bytes,
-                content_manifest_sha256,
-                compression: FileBlobCompression::None,
-                range: None,
-                data: Vec::new(),
-                metadata: serde_json::Value::Object(Default::default()),
-                created_at: Utc::now(),
-            }),
+            object: Some(blob),
             uploaded_size_bytes: session.size_bytes,
             uploaded_parts,
         })
@@ -866,6 +925,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             width: request.width,
             height: request.height,
             metadata: request.metadata.clone(),
+            upload_policy: &request.policy,
         });
         let now = Utc::now();
         let expires = self
@@ -1005,6 +1065,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             width: request.width,
             height: request.height,
             metadata: request.metadata.clone(),
+            upload_policy: &request.policy,
         });
         let session_metadata =
             upload_session_metadata_with_manifest(&session_metadata, &request.parts)?;
@@ -1186,6 +1247,15 @@ impl FileStorageService for S3CompatibleFileStorageService {
             }
         }
         attach_prepared_file_urls(self, &mut files, context.database_object_route_prefix)?;
+        if let Some(repository) = self.repository.as_ref() {
+            super::media_processing::attach_variants_to_files(
+                self,
+                repository.as_ref(),
+                &mut files,
+                context.database_object_route_prefix,
+            )
+            .await?;
+        }
         strip_internal_file_metadata(&mut files);
         Ok(files)
     }
@@ -1226,30 +1296,62 @@ impl FileStorageService for S3CompatibleFileStorageService {
                         &file.object_key,
                     )
                     .await?;
-                if repository
-                    .object_reference_count(&file.storage_backend, &file.object_key)
-                    .await?
-                    > 0
-                {
+                let active_reference_count =
+                    if origin == FileStorageCleanupOrigin::UnreferencedObject {
+                        repository
+                            .object_reference_count_excluding_kind(
+                                &file.storage_backend,
+                                &file.object_key,
+                                super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                            )
+                            .await?
+                    } else {
+                        repository
+                            .object_reference_count(&file.storage_backend, &file.object_key)
+                            .await?
+                    };
+                if active_reference_count > 0 {
                     continue;
                 }
             }
-            match self.operator.delete(&file.object_key).await {
-                Ok(()) => {}
-                Err(error) => {
-                    failed_count += 1;
-                    last_error = Some(error.to_string());
-                    crate::metrics::file_storage::FILE_OBJECT_DELETE_FAILURES
-                        .with_label_values(&[origin_label, &file.storage_backend])
-                        .inc();
-                    tracing::warn!(
-                        error = %error,
-                        object_key = %file.object_key,
-                        "failed to delete file object"
-                    );
+            let mut object_keys = Vec::new();
+            if let Some(repository) = self.repository.as_ref() {
+                let derived_variants = repository
+                    .list_derived_object_variants(&file.storage_backend, &file.object_key)
+                    .await?;
+                object_keys.extend(
+                    derived_variants
+                        .into_iter()
+                        .map(|variant| variant.object_key),
+                );
+            }
+            object_keys.push(file.object_key.clone());
+            for object_key in &object_keys {
+                match self.operator.delete(object_key).await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        failed_count += 1;
+                        last_error = Some(error.to_string());
+                        crate::metrics::file_storage::FILE_OBJECT_DELETE_FAILURES
+                            .with_label_values(&[origin_label, &file.storage_backend])
+                            .inc();
+                        tracing::warn!(
+                            error = %error,
+                            object_key,
+                            "failed to delete file object"
+                        );
+                    }
                 }
             }
             if let Some(repository) = self.repository.as_ref() {
+                for object_key in object_keys
+                    .iter()
+                    .filter(|object_key| *object_key != &file.object_key)
+                {
+                    repository
+                        .delete_object(&file.storage_backend, object_key)
+                        .await?;
+                }
                 repository
                     .delete_object(&file.storage_backend, &file.object_key)
                     .await?;
@@ -1262,6 +1364,79 @@ impl FileStorageService for S3CompatibleFileStorageService {
             )));
         }
         Ok(())
+    }
+
+    async fn cleanup_expired_upload_session(
+        &self,
+        session: crate::models::FileUploadSessionRecord,
+    ) -> Result<bool> {
+        if session.storage_backend != self.config.storage_backend {
+            return Ok(false);
+        }
+        if session.completed_at.is_some() || session.expires_at > Utc::now() {
+            return Ok(false);
+        }
+        let repository = self.repository()?;
+        if let Some(upload_id) = session.upload_id.as_deref() {
+            if let Err(error) = self
+                .abort_s3_multipart_upload(&session.object_key, upload_id)
+                .await
+            {
+                tracing::warn!(
+                    error = %error,
+                    object_key = %session.object_key,
+                    upload_id,
+                    "failed to abort expired S3 multipart upload"
+                );
+            }
+        }
+        if let Err(error) = self.operator.delete(&session.object_key).await {
+            tracing::debug!(
+                error = %error,
+                object_key = %session.object_key,
+                "expired S3 upload object delete skipped or failed"
+            );
+        }
+        repository
+            .delete_upload_session_parts(&self.config.storage_backend, &session.upload_session_key)
+            .await?;
+        let (_, reference_id) = super::upload_session_reference_target(
+            session
+                .metadata
+                .get(super::FILE_SESSION_METADATA_PUBLIC_ID_KEY)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        );
+        if !reference_id.is_empty() {
+            repository
+                .release_reference(
+                    super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                    &reference_id,
+                    &self.config.storage_backend,
+                    &session.object_key,
+                )
+                .await?;
+        }
+        let session_deleted = repository
+            .delete_upload_session(&self.config.storage_backend, &session.upload_session_key)
+            .await?;
+        if !repository
+            .object_validated(&self.config.storage_backend, &session.object_key)
+            .await?
+            && repository
+                .object_reference_count_excluding_kind(
+                    &self.config.storage_backend,
+                    &session.object_key,
+                    super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                )
+                .await?
+                == 0
+        {
+            repository
+                .delete_object(&self.config.storage_backend, &session.object_key)
+                .await?;
+        }
+        Ok(session_deleted)
     }
 
     async fn store_upload(&self, upload: StoreFileUpload) -> Result<StoreFileUploadResult> {
@@ -1582,6 +1757,161 @@ impl FileStorageService for S3CompatibleFileStorageService {
 
     async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
         self.object_download(request).await
+    }
+
+    async fn get_object_by_key(&self, storage_backend: &str, object_key: &str) -> Result<FileBlob> {
+        if storage_backend != self.config.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.config.storage_backend
+            )));
+        }
+        let read_token = super::database_file_read_token(
+            &self.config.storage_backend,
+            object_key,
+            &self.config.upload_token_secret,
+        )?;
+        self.get_object(GetFileObject {
+            encoded_object_key: encode_database_file_object_key(object_key),
+            read_token,
+            range: None,
+        })
+        .await
+    }
+
+    async fn get_object_reader_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<FileObjectReader> {
+        if storage_backend != self.config.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.config.storage_backend
+            )));
+        }
+        let size_bytes = if let Some(repository) = self.repository.as_ref() {
+            repository
+                .get_object(&self.config.storage_backend, object_key)
+                .await?
+                .map(|object| object.size_bytes)
+        } else {
+            None
+        };
+        let size_bytes = if let Some(size_bytes) = size_bytes {
+            size_bytes
+        } else {
+            let stat = self
+                .operator
+                .stat(object_key)
+                .await
+                .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
+            i64::try_from(stat.content_length())
+                .map_err(|_| Error::Internal("file object size exceeds i64::MAX".to_string()))?
+        };
+        let operator = self.operator.clone();
+        let object_key = object_key.to_string();
+        let reader = super::read_seek::RangeSeekReader::new(
+            size_bytes,
+            usize::try_from(size_bytes.min(1024 * 1024)).unwrap_or(1024 * 1024),
+            move |offset, length| {
+                let operator = operator.clone();
+                let object_key = object_key.clone();
+                Box::pin(async move {
+                    let start = u64::try_from(offset)
+                        .map_err(|_| Error::InvalidInput("file range is invalid".to_string()))?;
+                    let end = start
+                        .checked_add(u64::try_from(length).map_err(|_| {
+                            Error::InvalidInput("file range is invalid".to_string())
+                        })?)
+                        .ok_or_else(|| Error::InvalidInput("file range is invalid".to_string()))?;
+                    let bytes = operator
+                        .read_with(&object_key)
+                        .range(start..end)
+                        .await
+                        .map_err(|error| {
+                            Error::Internal(format!("failed to read S3 file object range: {error}"))
+                        })?;
+                    Ok(bytes.to_bytes())
+                })
+            },
+        )?;
+        Ok(Box::new(reader))
+    }
+
+    async fn put_object_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+        metadata: serde_json::Value,
+    ) -> Result<FileBlob> {
+        if storage_backend != self.config.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.config.storage_backend
+            )));
+        }
+        if data.is_empty() {
+            return Err(Error::InvalidInput(
+                "file object payload must be non-empty".to_string(),
+            ));
+        }
+        let size_bytes = payload_len_i64(data.len())?;
+        let checksum = hex::encode(Sha256::digest(&data));
+        self.operator
+            .write(object_key, data.clone())
+            .await
+            .map_err(|error| {
+                Error::Internal(format!("failed to write S3 file object variant: {error}"))
+            })?;
+        self.repository()?
+            .upsert_object(UpsertFileObject {
+                storage_backend: &self.config.storage_backend,
+                object_key,
+                mime_type,
+                size_bytes,
+                content_manifest_sha256: &checksum,
+                metadata: &metadata,
+            })
+            .await?;
+        Ok(FileBlob {
+            storage_backend: self.config.storage_backend.clone(),
+            object_key: object_key.to_string(),
+            mime_type: mime_type.to_string(),
+            size_bytes,
+            total_size_bytes: size_bytes,
+            content_manifest_sha256: checksum,
+            compression: FileBlobCompression::None,
+            range: None,
+            data,
+            metadata,
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn process_object_variants(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        database_object_route_prefix: &str,
+        upload_policy: &crate::models::FileUploadPolicy,
+    ) -> Result<Vec<crate::models::FileObjectVariant>> {
+        if storage_backend != self.config.storage_backend {
+            return Ok(Vec::new());
+        }
+        let repository = self.repository()?;
+        super::process_file_variants_for_object(
+            self,
+            repository.clone(),
+            storage_backend,
+            object_key,
+            database_object_route_prefix,
+            upload_policy,
+        )
+        .await
+        .map(|result| result.variants)
     }
 }
 

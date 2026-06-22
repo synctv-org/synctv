@@ -1,0 +1,233 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT storage_backend, object_key, original_storage_backend, original_object_key,\n                   group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                   is_original, lossy, quality, sort_order,\n                   metadata AS \"metadata!: serde_json::Value\", created_at\n            FROM file_object_variants\n            WHERE original_storage_backend = $1 AND original_object_key = $2\n            ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "original_storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "original_storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "original_object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "original_object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "group_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "variant_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "variant_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "label",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "mime_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "is_original",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "is_original"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "lossy",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "lossy"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "quality",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "quality"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "sort_order",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "metadata!: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_object_variants",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "854edbac4f326cc2ad69a3259faa234541b911833b37b59a953054ce103e8cb8"
+}

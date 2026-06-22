@@ -75,7 +75,7 @@ tokio = { version = "1.52.3", features = [
     "signal",
     "fs",
 ] }
-tokio-util = { version = "0.7.18", features = ["codec", "io", "rt"] }
+tokio-util = { version = "0.7.18", features = ["codec", "io", "io-util", "rt"] }
 tokio-stream = "0.1.18"
 
 # gRPC & Protobuf
@@ -274,6 +274,8 @@ flate2 = "1.1.9"
 brotli = "8.0.3"
 lz4_flex = "0.11.5"
 zstd = "0.13.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "avif", "rayon"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "flac", "isomp4", "mkv", "mp3", "ogg", "vorbis", "wav"] }
 
 # Resilience
 governor = "0.10.4"

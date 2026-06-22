@@ -3,15 +3,15 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileObjectDownload, FileReferenceTarget, FileUploadSessionCreateResult,
-        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
-        SubmittedFileReference, SubmittedFileReferenceKind,
+        FileBlob, FileObjectDownload, FileObjectVariant, FileReferenceTarget,
+        FileUploadSessionCreateResult, GetFileObject, NewStoredFile, StoreFileUpload,
+        StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
         database_file_read_token_storage_backend, file_upload_token_storage_backend,
         upload_session_reference_target, validation::validate_stored_files, CreateFileReuseGrant,
-        FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
-        ValidatedFileReuseGrant,
+        FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext,
+        FileStorageService, ValidatedFileReuseGrant,
     },
     Error, Result,
 };
@@ -201,6 +201,16 @@ impl FileStorageService for RoutedFileStorageService {
         Ok(())
     }
 
+    async fn cleanup_expired_upload_session(
+        &self,
+        session: crate::models::FileUploadSessionRecord,
+    ) -> Result<bool> {
+        self.registry
+            .backend(&session.storage_backend)?
+            .cleanup_expired_upload_session(session)
+            .await
+    }
+
     async fn store_upload_object(
         &self,
         encoded_object_key: &str,
@@ -247,6 +257,56 @@ impl FileStorageService for RoutedFileStorageService {
         self.registry
             .backend(&backend_name)?
             .get_object_stream(request)
+            .await
+    }
+
+    async fn get_object_by_key(&self, storage_backend: &str, object_key: &str) -> Result<FileBlob> {
+        self.registry
+            .backend(storage_backend)?
+            .get_object_by_key(storage_backend, object_key)
+            .await
+    }
+
+    async fn get_object_reader_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<FileObjectReader> {
+        self.registry
+            .backend(storage_backend)?
+            .get_object_reader_by_key(storage_backend, object_key)
+            .await
+    }
+
+    async fn put_object_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+        metadata: serde_json::Value,
+    ) -> Result<FileBlob> {
+        self.registry
+            .backend(storage_backend)?
+            .put_object_by_key(storage_backend, object_key, mime_type, data, metadata)
+            .await
+    }
+
+    async fn process_object_variants(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        database_object_route_prefix: &str,
+        upload_policy: &crate::models::FileUploadPolicy,
+    ) -> Result<Vec<FileObjectVariant>> {
+        self.registry
+            .backend(storage_backend)?
+            .process_object_variants(
+                storage_backend,
+                object_key,
+                database_object_route_prefix,
+                upload_policy,
+            )
             .await
     }
 }

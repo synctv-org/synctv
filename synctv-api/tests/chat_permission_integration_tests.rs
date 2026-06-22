@@ -256,6 +256,8 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
                     size_bytes: 10,
                     width: 1,
                     height: 1,
+                    duration_seconds: 0,
+                    bitrate_bps: 0,
                     parts: vec![FileUploadManifestPart {
                         part_number: 1,
                         offset_bytes: 0,

@@ -578,7 +578,8 @@ impl ChatService {
             .chat_repository
             .list_by_room_cursor_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
             .await?;
-        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        self.attach_attachment_view_metadata(&mut messages, viewer_user_id)
+            .await?;
         Ok((messages, cursor))
     }
 
@@ -594,7 +595,8 @@ impl ChatService {
             .chat_repository
             .list_history_page_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
             .await?;
-        self.attach_reuse_grants_for_viewer(&mut page.messages, viewer_user_id)?;
+        self.attach_attachment_view_metadata(&mut page.messages, viewer_user_id)
+            .await?;
         Ok(page)
     }
 
@@ -616,7 +618,8 @@ impl ChatService {
             .chat_repository
             .list_playback_messages_for_viewer(&query, viewer_user_id)
             .await?;
-        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        self.attach_attachment_view_metadata(&mut messages, viewer_user_id)
+            .await?;
         Ok(messages)
     }
 
@@ -646,7 +649,8 @@ impl ChatService {
             return Err(Error::NotFound("Message not found".to_string()));
         }
         let mut messages = vec![message];
-        self.attach_reuse_grants_for_viewer(&mut messages, viewer_user_id)?;
+        self.attach_attachment_view_metadata(&mut messages, viewer_user_id)
+            .await?;
         Ok(messages.remove(0))
     }
 
@@ -690,12 +694,15 @@ impl ChatService {
             )
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
-        self.attach_reuse_grants_for_viewer(&mut context.before, viewer_user_id)?;
-        self.attach_reuse_grants_for_viewer(
+        self.attach_attachment_view_metadata(&mut context.before, viewer_user_id)
+            .await?;
+        self.attach_attachment_view_metadata(
             std::slice::from_mut(&mut context.anchor),
             viewer_user_id,
-        )?;
-        self.attach_reuse_grants_for_viewer(&mut context.after, viewer_user_id)?;
+        )
+        .await?;
+        self.attach_attachment_view_metadata(&mut context.after, viewer_user_id)
+            .await?;
         Ok(context)
     }
 
@@ -1760,11 +1767,36 @@ impl ChatService {
         }
     }
 
-    fn attach_reuse_grants_for_viewer(
+    async fn attach_attachment_view_metadata(
         &self,
         messages: &mut [ChatMessageWithAttachments],
         viewer_user_id: Option<&UserId>,
     ) -> Result<()> {
+        let upload_policy = super::chat_attachment_upload_policy();
+        let Some(repository) = self.file_storage_service.repository() else {
+            if viewer_user_id.is_none() {
+                return Ok(());
+            }
+            for message in messages {
+                attach_chat_attachment_reuse_grants(
+                    self.file_storage_service.as_ref(),
+                    viewer_user_id
+                        .copied()
+                        .ok_or_else(|| Error::Internal("viewer_user_id disappeared".to_string()))?,
+                    &mut message.attachments,
+                )?;
+            }
+            return Ok(());
+        };
+        for message in messages.iter_mut() {
+            crate::service::file_storage::attach_variants_to_chat_attachments(
+                self.file_storage_service.as_ref(),
+                repository.as_ref(),
+                &mut message.attachments,
+                &upload_policy.database_object_route_prefix,
+            )
+            .await?;
+        }
         let Some(viewer_user_id) = viewer_user_id.copied() else {
             return Ok(());
         };

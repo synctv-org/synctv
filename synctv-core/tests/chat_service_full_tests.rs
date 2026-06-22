@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use image::ImageEncoder;
 use sha2::Digest;
 use sqlx::PgPool;
 use synctv_core::{
@@ -34,6 +35,14 @@ use synctv_core::{
     Error,
 };
 use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};
+
+fn png_test_image() -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(&[0, 0, 0, 255], 1, 1, image::ColorType::Rgba8.into())
+        .expect("test png image should encode");
+    out
+}
 
 fn make_user_service(pool: &PgPool) -> UserService {
     make_user_service_with_username_cache(
@@ -196,11 +205,16 @@ async fn upload_chat_attachment_file(
         .upload_headers
         .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
         .checked("database upload token header should be returned");
+    let content_type = session
+        .file
+        .mime_type
+        .as_deref()
+        .checked("attachment session mime_type should be present");
     chat_service
         .store_attachment_upload_object(
             encoded_object_key,
             upload_token,
-            Some("image/webp"),
+            Some(content_type),
             None,
             payload,
         )
@@ -1961,7 +1975,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
         .await
         .checked("test operation should succeed");
 
-    let payload = b"image-1".to_vec();
+    let payload = png_test_image();
     let session = create_chat_attachment_upload_session_for_payload(
         &chat_service,
         synctv_core::models::CreateChatAttachmentUploadSession {
@@ -1969,10 +1983,12 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             user_id: creator.id,
             client_attachment_id: Some("image-1".to_string()),
             filename: None,
-            mime_type: "image/webp".to_string(),
+            mime_type: "image/png".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
-            width: Some(640),
-            height: Some(480),
+            width: Some(1),
+            height: Some(1),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
         },
@@ -2010,10 +2026,10 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
     assert_eq!(history[0].attachments[0].id, session.file.id);
     assert_eq!(
         history[0].attachments[0].mime_type.as_deref(),
-        Some("image/webp")
+        Some("image/png")
     );
-    assert_eq!(history[0].attachments[0].width, Some(640));
-    assert_eq!(history[0].attachments[0].height, Some(480));
+    assert_eq!(history[0].attachments[0].width, Some(1));
+    assert_eq!(history[0].attachments[0].height, Some(1));
 }
 
 #[tokio::test]
@@ -2199,7 +2215,7 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         .await
         .checked("test operation should succeed");
 
-    let payload = b"idempotent-attachment-1".to_vec();
+    let payload = png_test_image();
     let session = create_chat_attachment_upload_session_for_payload(
         &chat_service,
         synctv_core::models::CreateChatAttachmentUploadSession {
@@ -2207,10 +2223,12 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
             user_id: creator.id,
             client_attachment_id: Some("idempotent-attachment-1".to_string()),
             filename: None,
-            mime_type: "image/webp".to_string(),
+            mime_type: "image/png".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
-            width: Some(640),
-            height: Some(480),
+            width: Some(1),
+            height: Some(1),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
         },
@@ -2249,7 +2267,8 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         session.file.object_key
     );
 
-    let changed_payload = b"idempotent-attachment-2".to_vec();
+    let mut changed_payload = png_test_image();
+    changed_payload.extend_from_slice(b"changed");
     let changed_session = create_chat_attachment_upload_session_for_payload(
         &chat_service,
         synctv_core::models::CreateChatAttachmentUploadSession {
@@ -2257,11 +2276,13 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
             user_id: creator.id,
             client_attachment_id: Some("idempotent-attachment-2".to_string()),
             filename: None,
-            mime_type: "image/webp".to_string(),
+            mime_type: "image/png".to_string(),
             size_bytes: i64::try_from(changed_payload.len())
                 .checked("test operation should succeed"),
-            width: Some(640),
-            height: Some(480),
+            width: Some(1),
+            height: Some(1),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
         },
@@ -2381,7 +2402,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
         .await
         .checked("test operation should succeed");
 
-    let payload = b"deleted-attachment-1".to_vec();
+    let payload = png_test_image();
     let session = create_chat_attachment_upload_session_for_payload(
         &chat_service,
         synctv_core::models::CreateChatAttachmentUploadSession {
@@ -2389,10 +2410,12 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             user_id: creator.id,
             client_attachment_id: Some("deleted-attachment-1".to_string()),
             filename: None,
-            mime_type: "image/webp".to_string(),
+            mime_type: "image/png".to_string(),
             size_bytes: i64::try_from(payload.len()).checked("test operation should succeed"),
-            width: Some(640),
-            height: Some(480),
+            width: Some(1),
+            height: Some(1),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: Vec::new(),
             metadata: serde_json::json!({"blurhash": "abc"}),
         },

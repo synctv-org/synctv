@@ -24,6 +24,8 @@ pub struct CreateRoomCoverUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+    pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
     pub metadata: serde_json::Value,
 }

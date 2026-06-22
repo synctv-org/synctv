@@ -179,15 +179,17 @@ impl TryFrom<&Value> for DirectUrlMediaSourceConfig {
             ));
         }
 
-        let check_index = |index: Option<usize>, len: usize, field: &str| {
-            match index {
-                Some(index) if index >= len => Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl {field} {index} is out of bounds"
-                ))),
-                _ => Ok(()),
-            }
+        let check_index = |index: Option<usize>, len: usize, field: &str| match index {
+            Some(index) if index >= len => Err(ProviderError::InvalidConfig(format!(
+                "DirectUrl {field} {index} is out of bounds"
+            ))),
+            _ => Ok(()),
         };
-        check_index(config.default_media_index, config.medias.len(), "default_media_index")?;
+        check_index(
+            config.default_media_index,
+            config.medias.len(),
+            "default_media_index",
+        )?;
         check_index(
             config.default_subtitle_index,
             config.subtitles.len(),

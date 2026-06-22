@@ -373,6 +373,19 @@ impl DatabaseMaintenanceService {
         cleanup_ops::cleanup_expired_file_references(&self.pool, storage).await
     }
 
+    /// Delete expired upload sessions and backend-specific temporary upload data.
+    pub async fn run_cleanup_expired_file_upload_sessions(&self) -> crate::Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        let deleted =
+            cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage).await?;
+        if deleted > 0 {
+            info!(deleted, "Expired file upload session cleanup completed");
+        }
+        Ok(deleted)
+    }
+
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> crate::Result<()> {
         let deleted = cleanup_ops::delete_expired_credentials(
@@ -411,6 +424,9 @@ impl DatabaseMaintenanceService {
         }
         if let Err(e) = self.run_cleanup_expired_file_references().await {
             error!(error = %e, "Expired file reference cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_expired_file_upload_sessions().await {
+            error!(error = %e, "Expired file upload session cleanup failed");
         }
         if let Err(e) = self.run_cleanup_unreferenced_file_objects().await {
             error!(error = %e, "Unreferenced file object cleanup failed");
@@ -480,6 +496,9 @@ impl DatabaseMaintenanceService {
                         }
                         if let Err(e) = service.run_cleanup_expired_file_references().await {
                             error!(error = %e, "Scheduled expired file reference cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_expired_file_upload_sessions().await {
+                            error!(error = %e, "Scheduled expired file upload session cleanup failed");
                         }
                         if let Err(e) = service.run_cleanup_unreferenced_file_objects().await {
                             error!(error = %e, "Scheduled unreferenced file object cleanup failed");

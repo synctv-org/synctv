@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE file_objects\n            SET validated_at = CURRENT_TIMESTAMP\n            WHERE storage_backend = $1 AND object_key = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62fdc68b63aea2c954f1bf596194bc0d4c7b277f30efc1fdc42d46d2b1cf3334"
+}

@@ -50,6 +50,8 @@ impl RoomService {
                 size_bytes: request.size_bytes,
                 width: request.width,
                 height: request.height,
+                duration_seconds: request.duration_seconds,
+                bitrate_bps: request.bitrate_bps,
                 parts: request.parts,
                 metadata: request.metadata,
                 policy: room_cover_upload_policy(),

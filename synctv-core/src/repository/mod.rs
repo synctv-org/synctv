@@ -49,7 +49,8 @@ pub use email_registration_token::{EmailRegistrationToken, EmailRegistrationToke
 pub use email_token::EmailTokenRepository;
 pub use file_storage::{
     FileStorageRepository, UpsertFileBlob, UpsertFileBlobPart, UpsertFileObject,
-    UpsertFileUploadSession, UpsertFileUploadSessionPart,
+    UpsertFileObjectGroup, UpsertFileObjectVariant, UpsertFileUploadSession,
+    UpsertFileUploadSessionPart,
 };
 pub use media::MediaRepository;
 pub use notification::NotificationRepository;

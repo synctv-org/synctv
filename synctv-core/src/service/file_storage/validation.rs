@@ -120,6 +120,18 @@ pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSess
             "file dimensions must be positive".to_string(),
         ));
     }
+    validate_file_dimensions(
+        &request.policy,
+        &request.mime_type,
+        request.width,
+        request.height,
+    )?;
+    validate_file_audio_metadata(
+        &request.policy,
+        &request.mime_type,
+        request.duration_seconds,
+        request.bitrate_bps,
+    )?;
     for part in &request.parts {
         let valid = part.checksum_sha256.len() == FILE_SHA256_HEX_CHARS
             && part.checksum_sha256.chars().all(|c| c.is_ascii_hexdigit());
@@ -139,12 +151,29 @@ pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSess
             "file metadata must be a JSON object".to_string(),
         ));
     }
+    if request
+        .metadata
+        .as_object()
+        .is_some_and(|metadata| metadata.keys().any(|key| key.starts_with("_synctv_")))
+    {
+        return Err(Error::InvalidInput(
+            "file metadata uses a reserved key".to_string(),
+        ));
+    }
     Ok(())
 }
 
 pub(super) fn validate_file_upload_policy(policy: &FileUploadPolicy) -> Result<()> {
     if policy.kind.trim().is_empty()
         || policy.max_size_bytes <= 0
+        || policy.max_width.is_some_and(|width| width <= 0)
+        || policy.max_height.is_some_and(|height| height <= 0)
+        || policy
+            .max_audio_duration_seconds
+            .is_some_and(|duration| duration <= 0)
+        || policy
+            .max_audio_bitrate_bps
+            .is_some_and(|bitrate| bitrate <= 0)
         || policy.storage_namespace.trim().is_empty()
         || policy.database_object_route_prefix.trim().is_empty()
     {
@@ -177,6 +206,85 @@ pub(crate) fn validate_file_mime_type(policy: &FileUploadPolicy, mime_type: &str
         "{} mime_type is not allowed",
         policy.kind
     )))
+}
+
+pub(crate) fn validate_file_dimensions(
+    policy: &FileUploadPolicy,
+    mime_type: &str,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<()> {
+    let is_image = mime_type.trim().to_ascii_lowercase().starts_with("image/");
+    if !is_image {
+        return Ok(());
+    }
+    if policy.require_image_dimensions && (width.is_none() || height.is_none()) {
+        return Err(Error::InvalidInput(format!(
+            "{} image dimensions are required",
+            policy.kind
+        )));
+    }
+    if let (Some(max_width), Some(width)) = (policy.max_width, width) {
+        if width > max_width {
+            return Err(Error::InvalidInput(format!(
+                "{} image width must be at most {max_width}px",
+                policy.kind
+            )));
+        }
+    }
+    if let (Some(max_height), Some(height)) = (policy.max_height, height) {
+        if height > max_height {
+            return Err(Error::InvalidInput(format!(
+                "{} image height must be at most {max_height}px",
+                policy.kind
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_file_audio_metadata(
+    policy: &FileUploadPolicy,
+    mime_type: &str,
+    duration_seconds: Option<i32>,
+    bitrate_bps: Option<i32>,
+) -> Result<()> {
+    let is_audio = mime_type.trim().to_ascii_lowercase().starts_with("audio/");
+    if !is_audio {
+        return Ok(());
+    }
+    if duration_seconds.is_some_and(|duration| duration <= 0)
+        || bitrate_bps.is_some_and(|bitrate| bitrate <= 0)
+    {
+        return Err(Error::InvalidInput(
+            "file audio duration and bitrate must be positive".to_string(),
+        ));
+    }
+    if policy.require_audio_metadata && (duration_seconds.is_none() || bitrate_bps.is_none()) {
+        return Err(Error::InvalidInput(format!(
+            "{} audio metadata is required",
+            policy.kind
+        )));
+    }
+    if let (Some(max_duration), Some(duration)) =
+        (policy.max_audio_duration_seconds, duration_seconds)
+    {
+        if duration > max_duration {
+            return Err(Error::InvalidInput(format!(
+                "{} audio duration must be at most {max_duration} seconds",
+                policy.kind
+            )));
+        }
+    }
+    if let (Some(max_bitrate), Some(bitrate)) = (policy.max_audio_bitrate_bps, bitrate_bps) {
+        if bitrate > max_bitrate {
+            return Err(Error::InvalidInput(format!(
+                "{} audio bitrate must be at most {max_bitrate} bps",
+                policy.kind
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_s3_file_storage_config(config: &S3FileStorageConfig) -> Result<()> {

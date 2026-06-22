@@ -73,6 +73,7 @@ sqlx_i16_enum!(ChatMessageType, "Invalid chat message type", {
 pub enum ChatAttachmentKind {
     File = 1,
     Image = 2,
+    Audio = 3,
 }
 
 impl ChatAttachmentKind {
@@ -81,13 +82,17 @@ impl ChatAttachmentKind {
         match self {
             Self::File => "file",
             Self::Image => "image",
+            Self::Audio => "audio",
         }
     }
 
     #[must_use]
     pub fn from_mime_type(mime_type: &str) -> Self {
-        if mime_type.trim().to_ascii_lowercase().starts_with("image/") {
+        let mime_type = mime_type.trim().to_ascii_lowercase();
+        if mime_type.starts_with("image/") {
             Self::Image
+        } else if mime_type.starts_with("audio/") {
+            Self::Audio
         } else {
             Self::File
         }
@@ -103,6 +108,7 @@ impl std::fmt::Display for ChatAttachmentKind {
 sqlx_i16_enum!(ChatAttachmentKind, "Invalid chat attachment kind", {
     File = 1,
     Image = 2,
+    Audio = 3,
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +262,8 @@ pub struct CreateChatAttachmentUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+    pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
 }

@@ -157,6 +157,26 @@ pub(super) async fn cleanup_expired_file_references(
     }
 }
 
+/// Delete expired upload sessions and backend-specific temporary upload data.
+pub(super) async fn cleanup_expired_file_upload_sessions(
+    pool: &PgPool,
+    storage: &Arc<dyn FileStorageService>,
+) -> Result<u64> {
+    let repository = FileStorageRepository::new(pool.clone());
+    let sessions = repository.list_expired_upload_sessions(100).await?;
+    if sessions.is_empty() {
+        return Ok(0);
+    }
+
+    let mut cleaned = 0_u64;
+    for session in sessions {
+        if storage.cleanup_expired_upload_session(session).await? {
+            cleaned += 1;
+        }
+    }
+    Ok(cleaned)
+}
+
 /// Delete uploaded file objects that never received an active product
 /// reference, deleting the underlying objects through `storage`. Failed deletes
 /// are persisted as retry jobs. Returns the number of objects cleaned.

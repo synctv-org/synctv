@@ -351,6 +351,7 @@ impl ClientApiImpl {
                 size_bytes: file.size_bytes,
                 width: file.width,
                 height: file.height,
+                variants: file.variants,
                 metadata: file.metadata,
             });
         }
@@ -511,6 +512,8 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
+                    duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
+                    bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                     parts: proto_upload_manifest_parts(req.parts),
                     metadata,
                 },

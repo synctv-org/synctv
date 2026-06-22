@@ -75,6 +75,102 @@ pub(crate) fn json_to_string<T: serde::Serialize + ?Sized>(
     })
 }
 
+pub(crate) fn file_object_variant_to_proto(
+    variant: &synctv_core::models::FileObjectVariant,
+) -> Result<synctv_proto::client::FileObjectVariant, crate::impls::ApiError> {
+    Ok(synctv_proto::client::FileObjectVariant {
+        key: variant.variant_key.clone(),
+        label: variant.label.clone(),
+        url: variant.url.clone().unwrap_or_default(),
+        mime_type: variant.mime_type.clone(),
+        size_bytes: variant.size_bytes,
+        width: variant.width.unwrap_or_default(),
+        height: variant.height.unwrap_or_default(),
+        is_original: variant.is_original,
+        lossy: variant.lossy,
+        quality: variant.quality,
+        metadata: json_to_vec(&variant.metadata, "file object variant metadata")?,
+    })
+}
+
+pub(crate) fn file_object_variants_from_metadata(
+    metadata: &serde_json::Value,
+    context: &'static str,
+) -> Result<Vec<synctv_proto::client::FileObjectVariant>, crate::impls::ApiError> {
+    let Some(raw_variants) =
+        metadata.get(synctv_core::models::FILE_GENERATED_VARIANTS_METADATA_KEY)
+    else {
+        return Ok(Vec::new());
+    };
+    let variants: Vec<synctv_core::models::FileObjectVariant> =
+        serde_json::from_value(raw_variants.clone()).map_err(|error| {
+            crate::impls::ApiError::Internal(format!(
+                "Failed to parse {context} variants metadata: {error}"
+            ))
+        })?;
+    variants.iter().map(file_object_variant_to_proto).collect()
+}
+
+#[cfg(test)]
+mod file_variant_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn client_variants_metadata_field_is_ignored() {
+        let metadata = serde_json::json!({
+            "variants": "client-value",
+        });
+
+        let variants = file_object_variants_from_metadata(&metadata, "test metadata")
+            .expect("client metadata should parse");
+
+        assert!(variants.is_empty());
+    }
+
+    #[test]
+    fn generated_variants_metadata_uses_reserved_key() {
+        let variant = synctv_core::models::FileObjectVariant {
+            storage_backend: "database".to_string(),
+            object_key: "objects/file-small.jpg".to_string(),
+            original_storage_backend: "database".to_string(),
+            original_object_key: "objects/file.jpg".to_string(),
+            group_id: "fg_test".to_string(),
+            variant_key: "small".to_string(),
+            label: "Small".to_string(),
+            url: Some("/files/small".to_string()),
+            mime_type: "image/jpeg".to_string(),
+            size_bytes: 1024,
+            width: Some(320),
+            height: Some(180),
+            is_original: false,
+            lossy: true,
+            quality: Some(78),
+            sort_order: 20,
+            metadata: serde_json::json!({"source": "test"}),
+            created_at: chrono::Utc::now(),
+        };
+        let mut metadata = serde_json::json!({
+            "variants": "client-value",
+        });
+        metadata
+            .as_object_mut()
+            .expect("test metadata should be an object")
+            .insert(
+                synctv_core::models::FILE_GENERATED_VARIANTS_METADATA_KEY.to_string(),
+                serde_json::to_value(vec![variant]).expect("variant should serialize"),
+            );
+
+        let variants = file_object_variants_from_metadata(&metadata, "test metadata")
+            .expect("generated metadata should parse");
+
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].key, "small");
+        assert_eq!(variants[0].url, "/files/small");
+        assert_eq!(variants[0].width, 320);
+        assert_eq!(variants[0].height, 180);
+    }
+}
+
 fn invalid_source_config(message: impl Into<String>) -> crate::impls::ApiError {
     crate::impls::ApiError::InvalidInput(message.into())
 }
@@ -514,6 +610,7 @@ pub(crate) fn stored_file_reference_to_resource_cover(
     Ok(synctv_proto::client::ResourceCover {
         url: required_cover_url(url, "resource cover")?,
         metadata: json_to_vec(&file.metadata, "resource cover metadata")?,
+        variants: file_object_variants_from_metadata(&file.metadata, "resource cover")?,
     })
 }
 
@@ -529,6 +626,7 @@ pub(crate) fn stored_file_reference_to_media_cover(
         width: metadata_i32(&file.metadata, "width", "media cover")?,
         height: metadata_i32(&file.metadata, "height", "media cover")?,
         metadata: json_to_vec(&file.metadata, "media cover metadata")?,
+        variants: file_object_variants_from_metadata(&file.metadata, "media cover")?,
     })
 }
 

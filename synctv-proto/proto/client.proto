@@ -312,6 +312,7 @@ message Playlist {
 message ResourceCover {
   string url = 1;
   bytes metadata = 2; // JSON object.
+  repeated FileObjectVariant variants = 3;
 }
 
 enum ResourceAvailability {
@@ -2516,6 +2517,7 @@ enum ChatAttachmentKind {
   CHAT_ATTACHMENT_KIND_UNSPECIFIED = 0;
   CHAT_ATTACHMENT_KIND_FILE = 1;
   CHAT_ATTACHMENT_KIND_IMAGE = 2;
+  CHAT_ATTACHMENT_KIND_AUDIO = 3;
 }
 
 enum ChatAttachmentReferenceKind {
@@ -2536,6 +2538,21 @@ message ChatAttachment {
   ChatAttachmentKind kind = 9;
   string reuse_token = 10;
   optional int64 reuse_expires_at = 11;
+  repeated FileObjectVariant variants = 12;
+}
+
+message FileObjectVariant {
+  string key = 1;
+  string label = 2;
+  string url = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  bool is_original = 8;
+  bool lossy = 9;
+  optional int32 quality = 10;
+  bytes metadata = 11; // JSON object.
 }
 
 message ChatAttachmentReference {
@@ -2552,6 +2569,8 @@ message CreateChatAttachmentUploadSessionRequest {
   repeated FileUploadManifestPart parts = 6;
   bytes metadata = 7; // JSON object.
   string filename = 8;
+  int32 duration_seconds = 9;
+  int32 bitrate_bps = 10;
 }
 
 message FileUploadManifestPart {
@@ -2703,6 +2722,7 @@ message UserAvatar {
   int32 width = 5;
   int32 height = 6;
   bytes metadata = 7; // JSON object.
+  repeated FileObjectVariant variants = 8;
 }
 
 message CreateUserAvatarUploadSessionRequest {
@@ -2713,6 +2733,8 @@ message CreateUserAvatarUploadSessionRequest {
   int32 height = 5;
   repeated FileUploadManifestPart parts = 6;
   bytes metadata = 7; // JSON object.
+  int32 duration_seconds = 8;
+  int32 bitrate_bps = 9;
 }
 
 message UserAvatarUploadSession {
@@ -2807,6 +2829,7 @@ message FileCover {
   int32 width = 5;
   int32 height = 6;
   bytes metadata = 7; // JSON object.
+  repeated FileObjectVariant variants = 8;
 }
 
 message MediaCover {
@@ -2817,6 +2840,7 @@ message MediaCover {
   int32 width = 5;
   int32 height = 6;
   bytes metadata = 7; // JSON object.
+  repeated FileObjectVariant variants = 8;
 }
 
 message CreateMediaCoverUploadSessionRequest {
@@ -2829,6 +2853,8 @@ message CreateMediaCoverUploadSessionRequest {
   int32 height = 7;
   repeated FileUploadManifestPart parts = 8;
   bytes metadata = 9; // JSON object.
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
 }
 
 message MediaCoverUploadSession {
@@ -2929,6 +2955,8 @@ message CreateRoomCoverUploadSessionRequest {
   int32 height = 6;
   repeated FileUploadManifestPart parts = 7;
   bytes metadata = 8; // JSON object.
+  int32 duration_seconds = 9;
+  int32 bitrate_bps = 10;
 }
 
 message RoomCoverUploadSession {
@@ -3023,6 +3051,8 @@ message CreatePlaylistCoverUploadSessionRequest {
   int32 height = 7;
   repeated FileUploadManifestPart parts = 8;
   bytes metadata = 9; // JSON object.
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
 }
 
 message PlaylistCoverUploadSession {

@@ -22,15 +22,17 @@ use crate::{
         decode_database_file_object_key, encode_database_file_object_key, file_object_key,
         file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
-        new_public_file_id, optional_payload_bool, ownership_proof_ranges_from_payload,
-        payload_len_i64, register_upload_session_reference, strip_internal_file_metadata,
-        upload_manifest_metadata, upload_manifest_parts_from_metadata, upload_media_type,
-        upload_session_metadata, upload_session_metadata_with_manifest,
-        upload_session_parts_progress, upload_session_progress, upload_session_public_file_id,
-        validate_create_file_upload_session, validate_database_file_read_token,
-        validate_database_file_upload_token, validate_file_mime_type, validate_file_reuse_grant,
-        validate_stored_files, validate_upload_range, validated_upload_manifest,
-        CreateFileReuseGrant, DatabaseFileStorageCompressionConfig, DatabaseFileStorageService,
+        media_processing::attach_variants_to_files, new_public_file_id, optional_payload_bool,
+        ownership_proof_ranges_from_payload, payload_len_i64, process_file_variants_for_object,
+        register_upload_session_reference, strip_internal_file_metadata, upload_manifest_metadata,
+        upload_manifest_parts_from_metadata, upload_media_type, upload_session_metadata,
+        upload_session_metadata_with_manifest, upload_session_object_metadata,
+        upload_session_parts_progress, upload_session_policy, upload_session_progress,
+        upload_session_public_file_id, validate_create_file_upload_session,
+        validate_database_file_read_token, validate_database_file_upload_token,
+        validate_file_mime_type, validate_file_reuse_grant, validate_stored_files,
+        validate_upload_range, validated_upload_manifest, CreateFileReuseGrant,
+        DatabaseFileStorageCompressionConfig, DatabaseFileStorageService, FileObjectReader,
         FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
         UploadSessionMetadataInput, ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
         FILE_UPLOAD_TOKEN_HEADER, FILE_UPLOAD_TOKEN_KEY, MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
@@ -161,8 +163,7 @@ impl DatabaseFileStorageService {
 
     async fn finalize_upload_object(
         &self,
-        upload_session_key: &str,
-        object_key: &str,
+        session: &crate::models::FileUploadSessionRecord,
         mime_type: &str,
         expected_size: i64,
         content_manifest_sha256: &str,
@@ -170,7 +171,7 @@ impl DatabaseFileStorageService {
     ) -> Result<FileBlob> {
         let parts = self
             .repository
-            .list_upload_session_parts(&self.storage_backend, upload_session_key)
+            .list_upload_session_parts(&self.storage_backend, &session.upload_session_key)
             .await?;
         let mut next_offset = 0_i64;
         let mut manifest_parts = Vec::with_capacity(parts.len());
@@ -203,7 +204,7 @@ impl DatabaseFileStorageService {
                 .as_bytes(),
         ) {
             self.repository
-                .delete_blob_parts(&self.storage_backend, upload_session_key)
+                .delete_blob_parts(&self.storage_backend, &session.upload_session_key)
                 .await?;
             return Err(Error::InvalidInput(
                 "file manifest does not match uploaded parts".to_string(),
@@ -218,35 +219,31 @@ impl DatabaseFileStorageService {
         self.repository
             .promote_blob_parts(
                 &self.storage_backend,
-                upload_session_key,
-                object_key,
+                &session.upload_session_key,
+                &session.object_key,
                 parts.len(),
             )
             .await?;
+        let upload_policy = upload_session_policy(&session.metadata)?;
+        let metadata = upload_session_object_metadata(&session.metadata)?;
         self.repository
-            .upsert_object(UpsertFileObject {
+            .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.storage_backend,
-                object_key,
+                object_key: &session.object_key,
                 mime_type,
                 size_bytes: expected_size,
                 content_manifest_sha256: &actual_content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &metadata,
             })
             .await?;
-        self.repository
-            .delete_object(&self.storage_backend, upload_session_key)
-            .await?;
-        self.repository
-            .complete_upload_session(&self.storage_backend, upload_session_key)
-            .await?;
         let data = if return_inline_data {
-            self.load_range_data(object_key, None).await?
+            self.load_range_data(&session.object_key, None).await?
         } else {
             Vec::new()
         };
-        Ok(FileBlob {
+        let mut blob = FileBlob {
             storage_backend: self.storage_backend.clone(),
-            object_key: object_key.to_string(),
+            object_key: session.object_key.clone(),
             mime_type: mime_type.to_string(),
             size_bytes: expected_size,
             total_size_bytes: expected_size,
@@ -254,9 +251,35 @@ impl DatabaseFileStorageService {
             compression: FileBlobCompression::None,
             range: None,
             data,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata,
             created_at: Utc::now(),
-        })
+        };
+        if let Err(error) = super::complete_uploaded_file_object(
+            self,
+            self.repository.as_ref(),
+            &mut blob,
+            &upload_policy,
+        )
+        .await
+        {
+            self.repository
+                .delete_upload_session_parts(&self.storage_backend, &session.upload_session_key)
+                .await?;
+            self.repository
+                .delete_object(&self.storage_backend, &session.upload_session_key)
+                .await?;
+            self.repository
+                .delete_object(&self.storage_backend, &session.object_key)
+                .await?;
+            return Err(error);
+        }
+        self.repository
+            .mark_object_validated(&self.storage_backend, &session.object_key)
+            .await?;
+        self.repository
+            .complete_upload_session(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        Ok(blob)
     }
 }
 
@@ -481,6 +504,7 @@ impl FileStorageService for DatabaseFileStorageService {
             width: request.width,
             height: request.height,
             metadata: request.metadata.clone(),
+            upload_policy: &request.policy,
         });
         let expires_at = Utc::now() + chrono::Duration::seconds(FILE_UPLOAD_EXPIRES_SECONDS);
         if let Some(existing) = self
@@ -610,6 +634,7 @@ impl FileStorageService for DatabaseFileStorageService {
             width: request.width,
             height: request.height,
             metadata: request.metadata.clone(),
+            upload_policy: &request.policy,
         });
         let session_metadata =
             upload_session_metadata_with_manifest(&session_metadata, &request.parts)?;
@@ -773,6 +798,13 @@ impl FileStorageService for DatabaseFileStorageService {
             }
         }
         attach_prepared_file_urls(self, &mut files, context.database_object_route_prefix)?;
+        attach_variants_to_files(
+            self,
+            self.repository.as_ref(),
+            &mut files,
+            context.database_object_route_prefix,
+        )
+        .await?;
         strip_internal_file_metadata(&mut files);
         Ok(files)
     }
@@ -810,13 +842,46 @@ impl FileStorageService for DatabaseFileStorageService {
                     &file.object_key,
                 )
                 .await?;
-            if self
-                .repository
-                .object_reference_count(&file.storage_backend, &file.object_key)
-                .await?
-                > 0
-            {
+            let active_reference_count = if origin == FileStorageCleanupOrigin::UnreferencedObject {
+                self.repository
+                    .object_reference_count_excluding_kind(
+                        &file.storage_backend,
+                        &file.object_key,
+                        super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                    )
+                    .await?
+            } else {
+                self.repository
+                    .object_reference_count(&file.storage_backend, &file.object_key)
+                    .await?
+            };
+            if active_reference_count > 0 {
                 continue;
+            }
+            let derived_variants = self
+                .repository
+                .list_derived_object_variants(&file.storage_backend, &file.object_key)
+                .await?;
+            let derived_object_keys = derived_variants
+                .into_iter()
+                .map(|variant| variant.object_key)
+                .collect::<Vec<_>>();
+            for object_key in &derived_object_keys {
+                if let Err(error) = self
+                    .repository
+                    .delete_blob(&self.storage_backend, object_key)
+                    .await
+                {
+                    crate::metrics::file_storage::FILE_OBJECT_DELETE_FAILURES
+                        .with_label_values(&[origin_label, &file.storage_backend])
+                        .inc();
+                    return Err(error);
+                }
+            }
+            for object_key in derived_object_keys {
+                self.repository
+                    .delete_object(&file.storage_backend, &object_key)
+                    .await?;
             }
             if let Err(error) = self
                 .repository
@@ -833,6 +898,67 @@ impl FileStorageService for DatabaseFileStorageService {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn cleanup_expired_upload_session(
+        &self,
+        session: crate::models::FileUploadSessionRecord,
+    ) -> Result<bool> {
+        if session.storage_backend != self.storage_backend {
+            return Ok(false);
+        }
+        if session.completed_at.is_some() || session.expires_at > Utc::now() {
+            return Ok(false);
+        }
+        self.repository
+            .delete_blob_parts(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        self.repository
+            .delete_upload_session_parts(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        self.repository
+            .delete_object(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        let (_, reference_id) = super::upload_session_reference_target(
+            session
+                .metadata
+                .get(super::FILE_SESSION_METADATA_PUBLIC_ID_KEY)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        );
+        if !reference_id.is_empty() {
+            self.repository
+                .release_reference(
+                    super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                    &reference_id,
+                    &self.storage_backend,
+                    &session.object_key,
+                )
+                .await?;
+        }
+        let session_deleted = self
+            .repository
+            .delete_upload_session(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        if !self
+            .repository
+            .object_validated(&self.storage_backend, &session.object_key)
+            .await?
+            && self
+                .repository
+                .object_reference_count_excluding_kind(
+                    &self.storage_backend,
+                    &session.object_key,
+                    super::FILE_UPLOAD_SESSION_REFERENCE_KIND,
+                )
+                .await?
+                == 0
+        {
+            self.repository
+                .delete_object(&self.storage_backend, &session.object_key)
+                .await?;
+        }
+        Ok(session_deleted)
     }
 
     async fn store_upload(&self, upload: StoreFileUpload) -> Result<StoreFileUploadResult> {
@@ -971,8 +1097,7 @@ impl FileStorageService for DatabaseFileStorageService {
         }
         let blob = self
             .finalize_upload_object(
-                &upload_session_key,
-                &session.object_key,
+                &session,
                 mime_type,
                 expected_size,
                 &session.content_manifest_sha256,
@@ -1117,8 +1242,7 @@ impl FileStorageService for DatabaseFileStorageService {
         let _ = payload;
         let blob = self
             .finalize_upload_object(
-                &decoded_object_key,
-                &session.object_key,
+                &session,
                 &session.mime_type,
                 session.size_bytes,
                 &session.content_manifest_sha256,
@@ -1138,5 +1262,167 @@ impl FileStorageService for DatabaseFileStorageService {
 
     async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
         self.object_download(request).await
+    }
+
+    async fn get_object_by_key(&self, storage_backend: &str, object_key: &str) -> Result<FileBlob> {
+        if storage_backend != self.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.storage_backend
+            )));
+        }
+        let read_token = super::database_file_read_token(
+            &self.storage_backend,
+            object_key,
+            &self.upload_token_secret,
+        )?;
+        self.get_object(GetFileObject {
+            encoded_object_key: encode_database_file_object_key(object_key),
+            read_token,
+            range: None,
+        })
+        .await
+    }
+
+    async fn get_object_reader_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<FileObjectReader> {
+        if storage_backend != self.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.storage_backend
+            )));
+        }
+        let Some(object) = self
+            .repository
+            .get_object(&self.storage_backend, object_key)
+            .await?
+        else {
+            return Err(Error::NotFound("File object not found".to_string()));
+        };
+        let repository = Arc::clone(&self.repository);
+        let storage_backend = self.storage_backend.clone();
+        let object_key = object_key.to_string();
+        let chunk_size = usize::try_from(object.size_bytes.min(1024 * 1024)).unwrap_or(1024 * 1024);
+        let reader = super::read_seek::RangeSeekReader::new(
+            object.size_bytes,
+            chunk_size,
+            move |offset, length| {
+                let repository = Arc::clone(&repository);
+                let storage_backend = storage_backend.clone();
+                let object_key = object_key.clone();
+                Box::pin(async move {
+                    let length_i64 = i64::try_from(length).map_err(|_| {
+                        Error::Internal("file reader length is invalid".to_string())
+                    })?;
+                    let end_inclusive = offset
+                        .checked_add(length_i64)
+                        .and_then(|end| end.checked_sub(1))
+                        .ok_or_else(|| Error::Internal("file reader range overflow".to_string()))?;
+                    let range = FileByteRange {
+                        start: offset,
+                        end_inclusive,
+                    };
+                    let parts = repository
+                        .list_blob_parts_overlapping_range(
+                            &storage_backend,
+                            &object_key,
+                            range.start,
+                            range.end_inclusive,
+                        )
+                        .await?;
+                    ensure_database_parts_cover_range(&parts, range)?;
+                    let mut out = bytes::BytesMut::with_capacity(length);
+                    for part in parts {
+                        let chunk = database_part_chunk(part, range).await?;
+                        out.extend_from_slice(&chunk);
+                    }
+                    Ok(out.freeze())
+                })
+            },
+        )?;
+        Ok(Box::new(reader))
+    }
+
+    async fn put_object_by_key(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        mime_type: &str,
+        data: Vec<u8>,
+        metadata: serde_json::Value,
+    ) -> Result<FileBlob> {
+        if storage_backend != self.storage_backend {
+            return Err(Error::InvalidInput(format!(
+                "file storage_backend must be {}",
+                self.storage_backend
+            )));
+        }
+        if data.is_empty() {
+            return Err(Error::InvalidInput(
+                "file object payload must be non-empty".to_string(),
+            ));
+        }
+        let size_bytes = payload_len_i64(data.len())?;
+        let checksum = hex::encode(Sha256::digest(&data));
+        self.repository
+            .upsert_object(UpsertFileObject {
+                storage_backend: &self.storage_backend,
+                object_key,
+                mime_type,
+                size_bytes,
+                content_manifest_sha256: &checksum,
+                metadata: &metadata,
+            })
+            .await?;
+        self.repository
+            .upsert_blob_part(UpsertFileBlobPart {
+                storage_backend: &self.storage_backend,
+                object_key,
+                part_index: 0,
+                offset_bytes: 0,
+                size_bytes,
+                checksum_sha256: &checksum,
+                compression: FileBlobCompression::None,
+                data: data.clone(),
+            })
+            .await?;
+        Ok(FileBlob {
+            storage_backend: self.storage_backend.clone(),
+            object_key: object_key.to_string(),
+            mime_type: mime_type.to_string(),
+            size_bytes,
+            total_size_bytes: size_bytes,
+            content_manifest_sha256: checksum,
+            compression: FileBlobCompression::None,
+            range: None,
+            data,
+            metadata,
+            created_at: Utc::now(),
+        })
+    }
+
+    async fn process_object_variants(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        database_object_route_prefix: &str,
+        upload_policy: &crate::models::FileUploadPolicy,
+    ) -> Result<Vec<crate::models::FileObjectVariant>> {
+        if storage_backend != self.storage_backend {
+            return Ok(Vec::new());
+        }
+        process_file_variants_for_object(
+            self,
+            self.repository.clone(),
+            storage_backend,
+            object_key,
+            database_object_route_prefix,
+            upload_policy,
+        )
+        .await
+        .map(|result| result.variants)
     }
 }

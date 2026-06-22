@@ -283,11 +283,24 @@ pub(super) fn new_chat_attachment_to_proto(
             .starts_with("image/")
         {
             synctv_proto::client::ChatAttachmentKind::Image
+        } else if attachment
+            .mime_type
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("audio/")
+        {
+            synctv_proto::client::ChatAttachmentKind::Audio
         } else {
             synctv_proto::client::ChatAttachmentKind::File
         } as i32,
         reuse_token: String::new(),
         reuse_expires_at: None,
+        variants: crate::impls::client::convert::file_object_variants_from_metadata(
+            &attachment.metadata,
+            "chat attachment",
+        )?,
     })
 }
 

@@ -115,16 +115,16 @@
       ]
     },
     "nullable": [
+      false,
       true,
       true,
-      true,
-      true,
+      false,
       true,
       null,
-      true,
-      true,
-      true,
-      true
+      false,
+      false,
+      false,
+      false
     ]
   },
   "hash": "6062be72fb550cbcd6ec47f062b11f7ce45ae3120c06f60f05a7d2e1dcedcd79"

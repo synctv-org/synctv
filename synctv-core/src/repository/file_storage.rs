@@ -3,11 +3,11 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{
     models::{
-        FileBlob, FileBlobCompression, FileBlobPart, FileCleanupJob, FileObject,
-        FileReferenceTarget, FileUploadSessionKind, FileUploadSessionPart, FileUploadSessionRecord,
-        StoredFileReference, UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-        FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS,
-        FILE_STORAGE_BACKEND_MAX_CHARS,
+        FileBlob, FileBlobCompression, FileBlobPart, FileCleanupJob, FileObject, FileObjectGroup,
+        FileObjectVariant, FileReferenceTarget, FileUploadSessionKind, FileUploadSessionPart,
+        FileUploadSessionRecord, StoredFileReference, UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
+        FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
@@ -74,6 +74,31 @@ fn validate_file_object_fields(
         ));
     }
     validate_required_sha256(content_manifest_sha256, "content_manifest_sha256")?;
+    if !metadata.is_object() {
+        return Err(Error::InvalidInput(
+            "file metadata must be a JSON object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_file_object_identity(
+    storage_backend: &str,
+    object_key: &str,
+    size_bytes: i64,
+    metadata: &serde_json::Value,
+) -> Result<()> {
+    validate_required_text(
+        storage_backend,
+        "file storage_backend",
+        FILE_STORAGE_BACKEND_MAX_CHARS,
+    )?;
+    validate_required_text(object_key, "file object_key", FILE_OBJECT_KEY_MAX_CHARS)?;
+    if size_bytes <= 0 {
+        return Err(Error::InvalidInput(
+            "file size_bytes must be positive".to_string(),
+        ));
+    }
     if !metadata.is_object() {
         return Err(Error::InvalidInput(
             "file metadata must be a JSON object".to_string(),
@@ -149,6 +174,34 @@ pub struct UpsertFileObject<'a> {
     pub metadata: &'a serde_json::Value,
 }
 
+pub struct UpsertFileObjectGroup<'a> {
+    pub id: &'a str,
+    pub storage_backend: &'a str,
+    pub original_object_key: &'a str,
+    pub media_kind: &'a str,
+    pub metadata: &'a serde_json::Value,
+}
+
+pub struct UpsertFileObjectVariant<'a> {
+    pub storage_backend: &'a str,
+    pub object_key: &'a str,
+    pub original_storage_backend: &'a str,
+    pub original_object_key: &'a str,
+    pub group_id: &'a str,
+    pub variant_key: &'a str,
+    pub label: &'a str,
+    pub url: Option<&'a str>,
+    pub mime_type: &'a str,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub is_original: bool,
+    pub lossy: bool,
+    pub quality: Option<i32>,
+    pub sort_order: i32,
+    pub metadata: &'a serde_json::Value,
+}
+
 pub struct UpsertFileUploadSession<'a> {
     pub storage_backend: &'a str,
     pub upload_session_key: &'a str,
@@ -180,6 +233,11 @@ impl FileStorageRepository {
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
+        &self.pool
     }
 
     pub async fn upsert_blob(&self, blob: UpsertFileBlob<'_>) -> Result<FileBlob> {
@@ -379,6 +437,259 @@ impl FileStorageRepository {
         Ok(object)
     }
 
+    pub async fn update_object_metadata(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        metadata: &serde_json::Value,
+    ) -> Result<()> {
+        if !metadata.is_object() {
+            return Err(Error::InvalidInput(
+                "file metadata must be a JSON object".to_string(),
+            ));
+        }
+        sqlx::query!(
+            r#"
+            UPDATE file_objects
+            SET metadata = $3
+            WHERE storage_backend = $1 AND object_key = $2
+            "#,
+            storage_backend,
+            object_key,
+            metadata,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_object_validated(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<()> {
+        sqlx::query!(
+            r#"
+            UPDATE file_objects
+            SET validated_at = CURRENT_TIMESTAMP
+            WHERE storage_backend = $1 AND object_key = $2
+            "#,
+            storage_backend,
+            object_key,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_object_group(
+        &self,
+        group: UpsertFileObjectGroup<'_>,
+    ) -> Result<FileObjectGroup> {
+        validate_required_text(
+            group.id,
+            "file object group id",
+            FILE_REFERENCE_ID_MAX_CHARS,
+        )?;
+        validate_required_text(
+            group.storage_backend,
+            "file storage_backend",
+            FILE_STORAGE_BACKEND_MAX_CHARS,
+        )?;
+        validate_required_text(
+            group.original_object_key,
+            "file original object_key",
+            FILE_OBJECT_KEY_MAX_CHARS,
+        )?;
+        validate_required_text(group.media_kind, "file media_kind", 64)?;
+        if !group.metadata.is_object() {
+            return Err(Error::InvalidInput(
+                "file object group metadata must be a JSON object".to_string(),
+            ));
+        }
+        let row = sqlx::query_as!(
+            FileObjectGroup,
+            r#"
+            INSERT INTO file_object_groups (
+                id, storage_backend, original_object_key, media_kind, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (storage_backend, original_object_key)
+            DO UPDATE SET
+                media_kind = EXCLUDED.media_kind,
+                metadata = EXCLUDED.metadata,
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING id, storage_backend, original_object_key, media_kind,
+                      metadata AS "metadata!: serde_json::Value",
+                      created_at, updated_at
+            "#,
+            group.id,
+            group.storage_backend,
+            group.original_object_key,
+            group.media_kind,
+            group.metadata,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn upsert_object_variant(
+        &self,
+        variant: UpsertFileObjectVariant<'_>,
+    ) -> Result<FileObjectVariant> {
+        validate_required_text(
+            variant.storage_backend,
+            "file storage_backend",
+            FILE_STORAGE_BACKEND_MAX_CHARS,
+        )?;
+        validate_required_text(
+            variant.object_key,
+            "file object_key",
+            FILE_OBJECT_KEY_MAX_CHARS,
+        )?;
+        validate_required_text(
+            variant.original_storage_backend,
+            "file original storage_backend",
+            FILE_STORAGE_BACKEND_MAX_CHARS,
+        )?;
+        validate_required_text(
+            variant.original_object_key,
+            "file original object_key",
+            FILE_OBJECT_KEY_MAX_CHARS,
+        )?;
+        validate_required_text(
+            variant.group_id,
+            "file object group id",
+            FILE_REFERENCE_ID_MAX_CHARS,
+        )?;
+        validate_required_text(variant.variant_key, "file variant_key", 64)?;
+        validate_required_text(variant.label, "file variant label", 64)?;
+        validate_file_object_identity(
+            variant.storage_backend,
+            variant.object_key,
+            variant.size_bytes,
+            variant.metadata,
+        )?;
+        if variant
+            .quality
+            .is_some_and(|quality| !(1..=100).contains(&quality))
+        {
+            return Err(Error::InvalidInput(
+                "file variant quality must be between 1 and 100".to_string(),
+            ));
+        }
+        if variant.width.is_some_and(|width| width <= 0)
+            || variant.height.is_some_and(|height| height <= 0)
+        {
+            return Err(Error::InvalidInput(
+                "file variant dimensions must be positive".to_string(),
+            ));
+        }
+        let row = sqlx::query_as!(
+            FileObjectVariant,
+            r#"
+            INSERT INTO file_object_variants (
+                storage_backend, object_key, original_storage_backend, original_object_key,
+                group_id, variant_key, label, url, mime_type, size_bytes, width, height,
+                is_original, lossy, quality, sort_order, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT (storage_backend, object_key)
+            DO UPDATE SET
+                original_storage_backend = EXCLUDED.original_storage_backend,
+                original_object_key = EXCLUDED.original_object_key,
+                group_id = EXCLUDED.group_id,
+                variant_key = EXCLUDED.variant_key,
+                label = EXCLUDED.label,
+                url = EXCLUDED.url,
+                mime_type = EXCLUDED.mime_type,
+                size_bytes = EXCLUDED.size_bytes,
+                width = EXCLUDED.width,
+                height = EXCLUDED.height,
+                is_original = EXCLUDED.is_original,
+                lossy = EXCLUDED.lossy,
+                quality = EXCLUDED.quality,
+                sort_order = EXCLUDED.sort_order,
+                metadata = EXCLUDED.metadata
+            RETURNING storage_backend, object_key, original_storage_backend, original_object_key,
+                      group_id, variant_key, label, url, mime_type, size_bytes, width, height,
+                      is_original, lossy, quality, sort_order,
+                      metadata AS "metadata!: serde_json::Value", created_at
+            "#,
+            variant.storage_backend,
+            variant.object_key,
+            variant.original_storage_backend,
+            variant.original_object_key,
+            variant.group_id,
+            variant.variant_key,
+            variant.label,
+            variant.url,
+            variant.mime_type,
+            variant.size_bytes,
+            variant.width,
+            variant.height,
+            variant.is_original,
+            variant.lossy,
+            variant.quality,
+            variant.sort_order,
+            variant.metadata,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    pub async fn list_object_variants(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<Vec<FileObjectVariant>> {
+        let rows = sqlx::query_as!(
+            FileObjectVariant,
+            r#"
+            SELECT storage_backend, object_key, original_storage_backend, original_object_key,
+                   group_id, variant_key, label, url, mime_type, size_bytes, width, height,
+                   is_original, lossy, quality, sort_order,
+                   metadata AS "metadata!: serde_json::Value", created_at
+            FROM file_object_variants
+            WHERE original_storage_backend = $1 AND original_object_key = $2
+            ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC
+            "#,
+            storage_backend,
+            object_key,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn list_derived_object_variants(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+    ) -> Result<Vec<FileObjectVariant>> {
+        let rows = sqlx::query_as!(
+            FileObjectVariant,
+            r#"
+            SELECT storage_backend, object_key, original_storage_backend, original_object_key,
+                   group_id, variant_key, label, url, mime_type, size_bytes, width, height,
+                   is_original, lossy, quality, sort_order,
+                   metadata AS "metadata!: serde_json::Value", created_at
+            FROM file_object_variants
+            WHERE original_storage_backend = $1
+              AND original_object_key = $2
+              AND is_original = FALSE
+            ORDER BY sort_order ASC, size_bytes ASC, variant_key ASC
+            "#,
+            storage_backend,
+            object_key,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn get_pending_upload_session_by_manifest(
         &self,
         storage_backend: &str,
@@ -498,6 +809,29 @@ impl FileStorageRepository {
         .fetch_one(&self.pool)
         .await?;
         scalar_value(count, "file reference COUNT")
+    }
+
+    pub async fn object_reference_count_excluding_kind(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        excluded_reference_kind: &str,
+    ) -> Result<i64> {
+        let count = sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*)::BIGINT
+            FROM file_references
+            WHERE storage_backend = $1 AND object_key = $2
+              AND reference_kind <> $3
+              AND released_at IS NULL
+            "#,
+            storage_backend,
+            object_key,
+            excluded_reference_kind,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        scalar_value(count, "file reference COUNT excluding kind")
     }
 
     pub async fn insert_reference_in_tx(
@@ -1131,6 +1465,47 @@ impl FileStorageRepository {
         Ok(session)
     }
 
+    pub async fn list_expired_upload_sessions(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<FileUploadSessionRecord>> {
+        let rows = sqlx::query_as!(
+            FileUploadSessionRecord,
+            r#"
+            SELECT storage_backend, upload_session_key, object_key,
+                   session_kind AS "session_kind!: FileUploadSessionKind",
+                   upload_id, user_id,
+                   storage_scope, mime_type, size_bytes, content_manifest_sha256,
+                   part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                   expires_at, completed_at, created_at, updated_at
+            FROM file_upload_sessions
+            WHERE completed_at IS NULL
+              AND expires_at <= CURRENT_TIMESTAMP
+            ORDER BY expires_at ASC, created_at ASC
+            LIMIT $1
+            "#,
+            limit.clamp(1, 1000),
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn delete_upload_session(
+        &self,
+        storage_backend: &str,
+        upload_session_key: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query!(
+            "DELETE FROM file_upload_sessions WHERE storage_backend = $1 AND upload_session_key = $2",
+            storage_backend,
+            upload_session_key,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn complete_upload_session(
         &self,
         storage_backend: &str,
@@ -1300,6 +1675,13 @@ impl FileStorageRepository {
                   WHERE r.storage_backend = o.storage_backend
                     AND r.object_key = o.object_key
                     AND r.released_at IS NULL
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM file_object_variants v
+                  WHERE v.storage_backend = o.storage_backend
+                    AND v.object_key = o.object_key
+                    AND v.is_original = FALSE
               )
             ORDER BY o.created_at ASC, o.storage_backend ASC, o.object_key ASC
             LIMIT $2

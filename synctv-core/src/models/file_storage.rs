@@ -13,6 +13,7 @@ pub const FILE_REFERENCE_KIND_MAX_CHARS: usize = 64;
 pub const FILE_REFERENCE_ID_MAX_CHARS: usize = 256;
 pub const FILE_CLEANUP_ORIGIN_MAX_CHARS: usize = 64;
 pub const FILE_SHA256_HEX_CHARS: usize = 64;
+pub const FILE_GENERATED_VARIANTS_METADATA_KEY: &str = "_synctv_file_variants";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i16)]
@@ -147,6 +148,39 @@ pub struct FileObject {
     pub metadata: JsonValue,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FileObjectGroup {
+    pub id: String,
+    pub storage_backend: String,
+    pub original_object_key: String,
+    pub media_kind: String,
+    pub metadata: JsonValue,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FileObjectVariant {
+    pub storage_backend: String,
+    pub object_key: String,
+    pub original_storage_backend: String,
+    pub original_object_key: String,
+    pub group_id: String,
+    pub variant_key: String,
+    pub label: String,
+    pub url: Option<String>,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub is_original: bool,
+    pub lossy: bool,
+    pub quality: Option<i32>,
+    pub sort_order: i32,
+    pub metadata: JsonValue,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -328,6 +362,12 @@ pub struct FileOwnershipProofRange {
 pub struct FileUploadPolicy {
     pub kind: String,
     pub max_size_bytes: i64,
+    pub max_width: Option<i32>,
+    pub max_height: Option<i32>,
+    pub require_image_dimensions: bool,
+    pub max_audio_duration_seconds: Option<i32>,
+    pub max_audio_bitrate_bps: Option<i32>,
+    pub require_audio_metadata: bool,
     pub allowed_mime_prefixes: Vec<String>,
     pub allowed_mime_types: Vec<String>,
     pub storage_namespace: String,
@@ -371,6 +411,8 @@ pub struct CreateFileUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+    pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
     pub policy: FileUploadPolicy,

@@ -25,11 +25,20 @@ use crate::{
         SettingsRegistry,
     },
 };
+use image::ImageEncoder;
 use opendal::Operator;
 use sha2::{Digest, Sha256};
 use tokio::sync::Barrier;
 
 const TEST_FILE_STORAGE_SCOPE: &str = "rooms/1/users/1";
+
+fn png_test_image() -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut out)
+        .write_image(&[0, 0, 0, 255], 1, 1, image::ColorType::Rgba8.into())
+        .expect("test png image should encode");
+    out
+}
 
 fn single_manifest_part(
     size_bytes: i64,
@@ -128,6 +137,7 @@ async fn send_database_chat_attachment(
     client_attachment_id: &str,
     payload: &[u8],
 ) -> ChatMessageEventOutcome {
+    let size_bytes = i64::try_from(payload.len()).expect("payload length fits i64");
     let session = expect_upload_session(
         ok(
             service
@@ -135,15 +145,14 @@ async fn send_database_chat_attachment(
                     room_id,
                     user_id,
                     client_attachment_id: Some(client_attachment_id.to_string()),
-                    filename: Some(format!("{client_attachment_id}.webp")),
-                    mime_type: "image/webp".to_string(),
-                    size_bytes: i64::try_from(payload.len()).expect("payload length fits i64"),
-                    width: Some(640),
-                    height: Some(480),
-                    parts: single_manifest_part(
-                        i64::try_from(payload.len()).expect("payload length fits i64"),
-                        hex::encode(Sha256::digest(payload)),
-                    ),
+                    filename: Some(format!("{client_attachment_id}.png")),
+                    mime_type: "image/png".to_string(),
+                    size_bytes,
+                    width: Some(1),
+                    height: Some(1),
+                    duration_seconds: None,
+                    bitrate_bps: None,
+                    parts: single_manifest_part(size_bytes, hex::encode(Sha256::digest(payload))),
                     metadata: serde_json::Value::Object(Default::default()),
                 })
                 .await,
@@ -168,7 +177,7 @@ async fn send_database_chat_attachment(
             .store_attachment_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/webp"),
+                Some("image/png"),
                 None,
                 payload.to_vec(),
             )
@@ -449,6 +458,18 @@ fn validate_chat_attachments_rejects_non_object_metadata() {
     );
     assert!(
         matches!(error, Error::InvalidInput(message) if message == "chat metadata must be a JSON object")
+    );
+}
+
+#[test]
+fn chat_attachment_kind_detects_audio_mime_types() {
+    assert_eq!(
+        crate::models::ChatAttachmentKind::from_mime_type("audio/ogg"),
+        crate::models::ChatAttachmentKind::Audio
+    );
+    assert_eq!(
+        crate::models::ChatAttachmentKind::from_mime_type("audio/webm; codecs=opus"),
+        crate::models::ChatAttachmentKind::Audio
     );
 }
 
@@ -820,6 +841,8 @@ async fn disabled_file_storage_rejects_upload_session() {
             size_bytes: 1024,
             width: Some(640),
             height: Some(480),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: single_manifest_part(1024, "a".repeat(64)),
             metadata: serde_json::json!({"blurhash": "abc"}),
             policy: chat_attachment_upload_policy(),
@@ -900,8 +923,10 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         Arc::new(FileStorageRepository::new(pool.clone())),
         "database-attachment-secret",
     );
-    let part_checksum = hex::encode(Sha256::digest(b"data"));
-    let expected_manifest_digest = single_part_manifest_digest(4, &part_checksum);
+    let payload = png_test_image();
+    let size_bytes = i64::try_from(payload.len()).expect("payload size should fit");
+    let part_checksum = hex::encode(Sha256::digest(&payload));
+    let expected_manifest_digest = single_part_manifest_digest(size_bytes, &part_checksum);
     let session = ok(
         service
             .create_upload_session(CreateFileUploadSession {
@@ -909,11 +934,13 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 user_id: user.id,
                 client_file_id: Some("database-attachment-1".to_string()),
                 filename: None,
-                mime_type: "image/webp".to_string(),
-                size_bytes: 4,
-                width: Some(16),
-                height: Some(16),
-                parts: single_manifest_part(4, part_checksum.clone()),
+                mime_type: "image/png".to_string(),
+                size_bytes,
+                width: Some(1),
+                height: Some(1),
+                duration_seconds: None,
+                bitrate_bps: None,
+                parts: single_manifest_part(size_bytes, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
@@ -940,14 +967,14 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .store_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/webp"),
-                b"data".to_vec(),
+                Some("image/png"),
+                payload.clone(),
             )
             .await,
         "database attachment object should store",
     );
     assert_eq!(stored.object_key, session.file.object_key);
-    assert_eq!(stored.data, b"data");
+    assert_eq!(stored.data.as_slice(), payload.as_slice());
     assert_eq!(stored.content_manifest_sha256, expected_manifest_digest);
     let final_url = ok(
         service.object_url("database", &stored.object_key, "/api/test/objects"),
@@ -967,7 +994,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .await,
         "database attachment object should load",
     );
-    assert_eq!(loaded.data, b"data");
+    assert_eq!(loaded.data.as_slice(), payload.as_slice());
     let prepared = ok(
         service
             .prepare_files(
@@ -992,11 +1019,13 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 user_id: user.id,
                 client_file_id: Some("database-attachment-2".to_string()),
                 filename: None,
-                mime_type: "image/webp".to_string(),
-                size_bytes: 4,
-                width: Some(16),
-                height: Some(16),
-                parts: single_manifest_part(4, part_checksum.clone()),
+                mime_type: "image/png".to_string(),
+                size_bytes,
+                width: Some(1),
+                height: Some(1),
+                duration_seconds: None,
+                bitrate_bps: None,
+                parts: single_manifest_part(size_bytes, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
             })
@@ -1016,7 +1045,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         "reuse session should return proof nonce",
     );
     let chunks = ok(
-        ownership_proof_chunks_from_bytes(b"data", &reuse_session.ownership_proof_ranges),
+        ownership_proof_chunks_from_bytes(&payload, &reuse_session.ownership_proof_ranges),
         "proof chunks should be readable",
     );
     let proof = file_ownership_proof_digest(
@@ -1107,6 +1136,8 @@ async fn database_file_storage_rejects_checksum_mismatch() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(4, hex::encode(Sha256::digest(b"data"))),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
@@ -1161,6 +1192,8 @@ async fn image_upload_session_requires_checksum() {
             size_bytes: 2048,
             width: Some(800),
             height: Some(600),
+            duration_seconds: None,
+            bitrate_bps: None,
             parts: Vec::new(),
             metadata: serde_json::Value::Object(Default::default()),
             policy: chat_attachment_upload_policy(),
@@ -1199,6 +1232,8 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
                 size_bytes: 1024,
                 width: Some(640),
                 height: Some(480),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(1024, "b".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
@@ -1269,6 +1304,8 @@ async fn s3_file_storage_creates_resumable_upload_session() {
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(2048, "a".repeat(64)),
                 metadata: serde_json::json!({"blurhash": "abc"}),
                 policy: chat_attachment_upload_policy(),
@@ -1363,6 +1400,8 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(2048, "c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
@@ -1381,6 +1420,8 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
                 size_bytes: 2048,
                 width: Some(800),
                 height: Some(600),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(2048, "c".repeat(64)),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
@@ -1449,6 +1490,8 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 size_bytes: 4,
                 width: Some(16),
                 height: Some(16),
+                duration_seconds: None,
+                bitrate_bps: None,
                 parts: single_manifest_part(4, part_checksum.clone()),
                 metadata: serde_json::Value::Object(Default::default()),
                 policy: chat_attachment_upload_policy(),
@@ -1617,7 +1660,8 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
         "room should be created",
     );
 
-    let payload = vec![b'd'; 1024];
+    let payload = png_test_image();
+    let size_bytes = i64::try_from(payload.len()).expect("payload size should fit");
     let session = ok(
         service
             .create_attachment_upload_session(CreateChatAttachmentUploadSession {
@@ -1625,11 +1669,13 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 user_id: user.id,
                 client_attachment_id: Some("strip-attachment-1".to_string()),
                 filename: None,
-                mime_type: "image/webp".to_string(),
-                size_bytes: 1024,
-                width: Some(640),
-                height: Some(480),
-                parts: single_manifest_part(1024, hex::encode(Sha256::digest(&payload))),
+                mime_type: "image/png".to_string(),
+                size_bytes,
+                width: Some(1),
+                height: Some(1),
+                duration_seconds: None,
+                bitrate_bps: None,
+                parts: single_manifest_part(size_bytes, hex::encode(Sha256::digest(&payload))),
                 metadata: serde_json::json!({"blurhash": "abc"}),
             })
             .await,
@@ -1653,7 +1699,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
             .store_attachment_upload_object(
                 &encoded_object_key,
                 upload_token,
-                Some("image/webp"),
+                Some("image/png"),
                 None,
                 payload,
             )
@@ -1843,7 +1889,7 @@ async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
         owner.id,
         "original-reuse-message",
         "original-reuse-attachment",
-        b"original image bytes",
+        &png_test_image(),
     )
     .await;
     let original_attachment = some(
@@ -2007,7 +2053,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
         owner.id,
         "private-reuse-message",
         "private-reuse-attachment",
-        b"private image bytes",
+        &png_test_image(),
     )
     .await;
     let original_attachment = some(

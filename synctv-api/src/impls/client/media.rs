@@ -367,6 +367,7 @@ pub(crate) fn stored_file_to_file_cover_proto(
         width: fields.width,
         height: fields.height,
         metadata: fields.metadata,
+        variants: super::convert::file_object_variants_from_metadata(&file.metadata, "file cover")?,
     })
 }
 
@@ -1406,6 +1407,8 @@ impl ClientApiImpl {
                     size_bytes: req.size_bytes,
                     width: (req.width > 0).then_some(req.width),
                     height: (req.height > 0).then_some(req.height),
+                    duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
+                    bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                     parts: proto_upload_manifest_parts(req.parts),
                     metadata: parse_json_metadata(&req.metadata)?,
                 },

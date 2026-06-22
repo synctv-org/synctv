@@ -119,6 +119,8 @@ hostname.workspace = true
 lz4_flex.workspace = true
 urlencoding.workspace = true
 zstd.workspace = true
+image.workspace = true
+symphonia.workspace = true
 
 
 [features]

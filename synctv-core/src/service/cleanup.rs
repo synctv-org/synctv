@@ -96,6 +96,8 @@ pub struct CleanupResult {
     pub token_blacklist_deleted: u64,
     /// Number of unreferenced file objects cleaned
     pub unreferenced_files_deleted: u64,
+    /// Number of expired file upload sessions cleaned
+    pub expired_file_upload_sessions_deleted: u64,
 }
 
 #[derive(Clone, Default)]
@@ -331,6 +333,16 @@ impl CleanupService {
                 }
             }
             Err(e) => warn!(error = %e, "Failed to cleanup expired file references"),
+        }
+
+        match self.cleanup_expired_file_upload_sessions().await {
+            Ok(count) => {
+                result.expired_file_upload_sessions_deleted = count;
+                if count > 0 {
+                    info!(count, "Deleted expired file upload sessions");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to cleanup expired file upload sessions"),
         }
 
         if self.config.unreferenced_file_retention_seconds > 0 {
@@ -571,6 +583,15 @@ impl CleanupService {
         )
         .await
         .internal_with_err("Failed to cleanup unreferenced file objects")
+    }
+
+    async fn cleanup_expired_file_upload_sessions(&self) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage)
+            .await
+            .internal_with_err("Failed to cleanup expired file upload sessions")
     }
 
     /// Cleanup chat messages exceeding per-room cap

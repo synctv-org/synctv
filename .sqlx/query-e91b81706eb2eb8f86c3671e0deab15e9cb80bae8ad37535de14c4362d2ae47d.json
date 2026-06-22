@@ -1,0 +1,104 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO file_object_groups (\n                id, storage_backend, original_object_key, media_kind, metadata\n            )\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (storage_backend, original_object_key)\n            DO UPDATE SET\n                media_kind = EXCLUDED.media_kind,\n                metadata = EXCLUDED.metadata,\n                updated_at = CURRENT_TIMESTAMP\n            RETURNING id, storage_backend, original_object_key, media_kind,\n                      metadata AS \"metadata!: serde_json::Value\",\n                      created_at, updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "original_object_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "original_object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "media_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "media_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "metadata!: serde_json::Value",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_object_groups",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e91b81706eb2eb8f86c3671e0deab15e9cb80bae8ad37535de14c4362d2ae47d"
+}

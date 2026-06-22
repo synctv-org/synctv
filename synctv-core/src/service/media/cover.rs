@@ -23,6 +23,8 @@ pub struct CreateMediaCoverUploadSession {
     pub size_bytes: i64,
     pub width: Option<i32>,
     pub height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+    pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
     pub metadata: JsonValue,
 }
@@ -70,6 +72,8 @@ impl MediaService {
                 size_bytes: request.size_bytes,
                 width: request.width,
                 height: request.height,
+                duration_seconds: request.duration_seconds,
+                bitrate_bps: request.bitrate_bps,
                 parts: request.parts,
                 metadata: request.metadata,
                 policy: media_cover_upload_policy(),

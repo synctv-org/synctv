@@ -314,11 +314,11 @@ impl Media {
             super::DirectUrlMediaSourceConfig::single(default_url.to_string(), default_headers),
         )
         .into_provider_json()
-            .map_err(|error| {
-                crate::Error::Internal(format!(
-                    "Failed to serialize DirectUrl source_config: {error}"
-                ))
-            })?;
+        .map_err(|error| {
+            crate::Error::Internal(format!(
+                "Failed to serialize DirectUrl source_config: {error}"
+            ))
+        })?;
 
         let now = Utc::now();
         Ok(Self {

@@ -12,6 +12,7 @@ pub mod external_service;
 pub mod postgres;
 pub mod redis;
 pub mod result;
+pub mod rustfs;
 pub mod services;
 pub mod source_config;
 
@@ -44,6 +45,10 @@ pub use redis::{
     wait_for_redis_ready, RedisContainer,
 };
 pub use result::{err, ok, some, TestOptionExt, TestResultExt};
+pub use rustfs::{
+    start_rustfs, test_rustfs_base_path, test_rustfs_bucket_name, RustfsContainer, RustfsS3Config,
+    RUSTFS_ACCESS_KEY, RUSTFS_REGION, RUSTFS_SECRET_KEY,
+};
 pub use services::{
     create_empty_provider_instance_manager, create_test_brute_force_protection_service,
     create_test_jwt_service, create_test_request_rate_limiter, create_test_room_service,

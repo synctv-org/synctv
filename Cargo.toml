@@ -300,6 +300,7 @@ testcontainers = { version = "0.27.3", default-features = false }
 testcontainers-modules = { version = "0.15.0", default-features = false, features = [
     "postgres",
     "redis",
+    "rustfs",
 ] }
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect"] }
 

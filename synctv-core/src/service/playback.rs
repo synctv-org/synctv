@@ -12,8 +12,9 @@ use crate::{
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
     models::{
-        MediaId, PlayMode, PlaybackSourceIdentity, PlaylistId, RoomId, RoomPlaybackState,
-        RoomSettings, UserId,
+        BilibiliMediaSourceConfig, DirectUrlMediaSourceConfig, MediaId, PlayMode,
+        PlaybackSourceIdentity, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
+        SourceProvider, UserId,
     },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
@@ -96,6 +97,39 @@ struct PlaybackSwitchCommand {
     target: SwitchPlaybackTarget,
     bypass_room_permissions: bool,
     outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
+}
+
+fn live_status_for_media_source(
+    provider: SourceProvider,
+    source_config: &serde_json::Value,
+) -> Option<bool> {
+    match provider {
+        SourceProvider::DirectUrl => {
+            serde_json::from_value::<DirectUrlMediaSourceConfig>(source_config.clone())
+                .ok()
+                .and_then(|config| config.inferred_live_status())
+        }
+        SourceProvider::Bilibili => {
+            serde_json::from_value::<BilibiliMediaSourceConfig>(source_config.clone())
+                .ok()
+                .map(|config| matches!(config, BilibiliMediaSourceConfig::Live(_)))
+        }
+        SourceProvider::Alist | SourceProvider::Emby => Some(false),
+        SourceProvider::Rtmp | SourceProvider::LiveProxy => Some(true),
+    }
+}
+
+fn live_status_for_playlist_source(
+    provider: SourceProvider,
+    source_config: &serde_json::Value,
+) -> Option<bool> {
+    match provider {
+        SourceProvider::Alist | SourceProvider::Emby => source_config.is_object().then_some(false),
+        SourceProvider::DirectUrl
+        | SourceProvider::Bilibili
+        | SourceProvider::Rtmp
+        | SourceProvider::LiveProxy => None,
+    }
 }
 
 impl std::fmt::Debug for PlaybackService {
@@ -204,6 +238,70 @@ impl PlaybackService {
     #[must_use]
     pub const fn source_metadata_repository(&self) -> &PlaybackSourceMetadataRepository {
         &self.source_metadata_repo
+    }
+
+    pub async fn source_live_status_for_state(
+        &self,
+        state: &RoomPlaybackState,
+    ) -> Result<Option<bool>> {
+        if let Some(media_id) = state.playing_media_id {
+            let Some(media) = self
+                .media_service
+                .get_room_media(&state.room_id, &media_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            return Ok(live_status_for_media_source(
+                media.source_provider,
+                &media.source_config,
+            ));
+        }
+
+        if let Some(playlist_id) = state.playing_playlist_id {
+            let Some(playlist) = self
+                .media_service
+                .get_room_playlist(&state.room_id, &playlist_id)
+                .await?
+            else {
+                return Ok(None);
+            };
+            return Ok(
+                match (playlist.source_provider, playlist.source_config.as_ref()) {
+                    (Some(provider), Some(source_config)) => {
+                        live_status_for_playlist_source(provider, source_config)
+                    }
+                    _ => None,
+                },
+            );
+        }
+
+        Ok(None)
+    }
+
+    async fn reject_position_update_for_live_source(
+        &self,
+        state: &RoomPlaybackState,
+    ) -> Result<()> {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+            return Ok(());
+        };
+        if self
+            .source_metadata_repo
+            .get(&identity)
+            .await?
+            .is_some_and(|metadata| metadata.is_live == Some(true))
+        {
+            return Err(Error::InvalidInput(
+                "live playback does not accept position updates".to_string(),
+            ));
+        }
+        if self.source_live_status_for_state(state).await? == Some(true) {
+            return Err(Error::InvalidInput(
+                "live playback does not accept position updates".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub async fn generate_backend_playback_for_source(
@@ -1424,6 +1522,7 @@ impl PlaybackService {
 
             if position.is_some() {
                 validate_position_update_source(&state)?;
+                self.reject_position_update_for_live_source(&state).await?;
             }
             if expected_version.is_some_and(|expected| state.version != expected) {
                 return Err(Error::OptimisticLockConflict);
@@ -1452,14 +1551,46 @@ impl PlaybackService {
 
             updated_state
         } else if position.is_some() {
-            self.update_state_checked_with_outbox(
-                room_id,
-                |state| {
-                    validate_position_update_source(state)?;
-                    apply_update(state);
-                    Ok(())
+            crate::service::optimistic_retry::retry_with_optimistic_lock(
+                Self::MAX_RETRIES,
+                Self::BACKOFF_BASE_MS,
+                Self::UPDATE_STATE_RETRY_EXHAUSTED,
+                || {
+                    let outbox_event_factory = outbox_event_factory.clone();
+                    let apply_update = &apply_update;
+                    async move {
+                        let mut state = match self.playback_repo.get(&room_id).await? {
+                            Some(state) => state,
+                            None => self.playback_repo.create_or_get(&room_id).await?,
+                        };
+                        validate_position_update_source(&state)?;
+                        self.reject_position_update_for_live_source(&state).await?;
+
+                        let observed_version = state.version;
+                        let previous_state = state.clone();
+                        apply_update(&mut state);
+                        let previous_progress_position =
+                            previous_progress_position_for_source_transition(
+                                &previous_state,
+                                &state,
+                            );
+
+                        let updated_state = self
+                            .persist_playback_state_update_with_previous_progress(
+                                &state,
+                                observed_version,
+                                previous_progress_position,
+                                outbox_event_factory.as_ref(),
+                            )
+                            .await?;
+                        self.write_playback_cache(&updated_state).await;
+
+                        self.broadcast_invalidation(&room_id, &updated_state, "update_state")
+                            .await;
+
+                        Ok(updated_state)
+                    }
                 },
-                outbox_event_factory,
             )
             .await?
         } else {

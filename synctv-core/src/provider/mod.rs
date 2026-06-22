@@ -295,6 +295,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         provider: RtmpProvider::NAME.to_string(),
         provider_instance_name: None,
         duration_seconds: None,
+        is_live: Some(true),
         metadata,
     }
 }

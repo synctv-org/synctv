@@ -36,6 +36,8 @@ fn direct_url_media_source_config(
         provider: Some(
             synctv_proto::source_config::media_source_config::Provider::DirectUrl(
                 synctv_proto::source_config::DirectUrlMediaSourceConfig {
+                    is_live: None,
+                    duration_seconds: None,
                     medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
                         name: String::new(),
                         url: url.to_string(),
@@ -4795,6 +4797,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                 metadata: std::collections::HashMap::new(),
                 expires_at: None,
                 duration_seconds: None,
+                is_live: false,
             }),
         },
         &GlobalConfigArgs {

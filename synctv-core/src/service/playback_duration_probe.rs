@@ -170,10 +170,25 @@ impl PlaybackDurationProbeService {
             let Some(identity) = PlaybackSourceIdentity::from_state(&state) else {
                 continue;
             };
-            self.playback_service
-                .source_metadata_repository()
-                .mark_unknown_if_absent(&identity)
-                .await?;
+            match self
+                .playback_service
+                .source_live_status_for_state(&state)
+                .await?
+            {
+                Some(true) => {
+                    self.playback_service
+                        .source_metadata_repository()
+                        .upsert_provider_source_metadata(&identity, true, None)
+                        .await?;
+                }
+                Some(false) => {
+                    self.playback_service
+                        .source_metadata_repository()
+                        .mark_probeable_unknown_if_absent(&identity)
+                        .await?;
+                }
+                None => {}
+            }
         }
         Ok(())
     }
@@ -189,6 +204,14 @@ impl PlaybackDurationProbeService {
         let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
             return Ok(false);
         };
+        if self
+            .playback_service
+            .source_live_status_for_state(state)
+            .await?
+            != Some(false)
+        {
+            return Ok(false);
+        }
 
         let Some(claim) = self
             .playback_service
@@ -231,6 +254,14 @@ impl PlaybackDurationProbeService {
             .await?;
             return Ok(());
         };
+
+        if playback.is_live == Some(true) {
+            self.playback_service
+                .source_metadata_repository()
+                .upsert_provider_source_metadata(&identity, true, None)
+                .await?;
+            return Ok(());
+        }
 
         if let Some(duration_seconds) = playback
             .duration_seconds

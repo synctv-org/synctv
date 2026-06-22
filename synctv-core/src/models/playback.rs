@@ -77,6 +77,7 @@ pub struct PlaybackSourceMetadata {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
     pub target_hash: String,
+    pub is_live: Option<bool>,
     pub duration_seconds: Option<f64>,
     pub duration_status: PlaybackDurationStatus,
     pub duration_source: Option<PlaybackDurationSource>,

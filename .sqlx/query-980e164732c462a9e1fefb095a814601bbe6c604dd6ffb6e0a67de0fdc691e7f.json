@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            WITH claimed AS (\n                SELECT metadata.room_id,\n                       metadata.media_id,\n                       metadata.playlist_id,\n                       metadata.target_hash\n                FROM playback_source_metadata metadata\n                JOIN room_playback_state state\n                  ON state.room_id = metadata.room_id\n                 AND state.playing_media_id IS NOT DISTINCT FROM metadata.media_id\n                 AND state.playing_playlist_id IS NOT DISTINCT FROM metadata.playlist_id\n                JOIN room_playback_progress progress\n                  ON progress.id = state.current_progress_id\n                 AND progress.target_hash = metadata.target_hash\n                WHERE metadata.room_id = $1\n                  AND metadata.media_id IS NOT DISTINCT FROM $2\n                  AND metadata.playlist_id IS NOT DISTINCT FROM $3\n                  AND metadata.target_hash = $4\n                  AND (\n                      metadata.duration_status = ANY($5::smallint[])\n                      OR (\n                          metadata.duration_status = $6\n                          AND metadata.next_retry_at <= NOW()\n                      )\n                  )\n                  AND state.is_playing = TRUE\n                  AND metadata.duration_seconds IS NULL\n                  AND (metadata.next_retry_at IS NULL OR metadata.next_retry_at <= NOW())\n                LIMIT 1\n                FOR UPDATE OF metadata SKIP LOCKED\n            ),\n            updated AS (\n                UPDATE playback_source_metadata metadata\n                   SET duration_status = $7,\n                       duration_error = NULL,\n                       next_retry_at = NOW() + INTERVAL '5 minutes',\n                       version = metadata.version + 1\n                  FROM claimed\n                 WHERE metadata.room_id = claimed.room_id\n                   AND metadata.media_id IS NOT DISTINCT FROM claimed.media_id\n                   AND metadata.playlist_id IS NOT DISTINCT FROM claimed.playlist_id\n                   AND metadata.target_hash = claimed.target_hash\n                RETURNING metadata.room_id,\n                          metadata.media_id,\n                          metadata.playlist_id,\n                          metadata.target_hash,\n                          metadata.duration_seconds,\n                          metadata.duration_status,\n                          metadata.duration_source,\n                          metadata.duration_error,\n                          metadata.next_retry_at,\n                          metadata.created_at,\n                          metadata.updated_at,\n                          metadata.version\n            )\n            SELECT updated.room_id AS \"metadata_room_id!: RoomId\",\n                   updated.media_id AS \"metadata_media_id?: MediaId\",\n                   updated.playlist_id AS \"metadata_playlist_id?: PlaylistId\",\n                   updated.target_hash AS metadata_target_hash,\n                   updated.duration_seconds,\n                   updated.duration_status AS \"metadata_duration_status!: PlaybackDurationStatus\",\n                   updated.duration_source AS \"metadata_duration_source?: PlaybackDurationSource\",\n                   updated.duration_error,\n                   updated.next_retry_at,\n                   updated.created_at AS metadata_created_at,\n                   updated.updated_at AS metadata_updated_at,\n                   updated.version AS metadata_version,\n                   state.room_id AS \"state_room_id!: RoomId\",\n                   state.playing_media_id AS \"state_playing_media_id?: MediaId\",\n                   state.playing_playlist_id AS \"state_playing_playlist_id?: PlaylistId\",\n                   state.target AS state_target,\n                   state.current_progress_id AS state_current_progress_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"state_position!\",\n                   state.speed AS state_speed,\n                   state.is_playing AS state_is_playing,\n                   state.updated_at AS state_updated_at,\n                   state.version AS state_version\n            FROM updated\n            JOIN room_playback_state state\n              ON state.room_id = updated.room_id\n             AND state.playing_media_id IS NOT DISTINCT FROM updated.media_id\n             AND state.playing_playlist_id IS NOT DISTINCT FROM updated.playlist_id\n            JOIN room_playback_progress progress\n              ON progress.id = state.current_progress_id\n             AND progress.target_hash = updated.target_hash\n            ",
+  "query": "\n            SELECT metadata.room_id AS \"metadata_room_id!: RoomId\",\n                   metadata.media_id AS \"metadata_media_id?: MediaId\",\n                   metadata.playlist_id AS \"metadata_playlist_id?: PlaylistId\",\n                   metadata.target_hash AS metadata_target_hash,\n                   metadata.is_live AS metadata_is_live,\n                   metadata.duration_seconds,\n                   metadata.duration_status AS \"metadata_duration_status!: PlaybackDurationStatus\",\n                   metadata.duration_source AS \"metadata_duration_source?: PlaybackDurationSource\",\n                   metadata.duration_error,\n                   metadata.next_retry_at,\n                   metadata.created_at AS metadata_created_at,\n                   metadata.updated_at AS metadata_updated_at,\n                   metadata.version AS metadata_version,\n                   state.room_id AS \"state_room_id!: RoomId\",\n                   state.playing_media_id AS \"state_playing_media_id?: MediaId\",\n                   state.playing_playlist_id AS \"state_playing_playlist_id?: PlaylistId\",\n                   state.target AS state_target,\n                   state.current_progress_id AS state_current_progress_id,\n                   COALESCE(progress.\"position\", 0.0) AS \"state_position!\",\n                   state.speed AS state_speed,\n                   state.is_playing AS state_is_playing,\n                   state.updated_at AS state_updated_at,\n                   state.version AS state_version\n            FROM room_playback_state state\n            JOIN room_playback_progress progress ON progress.id = state.current_progress_id\n            JOIN playback_source_metadata metadata\n              ON metadata.room_id = state.room_id\n             AND metadata.media_id IS NOT DISTINCT FROM state.playing_media_id\n             AND metadata.playlist_id IS NOT DISTINCT FROM state.playing_playlist_id\n             AND metadata.target_hash = progress.target_hash\n            WHERE state.is_playing = TRUE\n              AND state.room_id = ANY($2)\n              AND metadata.duration_status = $1\n              AND metadata.duration_seconds IS NOT NULL\n            ORDER BY state.updated_at ASC\n            LIMIT $3\n            ",
   "describe": {
     "columns": [
       {
@@ -49,6 +49,17 @@
       },
       {
         "ordinal": 4,
+        "name": "metadata_is_live",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "playback_source_metadata",
+            "name": "is_live"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
         "name": "duration_seconds",
         "type_info": "Float8",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "metadata_duration_status!: PlaybackDurationStatus",
         "type_info": "Int2",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "metadata_duration_source?: PlaybackDurationSource",
         "type_info": "Int2",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "duration_error",
         "type_info": "Text",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "next_retry_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "metadata_created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +125,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "metadata_updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "metadata_version",
         "type_info": "Int8",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "state_room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "state_playing_media_id?: MediaId",
         "type_info": "Int8",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "state_playing_playlist_id?: PlaylistId",
         "type_info": "Int8",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "state_target",
         "type_info": "Bytea",
         "origin": {
@@ -180,7 +191,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "state_current_progress_id",
         "type_info": "Int8",
         "origin": {
@@ -191,13 +202,13 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "state_position!",
         "type_info": "Float8",
         "origin": "Expression"
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "state_speed",
         "type_info": "Float8",
         "origin": {
@@ -208,7 +219,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "state_is_playing",
         "type_info": "Bool",
         "origin": {
@@ -219,7 +230,7 @@
         }
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "state_updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -230,7 +241,7 @@
         }
       },
       {
-        "ordinal": 21,
+        "ordinal": 22,
         "name": "state_version",
         "type_info": "Int8",
         "origin": {
@@ -243,13 +254,9 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Int8",
-        "Int8",
-        "Text",
-        "Int2Array",
         "Int2",
-        "Int2"
+        "Int8Array",
+        "Int8"
       ]
     },
     "nullable": [
@@ -257,6 +264,7 @@
       true,
       true,
       false,
+      true,
       true,
       false,
       true,
@@ -277,5 +285,5 @@
       false
     ]
   },
-  "hash": "45115c65f84cfc7fabd6d82a3f7b410c305369f5fd60012d8f3e7ee29102adda"
+  "hash": "980e164732c462a9e1fefb095a814601bbe6c604dd6ffb6e0a67de0fdc691e7f"
 }

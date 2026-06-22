@@ -776,6 +776,7 @@ mod tests {
             provider: "test".to_string(),
             provider_instance_name: None,
             duration_seconds: None,
+            is_live: Some(false),
             metadata,
         }
     }

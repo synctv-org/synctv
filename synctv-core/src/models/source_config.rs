@@ -2,6 +2,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use url::Url;
 
 use super::media::SourceProvider;
 
@@ -26,6 +27,10 @@ pub enum PlaylistSourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DirectUrlMediaSourceConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_live: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<serde_json::Number>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub medias: Vec<DirectUrlMediaResourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,6 +51,8 @@ impl DirectUrlMediaSourceConfig {
     #[must_use]
     pub fn single(url: String, headers: HashMap<String, String>) -> Self {
         Self {
+            is_live: None,
+            duration_seconds: None,
             medias: vec![DirectUrlMediaResourceConfig {
                 name: String::new(),
                 url,
@@ -59,6 +66,29 @@ impl DirectUrlMediaSourceConfig {
             default_danmaku_index: None,
         }
     }
+
+    #[must_use]
+    pub fn inferred_live_status(&self) -> Option<bool> {
+        self.is_live.or_else(|| {
+            self.has_positive_duration().then_some(false).or_else(|| {
+                self.medias
+                    .first()
+                    .and_then(DirectUrlMediaResourceConfig::is_file_video)
+            })
+        })
+    }
+
+    #[must_use]
+    pub fn positive_duration_seconds(&self) -> Option<f64> {
+        self.duration_seconds
+            .as_ref()
+            .and_then(serde_json::Number::as_f64)
+            .filter(|duration| duration.is_finite() && *duration > 0.0)
+    }
+
+    fn has_positive_duration(&self) -> bool {
+        self.positive_duration_seconds().is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +101,41 @@ pub struct DirectUrlMediaResourceConfig {
     pub headers: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub format: String,
+}
+
+impl DirectUrlMediaResourceConfig {
+    #[must_use]
+    pub fn inferred_format(&self) -> String {
+        if self.format.is_empty() {
+            detect_direct_url_format(&self.url).to_string()
+        } else {
+            self.format.clone()
+        }
+    }
+
+    fn is_file_video(&self) -> Option<bool> {
+        let format = self.inferred_format();
+        match format.trim().to_ascii_lowercase().as_str() {
+            "mp4" | "mkv" | "webm" | "avi" => Some(false),
+            _ => None,
+        }
+    }
+}
+
+#[must_use]
+pub fn detect_direct_url_format(url: &str) -> &'static str {
+    let path = Url::parse(url).map_or_else(|_| url.to_string(), |url| url.path().to_string());
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "m3u8" => "m3u8",
+        "mpd" => "mpd",
+        "flv" => "flv",
+        "mp4" | "m4v" | "mov" => "mp4",
+        "mkv" => "mkv",
+        "webm" => "webm",
+        "avi" => "avi",
+        _ => "video",
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -281,10 +346,43 @@ mod tests {
     }
 
     #[test]
+    fn direct_url_inferred_live_status_treats_file_video_as_finite() {
+        let config = DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4?token=m3u8".to_string(),
+            HashMap::new(),
+        );
+
+        assert_eq!(config.inferred_live_status(), Some(false));
+    }
+
+    #[test]
+    fn direct_url_inferred_live_status_keeps_manifest_unknown() {
+        let config = DirectUrlMediaSourceConfig::single(
+            "https://example.com/live.m3u8".to_string(),
+            HashMap::new(),
+        );
+
+        assert_eq!(config.inferred_live_status(), None);
+    }
+
+    #[test]
+    fn direct_url_inferred_live_status_honors_explicit_live_flag() {
+        let mut config = DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::new(),
+        );
+        config.is_live = Some(true);
+
+        assert_eq!(config.inferred_live_status(), Some(true));
+    }
+
+    #[test]
     fn media_source_configs_round_trip_provider_storage() {
         media_round_trip(
             SourceProvider::DirectUrl,
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
+                is_live: Some(false),
+                duration_seconds: serde_json::Number::from_f64(120.5),
                 medias: vec![DirectUrlMediaResourceConfig {
                     name: "1080p".to_string(),
                     url: "https://example.com/video.mp4".to_string(),
@@ -309,6 +407,8 @@ mod tests {
                 default_danmaku_index: Some(0),
             }),
             &json!({
+                "is_live": false,
+                "duration_seconds": 120.5,
                 "medias": [{
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",

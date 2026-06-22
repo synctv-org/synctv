@@ -37,6 +37,8 @@ fn direct_url_media_source_config(
                     default_subtitle_index: None,
                     danmakus: Vec::new(),
                     default_danmaku_index: None,
+                    is_live: None,
+                    duration_seconds: None,
                 },
             ),
         ),

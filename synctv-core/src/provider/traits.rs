@@ -53,6 +53,10 @@ pub struct PlaybackResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
 
+    /// Backend-owned source liveness when the provider can determine it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_live: Option<bool>,
+
     /// Additional provider metadata for display-only fields.
     #[serde(default)]
     pub metadata: HashMap<String, Value>,

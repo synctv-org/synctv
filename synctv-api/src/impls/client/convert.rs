@@ -249,6 +249,10 @@ fn proto_direct_url_media_source_config_to_core(
     config: source_config_proto::DirectUrlMediaSourceConfig,
 ) -> Result<synctv_core::models::DirectUrlMediaSourceConfig, crate::impls::ApiError> {
     Ok(synctv_core::models::DirectUrlMediaSourceConfig {
+        is_live: config.is_live,
+        duration_seconds: config
+            .duration_seconds
+            .and_then(serde_json::Number::from_f64),
         medias: config
             .medias
             .into_iter()
@@ -1332,6 +1336,7 @@ pub(crate) fn try_playback_to_proto(
         metadata,
         expires_at: None,
         duration_seconds: result.duration_seconds,
+        is_live: result.is_live,
     })
 }
 
@@ -2005,6 +2010,7 @@ mod playback_conversion_tests {
             playback_infos,
             default_mode: "dash".to_string(),
             duration_seconds: None,
+            is_live: false,
             metadata: HashMap::new(),
         }
     }
@@ -2023,6 +2029,7 @@ mod playback_conversion_tests {
             playback_infos,
             default_mode: mode.to_string(),
             duration_seconds: None,
+            is_live: false,
             metadata: HashMap::new(),
         }
     }

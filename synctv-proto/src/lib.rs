@@ -241,6 +241,8 @@ mod tests {
                         default_subtitle_index: None,
                         danmakus: Vec::new(),
                         default_danmaku_index: None,
+                        is_live: None,
+                        duration_seconds: None,
                     },
                 ),
             ),

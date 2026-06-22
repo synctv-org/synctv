@@ -76,6 +76,23 @@ fn make_user(username: &str) -> User {
 }
 
 async fn create_media(pool: &PgPool, room_id: RoomId, owner_id: UserId, name: &str) -> Media {
+    create_media_with_source_config(
+        pool,
+        room_id,
+        owner_id,
+        name,
+        synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
+    )
+    .await
+}
+
+async fn create_media_with_source_config(
+    pool: &PgPool,
+    room_id: RoomId,
+    owner_id: UserId,
+    name: &str,
+    source_config: serde_json::Value,
+) -> Media {
     let media = Media {
         id: MediaId::new(),
         playlist_id: None,
@@ -85,9 +102,7 @@ async fn create_media(pool: &PgPool, room_id: RoomId, owner_id: UserId, name: &s
         description: String::new(),
         position: 0.0,
         source_provider: SourceProvider::DirectUrl,
-        source_config: synctv_core_testing::direct_url_media_source_config(
-            "https://example.com/video.mp4",
-        ),
+        source_config,
         provider_instance_name: None,
         cover_file_reference_id: None,
         added_at: Utc::now(),
@@ -98,6 +113,38 @@ async fn create_media(pool: &PgPool, room_id: RoomId, owner_id: UserId, name: &s
         .create(&media)
         .await
         .checked("test media should be created")
+}
+
+async fn create_room_with_media_source_config(
+    pool: &PgPool,
+    room_service: &RoomService,
+    owner_id: UserId,
+    room_name: &str,
+    media_name: &str,
+    source_config: serde_json::Value,
+) -> (Room, Media, synctv_core::models::RoomPlaybackState) {
+    let (room, _) = room_service
+        .create_room(room_name.to_string(), String::new(), owner_id, None, None)
+        .await
+        .checked("test room should be created");
+    let media =
+        create_media_with_source_config(pool, room.id, owner_id, media_name, source_config).await;
+    let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
+    let mut state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .checked("playback state should exist");
+    state.playing_media_id = Some(media.id);
+    state.playing_playlist_id = None;
+    state.target.clear();
+    state.position = 0.0;
+    state.is_playing = true;
+    let state = playback_repo
+        .update(&state)
+        .await
+        .checked("playback state should update");
+
+    (room, media, state)
 }
 
 async fn create_room_with_media(
@@ -240,11 +287,11 @@ async fn claim_duration_probe_for_active_source_claims_only_current_source() {
         PlaybackSourceIdentity::from_state(&state).checked("active source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::static_media(room.id, inactive_media.id);
     metadata_repo
-        .mark_unknown_if_absent(&active_identity)
+        .mark_probeable_unknown_if_absent(&active_identity)
         .await
         .checked("active metadata should be inserted");
     metadata_repo
-        .mark_unknown_if_absent(&inactive_identity)
+        .mark_probeable_unknown_if_absent(&inactive_identity)
         .await
         .checked("inactive metadata should be inserted");
 
@@ -310,11 +357,11 @@ async fn room_scoped_duration_probe_claims_only_active_rooms() {
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
         .checked("inactive source identity should exist");
     metadata_repo
-        .mark_unknown_if_absent(&active_identity)
+        .mark_probeable_unknown_if_absent(&active_identity)
         .await
         .checked("active metadata should be inserted");
     metadata_repo
-        .mark_unknown_if_absent(&inactive_identity)
+        .mark_probeable_unknown_if_absent(&inactive_identity)
         .await
         .checked("inactive metadata should be inserted");
 
@@ -350,6 +397,116 @@ async fn room_scoped_duration_probe_claims_only_active_rooms() {
         .await
         .checked("duplicate room scoped claim should run");
     assert!(duplicate_claims.is_empty());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn room_scoped_duration_probe_skips_live_sources() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let metadata_repo = PlaybackSourceMetadataRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("room_scoped_live_duration_probe_owner"))
+        .await
+        .checked("test owner should be created");
+    let (room, live_media, live_state) = create_room_with_media(
+        &pool,
+        &room_service,
+        owner.id,
+        "Live Probe Room",
+        "Live Probe Media",
+    )
+    .await;
+    let live_identity = PlaybackSourceIdentity::from_state(&live_state)
+        .checked("live source identity should exist");
+
+    metadata_repo
+        .upsert_provider_source_metadata(&live_identity, true, None)
+        .await
+        .checked("live metadata should be inserted");
+
+    let claims = metadata_repo
+        .claim_duration_probe_batch_for_rooms(&[room.id], 10)
+        .await
+        .checked("room scoped live claim should run");
+    assert!(claims.is_empty());
+
+    let direct_claim = metadata_repo
+        .claim_duration_probe_for_active_source(&live_identity)
+        .await
+        .checked("active live source claim should run");
+    assert!(direct_claim.is_none());
+
+    let live_metadata = metadata_repo
+        .get(&live_identity)
+        .await
+        .checked("live metadata should fetch")
+        .checked("live metadata should exist");
+    assert_eq!(live_metadata.room_id, room.id);
+    assert_eq!(live_metadata.media_id, Some(live_media.id));
+    assert_eq!(live_metadata.is_live, Some(true));
+    assert_eq!(live_metadata.duration_seconds, None);
+    assert_eq!(
+        live_metadata.duration_status,
+        PlaybackDurationStatus::Unavailable
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn duration_probe_initializes_plain_direct_url_as_probeable() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let metadata_repo = PlaybackSourceMetadataRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("duration_probe_direct_url_owner"))
+        .await
+        .checked("test owner should be created");
+    let (room, _media, state) = create_room_with_media_source_config(
+        &pool,
+        &room_service,
+        owner.id,
+        "DirectUrl Probe Room",
+        "DirectUrl Probe Media",
+        synctv_core_testing::direct_url_media_source_config("http://127.0.0.1/video.mp4"),
+    )
+    .await;
+    let identity =
+        PlaybackSourceIdentity::from_state(&state).checked("source identity should exist");
+
+    let probe_service = PlaybackDurationProbeService::new(
+        room_service.playback_service().clone(),
+        synctv_common::ssrf::SsrfGuard::strict_policy(),
+    )
+    .with_active_room_source(Arc::new(StaticActiveRoomSource {
+        room_ids: vec![room.id],
+    }));
+
+    let probed = probe_service
+        .run_once()
+        .await
+        .checked("duration probe should run");
+    assert_eq!(probed, 0);
+
+    let metadata = metadata_repo
+        .get(&identity)
+        .await
+        .checked("metadata lookup should run")
+        .checked("plain direct url should get metadata initialized");
+    assert_eq!(metadata.is_live, Some(false));
+    assert_eq!(metadata.duration_seconds, None);
+    assert!(
+        matches!(
+            metadata.duration_status,
+            PlaybackDurationStatus::Pending | PlaybackDurationStatus::Failed
+        ),
+        "metadata should be claimable or record the attempted probe, got {:?}",
+        metadata.duration_status
+    );
 }
 
 #[tokio::test]
@@ -394,15 +551,15 @@ async fn room_scoped_duration_probe_claims_dynamic_playlist_current_targets_only
     );
 
     metadata_repo
-        .mark_unknown_if_absent(&active_identity)
+        .mark_probeable_unknown_if_absent(&active_identity)
         .await
         .checked("active dynamic metadata should be inserted");
     metadata_repo
-        .mark_unknown_if_absent(&inactive_identity)
+        .mark_probeable_unknown_if_absent(&inactive_identity)
         .await
         .checked("inactive dynamic metadata should be inserted");
     metadata_repo
-        .mark_unknown_if_absent(&stale_identity)
+        .mark_probeable_unknown_if_absent(&stale_identity)
         .await
         .checked("stale dynamic metadata should be inserted");
 
@@ -483,11 +640,11 @@ async fn room_scoped_auto_advance_candidates_only_include_active_rooms() {
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
         .checked("inactive source identity should exist");
     metadata_repo
-        .upsert_provider_duration(&active_identity, 30.0)
+        .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
         .await
         .checked("active duration should be inserted");
     metadata_repo
-        .upsert_provider_duration(&inactive_identity, 30.0)
+        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0))
         .await
         .checked("inactive duration should be inserted");
 
@@ -544,7 +701,7 @@ async fn room_scoped_auto_advance_candidates_skip_paused_sources() {
     let identity =
         PlaybackSourceIdentity::from_state(&state).checked("source identity should exist");
     metadata_repo
-        .upsert_provider_duration(&identity, 30.0)
+        .upsert_provider_source_metadata(&identity, false, Some(30.0))
         .await
         .checked("duration should be inserted");
 
@@ -613,15 +770,15 @@ async fn room_scoped_auto_advance_candidates_include_dynamic_playlist_current_ta
     );
 
     metadata_repo
-        .upsert_provider_duration(&active_identity, 30.0)
+        .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
         .await
         .checked("active dynamic duration should be inserted");
     metadata_repo
-        .upsert_provider_duration(&inactive_identity, 30.0)
+        .upsert_provider_source_metadata(&inactive_identity, false, Some(30.0))
         .await
         .checked("inactive dynamic duration should be inserted");
     metadata_repo
-        .upsert_provider_duration(&stale_identity, 30.0)
+        .upsert_provider_source_metadata(&stale_identity, false, Some(30.0))
         .await
         .checked("stale dynamic duration should be inserted");
 

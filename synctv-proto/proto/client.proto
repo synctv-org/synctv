@@ -2049,6 +2049,8 @@ message Playback {
   optional int64 expires_at = 10;
   // Backend-owned source duration in seconds, when available.
   optional double duration_seconds = 11;
+  // Whether the current playback source is a live stream.
+  bool is_live = 14;
 }
 
 // Playback information for a single mode

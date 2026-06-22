@@ -41,6 +41,8 @@ message DirectUrlMediaSourceConfig {
   optional uint32 default_subtitle_index = 4;
   repeated DirectUrlDanmakuSourceConfig danmakus = 5;
   optional uint32 default_danmaku_index = 6;
+  optional bool is_live = 7;
+  optional double duration_seconds = 8;
 }
 
 message AlistMediaSourceConfig {

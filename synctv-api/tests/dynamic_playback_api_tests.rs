@@ -236,6 +236,7 @@ impl MediaProvider for StubDynamicProvider {
             provider: self.name().to_string(),
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
+            is_live: Some(false),
             metadata: std::collections::HashMap::new(),
         })
     }

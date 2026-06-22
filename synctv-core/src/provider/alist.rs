@@ -1014,6 +1014,7 @@ impl AlistProvider {
             provider: Self::NAME.to_string(),
             provider_instance_name,
             duration_seconds,
+            is_live: Some(false),
             metadata,
         }
     }

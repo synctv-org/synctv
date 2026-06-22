@@ -822,6 +822,7 @@ impl EmbyProvider {
             duration_seconds: item
                 .duration_seconds
                 .filter(|duration| duration.is_finite() && *duration > 0.0),
+            is_live: Some(false),
             metadata,
         })
     }

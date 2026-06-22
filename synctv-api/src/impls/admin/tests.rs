@@ -167,6 +167,7 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
         provider: "test".to_string(),
         provider_instance_name: None,
         duration_seconds: None,
+        is_live: Some(false),
         metadata,
     }
 }

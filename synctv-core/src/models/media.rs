@@ -423,6 +423,10 @@ pub struct PlaybackResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<f64>,
 
+    /// Whether this playback source is a live stream.
+    #[serde(default)]
+    pub is_live: bool,
+
     /// Media-level provider metadata for display-only, provider-specific fields.
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, JsonValue>,
@@ -803,6 +807,7 @@ impl PlaybackResult {
             playback_infos,
             default_mode: mode_name.to_string(),
             duration_seconds: None,
+            is_live: false,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -826,6 +831,7 @@ impl PlaybackResult {
             playback_infos: indexmap::IndexMap::new(),
             default_mode: None,
             duration_seconds: None,
+            is_live: false,
             metadata: std::collections::HashMap::new(),
         }
     }
@@ -859,6 +865,7 @@ pub struct PlaybackResultBuilder {
     playback_infos: indexmap::IndexMap<String, PlaybackInfo>,
     default_mode: Option<String>,
     duration_seconds: Option<f64>,
+    is_live: bool,
     metadata: std::collections::HashMap<String, JsonValue>,
 }
 
@@ -902,6 +909,12 @@ impl PlaybackResultBuilder {
         self
     }
 
+    #[must_use]
+    pub const fn is_live(mut self, is_live: bool) -> Self {
+        self.is_live = is_live;
+        self
+    }
+
     /// Add metadata
     #[must_use]
     pub fn add_metadata(mut self, key: String, value: JsonValue) -> Self {
@@ -939,6 +952,7 @@ impl PlaybackResultBuilder {
             playback_infos: self.playback_infos.into_iter().collect(),
             default_mode,
             duration_seconds: self.duration_seconds,
+            is_live: self.is_live,
             metadata: self.metadata,
         })
     }

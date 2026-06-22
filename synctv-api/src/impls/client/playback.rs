@@ -18,7 +18,10 @@ use super::convert::{
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
-use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
+use crate::impls::playback::{
+    playback_expires_at, playback_generation_error_allows_state_only,
+    resolve_playback_source_metadata,
+};
 use crate::impls::ApiError;
 use crate::playback_fanout::{PlaybackFanoutActor, PreparedPlaybackStateFanout};
 use synctv_core::models::MediaId;
@@ -27,35 +30,6 @@ pub(super) fn static_media_source_provider(
     media: &synctv_core::models::Media,
 ) -> Result<SourceProvider, ApiError> {
     Ok(media.source_provider)
-}
-
-async fn resolve_playback_duration(
-    room_service: &synctv_core::service::RoomService,
-    identity: PlaybackSourceIdentity,
-    provider_duration_seconds: Option<f64>,
-) -> Result<Option<f64>, ApiError> {
-    let repo = room_service.playback_service().source_metadata_repository();
-    if let Some(duration_seconds) =
-        provider_duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
-    {
-        repo.upsert_provider_duration(&identity, duration_seconds)
-            .await
-            .map_err(ApiError::from)?;
-        return Ok(Some(duration_seconds));
-    }
-
-    let metadata = repo.get(&identity).await.map_err(ApiError::from)?;
-    if let Some(duration_seconds) = metadata
-        .and_then(|metadata| metadata.duration_seconds)
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-    {
-        return Ok(Some(duration_seconds));
-    }
-
-    repo.mark_unknown_if_absent(&identity)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(None)
 }
 
 fn stale_cached_playback_reference<T>(
@@ -112,6 +86,7 @@ struct ProviderPlaybackResultBuildRequest {
     position: f64,
     media_id: Option<synctv_core::models::MediaId>,
     duration_seconds: Option<f64>,
+    is_live: bool,
 }
 
 fn build_playback_result_from_provider(
@@ -125,13 +100,15 @@ fn build_playback_result_from_provider(
         position,
         media_id,
         duration_seconds,
+        is_live,
     } = request;
     let mut builder =
         synctv_core::models::media::PlaybackResult::builder(playlist_id, room_id, name, position)
             .provider(provider_result.provider.clone())
             .provider_instance_name(provider_result.provider_instance_name.clone())
             .default_mode(provider_result.default_mode.clone())
-            .duration_seconds(duration_seconds);
+            .duration_seconds(duration_seconds)
+            .is_live(is_live);
 
     if let Some(id) = media_id {
         builder = builder.id(id);
@@ -323,6 +300,9 @@ impl ClientApiImpl {
         let Some(metadata) = metadata else {
             return Ok(true);
         };
+        if metadata.is_live != Some(false) {
+            return Ok(false);
+        }
         if metadata.duration_seconds.is_some() {
             return Ok(false);
         }
@@ -468,9 +448,11 @@ impl ClientApiImpl {
             )
             .await?;
         }
-        let duration_seconds = resolve_playback_duration(
+        let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
+            self.provider_stores.as_ref(),
             PlaybackSourceIdentity::static_media(media.room_id, media.id),
+            provider_result.is_live,
             provider_result.duration_seconds,
         )
         .await?;
@@ -483,7 +465,8 @@ impl ClientApiImpl {
                 name: media.name.clone(),
                 position: media.position,
                 media_id: Some(media.id),
-                duration_seconds,
+                duration_seconds: source_metadata.duration_seconds,
+                is_live: source_metadata.is_live,
             })?;
 
         self.sign_and_finalize_playback(&full_result, &ctx)
@@ -589,9 +572,11 @@ impl ClientApiImpl {
             .await?;
         }
 
-        let duration_seconds = resolve_playback_duration(
+        let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
+            self.provider_stores.as_ref(),
             PlaybackSourceIdentity::dynamic_playlist(*room_id, *playlist_id, target),
+            provider_result.is_live,
             provider_result.duration_seconds,
         )
         .await?;
@@ -604,7 +589,8 @@ impl ClientApiImpl {
                 name: item.name.clone(),
                 position: 0.0,
                 media_id: None,
-                duration_seconds,
+                duration_seconds: source_metadata.duration_seconds,
+                is_live: source_metadata.is_live,
             })?;
 
         // Add dynamic playlist target metadata
@@ -676,6 +662,7 @@ impl ClientApiImpl {
             metadata: std::collections::HashMap::new(),
             expires_at: None,
             duration_seconds: None,
+            is_live: false,
         })
     }
 
@@ -1189,18 +1176,26 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
                     );
                 }
             } else if let Some(identity) = PlaybackSourceIdentity::from_state(state) {
-                if let Err(error) = self
+                if self
                     .room_service
                     .playback_service()
-                    .source_metadata_repository()
-                    .mark_unknown_if_absent(&identity)
+                    .source_live_status_for_state(state)
                     .await
+                    .is_ok_and(|status| status == Some(false))
                 {
-                    tracing::warn!(
-                        room_id = %room_id,
-                        error = %error,
-                        "Observed playback lifecycle failed to initialize playback metadata"
-                    );
+                    if let Err(error) = self
+                        .room_service
+                        .playback_service()
+                        .source_metadata_repository()
+                        .mark_probeable_unknown_if_absent(&identity)
+                        .await
+                    {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            error = %error,
+                            "Observed playback lifecycle failed to initialize playback metadata"
+                        );
+                    }
                 }
             }
         }

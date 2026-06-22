@@ -1531,6 +1531,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
+                    is_live: Some(false),
                     metadata,
                 })
             }
@@ -1679,6 +1680,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds,
+                    is_live: Some(false),
                     metadata,
                 })
             }
@@ -1738,6 +1740,7 @@ impl BilibiliProvider {
                     provider: Self::NAME.to_string(),
                     provider_instance_name: provider_instance_name.map(str::to_string),
                     duration_seconds: None,
+                    is_live: Some(true),
                     metadata,
                 })
             }

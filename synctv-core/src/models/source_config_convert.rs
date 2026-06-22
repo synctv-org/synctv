@@ -73,6 +73,8 @@ fn index_to_proto(index: Option<usize>) -> Option<u32> {
 impl From<DirectUrlMediaSourceConfig> for proto::DirectUrlMediaSourceConfig {
     fn from(config: DirectUrlMediaSourceConfig) -> Self {
         Self {
+            is_live: config.is_live,
+            duration_seconds: config.duration_seconds.and_then(|value| value.as_f64()),
             medias: config.medias.into_iter().map(Into::into).collect(),
             default_media_index: index_to_proto(config.default_media_index),
             subtitles: config.subtitles.into_iter().map(Into::into).collect(),

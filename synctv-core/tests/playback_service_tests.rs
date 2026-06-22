@@ -177,6 +177,83 @@ async fn test_seek_negative_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_seek_rejects_live_direct_url_source() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let media_repo = MediaRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("seek_live_direct_url_owner"))
+        .await
+        .checked("test operation should succeed");
+
+    let (room, _) = room_service
+        .create_room(
+            "Seek Live Direct URL Room".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let mut source_config =
+        synctv_core_testing::direct_url_media_source_config("https://example.com/live.m3u8");
+    source_config
+        .as_object_mut()
+        .checked("direct url source_config should be an object")
+        .insert("is_live".to_string(), serde_json::json!(true));
+
+    let media = Media {
+        id: MediaId::new(),
+        playlist_id: None,
+        room_id: room.id,
+        creator_id: Some(owner.id),
+        name: "Live Direct URL".to_string(),
+        description: String::new(),
+        position: 0.0,
+        source_provider: SourceProvider::DirectUrl,
+        source_config,
+        provider_instance_name: None,
+        cover_file_reference_id: None,
+        added_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+    let media = media_repo
+        .create(&media)
+        .await
+        .checked("live media should be created");
+
+    let playback_service = room_service.playback_service();
+    playback_service
+        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .await
+        .checked("live media should start playback");
+
+    let result = playback_service.seek(room.id, owner.id, 30.0).await;
+
+    match result.failed("live playback position update should fail") {
+        Error::InvalidInput(message) => {
+            assert!(
+                message.contains("live playback"),
+                "error should mention live playback: {message}"
+            );
+        }
+        other => std::panic::panic_any(format!("expected InvalidInput error, got: {other:?}")),
+    }
+
+    let state = playback_service
+        .get_state(&room.id)
+        .await
+        .checked("playback state should fetch");
+    assert!((state.position - 0.0).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_speed_zero_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -3117,6 +3117,7 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
                     duration_seconds: None,
+                    is_live: false,
                     provider: "test".to_string(),
                     provider_instance_name: String::new(),
                 },
@@ -3191,6 +3192,7 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
                     metadata: std::collections::HashMap::new(),
                     expires_at: Some(12345),
                     duration_seconds: None,
+                    is_live: false,
                     provider: "test".to_string(),
                     provider_instance_name: String::new(),
                 },
@@ -3401,6 +3403,7 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(chrono::Utc::now().timestamp() + 3600),
                 duration_seconds: None,
+                is_live: false,
                 provider: "test".to_string(),
                 provider_instance_name: String::new(),
             });
@@ -3476,6 +3479,7 @@ async fn test_observe_playback_sends_current_playback_immediately() {
                 metadata: std::collections::HashMap::new(),
                 expires_at: Some(12345),
                 duration_seconds: None,
+                is_live: false,
                 provider: "test".to_string(),
                 provider_instance_name: String::new(),
             },
@@ -3537,6 +3541,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3576,6 +3581,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3647,6 +3653,7 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3804,6 +3811,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3843,6 +3851,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3937,6 +3946,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -3996,6 +4006,7 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4038,6 +4049,7 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4095,6 +4107,7 @@ async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscribe
         metadata: std::collections::HashMap::new(),
         expires_at: None,
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4210,6 +4223,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4265,6 +4279,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         )]),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4367,6 +4382,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         metadata: std::collections::HashMap::new(),
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4426,6 +4442,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         )]),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
+        is_live: false,
         provider: "test".to_string(),
         provider_instance_name: String::new(),
     });
@@ -4493,6 +4510,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             metadata: std::collections::HashMap::new(),
             expires_at: Some(4_102_444_800),
             duration_seconds: None,
+            is_live: false,
             provider: "test".to_string(),
             provider_instance_name: String::new(),
         }),
@@ -4512,6 +4530,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             )]),
             expires_at: Some(4_102_444_860),
             duration_seconds: None,
+            is_live: false,
             provider: "test".to_string(),
             provider_instance_name: String::new(),
         }),
@@ -4613,6 +4632,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             metadata: std::collections::HashMap::new(),
             expires_at: Some(111),
             duration_seconds: None,
+            is_live: false,
             provider: "test".to_string(),
             provider_instance_name: String::new(),
         }),
@@ -4722,6 +4742,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             metadata: std::collections::HashMap::new(),
             expires_at: Some(refresh_at),
             duration_seconds: None,
+            is_live: false,
             provider: "test".to_string(),
             provider_instance_name: String::new(),
         }),
@@ -4741,6 +4762,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             )]),
             expires_at: Some(refresh_at + 60),
             duration_seconds: None,
+            is_live: false,
             provider: "test".to_string(),
             provider_instance_name: String::new(),
         }),

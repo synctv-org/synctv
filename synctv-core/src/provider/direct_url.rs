@@ -12,7 +12,7 @@ use crate::models::media::{
     PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::DirectUrlMediaSourceConfig;
+use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -90,25 +90,8 @@ impl DirectUrlProvider {
         Ok(())
     }
 
-    /// Detect format from URL path extension.
-    ///
-    /// Parses the URL to extract the path component, then checks the file
-    /// extension. This avoids false positives from `contains()` matching
-    /// against query parameters or hostnames (e.g., "cdn.flv.com/video").
     fn detect_format(url: &str) -> String {
-        let path = Url::parse(url).map_or_else(|_| url.to_string(), |u| u.path().to_string());
-
-        let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-        match ext.as_str() {
-            "m3u8" => "m3u8",
-            "flv" => "flv",
-            "mp4" | "m4v" | "mov" => "mp4",
-            "mkv" => "mkv",
-            "webm" => "webm",
-            "avi" => "avi",
-            _ => "video",
-        }
-        .to_string()
+        detect_direct_url_format(url).to_string()
     }
 
     fn validate_source_url(
@@ -159,6 +142,10 @@ impl DirectUrlProvider {
         let cache_key_suffix: String = hex::encode(hasher.finalize()).chars().take(16).collect();
         format!("playback:{cache_key_suffix}")
     }
+
+    fn configured_duration_seconds(config: &DirectUrlMediaSourceConfig) -> Option<f64> {
+        config.positive_duration_seconds()
+    }
 }
 
 impl Default for DirectUrlProvider {
@@ -200,6 +187,13 @@ impl TryFrom<&Value> for DirectUrlMediaSourceConfig {
             config.danmakus.len(),
             "default_danmaku_index",
         )?;
+        if config.is_live == Some(true)
+            && DirectUrlProvider::configured_duration_seconds(&config).is_some()
+        {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl live source_config cannot set duration_seconds".to_string(),
+            ));
+        }
         Ok(config)
     }
 }
@@ -584,18 +578,27 @@ impl MediaProvider for DirectUrlProvider {
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), json!(format));
-        metadata.insert("is_live".to_string(), json!(false));
+        if let Some(is_live) = config.is_live {
+            metadata.insert("is_live".to_string(), json!(is_live));
+        }
 
         if let Some(filename) = first_media.url.split('/').next_back() {
             metadata.insert("filename".to_string(), json!(filename));
         }
+        let is_live = config.inferred_live_status();
+        let duration_seconds = if is_live == Some(true) {
+            None
+        } else {
+            Self::configured_duration_seconds(&config)
+        };
 
         let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
             provider: Self::NAME.to_string(),
             provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
-            duration_seconds: None,
+            duration_seconds,
+            is_live,
             metadata,
         };
 
@@ -614,6 +617,57 @@ impl MediaProvider for DirectUrlProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn test_context() -> ProviderContext<'static> {
+        ProviderContext::new("test").with_store(Arc::new(
+            super::super::store::InMemoryProviderStore::new(100),
+        ))
+    }
+
+    #[tokio::test]
+    async fn generate_playback_marks_plain_file_video_probeable() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(
+            crate::models::DirectUrlMediaSourceConfig::single(
+                "https://example.com/video.mp4".to_string(),
+                HashMap::new(),
+            ),
+        )
+        .into_provider_json()
+        .expect("direct url config should serialize");
+
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .expect("direct url playback should generate");
+
+        assert_eq!(result.is_live, Some(false));
+        assert_eq!(result.duration_seconds, None);
+    }
+
+    #[tokio::test]
+    async fn generate_playback_keeps_manifest_liveness_unknown() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(
+            crate::models::DirectUrlMediaSourceConfig::single(
+                "https://example.com/live.m3u8".to_string(),
+                HashMap::new(),
+            ),
+        )
+        .into_provider_json()
+        .expect("direct url config should serialize");
+
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .expect("direct url playback should generate");
+
+        assert_eq!(result.is_live, None);
+        assert_eq!(result.duration_seconds, None);
+    }
 
     #[test]
     fn validate_source_url_allows_custom_port_for_allowed_host() {

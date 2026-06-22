@@ -229,11 +229,12 @@ pub use room_member::{
 pub use room_settings::RoomSettings;
 pub use settings::{get_default_settings, SettingsGroup};
 pub use source_config::{
-    AlistMediaSourceConfig, AlistPlaylistSourceConfig, BilibiliLiveSourceConfig,
-    BilibiliMediaSourceConfig, BilibiliPgcSourceConfig, BilibiliVideoSourceConfig,
-    DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
-    DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSourceConfig,
-    LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig, RtmpMediaSourceConfig,
+    detect_direct_url_format, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
+    BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
+    BilibiliVideoSourceConfig, DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig,
+    DirectUrlMediaSourceConfig, DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig,
+    EmbyPlaylistSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig,
+    RtmpMediaSourceConfig,
 };
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,

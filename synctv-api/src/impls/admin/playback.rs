@@ -13,6 +13,7 @@ use super::{
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::convert::{dynamic_playlist_source_fields, PlaybackHttpSigningContext};
+use crate::impls::playback::resolve_playback_source_metadata;
 
 struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
@@ -20,35 +21,6 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     playlist_id: &'a PlaylistId,
     target: &'a [u8],
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
-}
-
-async fn resolve_playback_duration(
-    room_service: &synctv_core::service::RoomService,
-    identity: PlaybackSourceIdentity,
-    provider_duration_seconds: Option<f64>,
-) -> Result<Option<f64>, ApiError> {
-    let repo = room_service.playback_service().source_metadata_repository();
-    if let Some(duration_seconds) =
-        provider_duration_seconds.filter(|duration| duration.is_finite() && *duration > 0.0)
-    {
-        repo.upsert_provider_duration(&identity, duration_seconds)
-            .await
-            .map_err(ApiError::from)?;
-        return Ok(Some(duration_seconds));
-    }
-
-    let metadata = repo.get(&identity).await.map_err(ApiError::from)?;
-    if let Some(duration_seconds) = metadata
-        .and_then(|metadata| metadata.duration_seconds)
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-    {
-        return Ok(Some(duration_seconds));
-    }
-
-    repo.mark_unknown_if_absent(&identity)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(None)
 }
 
 impl AdminApiImpl {
@@ -139,9 +111,11 @@ impl AdminApiImpl {
             .generate_playback(&ctx, &media.source_config)
             .await
             .map_err(ApiError::from)?;
-        let duration_seconds = resolve_playback_duration(
+        let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
+            self.provider_stores.as_ref(),
             PlaybackSourceIdentity::static_media(media.room_id, media.id),
+            provider_result.is_live,
             provider_result.duration_seconds,
         )
         .await?;
@@ -156,7 +130,8 @@ impl AdminApiImpl {
         .provider(provider_result.provider.clone())
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds);
+        .duration_seconds(source_metadata.duration_seconds)
+        .is_live(source_metadata.is_live);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -267,9 +242,11 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let duration_seconds = resolve_playback_duration(
+        let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
+            self.provider_stores.as_ref(),
             PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target),
+            provider_result.is_live,
             provider_result.duration_seconds,
         )
         .await?;
@@ -283,7 +260,8 @@ impl AdminApiImpl {
         .provider(provider_result.provider.clone())
         .provider_instance_name(provider_result.provider_instance_name.clone())
         .default_mode(provider_result.default_mode.clone())
-        .duration_seconds(duration_seconds);
+        .duration_seconds(source_metadata.duration_seconds)
+        .is_live(source_metadata.is_live);
 
         for (mode_name, provider_info) in provider_result.playback_infos {
             let info = provider_playback_info_to_model(&provider_info);
@@ -366,6 +344,7 @@ impl AdminApiImpl {
             metadata: std::collections::HashMap::new(),
             expires_at: None,
             duration_seconds: None,
+            is_live: false,
         })
     }
 

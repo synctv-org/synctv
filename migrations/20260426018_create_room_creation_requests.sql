@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
     requested_by BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    category_id BIGINT NULL REFERENCES room_categories(id) ON DELETE SET NULL,
     settings_payload JSONB,
     opaque_password_record BYTEA,
     opaque_password_credential_identifier BYTEA,
@@ -53,6 +54,12 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
         )
 );
 
+CREATE TABLE IF NOT EXISTS room_creation_request_labels (
+    request_id BIGINT NOT NULL REFERENCES room_creation_requests(id) ON DELETE CASCADE,
+    label_id BIGINT NOT NULL REFERENCES room_labels(id) ON DELETE RESTRICT,
+    PRIMARY KEY (request_id, label_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_room_creation_requests_requested_by
     ON room_creation_requests(requested_by, requested_at DESC);
 
@@ -62,3 +69,6 @@ CREATE INDEX IF NOT EXISTS idx_room_creation_requests_status_requested
 CREATE INDEX IF NOT EXISTS idx_room_creation_requests_reviewed_by
     ON room_creation_requests(reviewed_by)
     WHERE reviewed_by IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_room_creation_request_labels_label_request
+    ON room_creation_request_labels(label_id, request_id);

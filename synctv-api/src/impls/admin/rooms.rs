@@ -11,8 +11,9 @@ use super::{
     RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
-    convert::room_presence_stats_to_proto, proto_role_filter_to_room_role,
-    proto_role_to_assignable_room_role, proto_role_to_room_role,
+    convert::{room_category_to_proto, room_label_to_proto, room_presence_stats_to_proto},
+    parse_optional_room_category_id, parse_required_room_category_id, parse_room_label_ids,
+    proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
 };
 
 pub(in crate::impls::admin) fn username_from_loaded_user(
@@ -100,6 +101,8 @@ impl AdminApiImpl {
                 req.sort_direction,
                 CoreSortDirection::Desc,
             )?,
+            category_id: parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?,
+            label_ids: parse_room_label_ids(&req.label_ids, &self.public_id_codec)?,
         };
 
         let (rooms, total) = self
@@ -180,6 +183,151 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         Ok(synctv_proto::admin::GetRoomResponse {
             room: Some(self.load_admin_room_proto(&room, Some(&settings)).await?),
+        })
+    }
+
+    pub async fn list_room_categories(
+        &self,
+        req: synctv_proto::admin::ListRoomCategoriesRequest,
+    ) -> Result<synctv_proto::admin::ListRoomCategoriesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let categories = self
+            .room_service
+            .list_room_categories(!req.include_disabled)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::ListRoomCategoriesResponse {
+            categories: categories
+                .iter()
+                .map(|category| room_category_to_proto(category, &self.public_id_codec))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn upsert_room_category(
+        &self,
+        req: synctv_proto::admin::UpsertRoomCategoryRequest,
+    ) -> Result<synctv_proto::admin::UpsertRoomCategoryResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let category = self
+            .room_service
+            .upsert_room_category(synctv_core::models::UpsertRoomCategory {
+                key: req.key,
+                name: req.name,
+                description: req.description,
+                sort_order: req.sort_order,
+                is_enabled: req.is_enabled.unwrap_or(true),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::UpsertRoomCategoryResponse {
+            category: Some(room_category_to_proto(&category, &self.public_id_codec)?),
+        })
+    }
+
+    pub async fn delete_room_category(
+        &self,
+        req: synctv_proto::admin::DeleteRoomCategoryRequest,
+    ) -> Result<synctv_proto::admin::DeleteRoomCategoryResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let category_id = parse_required_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let success = self
+            .room_service
+            .delete_room_category(category_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::DeleteRoomCategoryResponse { success })
+    }
+
+    pub async fn list_room_labels(
+        &self,
+        req: synctv_proto::admin::ListRoomLabelsRequest,
+    ) -> Result<synctv_proto::admin::ListRoomLabelsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let labels = self
+            .room_service
+            .list_room_labels(!req.include_disabled, category_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::ListRoomLabelsResponse {
+            labels: labels
+                .iter()
+                .map(|label| room_label_to_proto(label, &self.public_id_codec))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn upsert_room_label(
+        &self,
+        req: synctv_proto::admin::UpsertRoomLabelRequest,
+    ) -> Result<synctv_proto::admin::UpsertRoomLabelResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let label = self
+            .room_service
+            .upsert_room_label(synctv_core::models::UpsertRoomLabel {
+                key: req.key,
+                name: req.name,
+                description: req.description,
+                color: req.color,
+                category_id,
+                sort_order: req.sort_order,
+                is_enabled: req.is_enabled.unwrap_or(true),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::UpsertRoomLabelResponse {
+            label: Some(room_label_to_proto(&label, &self.public_id_codec)?),
+        })
+    }
+
+    pub async fn delete_room_label(
+        &self,
+        req: synctv_proto::admin::DeleteRoomLabelRequest,
+    ) -> Result<synctv_proto::admin::DeleteRoomLabelResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let label_id = self
+            .public_id_codec
+            .decode_room_label_id(&req.label_id)
+            .map_err(ApiError::InvalidInput)?;
+        let success = self
+            .room_service
+            .delete_room_label(label_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::admin::DeleteRoomLabelResponse { success })
+    }
+
+    pub async fn update_room_taxonomy(
+        &self,
+        req: synctv_proto::admin::UpdateRoomTaxonomyRequest,
+        admin_user_id: &UserId,
+    ) -> Result<synctv_proto::admin::UpdateRoomTaxonomyResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let room_id = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
+        let requested_category_id =
+            parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let requested_label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
+        self.room_service
+            .update_room_taxonomy(
+                room_id,
+                requested_category_id,
+                &requested_label_ids,
+                Some(*admin_user_id),
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let response = self
+            .get_room(synctv_proto::admin::GetRoomRequest {
+                room_id: self
+                    .public_id_codec
+                    .encode_room_id(room_id)
+                    .map_err(ApiError::Internal)?,
+            })
+            .await?;
+        Ok(synctv_proto::admin::UpdateRoomTaxonomyResponse {
+            room: response.room,
         })
     }
 

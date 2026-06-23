@@ -27,7 +27,8 @@ pub(crate) mod playlist;
 mod report;
 mod room;
 pub(crate) use room::{
-    chat_reaction_count, chat_reaction_summary_to_proto, parse_proto_chat_attachments,
+    chat_reaction_count, chat_reaction_summary_to_proto, parse_optional_room_category_id,
+    parse_proto_chat_attachments, parse_required_room_category_id, parse_room_label_ids,
 };
 pub(crate) mod stream;
 mod user;

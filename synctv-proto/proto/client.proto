@@ -148,6 +148,10 @@ service RoomService {
   rpc GetRoomContentReport(GetRoomContentReportRequest) returns (GetRoomContentReportResponse);
   rpc UpdateRoomContentReportStatus(UpdateRoomContentReportStatusRequest) returns (UpdateRoomContentReportStatusResponse);
 
+  // Room discovery taxonomy
+  rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
+  rpc ListRoomLabels(ListRoomLabelsRequest) returns (ListRoomLabelsResponse);
+
   // WebRTC ICE Servers Configuration
   rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
 
@@ -271,6 +275,31 @@ message Room {
   ResourceCover cover = 13;
   synctv.common.RoomPresenceStats presence = 14;
   UserPublicView creator = 15;
+  RoomCategory category = 16;
+  repeated RoomLabel labels = 17;
+}
+
+message RoomCategory {
+  string id = 1;
+  string key = 2;
+  string name = 3;
+  string description = 4;
+  int32 sort_order = 5;
+  bool is_enabled = 6;
+}
+
+message RoomLabel {
+  string id = 1;
+  string key = 2;
+  string name = 3;
+  string description = 4;
+  string color = 5;
+  string category_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  int32 sort_order = 7;
+  bool is_enabled = 8;
 }
 
 message Media {
@@ -1002,6 +1031,18 @@ message CreateRoomRequest {
     }
   ];
   string password = 4 [(buf.validate.field).string = {max_len: 128}];
+  string category_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 6 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
 }
 
 message CreateRoomResponse {
@@ -1062,11 +1103,43 @@ message ListRoomsRequest {
   string search = 3 [(buf.validate.field).string = {max_len: 100}]; // Optional search by name/description
   RoomListSortBy sort_by = 4 [(buf.validate.field).enum.defined_only = true];
   SortDirection sort_direction = 5 [(buf.validate.field).enum.defined_only = true];
+  string category_id = 6 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 7 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
 }
 
 message ListRoomsResponse {
   repeated Room rooms = 1;
   int32 total = 2;
+}
+
+message ListRoomCategoriesRequest {
+  bool include_disabled = 1;
+}
+
+message ListRoomCategoriesResponse {
+  repeated RoomCategory categories = 1;
+}
+
+message ListRoomLabelsRequest {
+  bool include_disabled = 1;
+  string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomLabelsResponse {
+  repeated RoomLabel labels = 1;
 }
 
 message DeleteRoomRequest {}

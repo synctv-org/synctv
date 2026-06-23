@@ -4520,6 +4520,8 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             cover: None,
             presence: None,
             creator: None,
+            category: None,
+            labels: Vec::new(),
         }),
         playback_state: None,
         membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -4614,6 +4616,8 @@ fn render_human_output_converts_room_listing_without_context_inference() {
             creator_avatar_url: String::new(),
             presence: None,
             cover: None,
+            category: None,
+            labels: Vec::new(),
         }],
         total: 1,
     })

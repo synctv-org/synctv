@@ -3,10 +3,11 @@ use synctv_proto::admin::{
     BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
     DeleteRoomRequest, DeleteUserRequest, GetRoomMembersRequest, GetRoomRequest,
     GetRoomSettingsRequest, GetSettingsGroupRequest, GetUserRequest, GetUserRoomsRequest,
-    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListRoomsRequest,
-    ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
+    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListRoomLabelsRequest,
+    ListRoomsRequest, ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
     ResetRoomSettingsRequest, RoomPathRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateUserRoleRequest, UserPathRequest,
+    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
+    UpdateUserRoleRequest, UpsertRoomLabelRequest, UserPathRequest,
 };
 
 #[test]
@@ -279,6 +280,17 @@ fn test_admin_approve_room_request_rejects_invalid_request_id() {
 }
 
 #[test]
+fn test_admin_delete_room_category_request_rejects_invalid_category_id() {
+    let request = synctv_proto::admin::DeleteRoomCategoryRequest {
+        category_id: "bad-category".to_string(),
+    };
+
+    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
+    let message = error.to_string();
+    assert!(message.contains("category_id"), "{message}");
+}
+
+#[test]
 fn test_admin_list_rooms_request_rejects_invalid_creator_id() {
     let request = ListRoomsRequest {
         page: 1,
@@ -289,6 +301,8 @@ fn test_admin_list_rooms_request_rejects_invalid_creator_id() {
         is_banned: None,
         sort_by: 0,
         sort_direction: 0,
+        category_id: String::new(),
+        label_ids: Vec::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -307,11 +321,65 @@ fn test_admin_list_rooms_request_rejects_too_long_search() {
         is_banned: None,
         sort_by: 0,
         sort_direction: 0,
+        category_id: String::new(),
+        label_ids: Vec::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_admin_list_rooms_request_defaults_taxonomy_filters_from_json() {
+    let request: ListRoomsRequest =
+        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+
+    assert!(request.category_id.is_empty());
+    assert!(request.label_ids.is_empty());
+}
+
+#[test]
+fn test_admin_list_room_labels_request_defaults_category_filter_from_json() {
+    let request: ListRoomLabelsRequest =
+        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+
+    assert!(!request.include_disabled);
+    assert!(request.category_id.is_empty());
+}
+
+#[test]
+fn test_admin_update_room_taxonomy_request_defaults_optional_fields_from_json() {
+    let request: UpdateRoomTaxonomyRequest = serde_json::from_value(serde_json::json!({
+        "room_id": "room_abc",
+    }))
+    .expect("request should deserialize");
+
+    assert!(request.category_id.is_empty());
+    assert!(request.label_ids.is_empty());
+}
+
+#[test]
+fn test_admin_update_room_taxonomy_request_defaults_path_room_id_from_json() {
+    let request: UpdateRoomTaxonomyRequest =
+        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+
+    assert!(request.room_id.is_empty());
+    assert!(request.category_id.is_empty());
+    assert!(request.label_ids.is_empty());
+}
+
+#[test]
+fn test_admin_upsert_room_label_request_defaults_optional_category_from_json() {
+    let request: UpsertRoomLabelRequest = serde_json::from_value(serde_json::json!({
+        "key": "featured",
+        "name": "Featured",
+    }))
+    .expect("request should deserialize");
+
+    assert!(request.category_id.is_empty());
+    assert!(request.description.is_empty());
+    assert!(request.color.is_empty());
 }
 
 #[test]

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM room_labels\n            WHERE id = $1\n              AND NOT EXISTS (\n                  SELECT 1 FROM room_label_assignments WHERE label_id = $1\n              )\n              AND NOT EXISTS (\n                  SELECT 1 FROM room_creation_request_labels WHERE label_id = $1\n              )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eba883f5306b5590e22bf72251c8dc93468239fecf99d514a1a10e7c59019676"
+}

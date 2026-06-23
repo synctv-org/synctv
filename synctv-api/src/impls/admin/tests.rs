@@ -1110,6 +1110,8 @@ fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
         name: "room-ban-test".to_string(),
         description: "room for admin ban test".to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: *created_by,
         status: RoomStatus::Active,
         is_banned: false,
@@ -1129,6 +1131,8 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         name: "Admin Test Room".to_string(),
         description: "Room for admin tests".to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: UserId::expect_positive(102),
         status,
         is_banned: false,
@@ -1702,6 +1706,8 @@ fn review_rows_preserve_absent_optional_fields() -> TestResult {
             reviewed_at: None,
             reviewed_by: None,
             rejection_reason: None,
+            category: None,
+            labels: Vec::new(),
         },
         &public_id_codec,
     )
@@ -1955,6 +1961,8 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
                 is_banned: None,
                 sort_by: synctv_proto::admin::RoomListSortBy::Unspecified as i32,
                 sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
+                category_id: String::new(),
+                label_ids: Vec::new(),
             })
             .await,
     )?;

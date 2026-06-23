@@ -1057,6 +1057,8 @@ fn register_read_routes() -> Router<AppState> {
     Router::new()
         .route("/api/rooms", get(room::list_or_get_rooms))
         .route("/api/rooms/hot", get(room::get_hot_rooms))
+        .route("/api/rooms/categories", get(room::list_room_categories))
+        .route("/api/rooms/labels", get(room::list_room_labels))
         .route("/api/rooms/{room_id}/check", get(room::check_room))
         .route("/api/rooms/{room_id}", get(room::get_room))
         .route(

@@ -119,6 +119,7 @@ impl RoomService {
         options: RoomServiceOptions,
     ) -> Self {
         let room_repo = RoomRepository::new(pool.clone());
+        let taxonomy_repo = crate::repository::RoomTaxonomyRepository::new(pool.clone());
         let room_settings_repo = RoomSettingsRepository::new(pool.clone());
         let member_repo = RoomMemberRepository::new(pool.clone());
         let media_repo = MediaRepository::new(pool.clone());
@@ -199,6 +200,7 @@ impl RoomService {
             pool,
             distributed_lock: options.distributed_lock,
             room_repo,
+            taxonomy_repo,
             room_settings_repo,
             member_repo,
             media_repo,

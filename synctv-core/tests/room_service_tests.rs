@@ -12,7 +12,8 @@ use synctv_core::{
         room_settings::{AllowAutoJoin, MaxMembers, RequireApproval},
         Media, MediaId, MemberStatus, MyRoomListQuery, PageParams, Playlist, PlaylistId,
         ReviewRequestId, RoomAdminPermissionBits, RoomId, RoomListQuery, RoomRole, RoomSettings,
-        RoomStatus, SourceProvider, User, UserId, UserRole, UserStatus,
+        RoomStatus, SourceProvider, UpsertRoomCategory, UpsertRoomLabel, User, UserId, UserRole,
+        UserStatus,
     },
     repository::{
         MediaRepository, PlaylistRepository, ReviewRepository, RoomMemberRepository,
@@ -6721,6 +6722,409 @@ async fn test_set_member_role_only_creator_can_change_roles() {
     assert!(
         matches!(err, Error::Authorization(ref msg) if msg.contains("creator")),
         "Error should mention creator-only restriction, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_taxonomy_is_admin_curated_and_filterable() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("taxonomy_owner"))
+        .await
+        .checked("test operation should succeed");
+
+    let movie = room_service
+        .upsert_room_category(UpsertRoomCategory {
+            key: "movie".to_string(),
+            name: "Movie".to_string(),
+            description: String::new(),
+            sort_order: 10,
+            is_enabled: true,
+        })
+        .await
+        .checked("test operation should succeed");
+    let game = room_service
+        .upsert_room_category(UpsertRoomCategory {
+            key: "game".to_string(),
+            name: "Game".to_string(),
+            description: String::new(),
+            sort_order: 20,
+            is_enabled: true,
+        })
+        .await
+        .checked("test operation should succeed");
+    let anime = room_service
+        .upsert_room_label(UpsertRoomLabel {
+            key: "anime".to_string(),
+            name: "Anime".to_string(),
+            description: String::new(),
+            color: "#FFAA00".to_string(),
+            category_id: Some(movie.id),
+            sort_order: 1,
+            is_enabled: true,
+        })
+        .await
+        .checked("test operation should succeed");
+    let coop = room_service
+        .upsert_room_label(UpsertRoomLabel {
+            key: "coop".to_string(),
+            name: "Co-op".to_string(),
+            description: String::new(),
+            color: String::new(),
+            category_id: Some(game.id),
+            sort_order: 2,
+            is_enabled: true,
+        })
+        .await
+        .checked("test operation should succeed");
+    let disabled = room_service
+        .upsert_room_label(UpsertRoomLabel {
+            key: "disabled_tag".to_string(),
+            name: "Disabled".to_string(),
+            description: String::new(),
+            color: String::new(),
+            category_id: Some(movie.id),
+            sort_order: 3,
+            is_enabled: false,
+        })
+        .await
+        .checked("test operation should succeed");
+
+    let (movie_room, _) = room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Movie".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+            Some(movie.id),
+            vec![anime.id],
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+    let (game_room, _) = room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Game".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+            Some(game.id),
+            Vec::new(),
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    assert_eq!(
+        movie_room.category.as_ref().map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        movie_room
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let mut renamed_movie_room = movie_room.clone();
+    renamed_movie_room.name = "Taxonomy Movie Renamed".to_string();
+    let updated_movie_room = RoomRepository::new(pool.clone())
+        .update(&renamed_movie_room, movie_room.version)
+        .await
+        .checked("repository update should preserve category");
+    assert_eq!(
+        updated_movie_room
+            .category
+            .as_ref()
+            .map(|category| category.id),
+        Some(movie.id)
+    );
+
+    let (movie_rooms, total) = room_service
+        .list_accessible_rooms(&RoomListQuery {
+            category_id: Some(movie.id),
+            ..Default::default()
+        })
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(total, 1);
+    assert_eq!(movie_rooms[0].id, movie_room.id);
+    assert_eq!(
+        movie_rooms[0].category.as_ref().map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        movie_rooms[0]
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let (anime_rooms, total) = room_service
+        .list_accessible_rooms(&RoomListQuery {
+            label_ids: vec![anime.id],
+            ..Default::default()
+        })
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(total, 1);
+    assert_eq!(anime_rooms[0].id, movie_room.id);
+
+    let (duplicate_anime_rooms, total) = room_service
+        .list_accessible_rooms(&RoomListQuery {
+            label_ids: vec![anime.id, anime.id],
+            ..Default::default()
+        })
+        .await
+        .checked("duplicate label filters should be deduped");
+    assert_eq!(total, 1);
+    assert_eq!(duplicate_anime_rooms[0].id, movie_room.id);
+
+    let (creator_rooms, _) = room_service
+        .list_rooms_by_creator(&owner.id, PageParams::new(Some(1), Some(10)))
+        .await
+        .checked("creator room list should load taxonomy");
+    let creator_movie_room = creator_rooms
+        .iter()
+        .find(|room| room.id == movie_room.id)
+        .expect("creator room list should contain movie room");
+    assert_eq!(
+        creator_movie_room
+            .category
+            .as_ref()
+            .map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        creator_movie_room
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let (joined_rooms, _) = room_service
+        .list_joined_rooms_with_details(&owner.id, PageParams::new(Some(1), Some(10)))
+        .await
+        .checked("joined room list should load taxonomy");
+    let joined_movie_room = joined_rooms
+        .iter()
+        .map(|(room, _, _, _)| room)
+        .find(|room| room.id == movie_room.id)
+        .expect("joined room list should contain movie room");
+    assert_eq!(
+        joined_movie_room
+            .category
+            .as_ref()
+            .map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        joined_movie_room
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let mismatch = room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Mismatch".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+            Some(movie.id),
+            vec![coop.id],
+            None,
+        )
+        .await;
+    assert!(
+        matches!(mismatch, Err(Error::InvalidInput(ref msg)) if msg.contains("selected category")),
+        "category-scoped labels should be rejected for other categories"
+    );
+
+    let disabled_label = room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Disabled Label".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+            Some(movie.id),
+            vec![disabled.id],
+            None,
+        )
+        .await;
+    assert!(
+        matches!(disabled_label, Err(Error::InvalidInput(ref msg)) if msg.contains("disabled")),
+        "disabled labels should be rejected"
+    );
+
+    let inactive = room_service
+        .upsert_room_category(UpsertRoomCategory {
+            key: "inactive_room_category".to_string(),
+            name: "Inactive".to_string(),
+            description: String::new(),
+            sort_order: 30,
+            is_enabled: false,
+        })
+        .await
+        .checked("test operation should succeed");
+    let disabled_category = room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Disabled Category".to_string(),
+            String::new(),
+            owner.id,
+            None,
+            None,
+            Some(inactive.id),
+            Vec::new(),
+            None,
+        )
+        .await;
+    assert!(
+        matches!(disabled_category, Err(Error::InvalidInput(ref msg)) if msg.contains("disabled")),
+        "disabled categories should be rejected"
+    );
+
+    let invalid_update = room_service
+        .update_room_taxonomy(movie_room.id, Some(movie.id), &[coop.id], Some(owner.id))
+        .await;
+    assert!(
+        matches!(invalid_update, Err(Error::InvalidInput(ref msg)) if msg.contains("selected category")),
+        "taxonomy updates should validate labels in the service layer"
+    );
+
+    let labels_for_movie = room_service
+        .list_room_labels(true, Some(movie.id))
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(
+        labels_for_movie
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let labels_with_disabled = room_service
+        .list_room_labels(false, Some(movie.id))
+        .await
+        .checked("test operation should succeed");
+    assert!(labels_with_disabled
+        .iter()
+        .any(|label| label.id == disabled.id));
+
+    let (all_rooms, total) = room_service
+        .list_accessible_rooms(&RoomListQuery::default())
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(total, 2);
+    assert_eq!(
+        all_rooms
+            .iter()
+            .map(|room| room.id)
+            .collect::<std::collections::HashSet<_>>(),
+        [movie_room.id, game_room.id].into_iter().collect()
+    );
+
+    let registry = make_settings_registry(pool.clone()).await;
+    registry
+        .create_room_need_review
+        .set(true)
+        .await
+        .checked("test operation should succeed");
+    let review_room_service = make_room_service_with_settings_registry(&pool, registry);
+    let review_owner = user_repo
+        .create(&make_user("taxonomy_review_owner"))
+        .await
+        .checked("test operation should succeed");
+    let (pending_room, _) = review_room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Pending Review".to_string(),
+            String::new(),
+            review_owner.id,
+            None,
+            None,
+            Some(movie.id),
+            vec![anime.id],
+            None,
+        )
+        .await
+        .checked("pending room request should keep taxonomy");
+    assert_eq!(
+        pending_room.category.as_ref().map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        pending_room
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+    let approved_room = review_room_service
+        .approve_pending_room(pending_room.id, None)
+        .await
+        .checked("approved room should return taxonomy");
+    assert_eq!(
+        approved_room.category.as_ref().map(|category| category.id),
+        Some(movie.id)
+    );
+    assert_eq!(
+        approved_room
+            .labels
+            .iter()
+            .map(|label| label.id)
+            .collect::<Vec<_>>(),
+        vec![anime.id]
+    );
+
+    let (stale_pending_room, _) = review_room_service
+        .create_room_with_taxonomy_outbox(
+            "Taxonomy Stale Pending Review".to_string(),
+            String::new(),
+            review_owner.id,
+            None,
+            None,
+            Some(movie.id),
+            vec![anime.id],
+            None,
+        )
+        .await
+        .checked("pending room request should be created before taxonomy changes");
+    room_service
+        .upsert_room_label(UpsertRoomLabel {
+            key: "anime".to_string(),
+            name: "Anime".to_string(),
+            description: String::new(),
+            color: "#FFAA00".to_string(),
+            category_id: Some(movie.id),
+            sort_order: 1,
+            is_enabled: false,
+        })
+        .await
+        .checked("test operation should succeed");
+    let stale_approval = review_room_service
+        .approve_pending_room(stale_pending_room.id, None)
+        .await;
+    assert!(
+        matches!(stale_approval, Err(Error::InvalidInput(ref msg)) if msg.contains("disabled")),
+        "approval should re-check current taxonomy state"
     );
 }
 

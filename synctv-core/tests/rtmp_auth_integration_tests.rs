@@ -114,6 +114,8 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         name: name.to_string(),
         description: "Test room".to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: creator_id,
         status: RoomStatus::Active,
         is_banned: false,

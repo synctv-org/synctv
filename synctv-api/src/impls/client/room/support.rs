@@ -690,6 +690,7 @@ pub(super) async fn chat_message_read_receipts_to_proto(
 
 pub(super) fn build_public_room_list_query(
     req: synctv_proto::client::ListRoomsRequest,
+    public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
@@ -705,6 +706,8 @@ pub(super) fn build_public_room_list_query(
         search: (!req.search.is_empty()).then_some(req.search),
         status: Some(synctv_core::models::RoomStatus::Active),
         is_banned: Some(false),
+        category_id: parse_optional_room_category_id(&req.category_id, public_id_codec)?,
+        label_ids: parse_room_label_ids(&req.label_ids, public_id_codec)?,
         sort_by: proto_room_list_sort_by(req.sort_by)?,
         sort_direction: proto_sort_direction(
             req.sort_direction,
@@ -712,6 +715,41 @@ pub(super) fn build_public_room_list_query(
         )?,
         ..Default::default()
     })
+}
+
+pub(crate) fn parse_optional_room_category_id(
+    value: &str,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<Option<synctv_core::models::RoomCategoryId>, ApiError> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    public_id_codec
+        .decode_room_category_id(value)
+        .map(Some)
+        .map_err(ApiError::InvalidInput)
+}
+
+pub(crate) fn parse_required_room_category_id(
+    value: &str,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_core::models::RoomCategoryId, ApiError> {
+    parse_optional_room_category_id(value, public_id_codec)?
+        .ok_or_else(|| ApiError::InvalidInput("category_id is required".to_string()))
+}
+
+pub(crate) fn parse_room_label_ids(
+    values: &[String],
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<Vec<synctv_core::models::RoomLabelId>, ApiError> {
+    values
+        .iter()
+        .map(|value| {
+            public_id_codec
+                .decode_room_label_id(value)
+                .map_err(ApiError::InvalidInput)
+        })
+        .collect()
 }
 
 pub(super) fn build_my_room_list_query(

@@ -169,7 +169,7 @@ pub use file_storage::{
 };
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
-    ReviewRequestId, RoomId, TypedId, UserId,
+    ReviewRequestId, RoomCategoryId, RoomId, RoomLabelId, TypedId, UserId,
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
@@ -219,8 +219,9 @@ pub use provider_instance::{
 pub use query::SortDirection;
 pub use review::ReviewStatus;
 pub use room::{
-    AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomListQuery, RoomListSortBy,
-    RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,
+    AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomCategory, RoomLabel, RoomListQuery,
+    RoomListSortBy, RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,
+    UpsertRoomCategory, UpsertRoomLabel,
 };
 pub use room_member::{
     AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, RoomMember,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT rcr.id AS \"id: RoomId\",\n                   rcr.requested_by AS \"requested_by: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name,\n                   rcr.description,\n                   rcr.status AS \"status: ReviewStatus\",\n                   rcr.requested_at,\n                   rcr.reviewed_at,\n                   rcr.reviewed_by AS \"reviewed_by: UserId\",\n                   rcr.rejection_reason\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            WHERE rcr.status = $1\n              AND ($2::bigint IS NULL OR rcr.requested_by = $2)\n              AND ($3 = '' OR rcr.name ILIKE $3 ESCAPE '\\' OR rcr.description ILIKE $3 ESCAPE '\\')\n            ORDER BY rcr.requested_at DESC, rcr.id DESC\n            LIMIT $4 OFFSET $5\n            ",
+  "query": "\n            SELECT id AS \"id: RoomId\",\n                   requested_by AS \"requested_by: UserId\",\n                   name,\n                   description,\n                   category_id AS \"category_id: RoomCategoryId\",\n                   settings_payload,\n                   opaque_password_record,\n                   opaque_password_credential_identifier,\n                   opaque_password_ciphersuite,\n                   opaque_password_server_setup_version\n            FROM room_creation_requests\n            WHERE id = $1 AND reviewed_at IS NULL AND status = $2\n            FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -27,12 +27,6 @@
       },
       {
         "ordinal": 2,
-        "name": "requested_by_username!",
-        "type_info": "Varchar",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 3,
         "name": "name",
         "type_info": "Text",
         "origin": {
@@ -43,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "description",
         "type_info": "Text",
         "origin": {
@@ -54,82 +48,90 @@
         }
       },
       {
-        "ordinal": 5,
-        "name": "status: ReviewStatus",
-        "type_info": "Int2",
+        "ordinal": 4,
+        "name": "category_id: RoomCategoryId",
+        "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "room_creation_requests",
-            "name": "status"
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "settings_payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_creation_requests",
+            "name": "settings_payload"
           }
         }
       },
       {
         "ordinal": 6,
-        "name": "requested_at",
-        "type_info": "Timestamptz",
+        "name": "opaque_password_record",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "room_creation_requests",
-            "name": "requested_at"
+            "name": "opaque_password_record"
           }
         }
       },
       {
         "ordinal": 7,
-        "name": "reviewed_at",
-        "type_info": "Timestamptz",
+        "name": "opaque_password_credential_identifier",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "room_creation_requests",
-            "name": "reviewed_at"
+            "name": "opaque_password_credential_identifier"
           }
         }
       },
       {
         "ordinal": 8,
-        "name": "reviewed_by: UserId",
-        "type_info": "Int8",
+        "name": "opaque_password_ciphersuite",
+        "type_info": "Varchar",
         "origin": {
           "Table": {
             "table": "room_creation_requests",
-            "name": "reviewed_by"
+            "name": "opaque_password_ciphersuite"
           }
         }
       },
       {
         "ordinal": 9,
-        "name": "rejection_reason",
-        "type_info": "Text",
+        "name": "opaque_password_server_setup_version",
+        "type_info": "Int4",
         "origin": {
           "Table": {
             "table": "room_creation_requests",
-            "name": "rejection_reason"
+            "name": "opaque_password_server_setup_version"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Int2",
         "Int8",
-        "Text",
-        "Int8",
-        "Int8"
+        "Int2"
       ]
     },
     "nullable": [
       false,
       false,
-      null,
       false,
       false,
-      false,
-      false,
+      true,
+      true,
+      true,
       true,
       true,
       true
     ]
   },
-  "hash": "20cb5ac36c2c12811442d6a669e04e783bc5819240e4b80c3a987270f0e549f3"
+  "hash": "01e9288535d5a208f12d28435e7a59b71ef38feb6a7154a0a1a27b8771be0c91"
 }

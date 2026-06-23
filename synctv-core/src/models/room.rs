@@ -4,12 +4,69 @@ use serde_json::Value as JsonValue;
 use std::fmt::Display;
 use std::str::FromStr;
 
-use super::id::{RoomId, UserId};
+use super::id::{RoomCategoryId, RoomId, RoomLabelId, UserId};
 use super::permission::{
     RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
 };
 use super::query::SortDirection;
 use crate::Error;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomCategory {
+    pub id: RoomCategoryId,
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub sort_order: i32,
+    pub is_enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomLabel {
+    pub id: RoomLabelId,
+    pub key: String,
+    pub name: String,
+    pub description: String,
+    pub color: String,
+    pub category_id: Option<RoomCategoryId>,
+    pub sort_order: i32,
+    pub is_enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertRoomCategory {
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub sort_order: i32,
+    #[serde(default = "default_enabled")]
+    pub is_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertRoomLabel {
+    pub key: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: String,
+    pub category_id: Option<RoomCategoryId>,
+    #[serde(default)]
+    pub sort_order: i32,
+    #[serde(default = "default_enabled")]
+    pub is_enabled: bool,
+}
+
+const fn default_enabled() -> bool {
+    true
+}
 
 /// Derived room lifecycle used by API filters and display.
 ///
@@ -160,6 +217,10 @@ pub struct Room {
     #[serde(default)]
     pub description: String,
     pub cover_file_reference_id: Option<i64>,
+    #[serde(default)]
+    pub category: Option<RoomCategory>,
+    #[serde(default)]
+    pub labels: Vec<RoomLabel>,
     /// Creator user ID. ON DELETE RESTRICT prevents deleting users who still own rooms.
     pub created_by: UserId,
     #[serde(skip)]
@@ -191,6 +252,8 @@ impl Room {
             name,
             description: String::new(),
             cover_file_reference_id: None,
+            category: None,
+            labels: Vec::new(),
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
@@ -212,6 +275,8 @@ impl Room {
             name,
             description,
             cover_file_reference_id: None,
+            category: None,
+            labels: Vec::new(),
             created_by,
             status: RoomStatus::Active,
             is_banned: false,
@@ -290,6 +355,9 @@ pub struct CreateRoomRequest {
     pub description: String,
     pub password: Option<String>,
     pub settings: Option<JsonValue>,
+    pub category_id: Option<RoomCategoryId>,
+    #[serde(default)]
+    pub label_ids: Vec<RoomLabelId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +367,8 @@ pub struct UpdateRoomRequest {
     pub description: Option<String>,
     pub closed: Option<bool>,
     pub settings: Option<JsonValue>,
+    pub category_id: Option<RoomCategoryId>,
+    pub label_ids: Option<Vec<RoomLabelId>>,
 }
 
 /// Room with settings loaded from `room_settings` table
@@ -334,6 +404,9 @@ pub struct RoomListQuery {
     pub is_banned: Option<bool>,
     /// Filter by creator
     pub creator_id: Option<super::UserId>,
+    pub category_id: Option<RoomCategoryId>,
+    #[serde(default)]
+    pub label_ids: Vec<RoomLabelId>,
     #[serde(default)]
     pub sort_by: RoomListSortBy,
     #[serde(default)]
@@ -348,6 +421,8 @@ impl Default for RoomListQuery {
             search: None,
             is_banned: Some(false),
             creator_id: None,
+            category_id: None,
+            label_ids: Vec::new(),
             sort_by: RoomListSortBy::CreatedAt,
             sort_direction: SortDirection::Desc,
         }

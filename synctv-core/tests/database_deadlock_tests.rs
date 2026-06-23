@@ -69,6 +69,8 @@ fn make_room(creator_id: UserId) -> Room {
         name: "Test Room".to_string(),
         description: "Test".to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: creator_id,
         status: synctv_core::models::RoomStatus::Active,
         is_banned: false,

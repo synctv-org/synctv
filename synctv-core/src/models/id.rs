@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 static EPHEMERAL_ID_COUNTER: AtomicI64 = AtomicI64::new(1_000_000_000);
 static USER_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static ROOM_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static ROOM_CATEGORY_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
+static ROOM_LABEL_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static MEDIA_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static PLAYLIST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
 static REVIEW_REQUEST_ID_COUNTER: AtomicI64 = AtomicI64::new(1);
@@ -167,6 +169,8 @@ macro_rules! numeric_id_type {
 
 numeric_id_type!(UserId, "UserId", USER_ID_COUNTER);
 numeric_id_type!(RoomId, "RoomId", ROOM_ID_COUNTER);
+numeric_id_type!(RoomCategoryId, "RoomCategoryId", ROOM_CATEGORY_ID_COUNTER);
+numeric_id_type!(RoomLabelId, "RoomLabelId", ROOM_LABEL_ID_COUNTER);
 numeric_id_type!(MediaId, "MediaId", MEDIA_ID_COUNTER);
 numeric_id_type!(PlaylistId, "PlaylistId", PLAYLIST_ID_COUNTER);
 numeric_id_type!(
@@ -206,6 +210,10 @@ macro_rules! numeric_id_test_support {
 numeric_id_test_support!(UserId);
 #[cfg(any(test, feature = "test-support"))]
 numeric_id_test_support!(RoomId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(RoomCategoryId);
+#[cfg(any(test, feature = "test-support"))]
+numeric_id_test_support!(RoomLabelId);
 #[cfg(any(test, feature = "test-support"))]
 numeric_id_test_support!(MediaId);
 #[cfg(any(test, feature = "test-support"))]

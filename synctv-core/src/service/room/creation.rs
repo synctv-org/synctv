@@ -2,8 +2,9 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, OpaquePasswordRecord, PageParams, ReviewStatus, Room, RoomId,
-        RoomMember, RoomRole, RoomSettings, UserId, UserListQuery, UserRole, UserStatus,
+        AuditAction, AuditTargetType, OpaquePasswordRecord, PageParams, ReviewStatus, Room,
+        RoomCategoryId, RoomId, RoomLabelId, RoomMember, RoomRole, RoomSettings, UserId,
+        UserListQuery, UserRole, UserStatus,
     },
     repository::RoomRepository,
     service::{
@@ -21,6 +22,8 @@ pub(super) struct PendingRoomCreationRequest {
     pub(super) requested_by: UserId,
     pub(super) name: String,
     pub(super) description: String,
+    pub(super) category_id: Option<RoomCategoryId>,
+    pub(super) label_ids: Vec<RoomLabelId>,
     pub(super) settings: RoomSettings,
     pub(super) opaque_password_record: Option<OpaquePasswordRecord>,
 }
@@ -30,6 +33,7 @@ struct PendingRoomCreationRequestRow {
     requested_by: UserId,
     name: String,
     description: String,
+    category_id: Option<RoomCategoryId>,
     settings_payload: Option<serde_json::Value>,
     opaque_password_record: Option<Vec<u8>>,
     opaque_password_credential_identifier: Option<Vec<u8>>,
@@ -71,6 +75,8 @@ impl PendingRoomCreationRequestRow {
             requested_by: self.requested_by,
             name: self.name,
             description: self.description,
+            category_id: self.category_id,
+            label_ids: Vec::new(),
             settings,
             opaque_password_record,
         })
@@ -100,6 +106,8 @@ struct CreateRoomCommand {
     created_by: UserId,
     password: Option<String>,
     settings: Option<RoomSettings>,
+    category_id: Option<RoomCategoryId>,
+    label_ids: Vec<RoomLabelId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,6 +133,8 @@ impl RoomService {
         requested_by: &UserId,
         name: &str,
         description: &str,
+        category_id: Option<RoomCategoryId>,
+        label_ids: &[RoomLabelId],
         settings: &RoomSettings,
         password: Option<&str>,
     ) -> Result<Room> {
@@ -134,14 +144,15 @@ impl RoomService {
         let request_id = sqlx::query_scalar!(
             r"
             INSERT INTO room_creation_requests (
-                requested_by, name, description, settings_payload, status, requested_at
+                requested_by, name, description, category_id, settings_payload, status, requested_at
             )
-            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
             RETURNING id
             ",
             requested_by.as_i64(),
             name,
             description,
+            category_id.map(|id| id.as_i64()),
             settings_payload,
             i16::from(ReviewStatus::Pending)
         )
@@ -151,6 +162,23 @@ impl RoomService {
         let mut room =
             Room::new_with_description(name.to_string(), description.to_string(), *requested_by);
         room.id = RoomId::try_from(request_id).map_err(Error::Internal)?;
+        if let Some(category_id) = category_id {
+            room.category = self
+                .taxonomy_repo
+                .categories_by_ids(&[category_id])
+                .await?
+                .remove(&category_id);
+        }
+        room.labels = self
+            .taxonomy_repo
+            .labels_by_ids(label_ids)
+            .await?
+            .into_values()
+            .collect();
+        crate::repository::RoomTaxonomyRepository::assign_room_creation_request_labels(
+            room.id, label_ids, &mut *tx,
+        )
+        .await?;
         if let Some(password) = password {
             let opaque_record = self
                 .opaque_password_service
@@ -187,6 +215,7 @@ impl RoomService {
                    requested_by AS "requested_by: UserId",
                    name,
                    description,
+                   category_id AS "category_id: RoomCategoryId",
                    settings_payload,
                    opaque_password_record,
                    opaque_password_credential_identifier,
@@ -202,9 +231,22 @@ impl RoomService {
         .fetch_optional(&mut **tx)
         .await?;
 
-        row.map(PendingRoomCreationRequestRow::into_request)
-            .transpose()
-            .map_err(Error::Database)
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut request = row.into_request().map_err(Error::Database)?;
+        request.label_ids = sqlx::query_scalar!(
+            r#"
+            SELECT label_id AS "label_id: RoomLabelId"
+            FROM room_creation_request_labels
+            WHERE request_id = $1
+            ORDER BY label_id ASC
+            "#,
+            request_id as &RoomId
+        )
+        .fetch_all(&mut **tx)
+        .await?;
+        Ok(Some(request))
     }
 
     pub(super) async fn ensure_user_can_create_room_now_tx(
@@ -409,6 +451,30 @@ impl RoomService {
         settings: Option<RoomSettings>,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
+        self.create_room_with_taxonomy_outbox(
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+            None,
+            Vec::new(),
+            outbox_event_factory,
+        )
+        .await
+    }
+
+    pub async fn create_room_with_taxonomy_outbox(
+        &self,
+        name: String,
+        description: String,
+        created_by: UserId,
+        password: Option<String>,
+        settings: Option<RoomSettings>,
+        category_id: Option<RoomCategoryId>,
+        label_ids: Vec<RoomLabelId>,
+        outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
+    ) -> Result<(Room, RoomMember)> {
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("create_room:{created_by}");
             return crate::service::distributed_lock::with_coordination_lock(
@@ -420,6 +486,7 @@ impl RoomService {
                     let description = description.clone();
                     let password = password.clone();
                     let settings = settings.clone();
+                    let label_ids = label_ids.clone();
                     let outbox_event_factory = outbox_event_factory.clone();
                     async move {
                         self.do_create_room(
@@ -428,6 +495,8 @@ impl RoomService {
                             created_by,
                             password,
                             settings,
+                            category_id,
+                            label_ids,
                             outbox_event_factory,
                         )
                         .await
@@ -443,6 +512,8 @@ impl RoomService {
             created_by,
             password,
             settings,
+            category_id,
+            label_ids,
             outbox_event_factory,
         )
         .await
@@ -455,6 +526,8 @@ impl RoomService {
         created_by: UserId,
         password: Option<String>,
         settings: Option<RoomSettings>,
+        category_id: Option<RoomCategoryId>,
+        label_ids: Vec<RoomLabelId>,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
         self.do_create_room_with_policy(
@@ -464,6 +537,8 @@ impl RoomService {
                 created_by,
                 password,
                 settings,
+                category_id,
+                label_ids,
             },
             true,
             outbox_event_factory,
@@ -483,10 +558,15 @@ impl RoomService {
             created_by,
             password,
             settings,
+            category_id,
+            label_ids,
         } = command;
         let password_enabled = password.is_some();
         let room_settings = initial_room_settings(settings);
         room_settings.validate()?;
+        let (category_id, label_ids) = self
+            .resolve_enabled_room_taxonomy(category_id, &label_ids)
+            .await?;
 
         tracing::info!(
             user_id = %created_by,
@@ -545,6 +625,8 @@ impl RoomService {
                     &created_by,
                     &name,
                     &description,
+                    category_id,
+                    &label_ids,
                     &room_settings,
                     password.as_deref(),
                 )
@@ -614,7 +696,17 @@ impl RoomService {
             .await?;
 
         let room = Room::new_with_description(name, description, created_by);
-        let created_room = self.room_repo.create_with_executor(&room, &mut *tx).await?;
+        let created_room = self
+            .room_repo
+            .create_with_taxonomy_executor(&room, category_id, &mut *tx)
+            .await?;
+        crate::repository::RoomTaxonomyRepository::assign_room_labels(
+            created_room.id,
+            &label_ids,
+            Some(created_by),
+            &mut *tx,
+        )
+        .await?;
         if let Some(password) = password.as_deref() {
             let opaque_record = self.opaque_password_service.register_password(
                 &Self::room_opaque_credential_identifier(&created_room.id),
@@ -656,6 +748,9 @@ impl RoomService {
         self.permission_service
             .seed_added_member_cache(&created_room.id, &created_by, created_member.version)
             .await;
+
+        let mut created_room = created_room;
+        self.hydrate_room_taxonomy(&mut created_room).await?;
 
         Ok((created_room, created_member))
     }

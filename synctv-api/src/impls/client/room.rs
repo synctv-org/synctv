@@ -24,9 +24,12 @@ use super::media::{
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 mod support;
-pub(crate) use support::parse_proto_chat_attachments;
 use support::*;
 pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
+pub(crate) use support::{
+    parse_optional_room_category_id, parse_proto_chat_attachments, parse_required_room_category_id,
+    parse_room_label_ids,
+};
 
 fn required_room_availability(
     availability_map: &HashMap<synctv_core::models::RoomId, ClientResourceAvailability>,
@@ -149,7 +152,7 @@ impl ClientApiImpl {
         &self,
         req: synctv_proto::client::ListRoomsRequest,
     ) -> Result<synctv_proto::client::ListRoomsResponse, ApiError> {
-        let query = build_public_room_list_query(req)?;
+        let query = build_public_room_list_query(req, &self.public_id_codec)?;
         let (rooms, total) = self
             .room_service
             .list_rooms(&query)
@@ -313,6 +316,8 @@ impl ClientApiImpl {
             validate_room_password_for_set(&req.password)?;
             Some(req.password)
         };
+        let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
 
         let response_settings =
             crate::impls::client::convert::normalize_created_room_settings(settings.as_ref());
@@ -321,12 +326,14 @@ impl ClientApiImpl {
             .prepare_room_created_outbox_fanout(uid);
         let (room, _member) = self
             .room_service
-            .create_room_with_outbox(
+            .create_room_with_taxonomy_outbox(
                 req.name,
                 req.description,
                 uid,
                 password,
                 settings,
+                category_id,
+                label_ids,
                 Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await
@@ -343,6 +350,50 @@ impl ClientApiImpl {
                 )
                 .await?,
             ),
+        })
+    }
+
+    pub async fn list_room_categories(
+        &self,
+        req: synctv_proto::client::ListRoomCategoriesRequest,
+    ) -> Result<synctv_proto::client::ListRoomCategoriesResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let categories = self
+            .room_service
+            .list_room_categories(!req.include_disabled)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::ListRoomCategoriesResponse {
+            categories: categories
+                .iter()
+                .map(|category| {
+                    crate::impls::client::convert::room_category_to_proto(
+                        category,
+                        &self.public_id_codec,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn list_room_labels(
+        &self,
+        req: synctv_proto::client::ListRoomLabelsRequest,
+    ) -> Result<synctv_proto::client::ListRoomLabelsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let labels = self
+            .room_service
+            .list_room_labels(!req.include_disabled, category_id)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(synctv_proto::client::ListRoomLabelsResponse {
+            labels: labels
+                .iter()
+                .map(|label| {
+                    crate::impls::client::convert::room_label_to_proto(label, &self.public_id_codec)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         })
     }
 
@@ -1418,6 +1469,8 @@ impl ClientApiImpl {
                     search: None,
                     is_banned: Some(false),
                     creator_id: None,
+                    category_id: None,
+                    label_ids: Vec::new(),
                     sort_by: RoomListSortBy::LastActivityAt,
                     sort_direction: SortDirection::Desc,
                 })
@@ -2390,6 +2443,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_maps_sorting_and_defaults() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let query = api_ok(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 0,
@@ -2397,7 +2451,10 @@ mod tests {
                 search: "alpha".to_string(),
                 sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                category_id: String::new(),
+                label_ids: Vec::new(),
             },
+            &public_id_codec,
         ))?;
 
         assert_eq!(query.pagination.page, 1);
@@ -2498,6 +2555,7 @@ mod tests {
 
     #[test]
     fn room_list_query_builders_reject_unknown_sort_and_relation_enums() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let public_room_error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 1,
@@ -2505,7 +2563,10 @@ mod tests {
                 search: String::new(),
                 sort_by: 99,
                 sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+                category_id: String::new(),
+                label_ids: Vec::new(),
             },
+            &public_id_codec,
         ))?;
         assert!(matches!(
             public_room_error,
@@ -2574,6 +2635,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_rejects_invalid_proto_request() -> TestResult {
+        let public_id_codec = synctv_core::PublicIdCodec::plain();
         let error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: -1,
@@ -2581,7 +2643,10 @@ mod tests {
                 search: "a".repeat(101),
                 sort_by: 99,
                 sort_direction: 99,
+                category_id: String::new(),
+                label_ids: Vec::new(),
             },
+            &public_id_codec,
         ))?;
 
         match error {

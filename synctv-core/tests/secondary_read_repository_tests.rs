@@ -34,6 +34,8 @@ fn room(name: &str, owner_id: UserId) -> Room {
         name: name.to_string(),
         description: String::new(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: owner_id,
         status: RoomStatus::Active,
         is_banned: false,

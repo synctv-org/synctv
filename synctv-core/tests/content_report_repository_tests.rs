@@ -41,6 +41,8 @@ fn make_room(name: &str, owner: UserId) -> Room {
         name: name.to_string(),
         description: String::new(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: owner,
         status: RoomStatus::Active,
         is_banned: false,

@@ -39,7 +39,7 @@ pub(crate) use lifecycle::{
 };
 pub use lifecycle::{
     check_room, create_room, delete_room, get_hot_rooms, get_room, join_room, leave_room,
-    list_or_get_rooms,
+    list_or_get_rooms, list_room_categories, list_room_labels,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use media::{

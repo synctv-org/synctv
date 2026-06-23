@@ -1,10 +1,16 @@
+use std::collections::HashSet;
+
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 
-use super::{query_builder::escape_ilike, required_count};
+use super::{
+    query_builder::escape_ilike,
+    required_count,
+    room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
+};
 use crate::{
     models::{
-        OpaquePasswordRecord, PageParams, Room, RoomId, RoomListQuery, RoomListSortBy,
-        RoomSettings, RoomStatus, UserId,
+        OpaquePasswordRecord, PageParams, Room, RoomCategoryId, RoomId, RoomListQuery,
+        RoomListSortBy, RoomSettings, RoomStatus, UserId,
     },
     Error, Result,
 };
@@ -15,6 +21,14 @@ struct RoomRow {
     name: String,
     description: String,
     cover_file_reference_id: Option<i64>,
+    category_id: Option<RoomCategoryId>,
+    category_key: Option<String>,
+    category_name: Option<String>,
+    category_description: Option<String>,
+    category_sort_order: Option<i32>,
+    category_is_enabled: Option<bool>,
+    category_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    category_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     is_banned: bool,
@@ -32,11 +46,23 @@ impl From<RoomRow> for Room {
         } else {
             RoomStatus::Active
         };
+        let category = optional_room_category_from_parts(OptionalRoomCategoryRowParts {
+            id: row.category_id,
+            key: row.category_key,
+            name: row.category_name,
+            description: row.category_description,
+            sort_order: row.category_sort_order,
+            is_enabled: row.category_is_enabled,
+            created_at: row.category_created_at,
+            updated_at: row.category_updated_at,
+        });
         Self {
             id: row.id,
             name: row.name,
             description: row.description,
             cover_file_reference_id: row.cover_file_reference_id,
+            category,
+            labels: Vec::new(),
             created_by: row.created_by,
             status,
             is_banned: row.is_banned,
@@ -56,6 +82,14 @@ struct RoomWithCountRow {
     name: String,
     description: String,
     cover_file_reference_id: Option<i64>,
+    category_id: Option<RoomCategoryId>,
+    category_key: Option<String>,
+    category_name: Option<String>,
+    category_description: Option<String>,
+    category_sort_order: Option<i32>,
+    category_is_enabled: Option<bool>,
+    category_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    category_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     is_banned: bool,
@@ -75,6 +109,14 @@ impl From<RoomWithCountRow> for crate::models::RoomWithCount {
             name: row.name,
             description: row.description,
             cover_file_reference_id: row.cover_file_reference_id,
+            category_id: row.category_id,
+            category_key: row.category_key,
+            category_name: row.category_name,
+            category_description: row.category_description,
+            category_sort_order: row.category_sort_order,
+            category_is_enabled: row.category_is_enabled,
+            category_created_at: row.category_created_at,
+            category_updated_at: row.category_updated_at,
             created_by: row.created_by,
             closed_at: row.closed_at,
             is_banned: row.is_banned,
@@ -88,6 +130,7 @@ impl From<RoomWithCountRow> for crate::models::RoomWithCount {
         Self { room, member_count }
     }
 }
+
 const ACTIVE_ROOM_BAN_EXISTS_SQL: &str = "EXISTS (
     SELECT 1 FROM room_bans rb
     WHERE rb.room_id = r.id
@@ -150,7 +193,8 @@ impl RoomRepository {
     /// Product policies such as duplicate-name handling belong in the service
     /// layer; this repository method only persists a validated room row.
     pub async fn create(&self, room: &Room) -> Result<Room> {
-        self.create_with_executor(room, &self.pool).await
+        self.create_with_taxonomy_executor(room, None, &self.pool)
+            .await
     }
 
     /// Create a new room using a provided executor (pool or transaction).
@@ -161,28 +205,66 @@ impl RoomRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
+        self.create_with_taxonomy_executor(room, None, executor)
+            .await
+    }
+
+    pub async fn create_with_taxonomy_executor<'e, E>(
+        &self,
+        room: &Room,
+        category_id: Option<RoomCategoryId>,
+        executor: E,
+    ) -> Result<Room>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
         let created = sqlx::query_as!(
             RoomRow,
             r#"
-             INSERT INTO rooms (name, description, cover_file_reference_id,
+             WITH inserted AS (
+                 INSERT INTO rooms (name, description, cover_file_reference_id, category_id,
                                 created_by, closed_at, created_at, updated_at, version, last_activity_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id AS "id: RoomId",
-                       name,
-                       description,
-                       cover_file_reference_id,
-                       created_by AS "created_by: UserId",
-                       closed_at,
-                       false AS "is_banned!",
-                       created_at,
-                       updated_at,
-                       deleted_at,
-                       version,
-                       last_activity_at
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 RETURNING id,
+                           name,
+                           description,
+                           cover_file_reference_id,
+                           category_id,
+                           created_by,
+                           closed_at,
+                           created_at,
+                           updated_at,
+                           deleted_at,
+                           version,
+                           last_activity_at
+             )
+             SELECT i.id AS "id!: RoomId",
+                    i.name,
+                    i.description,
+                    i.cover_file_reference_id,
+                    rc.id AS "category_id?: RoomCategoryId",
+                    rc.key AS "category_key?",
+                    rc.name AS "category_name?",
+                    rc.description AS "category_description?",
+                    rc.sort_order AS "category_sort_order?",
+                    rc.is_enabled AS "category_is_enabled?",
+                    rc.created_at AS "category_created_at?",
+                    rc.updated_at AS "category_updated_at?",
+                    i.created_by AS "created_by!: UserId",
+                    i.closed_at,
+                    false AS "is_banned!",
+                    i.created_at,
+                    i.updated_at,
+                    i.deleted_at,
+                    i.version,
+                    i.last_activity_at
+             FROM inserted i
+             LEFT JOIN room_categories rc ON rc.id = i.category_id
             "#,
             &room.name,
             &room.description,
             room.cover_file_reference_id,
+            category_id.map(|id| id.as_i64()),
             room.created_by.as_i64(),
             room.closed_at,
             room.created_at,
@@ -240,6 +322,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    EXISTS (
@@ -254,6 +344,7 @@ impl RoomRepository {
                    r.version,
                    r.last_activity_at
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = $1 AND r.deleted_at IS NULL
             "#,
             room_id as &RoomId
@@ -279,6 +370,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    EXISTS (
@@ -293,8 +392,9 @@ impl RoomRepository {
                    r.version,
                    r.last_activity_at
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = $1 AND r.deleted_at IS NULL
-            FOR UPDATE
+            FOR UPDATE OF r
             "#,
             room_id as &RoomId
         )
@@ -318,6 +418,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    r.created_at,
@@ -332,6 +440,7 @@ impl RoomRepository {
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                    ) AS "is_banned!"
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = ANY($1)
               AND r.deleted_at IS NULL
               AND r.closed_at IS NULL
@@ -367,13 +476,29 @@ impl RoomRepository {
     /// Note: `updated_at` is set automatically by the `update_rooms_updated_at`
     /// BEFORE UPDATE trigger, so we omit it from the SET clause.
     pub async fn update(&self, room: &Room, old_version: i32) -> Result<Room> {
-        self.update_with_executor(room, old_version, &self.pool)
+        let category_id = room.category.as_ref().map(|category| category.id);
+        self.update_with_taxonomy_executor(room, category_id, old_version, &self.pool)
             .await
     }
 
     pub async fn update_with_executor<'e, E>(
         &self,
         room: &Room,
+        old_version: i32,
+        executor: E,
+    ) -> Result<Room>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let category_id = room.category.as_ref().map(|category| category.id);
+        self.update_with_taxonomy_executor(room, category_id, old_version, executor)
+            .await
+    }
+
+    pub async fn update_with_taxonomy_executor<'e, E>(
+        &self,
+        room: &Room,
+        category_id: Option<RoomCategoryId>,
         old_version: i32,
         executor: E,
     ) -> Result<Room>
@@ -387,13 +512,15 @@ impl RoomRepository {
                  UPDATE rooms
                  SET name = $2, description = $3,
                      cover_file_reference_id = $4,
-                     closed_at = $5,
+                     category_id = $5,
+                     closed_at = $6,
                      version = version + 1
-                 WHERE id = $1 AND deleted_at IS NULL AND version = $6
+                 WHERE id = $1 AND deleted_at IS NULL AND version = $7
                  RETURNING id,
                            name,
                            description,
                            cover_file_reference_id,
+                           category_id,
                            created_by,
                            closed_at,
                            created_at,
@@ -406,6 +533,14 @@ impl RoomRepository {
                     u.name,
                     u.description,
                     u.cover_file_reference_id,
+                    rc.id AS "category_id?: RoomCategoryId",
+                    rc.key AS "category_key?",
+                    rc.name AS "category_name?",
+                    rc.description AS "category_description?",
+                    rc.sort_order AS "category_sort_order?",
+                    rc.is_enabled AS "category_is_enabled?",
+                    rc.created_at AS "category_created_at?",
+                    rc.updated_at AS "category_updated_at?",
                     u.created_by AS "created_by!: UserId",
                     u.closed_at,
                     EXISTS (
@@ -420,11 +555,13 @@ impl RoomRepository {
                     u.version,
                     u.last_activity_at
              FROM updated u
+             LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
             room.id.as_i64(),
             &room.name,
             &room.description,
             room.cover_file_reference_id,
+            category_id.map(|id| id.as_i64()),
             room.closed_at,
             old_version
         )
@@ -479,6 +616,14 @@ impl RoomRepository {
             r.name,
             r.description,
             r.cover_file_reference_id,
+            rc.id AS category_id,
+            rc.key AS category_key,
+            rc.name AS category_name,
+            rc.description AS category_description,
+            rc.sort_order AS category_sort_order,
+            rc.is_enabled AS category_is_enabled,
+            rc.created_at AS category_created_at,
+            rc.updated_at AS category_updated_at,
             r.created_by,
             r.closed_at,
             r.created_at,
@@ -503,6 +648,14 @@ impl RoomRepository {
             builder.push(" WHERE ");
             *has_condition = true;
         }
+    }
+
+    fn dedupe_label_filter_ids(label_ids: &[crate::models::RoomLabelId]) -> Vec<i64> {
+        let mut seen = HashSet::with_capacity(label_ids.len());
+        label_ids
+            .iter()
+            .filter_map(|id| seen.insert(*id).then(|| id.as_i64()))
+            .collect()
     }
 
     fn push_room_list_filters<'q>(
@@ -552,6 +705,30 @@ impl RoomRepository {
             Self::push_where_prefix(builder, has_condition);
             builder.push("r.created_by = ").push_bind(creator_id);
         }
+
+        if let Some(category_id) = query.category_id {
+            Self::push_where_prefix(builder, has_condition);
+            builder.push("r.category_id = ").push_bind(category_id);
+        }
+
+        let label_ids = Self::dedupe_label_filter_ids(&query.label_ids);
+        if !label_ids.is_empty() {
+            let required_label_count = i64::try_from(label_ids.len()).unwrap_or(i64::MAX);
+            Self::push_where_prefix(builder, has_condition);
+            builder.push(
+                "(
+                    SELECT COUNT(DISTINCT rla.label_id)
+                    FROM room_label_assignments rla
+                    WHERE rla.room_id = r.id
+                      AND rla.label_id = ANY(",
+            );
+            builder.push_bind(label_ids);
+            builder.push(
+                ")
+                ) = ",
+            );
+            builder.push_bind(required_label_count);
+        }
     }
 
     fn order_by_sql(query: &RoomListQuery) -> &'static str {
@@ -594,7 +771,7 @@ impl RoomRepository {
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
         Self::push_room_projection(&mut list_builder);
-        list_builder.push(" FROM rooms r");
+        list_builder.push(" FROM rooms r LEFT JOIN room_categories rc ON rc.id = r.category_id");
         let mut has_condition = false;
         Self::push_room_list_filters(
             &mut list_builder,
@@ -643,7 +820,7 @@ impl RoomRepository {
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
         Self::push_room_projection(&mut list_builder);
-        list_builder.push(" FROM rooms r");
+        list_builder.push(" FROM rooms r LEFT JOIN room_categories rc ON rc.id = r.category_id");
         let mut has_condition = false;
         Self::push_room_list_filters(
             &mut list_builder,
@@ -709,7 +886,7 @@ impl RoomRepository {
 
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
         Self::push_room_projection(&mut list_builder);
-        list_builder.push(" FROM rooms r");
+        list_builder.push(" FROM rooms r LEFT JOIN room_categories rc ON rc.id = r.category_id");
         let mut has_condition = false;
         Self::push_where_prefix(&mut list_builder, &mut has_condition);
         list_builder
@@ -774,7 +951,11 @@ impl RoomRepository {
         let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
         Self::push_room_projection(&mut list_builder);
         list_builder.push(", COALESCE(COUNT(rm.user_id), 0)::int AS member_count");
-        list_builder.push(" FROM rooms r LEFT JOIN room_members rm ON r.id = rm.room_id");
+        list_builder.push(
+            " FROM rooms r
+              LEFT JOIN room_categories rc ON rc.id = r.category_id
+              LEFT JOIN room_members rm ON r.id = rm.room_id",
+        );
         let mut has_condition = false;
         Self::push_room_list_filters(
             &mut list_builder,
@@ -783,7 +964,9 @@ impl RoomRepository {
             &mut has_condition,
         );
         list_builder.push(
-            " GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.created_by,
+            " GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
+              rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
+              rc.created_at, rc.updated_at, r.created_by,
               r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,
               r.last_activity_at",
         );
@@ -901,6 +1084,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    r.created_at,
@@ -915,6 +1106,7 @@ impl RoomRepository {
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                    ) AS "is_banned!"
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
@@ -959,6 +1151,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    r.created_at,
@@ -974,9 +1174,12 @@ impl RoomRepository {
                    ) AS "is_banned!",
                    COALESCE(COUNT(rm.user_id), 0)::int AS "member_count!"
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
-            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.created_by,
+            GROUP BY r.id, r.name, r.description, r.cover_file_reference_id, r.category_id,
+                     rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
+                     rc.created_at, rc.updated_at, r.created_by,
                      r.closed_at, r.created_at, r.updated_at, r.deleted_at, r.version,
                      r.last_activity_at
             ORDER BY r.created_at DESC
@@ -997,6 +1200,14 @@ impl RoomRepository {
                     name: row.name,
                     description: row.description,
                     cover_file_reference_id: row.cover_file_reference_id,
+                    category_id: row.category_id,
+                    category_key: row.category_key,
+                    category_name: row.category_name,
+                    category_description: row.category_description,
+                    category_sort_order: row.category_sort_order,
+                    category_is_enabled: row.category_is_enabled,
+                    category_created_at: row.category_created_at,
+                    category_updated_at: row.category_updated_at,
                     created_by: row.created_by,
                     closed_at: row.closed_at,
                     is_banned: row.is_banned,
@@ -1036,6 +1247,7 @@ impl RoomRepository {
                           name,
                           description,
                           cover_file_reference_id,
+                          category_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -1048,6 +1260,14 @@ impl RoomRepository {
                    u.name,
                    u.description,
                    u.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    u.created_by AS "created_by!: UserId",
                    u.closed_at,
                    EXISTS (
@@ -1062,6 +1282,7 @@ impl RoomRepository {
                    u.version,
                    u.last_activity_at
             FROM updated u
+            LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
             closed_at,
             room_id as &RoomId
@@ -1133,6 +1354,14 @@ impl RoomRepository {
                    r.name,
                    r.description,
                    r.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    r.created_by AS "created_by: UserId",
                    r.closed_at,
                    r.created_at,
@@ -1147,6 +1376,7 @@ impl RoomRepository {
                          AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
                    ) AS "is_banned!"
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             WHERE r.id = $1 AND r.deleted_at IS NULL
             "#,
             room_id as &RoomId
@@ -1171,6 +1401,7 @@ impl RoomRepository {
                           name,
                           description,
                           cover_file_reference_id,
+                          category_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -1183,6 +1414,14 @@ impl RoomRepository {
                    u.name,
                    u.description,
                    u.cover_file_reference_id,
+                   rc.id AS "category_id?: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    u.created_by AS "created_by!: UserId",
                    u.closed_at,
                    EXISTS (
@@ -1197,6 +1436,7 @@ impl RoomRepository {
                    u.version,
                    u.last_activity_at
             FROM updated u
+            LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
             description,
             room_id as &RoomId
@@ -1226,6 +1466,7 @@ impl RoomRepository {
                           name,
                           description,
                           cover_file_reference_id,
+                          category_id,
                           created_by,
                           closed_at,
                           created_at,
@@ -1238,6 +1479,14 @@ impl RoomRepository {
                    u.name,
                    u.description,
                    u.cover_file_reference_id,
+                   rc.id AS "category_id: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    u.created_by AS "created_by!: UserId",
                    u.closed_at,
                    EXISTS (
@@ -1252,6 +1501,7 @@ impl RoomRepository {
                    u.version,
                    u.last_activity_at
             FROM updated u
+            LEFT JOIN room_categories rc ON rc.id = u.category_id
             "#,
             room_id as &RoomId,
             new_owner_id as &UserId
@@ -1296,6 +1546,14 @@ impl RoomRepository {
                 r.name,
                 r.description,
                 r.cover_file_reference_id,
+                rc.id AS "category_id?: RoomCategoryId",
+                rc.key AS "category_key?",
+                rc.name AS "category_name?",
+                rc.description AS "category_description?",
+                rc.sort_order AS "category_sort_order?",
+                rc.is_enabled AS "category_is_enabled?",
+                rc.created_at AS "category_created_at?",
+                rc.updated_at AS "category_updated_at?",
                 r.created_by AS "created_by: UserId",
                 r.closed_at,
                 r.created_at,
@@ -1323,6 +1581,7 @@ impl RoomRepository {
                 COALESCE(rpc.enabled, false) AS "password_enabled!",
                 rpc.version AS "password_version?"
             FROM rooms r
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             LEFT JOIN room_settings rs_settings
                 ON rs_settings.room_id = r.id AND rs_settings.key = '_settings'
             LEFT JOIN room_password_credentials rpc
@@ -1342,6 +1601,14 @@ impl RoomRepository {
             name: row.name,
             description: row.description,
             cover_file_reference_id: row.cover_file_reference_id,
+            category_id: row.category_id,
+            category_key: row.category_key,
+            category_name: row.category_name,
+            category_description: row.category_description,
+            category_sort_order: row.category_sort_order,
+            category_is_enabled: row.category_is_enabled,
+            category_created_at: row.category_created_at,
+            category_updated_at: row.category_updated_at,
             created_by: row.created_by,
             closed_at: row.closed_at,
             is_banned: row.is_banned,

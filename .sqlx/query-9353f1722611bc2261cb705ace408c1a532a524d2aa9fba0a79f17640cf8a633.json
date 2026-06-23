@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE rooms\n            SET category_id = $2,\n                updated_at = CURRENT_TIMESTAMP,\n                version = version + 1\n            WHERE id = $1 AND deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9353f1722611bc2261cb705ace408c1a532a524d2aa9fba0a79f17640cf8a633"
+}

@@ -271,15 +271,20 @@ mod tests {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let mut conn = pool.acquire().await.expect("should acquire connection");
 
-        sqlx::query!("SET statement_timeout = 1")
+        sqlx::query!("SET statement_timeout = '250ms'")
             .execute(&mut *conn)
             .await
-            .expect("should set an aggressive timeout for the session");
+            .expect("should set a short timeout for the session");
 
         sqlx::query!("SET statement_timeout = 0")
             .execute(&mut *conn)
             .await
             .expect("migrations must be able to disable session statement timeout");
+
+        sqlx::query!("SELECT pg_sleep(0.3)")
+            .execute(&mut *conn)
+            .await
+            .expect("disabled statement_timeout should allow long migration statements");
 
         let timeout = sqlx::query_scalar!(
             r#"SELECT current_setting('statement_timeout') as "statement_timeout!""#

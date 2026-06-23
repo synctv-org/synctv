@@ -64,6 +64,8 @@ async fn setup_test_context(suffix: &str) -> TestContext {
                     name: format!("OptLock Room {suffix}"),
                     description: String::new(),
                     cover_file_reference_id: None,
+                    category: None,
+                    labels: Vec::new(),
                     created_by: owner.id,
                     status: RoomStatus::Active,
                     is_banned: false,

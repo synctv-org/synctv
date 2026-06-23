@@ -58,6 +58,8 @@ async fn test_chat_message_default_partition_routing() {
                     name: "Partition Test Room".to_string(),
                     description: String::new(),
                     cover_file_reference_id: None,
+                    category: None,
+                    labels: Vec::new(),
                     created_by: owner.id,
                     status: RoomStatus::Active,
                     is_banned: false,

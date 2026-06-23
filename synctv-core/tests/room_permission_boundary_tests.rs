@@ -76,6 +76,8 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         name: name.to_string(),
         description: description.to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: *owner,
         status: RoomStatus::Active,
         is_banned: false,

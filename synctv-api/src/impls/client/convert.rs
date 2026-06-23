@@ -26,6 +26,48 @@ fn encode_room_id_for_proto(
         .map_err(|error| proto_encode_error("room", &error))
 }
 
+pub(crate) fn room_category_to_proto(
+    category: &synctv_core::models::RoomCategory,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::client::RoomCategory, crate::impls::ApiError> {
+    Ok(synctv_proto::client::RoomCategory {
+        id: public_id_codec
+            .encode_room_category_id(category.id)
+            .map_err(|error| proto_encode_error("room category", &error))?,
+        key: category.key.clone(),
+        name: category.name.clone(),
+        description: category.description.clone(),
+        sort_order: category.sort_order,
+        is_enabled: category.is_enabled,
+    })
+}
+
+pub(crate) fn room_label_to_proto(
+    label: &synctv_core::models::RoomLabel,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_proto::client::RoomLabel, crate::impls::ApiError> {
+    Ok(synctv_proto::client::RoomLabel {
+        id: public_id_codec
+            .encode_room_label_id(label.id)
+            .map_err(|error| proto_encode_error("room label", &error))?,
+        key: label.key.clone(),
+        name: label.name.clone(),
+        description: label.description.clone(),
+        color: label.color.clone(),
+        category_id: label
+            .category_id
+            .map(|id| {
+                public_id_codec
+                    .encode_room_category_id(id)
+                    .map_err(|error| proto_encode_error("room category", &error))
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        sort_order: label.sort_order,
+        is_enabled: label.is_enabled,
+    })
+}
+
 fn encode_media_id_for_proto(
     id: synctv_core::models::MediaId,
     public_id_codec: &synctv_core::PublicIdCodec,
@@ -962,6 +1004,16 @@ pub(crate) fn try_room_to_proto_with_availability_and_presence(
         cover: None,
         presence: presence.map(room_presence_stats_to_proto).transpose()?,
         creator,
+        category: room
+            .category
+            .as_ref()
+            .map(|category| room_category_to_proto(category, public_id_codec))
+            .transpose()?,
+        labels: room
+            .labels
+            .iter()
+            .map(|label| room_label_to_proto(label, public_id_codec))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 

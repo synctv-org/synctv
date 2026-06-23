@@ -1,19 +1,19 @@
 use prost_reflect::Kind;
 use synctv_proto::client::{
     AddMediaRequest, ApproveRoomJoinReviewRequest, CheckRoomRequest, ClearPlaylistRequest,
-    CreateWebSocketTicketRequest, DeleteEntriesRequest, DeleteMediaRequest,
+    CreateRoomRequest, CreateWebSocketTicketRequest, DeleteEntriesRequest, DeleteMediaRequest,
     DeleteNotificationRequest, DeletePlaylistRequest, EditMediaRequest,
     ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
     GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
     GetRoomMembersRequest, GetRoomRequest, ListMyRoomsRequest, ListNotificationsRequest,
     ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomJoinReviewsRequest,
-    ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest, MovePlaylistRequest,
-    OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest, RejectRoomJoinReviewRequest,
-    RoomJoinReviewPathRequest, RoomMediaTargetPathRequest, RoomMemberTargetPathRequest,
-    RoomPathRequest, RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection,
-    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
-    UpdatePlaybackStateRequest, UpdatePlaylistRequest, UploadUserAvatarObjectRequest,
-    WebSocketConnectRequest,
+    ListRoomLabelsRequest, ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest,
+    MovePlaylistRequest, OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest,
+    RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMediaTargetPathRequest,
+    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
+    RoomStreamListSortBy, SortDirection, StartPlaybackRequest, TransferRoomOwnershipRequest,
+    UnlinkProviderRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+    UploadUserAvatarObjectRequest, WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
 use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
@@ -688,11 +688,43 @@ fn test_list_rooms_request_rejects_too_long_search() {
         search: "a".repeat(101),
         sort_by: synctv_proto::client::RoomListSortBy::Unspecified as i32,
         sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
+        category_id: String::new(),
+        label_ids: Vec::new(),
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("search"), "{message}");
+}
+
+#[test]
+fn test_create_room_request_defaults_optional_taxonomy_fields_from_json() {
+    let request: CreateRoomRequest = serde_json::from_value(serde_json::json!({
+        "name": "room",
+        "settings": {},
+    }))
+    .expect("request should deserialize");
+
+    assert!(request.category_id.is_empty());
+    assert!(request.label_ids.is_empty());
+}
+
+#[test]
+fn test_list_rooms_request_defaults_taxonomy_filters_from_json() {
+    let request: synctv_proto::client::ListRoomsRequest =
+        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+
+    assert!(request.category_id.is_empty());
+    assert!(request.label_ids.is_empty());
+}
+
+#[test]
+fn test_list_room_labels_request_defaults_category_filter_from_json() {
+    let request: ListRoomLabelsRequest =
+        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+
+    assert!(!request.include_disabled);
+    assert!(request.category_id.is_empty());
 }
 
 #[test]

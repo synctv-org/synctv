@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::config::PublicIdsConfig;
 use crate::models::{
-    BanRecordId, ContentReportId, MediaId, PlaylistId, ReviewRequestId, RoomId, TypedId, UserId,
+    BanRecordId, ContentReportId, MediaId, PlaylistId, ReviewRequestId, RoomCategoryId, RoomId,
+    RoomLabelId, TypedId, UserId,
 };
 
 const USER_ID_TAG: u64 = 1;
@@ -13,6 +14,8 @@ const PLAYLIST_ID_TAG: u64 = 4;
 const REVIEW_REQUEST_ID_TAG: u64 = 5;
 const BAN_RECORD_ID_TAG: u64 = 6;
 const CONTENT_REPORT_ID_TAG: u64 = 7;
+const ROOM_CATEGORY_ID_TAG: u64 = 8;
+const ROOM_LABEL_ID_TAG: u64 = 9;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum PublicIdKind {
@@ -23,6 +26,8 @@ pub enum PublicIdKind {
     ReviewRequest,
     BanRecord,
     ContentReport,
+    RoomCategory,
+    RoomLabel,
 }
 
 impl PublicIdKind {
@@ -36,6 +41,8 @@ impl PublicIdKind {
             Self::ReviewRequest => "ReviewRequestId",
             Self::BanRecord => "BanRecordId",
             Self::ContentReport => "ContentReportId",
+            Self::RoomCategory => "RoomCategoryId",
+            Self::RoomLabel => "RoomLabelId",
         }
     }
 
@@ -49,6 +56,8 @@ impl PublicIdKind {
             Self::ReviewRequest => REVIEW_REQUEST_ID_TAG,
             Self::BanRecord => BAN_RECORD_ID_TAG,
             Self::ContentReport => CONTENT_REPORT_ID_TAG,
+            Self::RoomCategory => ROOM_CATEGORY_ID_TAG,
+            Self::RoomLabel => ROOM_LABEL_ID_TAG,
         }
     }
 
@@ -62,6 +71,8 @@ impl PublicIdKind {
             Self::ReviewRequest => "rev_",
             Self::BanRecord => "ban_",
             Self::ContentReport => "report_",
+            Self::RoomCategory => "roomcat_",
+            Self::RoomLabel => "roomlbl_",
         }
     }
 }
@@ -82,6 +93,14 @@ impl PublicIdType for UserId {
 
 impl PublicIdType for RoomId {
     const PUBLIC_ID_KIND: PublicIdKind = PublicIdKind::Room;
+}
+
+impl PublicIdType for RoomCategoryId {
+    const PUBLIC_ID_KIND: PublicIdKind = PublicIdKind::RoomCategory;
+}
+
+impl PublicIdType for RoomLabelId {
+    const PUBLIC_ID_KIND: PublicIdKind = PublicIdKind::RoomLabel;
 }
 
 impl PublicIdType for MediaId {
@@ -181,6 +200,14 @@ impl PublicIdCodec {
         self.encode(id)
     }
 
+    pub fn encode_room_category_id(&self, id: RoomCategoryId) -> Result<String, String> {
+        self.encode(id)
+    }
+
+    pub fn encode_room_label_id(&self, id: RoomLabelId) -> Result<String, String> {
+        self.encode(id)
+    }
+
     pub fn encode_media_id(&self, id: MediaId) -> Result<String, String> {
         self.encode(id)
     }
@@ -206,6 +233,14 @@ impl PublicIdCodec {
     }
 
     pub fn decode_room_id(&self, value: &str) -> Result<RoomId, String> {
+        self.decode(value)
+    }
+
+    pub fn decode_room_category_id(&self, value: &str) -> Result<RoomCategoryId, String> {
+        self.decode(value)
+    }
+
+    pub fn decode_room_label_id(&self, value: &str) -> Result<RoomLabelId, String> {
         self.decode(value)
     }
 
@@ -342,6 +377,20 @@ mod tests {
             ),
             "ban_1"
         );
+        assert_eq!(
+            ok(
+                codec.encode_room_category_id(RoomCategoryId::expect_positive(1)),
+                "room category ID should encode",
+            ),
+            "roomcat_1"
+        );
+        assert_eq!(
+            ok(
+                codec.encode_room_label_id(RoomLabelId::expect_positive(1)),
+                "room label ID should encode",
+            ),
+            "roomlbl_1"
+        );
     }
 
     #[test]
@@ -354,6 +403,9 @@ mod tests {
         );
         assert!(codec.decode_room_id("usr_1").is_err());
         assert!(codec.decode_user_id("room_1").is_err());
+        assert!(codec.decode_room_category_id("1").is_err());
+        assert!(codec.decode_room_category_id("roomlbl_1").is_err());
+        assert!(codec.decode_room_label_id("roomcat_1").is_err());
         assert!(codec.decode_user_id("1").is_err());
     }
 
@@ -418,5 +470,7 @@ mod tests {
     fn public_id_kind_displays_human_readable_label() {
         assert_eq!(PublicIdKind::ReviewRequest.to_string(), "ReviewRequestId");
         assert_eq!(PublicIdKind::BanRecord.to_string(), "BanRecordId");
+        assert_eq!(PublicIdKind::RoomCategory.to_string(), "RoomCategoryId");
+        assert_eq!(PublicIdKind::RoomLabel.to_string(), "RoomLabelId");
     }
 }

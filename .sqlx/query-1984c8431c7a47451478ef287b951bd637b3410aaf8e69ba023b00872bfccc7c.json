@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SET statement_timeout = 1",
+  "query": "SET statement_timeout = '250ms'",
   "describe": {
     "columns": [],
     "parameters": {
@@ -8,5 +8,5 @@
     },
     "nullable": []
   },
-  "hash": "a48c5c7562a9068be20419a1eb59dab045f03c61cb38ec07269aa7085f7c887f"
+  "hash": "1984c8431c7a47451478ef287b951bd637b3410aaf8e69ba023b00872bfccc7c"
 }

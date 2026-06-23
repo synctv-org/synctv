@@ -12,6 +12,8 @@ fn test_room_list_order_clause_supports_name_ascending() {
         sort_direction: crate::models::SortDirection::Asc,
         pagination: PageParams::default(),
         creator_id: None,
+        category_id: None,
+        label_ids: Vec::new(),
     };
 
     assert_eq!(RoomRepository::order_by_sql(&query), "r.name ASC, r.id ASC");
@@ -27,6 +29,8 @@ fn test_room_list_order_clause_supports_last_activity_nulls_last() {
         sort_direction: crate::models::SortDirection::Desc,
         pagination: PageParams::default(),
         creator_id: None,
+        category_id: None,
+        label_ids: Vec::new(),
     };
 
     assert_eq!(
@@ -534,6 +538,7 @@ async fn test_list_rooms_pagination() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
     let (rooms, total) = room_repo
         .list(&query)
@@ -551,6 +556,7 @@ async fn test_list_rooms_pagination() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
     let (rooms, total) = room_repo
         .list(&query)
@@ -608,6 +614,7 @@ async fn test_list_rooms_with_filters() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
     let (rooms, _) = room_repo
         .list(&query)
@@ -624,6 +631,7 @@ async fn test_list_rooms_with_filters() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
     let (rooms, _) = room_repo
         .list(&query)
@@ -640,6 +648,7 @@ async fn test_list_rooms_with_filters() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
     let (rooms, _) = room_repo
         .list(&query)
@@ -708,6 +717,7 @@ async fn test_list_with_count_counts_current_members() {
         creator_id: None,
         sort_by: crate::models::RoomListSortBy::CreatedAt,
         sort_direction: crate::models::SortDirection::Desc,
+        ..Default::default()
     };
 
     let (rows, total) = room_repo

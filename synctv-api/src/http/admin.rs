@@ -99,7 +99,24 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         .route("/users/batch/delete", post(batch_delete_users))
         // Room management
         .route("/rooms", get(list_rooms))
+        .route(
+            "/rooms/categories",
+            get(list_room_categories).post(upsert_room_category),
+        )
+        .route(
+            "/rooms/categories/{category_id}",
+            axum::routing::delete(delete_room_category),
+        )
+        .route(
+            "/rooms/labels",
+            get(list_room_labels).post(upsert_room_label),
+        )
+        .route(
+            "/rooms/labels/{label_id}",
+            axum::routing::delete(delete_room_label),
+        )
         .route("/rooms/{room_id}", get(get_room).delete(delete_room))
+        .route("/rooms/{room_id}/taxonomy", patch(update_room_taxonomy))
         .route("/rooms/{room_id}/password", post(set_room_password))
         .route(
             "/rooms/{room_id}/members",
@@ -1201,6 +1218,215 @@ pub(crate) async fn list_rooms(
         move |api, _, _| async move { api.list_rooms(req).await },
     )
     .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/categories",
+        tag = "Admin",
+        params(admin::ListRoomCategoriesRequest),
+        responses(
+            (status = 200, description = "Room categories", body = admin::ListRoomCategoriesResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_room_categories(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<admin::ListRoomCategoriesRequest>,
+) -> AppResult<Json<admin::ListRoomCategoriesResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_room_categories(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/categories",
+        tag = "Admin",
+        request_body = admin::UpsertRoomCategoryRequest,
+        responses(
+            (status = 200, description = "Room category upserted", body = admin::UpsertRoomCategoryResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn upsert_room_category(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::UpsertRoomCategoryRequest>,
+) -> AppResult<Json<admin::UpsertRoomCategoryResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.upsert_room_category(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/rooms/categories/{category_id}",
+        tag = "Admin",
+        params(("category_id" = String, Path, description = "Room category ID")),
+        responses(
+            (status = 200, description = "Room category deleted", body = admin::DeleteRoomCategoryResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn delete_room_category(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(req): Path<admin::DeleteRoomCategoryRequest>,
+) -> AppResult<Json<admin::DeleteRoomCategoryResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.delete_room_category(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/rooms/labels",
+        tag = "Admin",
+        params(admin::ListRoomLabelsRequest),
+        responses(
+            (status = 200, description = "Room labels", body = admin::ListRoomLabelsResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn list_room_labels(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<admin::ListRoomLabelsRequest>,
+) -> AppResult<Json<admin::ListRoomLabelsResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.list_room_labels(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/rooms/labels",
+        tag = "Admin",
+        request_body = admin::UpsertRoomLabelRequest,
+        responses(
+            (status = 200, description = "Room label upserted", body = admin::UpsertRoomLabelResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn upsert_room_label(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Json(req): Json<admin::UpsertRoomLabelRequest>,
+) -> AppResult<Json<admin::UpsertRoomLabelResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.upsert_room_label(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        delete,
+        path = "/api/admin/rooms/labels/{label_id}",
+        tag = "Admin",
+        params(("label_id" = String, Path, description = "Room label ID")),
+        responses(
+            (status = 200, description = "Room label deleted", body = admin::DeleteRoomLabelResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn delete_room_label(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(req): Path<admin::DeleteRoomLabelRequest>,
+) -> AppResult<Json<admin::DeleteRoomLabelResponse>> {
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, _, _| async move { api.delete_room_label(req).await },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/admin/rooms/{room_id}/taxonomy",
+        tag = "Admin",
+        params(("room_id" = String, Path, description = "Room ID")),
+        request_body = admin::UpdateRoomTaxonomyRequest,
+        responses(
+            (status = 200, description = "Room taxonomy updated", body = admin::UpdateRoomTaxonomyResponse),
+            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_room_taxonomy(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<admin::GetRoomRequest>,
+    Json(mut req): Json<admin::UpdateRoomTaxonomyRequest>,
+) -> AppResult<Json<admin::UpdateRoomTaxonomyResponse>> {
+    req.room_id = path.room_id;
+    let resp =
+        execute_admin_endpoint(
+            &state,
+            request_meta,
+            require_admin_api,
+            move |api, validated, _| async move {
+                api.update_room_taxonomy(req, &validated.user_id).await
+            },
+        )
+        .await?;
     Ok(Json(resp))
 }
 

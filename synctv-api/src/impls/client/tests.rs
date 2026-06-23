@@ -619,6 +619,8 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         name: "Test Room".to_string(),
         description: "A test room".to_string(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by: UserId::expect_positive(202),
         status,
         is_banned: false,

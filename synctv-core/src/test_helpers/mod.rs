@@ -222,6 +222,8 @@ impl RoomFixture {
             name: self.name,
             description: self.description,
             cover_file_reference_id: None,
+            category: None,
+            labels: Vec::new(),
             created_by: self.created_by,
             status: crate::models::RoomStatus::Active,
             is_banned: false,

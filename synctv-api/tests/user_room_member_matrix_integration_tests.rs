@@ -913,6 +913,8 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
             search: "Matrix".to_string(),
             sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
             sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+            category_id: String::new(),
+            label_ids: Vec::new(),
         })
         .await
         .unwrap();

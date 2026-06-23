@@ -2,12 +2,15 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgExecutor, PgPool};
 
 use crate::models::{
-    oauth2_provider_type_name_from_code, ReviewRequestId, ReviewStatus, RoomId, SignupMethod,
-    UserId,
+    oauth2_provider_type_name_from_code, ReviewRequestId, ReviewStatus, RoomCategory,
+    RoomCategoryId, RoomId, RoomLabel, RoomLabelId, SignupMethod, UserId,
 };
 use crate::repository::pools::RepoPools;
 use crate::repository::query_builder::escape_ilike;
 use crate::repository::required_count;
+use crate::repository::room_taxonomy::{
+    optional_room_category_from_parts, OptionalRoomCategoryRowParts,
+};
 use crate::Result;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -39,11 +42,35 @@ pub struct RoomCreationReviewRecord {
     pub requested_by_username: String,
     pub name: String,
     pub description: String,
+    pub category: Option<RoomCategory>,
+    pub labels: Vec<RoomLabel>,
     pub status: ReviewStatus,
     pub requested_at: DateTime<Utc>,
     pub reviewed_at: Option<DateTime<Utc>>,
     pub reviewed_by: Option<UserId>,
     pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct RoomCreationReviewRow {
+    id: RoomId,
+    requested_by: UserId,
+    requested_by_username: String,
+    name: String,
+    description: String,
+    category_id: Option<RoomCategoryId>,
+    category_key: Option<String>,
+    category_name: Option<String>,
+    category_description: Option<String>,
+    category_sort_order: Option<i32>,
+    category_is_enabled: Option<bool>,
+    category_created_at: Option<DateTime<Utc>>,
+    category_updated_at: Option<DateTime<Utc>>,
+    status: ReviewStatus,
+    requested_at: DateTime<Utc>,
+    reviewed_at: Option<DateTime<Utc>>,
+    reviewed_by: Option<UserId>,
+    rejection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -164,6 +191,102 @@ impl ReviewRepository {
     pub const fn new_with_read_pool(pool: PgPool, read_pool: PgPool) -> Self {
         Self {
             pools: RepoPools::with_read(pool, read_pool),
+        }
+    }
+
+    async fn room_creation_labels_by_request_ids(
+        pool: &PgPool,
+        request_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, Vec<RoomLabel>>> {
+        if request_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let ids: Vec<i64> = request_ids.iter().map(RoomId::as_i64).collect();
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            request_id: RoomId,
+            id: RoomLabelId,
+            key: String,
+            name: String,
+            description: String,
+            color: String,
+            category_id: Option<RoomCategoryId>,
+            sort_order: i32,
+            is_enabled: bool,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+        }
+        let rows = sqlx::query_as!(
+            Row,
+            r#"
+            SELECT rcrl.request_id AS "request_id: RoomId",
+                   rl.id AS "id: RoomLabelId",
+                   rl.key,
+                   rl.name,
+                   rl.description,
+                   rl.color,
+                   rl.category_id AS "category_id: RoomCategoryId",
+                   rl.sort_order,
+                   rl.is_enabled,
+                   rl.created_at,
+                   rl.updated_at
+            FROM room_creation_request_labels rcrl
+            JOIN room_labels rl ON rl.id = rcrl.label_id
+            WHERE rcrl.request_id = ANY($1)
+            ORDER BY rl.sort_order ASC, rl.id ASC
+            "#,
+            &ids
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut labels_by_request = std::collections::HashMap::new();
+        for row in rows {
+            labels_by_request
+                .entry(row.request_id)
+                .or_insert_with(Vec::new)
+                .push(RoomLabel {
+                    id: row.id,
+                    key: row.key,
+                    name: row.name,
+                    description: row.description,
+                    color: row.color,
+                    category_id: row.category_id,
+                    sort_order: row.sort_order,
+                    is_enabled: row.is_enabled,
+                    created_at: row.created_at,
+                    updated_at: row.updated_at,
+                });
+        }
+        Ok(labels_by_request)
+    }
+
+    fn room_creation_review_from_row(
+        row: RoomCreationReviewRow,
+        labels: Vec<RoomLabel>,
+    ) -> RoomCreationReviewRecord {
+        let category = optional_room_category_from_parts(OptionalRoomCategoryRowParts {
+            id: row.category_id,
+            key: row.category_key,
+            name: row.category_name,
+            description: row.category_description,
+            sort_order: row.category_sort_order,
+            is_enabled: row.category_is_enabled,
+            created_at: row.category_created_at,
+            updated_at: row.category_updated_at,
+        });
+        RoomCreationReviewRecord {
+            id: row.id,
+            requested_by: row.requested_by,
+            requested_by_username: row.requested_by_username,
+            name: row.name,
+            description: row.description,
+            category,
+            labels,
+            status: row.status,
+            requested_at: row.requested_at,
+            reviewed_at: row.reviewed_at,
+            reviewed_by: row.reviewed_by,
+            rejection_reason: row.rejection_reason,
         }
     }
 
@@ -394,14 +517,22 @@ impl ReviewRepository {
         &self,
         request_id: RoomId,
     ) -> Result<Option<RoomCreationReviewRecord>> {
-        sqlx::query_as!(
-            RoomCreationReviewRecord,
+        let row = sqlx::query_as!(
+            RoomCreationReviewRow,
             r#"
             SELECT rcr.id AS "id: RoomId",
                    rcr.requested_by AS "requested_by: UserId",
                    COALESCE(u.username, '') AS "requested_by_username!",
                    rcr.name,
                    rcr.description,
+                   rc.id AS "category_id: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    rcr.status AS "status: ReviewStatus",
                    rcr.requested_at,
                    rcr.reviewed_at,
@@ -409,13 +540,22 @@ impl ReviewRepository {
                    rcr.rejection_reason
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
+            LEFT JOIN room_categories rc ON rc.id = rcr.category_id
             WHERE rcr.id = $1
             "#,
             request_id.as_i64()
         )
         .fetch_optional(self.pools.primary())
         .await
-        .map_err(Into::into)
+        .map_err(crate::Error::from)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let labels = Self::room_creation_labels_by_request_ids(self.pools.primary(), &[request_id])
+            .await?
+            .remove(&request_id)
+            .unwrap_or_default();
+        Ok(Some(Self::room_creation_review_from_row(row, labels)))
     }
 
     pub async fn list_room_creations(
@@ -445,13 +585,21 @@ impl ReviewRepository {
         let total = required_count(total_count, "room creation review total")?;
 
         let rows = sqlx::query_as!(
-            RoomCreationReviewRecord,
+            RoomCreationReviewRow,
             r#"
             SELECT rcr.id AS "id: RoomId",
                    rcr.requested_by AS "requested_by: UserId",
                    COALESCE(u.username, '') AS "requested_by_username!",
                    rcr.name,
                    rcr.description,
+                   rc.id AS "category_id: RoomCategoryId",
+                   rc.key AS "category_key?",
+                   rc.name AS "category_name?",
+                   rc.description AS "category_description?",
+                   rc.sort_order AS "category_sort_order?",
+                   rc.is_enabled AS "category_is_enabled?",
+                   rc.created_at AS "category_created_at?",
+                   rc.updated_at AS "category_updated_at?",
                    rcr.status AS "status: ReviewStatus",
                    rcr.requested_at,
                    rcr.reviewed_at,
@@ -459,6 +607,7 @@ impl ReviewRepository {
                    rcr.rejection_reason
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
+            LEFT JOIN room_categories rc ON rc.id = rcr.category_id
             WHERE rcr.status = $1
               AND ($2::bigint IS NULL OR rcr.requested_by = $2)
               AND ($3 = '' OR rcr.name ILIKE $3 ESCAPE '\' OR rcr.description ILIKE $3 ESCAPE '\')
@@ -473,6 +622,17 @@ impl ReviewRepository {
         )
         .fetch_all(pool)
         .await?;
+
+        let request_ids: Vec<RoomId> = rows.iter().map(|row| row.id).collect();
+        let mut labels_by_request =
+            Self::room_creation_labels_by_request_ids(pool, &request_ids).await?;
+        let rows = rows
+            .into_iter()
+            .map(|row| {
+                let labels = labels_by_request.remove(&row.id).unwrap_or_default();
+                Self::room_creation_review_from_row(row, labels)
+            })
+            .collect();
 
         Ok(ReviewPage { rows, total })
     }

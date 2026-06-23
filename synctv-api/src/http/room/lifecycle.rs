@@ -10,7 +10,9 @@ use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     CheckRoomRequest, CheckRoomResponse, CreateRoomRequest, CreateRoomResponse, DeleteRoomResponse,
     GetHotRoomsRequest, GetHotRoomsResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse,
-    LeaveRoomResponse, ListRoomsRequest, ListRoomsResponse, RoomPathRequest,
+    LeaveRoomResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
+    ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
+    RoomPathRequest,
 };
 
 /// Create a new room
@@ -335,6 +337,40 @@ pub async fn get_hot_rooms(
         EndpointRateLimitCategory::Read,
         EndpointRateLimitScope::RoomList,
         move |client_api| async move { client_api.get_hot_rooms(req).await },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn list_room_categories(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<ListRoomCategoriesRequest>,
+) -> AppResult<Json<ListRoomCategoriesResponse>> {
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomList,
+        move |client_api| async move { client_api.list_room_categories(req).await },
+    )
+    .await?;
+
+    Ok(Json(response))
+}
+
+pub async fn list_room_labels(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<ListRoomLabelsRequest>,
+) -> AppResult<Json<ListRoomLabelsResponse>> {
+    let response = execute_public_endpoint(
+        &state,
+        request_meta,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomList,
+        move |client_api| async move { client_api.list_room_labels(req).await },
     )
     .await?;
 

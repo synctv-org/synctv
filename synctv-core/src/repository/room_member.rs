@@ -3,7 +3,7 @@ use sqlx::PgPool;
 use crate::{
     models::{
         AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation,
-        PageParams, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
+        PageParams, RoomCategoryId, RoomId, RoomMember, RoomMemberListQuery, RoomMemberListSortBy,
         RoomMemberWithUser, RoomRole, RoomStatus, UserId,
     },
     repository::query_builder::trusted_dynamic_sql,
@@ -16,6 +16,7 @@ pub const KICK_COOLDOWN_DENIED_MESSAGE: &str =
 use super::{
     query_builder::{escape_ilike, WhereClauseBuilder},
     required_count,
+    room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
 };
 
 pub struct KickCooldownInsert<'a> {
@@ -65,6 +66,14 @@ struct MyRoomListRow {
     id: RoomId,
     name: String,
     description: String,
+    category_id: Option<RoomCategoryId>,
+    category_key: Option<String>,
+    category_name: Option<String>,
+    category_description: Option<String>,
+    category_sort_order: Option<i32>,
+    category_is_enabled: Option<bool>,
+    category_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    category_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     created_by: UserId,
     closed_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
@@ -378,6 +387,17 @@ impl RoomMemberRepository {
             name: row.name,
             description: row.description,
             cover_file_reference_id: None,
+            category: optional_room_category_from_parts(OptionalRoomCategoryRowParts {
+                id: row.category_id,
+                key: row.category_key,
+                name: row.category_name,
+                description: row.category_description,
+                sort_order: row.category_sort_order,
+                is_enabled: row.category_is_enabled,
+                created_at: row.category_created_at,
+                updated_at: row.category_updated_at,
+            }),
+            labels: Vec::new(),
             created_by: row.created_by,
             status,
             is_banned: row.is_banned,
@@ -2415,13 +2435,23 @@ impl RoomMemberRepository {
         let sql = format!(
             r"
             SELECT
-                r.id, r.name, r.description, r.created_by, r.closed_at,
+                r.id, r.name, r.description,
+                rc.id AS category_id,
+                rc.key AS category_key,
+                rc.name AS category_name,
+                rc.description AS category_description,
+                rc.sort_order AS category_sort_order,
+                rc.is_enabled AS category_is_enabled,
+                rc.created_at AS category_created_at,
+                rc.updated_at AS category_updated_at,
+                r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
                 COUNT(rm2.user_id)::int as member_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             LEFT JOIN room_members rm2
                 ON r.id = rm2.room_id
 	                   AND NOT EXISTS (
@@ -2431,8 +2461,10 @@ impl RoomMemberRepository {
 	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
 	                   )
 		            WHERE rm.user_id = $1 AND {where_sql}
-	            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at,
+	            GROUP BY r.id, r.name, r.description, r.category_id, r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                         rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
+                         rc.created_at, rc.updated_at,
 	                     rm.role, rm.joined_at
             ORDER BY {order_by_sql}
             LIMIT $2 OFFSET $3
@@ -2487,13 +2519,23 @@ impl RoomMemberRepository {
         let sql = format!(
             r"
             SELECT
-                r.id, r.name, r.description, r.created_by, r.closed_at,
+                r.id, r.name, r.description,
+                rc.id AS category_id,
+                rc.key AS category_key,
+                rc.name AS category_name,
+                rc.description AS category_description,
+                rc.sort_order AS category_sort_order,
+                rc.is_enabled AS category_is_enabled,
+                rc.created_at AS category_created_at,
+                rc.updated_at AS category_updated_at,
+                r.created_by, r.closed_at,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 {ACTIVE_ROOM_BAN_EXISTS_SQL} AS is_banned,
                 rm.role as user_role,
                 COUNT(rm2.user_id)::int as member_count
             FROM room_members rm
             JOIN rooms r ON rm.room_id = r.id
+            LEFT JOIN room_categories rc ON rc.id = r.category_id
             LEFT JOIN room_members rm2
                 ON r.id = rm2.room_id
 	                   AND NOT EXISTS (
@@ -2503,8 +2545,10 @@ impl RoomMemberRepository {
 	                         AND rmkc2.ends_at > CURRENT_TIMESTAMP
 	                   )
 	            WHERE rm.user_id = $1 AND {where_sql} AND {ACCESSIBLE_ROOM_CREATOR_CONDITION}
-	            GROUP BY r.id, r.name, r.description, r.created_by, r.closed_at,
+	            GROUP BY r.id, r.name, r.description, r.category_id, r.created_by, r.closed_at,
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
+                         rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
+                         rc.created_at, rc.updated_at,
 	                     rm.role, rm.joined_at
             ORDER BY {order_by_sql}
             LIMIT $2 OFFSET $3

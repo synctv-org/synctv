@@ -60,6 +60,13 @@ service AdminService {
   rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
   rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
   rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
+  rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
+  rpc UpsertRoomCategory(UpsertRoomCategoryRequest) returns (UpsertRoomCategoryResponse);
+  rpc DeleteRoomCategory(DeleteRoomCategoryRequest) returns (DeleteRoomCategoryResponse);
+  rpc ListRoomLabels(ListRoomLabelsRequest) returns (ListRoomLabelsResponse);
+  rpc UpsertRoomLabel(UpsertRoomLabelRequest) returns (UpsertRoomLabelResponse);
+  rpc DeleteRoomLabel(DeleteRoomLabelRequest) returns (DeleteRoomLabelResponse);
+  rpc UpdateRoomTaxonomy(UpdateRoomTaxonomyRequest) returns (UpdateRoomTaxonomyResponse);
 
   // =========================
   // Admin Management (Root Only)
@@ -142,6 +149,8 @@ message AdminRoom {
   synctv.common.RoomPresenceStats presence = 14;
   string creator_avatar_url = 15;
   synctv.client.ResourceCover cover = 16;
+  synctv.client.RoomCategory category = 17;
+  repeated synctv.client.RoomLabel labels = 18;
 }
 
 message SettingsGroup {
@@ -213,6 +222,8 @@ message RoomCreationReview {
   int64 reviewed_at = 8;
   optional string reviewed_by = 9;
   optional string rejection_reason = 10;
+  synctv.client.RoomCategory category = 11;
+  repeated synctv.client.RoomLabel labels = 12;
 }
 
 message RoomJoinReview {
@@ -762,11 +773,132 @@ message ListRoomsRequest {
   optional bool is_banned = 6; // Optional filter by ban status (true = banned only, false = not banned, absent = all)
   RoomListSortBy sort_by = 7 [(buf.validate.field).enum.defined_only = true];
   SortDirection sort_direction = 8 [(buf.validate.field).enum.defined_only = true];
+  string category_id = 9 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 10 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
 }
 
 message ListRoomsResponse {
   repeated AdminRoom rooms = 1;
   int32 total = 2;
+}
+
+message ListRoomCategoriesRequest {
+  bool include_disabled = 1;
+}
+
+message ListRoomCategoriesResponse {
+  repeated synctv.client.RoomCategory categories = 1;
+}
+
+message UpsertRoomCategoryRequest {
+  string key = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 80
+  }];
+  string description = 3 [(buf.validate.field).string = {max_len: 300}];
+  int32 sort_order = 4;
+  optional bool is_enabled = 5;
+}
+
+message UpsertRoomCategoryResponse {
+  synctv.client.RoomCategory category = 1;
+}
+
+message DeleteRoomCategoryRequest {
+  string category_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteRoomCategoryResponse {
+  bool success = 1;
+}
+
+message ListRoomLabelsRequest {
+  bool include_disabled = 1;
+  string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+}
+
+message ListRoomLabelsResponse {
+  repeated synctv.client.RoomLabel labels = 1;
+}
+
+message UpsertRoomLabelRequest {
+  string key = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  string name = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 80
+  }];
+  string description = 3 [(buf.validate.field).string = {max_len: 300}];
+  string color = 4 [(buf.validate.field).string = {max_len: 7}];
+  string category_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  int32 sort_order = 6;
+  optional bool is_enabled = 7;
+}
+
+message UpsertRoomLabelResponse {
+  synctv.client.RoomLabel label = 1;
+}
+
+message DeleteRoomLabelRequest {
+  string label_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^roomlbl_[A-Za-z0-9]+$"
+  }];
+}
+
+message DeleteRoomLabelResponse {
+  bool success = 1;
+}
+
+message UpdateRoomTaxonomyRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string category_id = 2 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+  }];
+  repeated string label_ids = 3 [
+    (buf.validate.field).repeated.max_items = 10,
+    (buf.validate.field).repeated.items.string = {
+      min_len: 1
+      max_len: 64
+      pattern: "^roomlbl_[A-Za-z0-9]+$"
+    }
+  ];
+}
+
+message UpdateRoomTaxonomyResponse {
+  AdminRoom room = 1;
 }
 
 message GetRoomRequest {

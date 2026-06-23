@@ -284,13 +284,26 @@ impl RoomService {
             Some(request_id),
         )
         .await?;
+        let (category_id, label_ids) = self
+            .resolve_enabled_room_taxonomy(request.category_id, &request.label_ids)
+            .await?;
 
         let room = Room::new_with_description(
             request.name.clone(),
             request.description.clone(),
             request.requested_by,
         );
-        let updated = self.room_repo.create_with_executor(&room, &mut *tx).await?;
+        let mut updated = self
+            .room_repo
+            .create_with_taxonomy_executor(&room, category_id, &mut *tx)
+            .await?;
+        crate::repository::RoomTaxonomyRepository::assign_room_labels(
+            updated.id,
+            &label_ids,
+            Some(request.requested_by),
+            &mut *tx,
+        )
+        .await?;
 
         self.room_settings_repo
             .set_settings_with_executor(&updated.id, &request.settings, &mut *tx)
@@ -344,6 +357,8 @@ impl RoomService {
         .await;
 
         tracing::info!(request_id = %request_id, room_id = %updated.id, ?admin_id, "Room approved and activated");
+
+        self.hydrate_room_taxonomy(&mut updated).await?;
 
         Ok(updated)
     }
@@ -484,6 +499,8 @@ impl RoomService {
                     name: row.name,
                     description: row.description,
                     cover_file_reference_id: None,
+                    category: None,
+                    labels: Vec::new(),
                     created_by: row.requested_by,
                     status: RoomStatus::Active,
                     is_banned: false,

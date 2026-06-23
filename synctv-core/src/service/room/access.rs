@@ -49,10 +49,13 @@ impl RoomService {
     }
 
     pub async fn get_room(&self, room_id: &RoomId) -> Result<Room> {
-        self.room_repo
+        let mut room = self
+            .room_repo
             .get_by_id(room_id)
             .await?
-            .ok_or_else(|| Error::NotFound("Room not found".to_string()))
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+        self.hydrate_room_taxonomy(&mut room).await?;
+        Ok(room)
     }
 
     pub async fn get_room_with_settings(&self, room_id: &RoomId) -> Result<(Room, RoomSettings)> {
@@ -126,19 +129,25 @@ impl RoomService {
 
     pub async fn list_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         query.pagination.validate()?;
-        self.room_repo.list(query).await
+        let (mut rooms, total) = self.room_repo.list(query).await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_active_unbanned_rooms_by_ids(
         &self,
         room_ids: &[RoomId],
     ) -> Result<Vec<Room>> {
-        self.room_repo.list_active_unbanned_by_ids(room_ids).await
+        let mut rooms = self.room_repo.list_active_unbanned_by_ids(room_ids).await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok(rooms)
     }
 
     pub async fn list_accessible_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         query.pagination.validate()?;
-        self.room_repo.list_accessible(query).await
+        let (mut rooms, total) = self.room_repo.list_accessible(query).await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_related_rooms_for_user(
@@ -147,7 +156,9 @@ impl RoomService {
         query: &RoomListQuery,
     ) -> Result<(Vec<Room>, i64)> {
         query.pagination.validate()?;
-        self.room_repo.list_related_to_user(user_id, query).await
+        let (mut rooms, total) = self.room_repo.list_related_to_user(user_id, query).await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_rooms_with_count(
@@ -155,7 +166,9 @@ impl RoomService {
         query: &RoomListQuery,
     ) -> Result<(Vec<RoomWithCount>, i64)> {
         query.pagination.validate()?;
-        self.room_repo.list_with_count(query).await
+        let (mut rooms, total) = self.room_repo.list_with_count(query).await?;
+        self.hydrate_room_with_count_items(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_rooms_by_creator(
@@ -164,7 +177,12 @@ impl RoomService {
         pagination: PageParams,
     ) -> Result<(Vec<Room>, i64)> {
         pagination.validate()?;
-        self.room_repo.list_by_creator(creator_id, pagination).await
+        let (mut rooms, total) = self
+            .room_repo
+            .list_by_creator(creator_id, pagination)
+            .await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_rooms_by_creator_with_count(
@@ -173,9 +191,12 @@ impl RoomService {
         pagination: PageParams,
     ) -> Result<(Vec<RoomWithCount>, i64)> {
         pagination.validate()?;
-        self.room_repo
+        let (mut rooms, total) = self
+            .room_repo
             .list_by_creator_with_count(creator_id, pagination)
-            .await
+            .await?;
+        self.hydrate_room_with_count_items(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_joined_rooms(
@@ -195,9 +216,12 @@ impl RoomService {
         pagination: PageParams,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         pagination.validate()?;
-        self.member_service
+        let (mut rooms, total) = self
+            .member_service
             .list_user_rooms_with_details(user_id, pagination)
-            .await
+            .await?;
+        self.hydrate_room_member_items(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_joined_rooms_with_query(
@@ -206,9 +230,12 @@ impl RoomService {
         query: &crate::models::MyRoomListQuery,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         query.pagination.validate()?;
-        self.member_service
+        let (mut rooms, total) = self
+            .member_service
             .list_user_rooms_with_details_query(user_id, query)
-            .await
+            .await?;
+        self.hydrate_room_member_items(&mut rooms).await?;
+        Ok((rooms, total))
     }
 
     pub async fn list_accessible_joined_rooms_with_query(
@@ -217,8 +244,32 @@ impl RoomService {
         query: &crate::models::MyRoomListQuery,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
         query.pagination.validate()?;
-        self.member_repo
+        let (mut rooms, total) = self
+            .member_repo
             .list_accessible_by_user_with_query(user_id, query)
-            .await
+            .await?;
+        self.hydrate_room_member_items(&mut rooms).await?;
+        Ok((rooms, total))
+    }
+
+    async fn hydrate_room_with_count_items(&self, items: &mut [RoomWithCount]) -> Result<()> {
+        let mut rooms: Vec<Room> = items.iter().map(|item| item.room.clone()).collect();
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        for (item, room) in items.iter_mut().zip(rooms) {
+            item.room = room;
+        }
+        Ok(())
+    }
+
+    async fn hydrate_room_member_items(
+        &self,
+        items: &mut [(Room, RoomRole, MemberStatus, i32)],
+    ) -> Result<()> {
+        let mut rooms: Vec<Room> = items.iter().map(|(room, _, _, _)| room.clone()).collect();
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        for ((room, _, _, _), hydrated) in items.iter_mut().zip(rooms) {
+            *room = hydrated;
+        }
+        Ok(())
     }
 }

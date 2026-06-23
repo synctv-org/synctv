@@ -1556,6 +1556,8 @@ impl ManagementService for ManagementServiceImpl {
                     settings,
                     description: req.description,
                     password: req.password,
+                    category_id: String::new(),
+                    label_ids: Vec::new(),
                 },
             )
             .await
@@ -1586,6 +1588,8 @@ impl ManagementService for ManagementServiceImpl {
                     req.sort_direction,
                     admin_proto::SortDirection::Desc,
                 )?,
+                category_id: String::new(),
+                label_ids: Vec::new(),
             })
             .await
             .map_err(map_api_error)?;

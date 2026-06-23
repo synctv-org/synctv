@@ -330,6 +330,8 @@ mod tests {
             cover: None,
             presence: None,
             creator: None,
+            category: None,
+            labels: Vec::new(),
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();
@@ -1587,6 +1589,8 @@ mod tests {
             settings: Vec::new(),
             description: "x".repeat(501),
             password: String::new(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());
@@ -1666,6 +1670,8 @@ mod tests {
             search: String::new(),
             sort_by: 99,
             sort_direction: 99,
+            category_id: String::new(),
+            label_ids: Vec::new(),
         };
         let my_rooms = crate::client::ListMyRoomsRequest {
             page: -1,
@@ -1704,6 +1710,8 @@ mod tests {
             search: "room".into(),
             sort_by: crate::client::RoomListSortBy::Unspecified as i32,
             sort_direction: crate::client::SortDirection::Unspecified as i32,
+            category_id: String::new(),
+            label_ids: Vec::new(),
         })
         .unwrap();
 
@@ -1840,6 +1848,8 @@ mod tests {
             is_banned: None,
             sort_by: 99,
             sort_direction: 99,
+            category_id: String::new(),
+            label_ids: Vec::new(),
         };
         let members = crate::admin::GetRoomMembersRequest {
             room_id: "abc123def456".into(),
@@ -1929,6 +1939,8 @@ mod tests {
             is_banned: Some(false),
             sort_by: crate::admin::RoomListSortBy::Unspecified as i32,
             sort_direction: crate::admin::SortDirection::Unspecified as i32,
+            category_id: String::new(),
+            label_ids: Vec::new(),
         })
         .unwrap();
 

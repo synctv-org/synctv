@@ -22,6 +22,7 @@ pub mod room_member;
 pub(crate) mod room_password;
 pub(crate) mod room_resource_event;
 pub(crate) mod room_settings;
+pub(crate) mod room_taxonomy;
 pub(crate) mod settings;
 pub(crate) mod system_stats;
 pub(crate) mod user;
@@ -70,6 +71,7 @@ pub use room_resource_event::{
     NewRoomResourceEvent, RoomResourceEventRepository, RoomResourceEventScope,
 };
 pub use room_settings::RoomSettingsRepository;
+pub use room_taxonomy::{RoomTaxonomyAssignment, RoomTaxonomyRepository};
 pub use settings::SettingsRepository;
 pub use system_stats::{SystemStats, SystemStatsRepository};
 pub use user::UserRepository;

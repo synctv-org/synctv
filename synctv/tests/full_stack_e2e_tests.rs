@@ -2705,6 +2705,8 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         settings: Vec::new(),
         description: "cli room get e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()
@@ -2757,6 +2759,8 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         settings: Vec::new(),
         description: "cli room ban lifecycle e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()
@@ -2849,6 +2853,8 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         settings: Vec::new(),
         description: "cli room settings lifecycle e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()
@@ -6834,6 +6840,8 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
             settings: Vec::new(),
             description: "created through full-stack gRPC e2e".to_string(),
             password: String::new(),
+            category_id: String::new(),
+            label_ids: Vec::new(),
         })
         .await
         .expect_err("missing auth should be rejected");
@@ -6844,6 +6852,8 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         settings: Vec::new(),
         description: "created through full-stack gRPC e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     request
         .metadata_mut()
@@ -6908,6 +6918,8 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         settings: Vec::new(),
         description: "room-scoped grpc e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()
@@ -7048,6 +7060,8 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         settings: Vec::new(),
         description: "grpc stream e2e".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()
@@ -8938,6 +8952,8 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         settings: Vec::new(),
         description: "membership denial for grpc stream".to_string(),
         password: String::new(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     });
     create_room
         .metadata_mut()

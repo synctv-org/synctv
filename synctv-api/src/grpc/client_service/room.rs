@@ -1,6 +1,7 @@
 use tonic::{Request, Response, Status};
 
-use super::ClientServiceImpl;
+use super::{map_api_error, ClientServiceImpl};
+use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::room_service_server::RoomService;
 use synctv_proto::client::*;
 
@@ -713,5 +714,39 @@ impl RoomService for ClientServiceImpl {
         request: Request<ListPlaylistsRequest>,
     ) -> Result<Response<ListPlaylistsResponse>, Status> {
         playlists::list_playlists(self, request).await
+    }
+
+    async fn list_room_categories(
+        &self,
+        request: Request<ListRoomCategoriesRequest>,
+    ) -> Result<Response<ListRoomCategoriesResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
+                client_api.list_room_categories(req).await
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_room_labels(
+        &self,
+        request: Request<ListRoomLabelsRequest>,
+    ) -> Result<Response<ListRoomLabelsResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
+                client_api.list_room_labels(req).await
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 }

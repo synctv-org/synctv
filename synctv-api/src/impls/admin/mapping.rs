@@ -6,6 +6,7 @@ use synctv_core::service::{
 };
 
 use super::{json_to_vec, user_status_to_proto, ApiError};
+use crate::impls::client::convert::{room_category_to_proto, room_label_to_proto};
 
 pub(in crate::impls::admin) fn public_id_encode_error(kind: &str, error: &str) -> ApiError {
     ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
@@ -183,6 +184,16 @@ pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
         reviewed_at: optional_timestamp(row.reviewed_at),
         reviewed_by: encode_optional_user_id_option(public_id_codec, row.reviewed_by)?,
         rejection_reason: row.rejection_reason.clone(),
+        category: row
+            .category
+            .as_ref()
+            .map(|category| room_category_to_proto(category, public_id_codec))
+            .transpose()?,
+        labels: row
+            .labels
+            .iter()
+            .map(|label| room_label_to_proto(label, public_id_codec))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 
@@ -291,6 +302,16 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
                 )
             })
             .transpose()?,
+        category: room
+            .category
+            .as_ref()
+            .map(|category| room_category_to_proto(category, public_id_codec))
+            .transpose()?,
+        labels: room
+            .labels
+            .iter()
+            .map(|label| room_label_to_proto(label, public_id_codec))
+            .collect::<Result<Vec<_>, _>>()?,
     })
 }
 

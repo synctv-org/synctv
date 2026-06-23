@@ -17,8 +17,9 @@ use synctv_proto::admin::{
     BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
     BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
     BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
-    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
-    GetContentReportRequest, GetContentReportResponse, GetRoomMembersRequest,
+    DeleteRoomCategoryRequest, DeleteRoomCategoryResponse, DeleteRoomLabelRequest,
+    DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
+    DeleteUserResponse, GetContentReportRequest, GetContentReportResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
     GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
     GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
@@ -26,21 +27,24 @@ use synctv_proto::admin::{
     GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
     KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
     ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
-    ListContentReportsResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
-    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomsRequest, ListRoomsResponse,
-    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
-    ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
-    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
-    RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
+    ListContentReportsResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
+    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
+    ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
+    ListUsersRequest, ListUsersResponse, RejectRoomCreationReviewRequest,
+    RejectRoomCreationReviewResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
+    RejectUserRegistrationReviewRequest, RejectUserRegistrationReviewResponse, RemoveAdminRequest,
+    RemoveAdminResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
     SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
     UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateContentReportStatusRequest,
     UpdateContentReportStatusResponse, UpdateMemberPermissionsRequest,
     UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
-    UpdateSettingsResponse, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
-    UpdateUserUsernameResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateRoomTaxonomyRequest,
+    UpdateRoomTaxonomyResponse, UpdateSettingsRequest, UpdateSettingsResponse,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UpdateUserRoleRequest,
+    UpdateUserRoleResponse, UpdateUserUsernameRequest, UpdateUserUsernameResponse,
+    UpsertRoomCategoryRequest, UpsertRoomCategoryResponse, UpsertRoomLabelRequest,
+    UpsertRoomLabelResponse,
 };
 
 use crate::impls::AdminApiImpl;
@@ -433,6 +437,76 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.get_room(req).await
+        })
+        .await
+    }
+
+    async fn list_room_categories(
+        &self,
+        request: Request<ListRoomCategoriesRequest>,
+    ) -> Result<Response<ListRoomCategoriesResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_room_categories(req).await
+        })
+        .await
+    }
+
+    async fn upsert_room_category(
+        &self,
+        request: Request<UpsertRoomCategoryRequest>,
+    ) -> Result<Response<UpsertRoomCategoryResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.upsert_room_category(req).await
+        })
+        .await
+    }
+
+    async fn delete_room_category(
+        &self,
+        request: Request<DeleteRoomCategoryRequest>,
+    ) -> Result<Response<DeleteRoomCategoryResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.delete_room_category(req).await
+        })
+        .await
+    }
+
+    async fn list_room_labels(
+        &self,
+        request: Request<ListRoomLabelsRequest>,
+    ) -> Result<Response<ListRoomLabelsResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.list_room_labels(req).await
+        })
+        .await
+    }
+
+    async fn upsert_room_label(
+        &self,
+        request: Request<UpsertRoomLabelRequest>,
+    ) -> Result<Response<UpsertRoomLabelResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.upsert_room_label(req).await
+        })
+        .await
+    }
+
+    async fn delete_room_label(
+        &self,
+        request: Request<DeleteRoomLabelRequest>,
+    ) -> Result<Response<DeleteRoomLabelResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            api.delete_room_label(req).await
+        })
+        .await
+    }
+
+    async fn update_room_taxonomy(
+        &self,
+        request: Request<UpdateRoomTaxonomyRequest>,
+    ) -> Result<Response<UpdateRoomTaxonomyResponse>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            api.update_room_taxonomy(req, &validated.user_id).await
         })
         .await
     }

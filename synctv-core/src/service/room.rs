@@ -81,7 +81,7 @@ use crate::{
         room_password::RoomPasswordCredentialState,
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
         RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
-        RoomSettingsRepository,
+        RoomSettingsRepository, RoomTaxonomyRepository,
     },
     service::{
         audit::AuditService,
@@ -139,6 +139,7 @@ mod password;
 mod permission_fence_guard;
 mod resource_access;
 mod settings;
+mod taxonomy;
 mod types;
 pub use types::{
     AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
@@ -197,6 +198,7 @@ pub struct RoomService {
 
     // Core repositories
     room_repo: RoomRepository,
+    taxonomy_repo: RoomTaxonomyRepository,
     room_settings_repo: RoomSettingsRepository,
     member_repo: RoomMemberRepository,
     media_repo: MediaRepository,

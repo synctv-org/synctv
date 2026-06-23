@@ -450,6 +450,8 @@ fn create_test_room(created_by: UserId) -> Room {
         name: "DB Maintenance Room".to_string(),
         description: String::new(),
         cover_file_reference_id: None,
+        category: None,
+        labels: Vec::new(),
         created_by,
         status: RoomStatus::Active,
         is_banned: false,

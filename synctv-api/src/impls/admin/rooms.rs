@@ -1,6 +1,8 @@
 use synctv_core::{
     models::{ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
-    service::{AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox},
+    service::{
+        room::RoomCategoryUpdate, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
+    },
 };
 
 use super::{
@@ -306,16 +308,26 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::UpdateRoomTaxonomyResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let room_id = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
-        let requested_category_id =
-            parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
+        if req.clear_category && req.category_id.is_some() {
+            return Err(ApiError::InvalidInput(
+                "category_id conflicts with clear_category".to_string(),
+            ));
+        }
+        let category_update = if req.clear_category {
+            RoomCategoryUpdate::Set(None)
+        } else if let Some(category_id) = req.category_id.as_deref() {
+            RoomCategoryUpdate::Set(Some(parse_required_room_category_id(
+                category_id,
+                &self.public_id_codec,
+            )?))
+        } else {
+            RoomCategoryUpdate::Preserve
+        };
         let requested_label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
+        let assigned_by =
+            (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
         self.room_service
-            .update_room_taxonomy(
-                room_id,
-                requested_category_id,
-                &requested_label_ids,
-                Some(*admin_user_id),
-            )
+            .update_room_taxonomy(room_id, category_update, &requested_label_ids, assigned_by)
             .await
             .map_err(ApiError::from)?;
         let response = self

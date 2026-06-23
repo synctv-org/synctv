@@ -9,6 +9,12 @@ use crate::{
     Error, Result,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoomCategoryUpdate {
+    Preserve,
+    Set(Option<RoomCategoryId>),
+}
+
 fn normalize_taxonomy_key(key: &str) -> Result<String> {
     let normalized = key.trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -217,30 +223,74 @@ impl RoomService {
     pub async fn update_room_taxonomy(
         &self,
         room_id: RoomId,
-        category_id: Option<RoomCategoryId>,
+        category_update: RoomCategoryUpdate,
         label_ids: &[RoomLabelId],
         assigned_by: Option<UserId>,
     ) -> Result<()> {
-        let (category_id, label_ids) = self
-            .resolve_enabled_room_taxonomy(category_id, label_ids)
-            .await?;
+        let label_ids = dedupe_label_ids(label_ids);
         let mut tx = self.pool.begin().await?;
+
+        let row = sqlx::query!(
+            r#"
+            SELECT category_id AS "category_id: RoomCategoryId"
+            FROM rooms
+            WHERE id = $1 AND deleted_at IS NULL
+            FOR UPDATE
+            "#,
+            room_id as RoomId,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(Error::NotFound(format!("Room {room_id} not found")));
+        };
+
+        // Resolve the target category and validate everything inside the tx so
+        // that (a) no second connection is needed and (b) Preserve never
+        // re-validates whether the existing category is still enabled.
+        let category_id = match category_update {
+            RoomCategoryUpdate::Preserve => {
+                // Keep the room's current category.  Do NOT check is_enabled —
+                // the category was valid when the room was created; an admin
+                // disabling it later must not break label-only updates.
+                validate_labels_for_category_in_tx(row.category_id, &label_ids, &mut tx).await?;
+                row.category_id
+            }
+            RoomCategoryUpdate::Set(new_id) => {
+                // Validate the incoming category inside the tx before writing.
+                if let Some(id) = new_id {
+                    let cat =
+                        crate::repository::RoomTaxonomyRepository::get_category_with_executor(
+                            id, &mut tx,
+                        )
+                        .await?
+                        .ok_or_else(|| {
+                            Error::InvalidInput("Room category not found".to_string())
+                        })?;
+                    if !cat.is_enabled {
+                        return Err(Error::InvalidInput("Room category is disabled".to_string()));
+                    }
+                }
+                validate_labels_for_category_in_tx(new_id, &label_ids, &mut tx).await?;
+                new_id
+            }
+        };
+
         let updated = sqlx::query!(
             r#"
             UPDATE rooms
             SET category_id = $2,
                 updated_at = CURRENT_TIMESTAMP,
                 version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL
+            WHERE id = $1
             "#,
             room_id as RoomId,
-            category_id.map(|id| id.as_i64())
+            category_id.map(|id| id.as_i64()),
         )
         .execute(&mut *tx)
         .await?;
-        if updated.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("Room {room_id} not found")));
-        }
+        debug_assert_eq!(updated.rows_affected(), 1);
+
         crate::repository::RoomTaxonomyRepository::assign_room_labels(
             room_id,
             &label_ids,
@@ -252,4 +302,44 @@ impl RoomService {
         self.notify_room_invalidation(&room_id).await;
         Ok(())
     }
+}
+
+/// Validate that all `label_ids` exist, are enabled, and are consistent with
+/// `category_id` — entirely within the supplied transaction connection, so
+/// no second pool connection is needed while a `FOR UPDATE` lock is held.
+async fn validate_labels_for_category_in_tx(
+    category_id: Option<RoomCategoryId>,
+    label_ids: &[RoomLabelId],
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+) -> Result<()> {
+    if label_ids.is_empty() {
+        return Ok(());
+    }
+    let labels =
+        crate::repository::RoomTaxonomyRepository::labels_by_ids_with_executor(label_ids, tx)
+            .await?;
+    if labels.len() != label_ids.len() {
+        return Err(Error::InvalidInput("Room label not found".to_string()));
+    }
+    for label_id in label_ids {
+        let label = labels
+            .get(label_id)
+            .ok_or_else(|| Error::InvalidInput("Room label not found".to_string()))?;
+        if !label.is_enabled {
+            return Err(Error::InvalidInput("Room label is disabled".to_string()));
+        }
+        if let Some(label_category_id) = label.category_id {
+            let Some(selected) = category_id else {
+                return Err(Error::InvalidInput(
+                    "Room label requires a matching room category".to_string(),
+                ));
+            };
+            if label_category_id != selected {
+                return Err(Error::InvalidInput(
+                    "Room label does not apply to the selected category".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }

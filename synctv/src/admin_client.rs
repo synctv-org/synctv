@@ -694,6 +694,52 @@ mod tests {
         ) -> std::result::Result<Response<admin_proto::GetRoomResponse>, Status> {
             unavailable_test_management_response()
         }
+        async fn list_room_categories(
+            &self,
+            _: Request<admin_proto::ListRoomCategoriesRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListRoomCategoriesResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn upsert_room_category(
+            &self,
+            _: Request<admin_proto::UpsertRoomCategoryRequest>,
+        ) -> std::result::Result<Response<admin_proto::UpsertRoomCategoryResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn delete_room_category(
+            &self,
+            _: Request<admin_proto::DeleteRoomCategoryRequest>,
+        ) -> std::result::Result<Response<admin_proto::DeleteRoomCategoryResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
+        async fn list_room_labels(
+            &self,
+            _: Request<admin_proto::ListRoomLabelsRequest>,
+        ) -> std::result::Result<Response<admin_proto::ListRoomLabelsResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn upsert_room_label(
+            &self,
+            _: Request<admin_proto::UpsertRoomLabelRequest>,
+        ) -> std::result::Result<Response<admin_proto::UpsertRoomLabelResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn delete_room_label(
+            &self,
+            _: Request<admin_proto::DeleteRoomLabelRequest>,
+        ) -> std::result::Result<Response<admin_proto::DeleteRoomLabelResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn update_room_taxonomy(
+            &self,
+            _: Request<admin_proto::UpdateRoomTaxonomyRequest>,
+        ) -> std::result::Result<Response<admin_proto::UpdateRoomTaxonomyResponse>, Status>
+        {
+            unavailable_test_management_response()
+        }
         async fn get_room_members(
             &self,
             _: Request<GetRoomMembersRequest>,

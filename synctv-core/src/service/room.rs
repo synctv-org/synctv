@@ -140,6 +140,8 @@ mod permission_fence_guard;
 mod resource_access;
 mod settings;
 mod taxonomy;
+pub use creation::CreateRoomWithTaxonomyRequest;
+pub use taxonomy::RoomCategoryUpdate;
 mod types;
 pub use types::{
     AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,

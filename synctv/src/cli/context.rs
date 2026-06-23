@@ -3,7 +3,8 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{anyhow, Result};
 use synctv_core::bootstrap::load_config_with_options;
 
-use super::{resolve_remote_endpoint, GlobalConfigArgs, RemoteAccessArgs};
+use super::args::{GlobalConfigArgs, RemoteAccessArgs};
+use super::execute::resolve_remote_endpoint;
 use crate::admin_client::AdminConnectionOptions;
 
 #[derive(Clone)]

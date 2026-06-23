@@ -99,6 +99,21 @@ struct RoomLabelRow {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct RoomLabelAssignmentRow {
+    room_id: RoomId,
+    id: RoomLabelId,
+    key: String,
+    name: String,
+    description: String,
+    color: String,
+    category_id: Option<RoomCategoryId>,
+    sort_order: i32,
+    is_enabled: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl From<RoomLabelRow> for RoomLabel {
     fn from(row: RoomLabelRow) -> Self {
         Self {
@@ -327,23 +342,9 @@ impl RoomTaxonomyRepository {
             return Ok(HashMap::new());
         }
         let ids: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            room_id: RoomId,
-            id: RoomLabelId,
-            key: String,
-            name: String,
-            description: String,
-            color: String,
-            category_id: Option<RoomCategoryId>,
-            sort_order: i32,
-            is_enabled: bool,
-            created_at: chrono::DateTime<chrono::Utc>,
-            updated_at: chrono::DateTime<chrono::Utc>,
-        }
 
         let rows = sqlx::query_as!(
-            Row,
+            RoomLabelAssignmentRow,
             r#"
             SELECT rla.room_id AS "room_id: RoomId",
                    rl.id AS "id: RoomLabelId",
@@ -494,6 +495,68 @@ impl RoomTaxonomyRepository {
         .await?
         .rows_affected();
         Ok(deleted > 0)
+    }
+
+    pub async fn get_category_with_executor(
+        id: RoomCategoryId,
+        executor: &mut PgConnection,
+    ) -> Result<Option<RoomCategory>> {
+        let row = sqlx::query_as!(
+            RoomCategoryRow,
+            r#"
+            SELECT id AS "id: RoomCategoryId",
+                   key,
+                   name,
+                   description,
+                   sort_order,
+                   is_enabled,
+                   created_at,
+                   updated_at
+            FROM room_categories
+            WHERE id = $1
+            "#,
+            id.as_i64()
+        )
+        .fetch_optional(&mut *executor)
+        .await?;
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn labels_by_ids_with_executor(
+        label_ids: &[RoomLabelId],
+        executor: &mut PgConnection,
+    ) -> Result<HashMap<RoomLabelId, RoomLabel>> {
+        if label_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<i64> = label_ids.iter().map(RoomLabelId::as_i64).collect();
+        let rows = sqlx::query_as!(
+            RoomLabelRow,
+            r#"
+            SELECT id AS "id: RoomLabelId",
+                   key,
+                   name,
+                   description,
+                   color,
+                   category_id AS "category_id: RoomCategoryId",
+                   sort_order,
+                   is_enabled,
+                   created_at,
+                   updated_at
+            FROM room_labels
+            WHERE id = ANY($1)
+            "#,
+            &ids
+        )
+        .fetch_all(&mut *executor)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let label: RoomLabel = row.into();
+                (label.id, label)
+            })
+            .collect())
     }
 
     pub async fn assign_room_labels(

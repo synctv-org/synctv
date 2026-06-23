@@ -100,14 +100,25 @@ mod tests {
     }
 }
 
-struct CreateRoomCommand {
-    name: String,
-    description: String,
-    created_by: UserId,
-    password: Option<String>,
-    settings: Option<RoomSettings>,
+#[derive(Clone, Debug)]
+pub struct CreateRoomWithTaxonomyRequest {
+    pub name: String,
+    pub description: String,
+    pub created_by: UserId,
+    pub password: Option<String>,
+    pub settings: Option<RoomSettings>,
+    pub category_id: Option<RoomCategoryId>,
+    pub label_ids: Vec<RoomLabelId>,
+}
+
+pub(super) struct RoomCreationRequestDraft<'a> {
+    requested_by: UserId,
+    name: &'a str,
+    description: &'a str,
     category_id: Option<RoomCategoryId>,
-    label_ids: Vec<RoomLabelId>,
+    label_ids: &'a [RoomLabelId],
+    settings: &'a RoomSettings,
+    password: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -130,14 +141,17 @@ impl RoomService {
     pub(super) async fn create_room_creation_request_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        requested_by: &UserId,
-        name: &str,
-        description: &str,
-        category_id: Option<RoomCategoryId>,
-        label_ids: &[RoomLabelId],
-        settings: &RoomSettings,
-        password: Option<&str>,
+        draft: RoomCreationRequestDraft<'_>,
     ) -> Result<Room> {
+        let RoomCreationRequestDraft {
+            requested_by,
+            name,
+            description,
+            category_id,
+            label_ids,
+            settings,
+            password,
+        } = draft;
         let settings_payload = serde_json::to_value(settings)
             .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
 
@@ -160,7 +174,7 @@ impl RoomService {
         .await?;
 
         let mut room =
-            Room::new_with_description(name.to_string(), description.to_string(), *requested_by);
+            Room::new_with_description(name.to_string(), description.to_string(), requested_by);
         room.id = RoomId::try_from(request_id).map_err(Error::Internal)?;
         if let Some(category_id) = category_id {
             room.category = self
@@ -452,13 +466,15 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
         self.create_room_with_taxonomy_outbox(
-            name,
-            description,
-            created_by,
-            password,
-            settings,
-            None,
-            Vec::new(),
+            CreateRoomWithTaxonomyRequest {
+                name,
+                description,
+                created_by,
+                password,
+                settings,
+                category_id: None,
+                label_ids: Vec::new(),
+            },
             outbox_event_factory,
         )
         .await
@@ -466,93 +482,44 @@ impl RoomService {
 
     pub async fn create_room_with_taxonomy_outbox(
         &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
-        category_id: Option<RoomCategoryId>,
-        label_ids: Vec<RoomLabelId>,
+        request: CreateRoomWithTaxonomyRequest,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
         if let Some(ref lock) = self.distributed_lock {
+            let created_by = request.created_by;
             let lock_key = format!("create_room:{created_by}");
             return crate::service::distributed_lock::with_coordination_lock(
                 lock.as_ref(),
                 &lock_key,
                 Self::CREATE_ROOM_LOCK_TTL_SECS,
                 || {
-                    let name = name.clone();
-                    let description = description.clone();
-                    let password = password.clone();
-                    let settings = settings.clone();
-                    let label_ids = label_ids.clone();
+                    let request = request.clone();
                     let outbox_event_factory = outbox_event_factory.clone();
-                    async move {
-                        self.do_create_room(
-                            name,
-                            description,
-                            created_by,
-                            password,
-                            settings,
-                            category_id,
-                            label_ids,
-                            outbox_event_factory,
-                        )
-                        .await
-                    }
+                    async move { self.do_create_room(request, outbox_event_factory).await }
                 },
             )
             .await;
         }
 
-        self.do_create_room(
-            name,
-            description,
-            created_by,
-            password,
-            settings,
-            category_id,
-            label_ids,
-            outbox_event_factory,
-        )
-        .await
+        self.do_create_room(request, outbox_event_factory).await
     }
 
     async fn do_create_room(
         &self,
-        name: String,
-        description: String,
-        created_by: UserId,
-        password: Option<String>,
-        settings: Option<RoomSettings>,
-        category_id: Option<RoomCategoryId>,
-        label_ids: Vec<RoomLabelId>,
+        request: CreateRoomWithTaxonomyRequest,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
-        self.do_create_room_with_policy(
-            CreateRoomCommand {
-                name,
-                description,
-                created_by,
-                password,
-                settings,
-                category_id,
-                label_ids,
-            },
-            true,
-            outbox_event_factory,
-        )
-        .await
+        self.do_create_room_with_policy(request, true, outbox_event_factory)
+            .await
     }
 
     async fn do_create_room_with_policy(
         &self,
-        command: CreateRoomCommand,
+        command: CreateRoomWithTaxonomyRequest,
         enforce_creation_policy: bool,
         outbox_event_factory: Option<RealtimeOutboxRoomEventFactory>,
     ) -> Result<(Room, RoomMember)> {
-        let CreateRoomCommand {
+        let CreateRoomWithTaxonomyRequest {
             name,
             description,
             created_by,
@@ -622,13 +589,15 @@ impl RoomService {
             let pending_room = self
                 .create_room_creation_request_tx(
                     &mut tx,
-                    &created_by,
-                    &name,
-                    &description,
-                    category_id,
-                    &label_ids,
-                    &room_settings,
-                    password.as_deref(),
+                    RoomCreationRequestDraft {
+                        requested_by: created_by,
+                        name: &name,
+                        description: &description,
+                        category_id,
+                        label_ids: &label_ids,
+                        settings: &room_settings,
+                        password: password.as_deref(),
+                    },
                 )
                 .await?;
             tx.commit().await?;
@@ -704,7 +673,7 @@ impl RoomService {
             created_room.id,
             &label_ids,
             Some(created_by),
-            &mut *tx,
+            &mut tx,
         )
         .await?;
         if let Some(password) = password.as_deref() {

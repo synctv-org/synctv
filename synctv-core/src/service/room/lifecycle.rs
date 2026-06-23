@@ -301,7 +301,7 @@ impl RoomService {
             updated.id,
             &label_ids,
             Some(request.requested_by),
-            &mut *tx,
+            &mut tx,
         )
         .await?;
 

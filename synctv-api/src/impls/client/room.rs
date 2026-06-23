@@ -327,13 +327,15 @@ impl ClientApiImpl {
         let (room, _member) = self
             .room_service
             .create_room_with_taxonomy_outbox(
-                req.name,
-                req.description,
-                uid,
-                password,
-                settings,
-                category_id,
-                label_ids,
+                synctv_core::service::room::CreateRoomWithTaxonomyRequest {
+                    name: req.name,
+                    description: req.description,
+                    created_by: uid,
+                    password,
+                    settings,
+                    category_id,
+                    label_ids,
+                },
                 Some(prepared_outbox_fanout.outbox_factory()),
             )
             .await

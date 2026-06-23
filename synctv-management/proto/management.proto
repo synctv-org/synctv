@@ -37,6 +37,13 @@ service ManagementService {
     rpc CreateRoom(CreateRoomRequest) returns (synctv.client.CreateRoomResponse);
     rpc ListRooms(ListRoomsRequest) returns (synctv.admin.ListRoomsResponse);
     rpc GetRoom(GetRoomRequest) returns (synctv.admin.GetRoomResponse);
+    rpc ListRoomCategories(synctv.admin.ListRoomCategoriesRequest) returns (synctv.admin.ListRoomCategoriesResponse);
+    rpc UpsertRoomCategory(synctv.admin.UpsertRoomCategoryRequest) returns (synctv.admin.UpsertRoomCategoryResponse);
+    rpc DeleteRoomCategory(synctv.admin.DeleteRoomCategoryRequest) returns (synctv.admin.DeleteRoomCategoryResponse);
+    rpc ListRoomLabels(synctv.admin.ListRoomLabelsRequest) returns (synctv.admin.ListRoomLabelsResponse);
+    rpc UpsertRoomLabel(synctv.admin.UpsertRoomLabelRequest) returns (synctv.admin.UpsertRoomLabelResponse);
+    rpc DeleteRoomLabel(synctv.admin.DeleteRoomLabelRequest) returns (synctv.admin.DeleteRoomLabelResponse);
+    rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.UpdateRoomTaxonomyResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
     rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
@@ -398,6 +405,8 @@ message CreateRoomRequest {
     string password = 3;
     string description = 4;
     bytes settings_json = 5;
+    string category_id = 6;
+    repeated string label_ids = 7;
 }
 
 message ListRoomsRequest {
@@ -409,6 +418,8 @@ message ListRoomsRequest {
     optional bool is_banned = 6;
     RoomListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
+    string category_id = 9;
+    repeated string label_ids = 10;
 }
 
 message GetRoomRequest {

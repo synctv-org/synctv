@@ -883,9 +883,9 @@ message UpdateRoomTaxonomyRequest {
     max_len: 64
     pattern: "^room_[A-Za-z0-9]+$"
   }];
-  string category_id = 2 [(buf.validate.field).string = {
+  optional string category_id = 2 [(buf.validate.field).string = {
     max_len: 64
-    pattern: "^$|^roomcat_[A-Za-z0-9]+$"
+    pattern: "^roomcat_[A-Za-z0-9]+$"
   }];
   repeated string label_ids = 3 [
     (buf.validate.field).repeated.max_items = 10,
@@ -895,6 +895,7 @@ message UpdateRoomTaxonomyRequest {
       pattern: "^roomlbl_[A-Za-z0-9]+$"
     }
   ];
+  bool clear_category = 4;
 }
 
 message UpdateRoomTaxonomyResponse {

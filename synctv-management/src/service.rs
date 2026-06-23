@@ -1556,8 +1556,8 @@ impl ManagementService for ManagementServiceImpl {
                     settings,
                     description: req.description,
                     password: req.password,
-                    category_id: String::new(),
-                    label_ids: Vec::new(),
+                    category_id: req.category_id,
+                    label_ids: req.label_ids,
                 },
             )
             .await
@@ -1588,12 +1588,96 @@ impl ManagementService for ManagementServiceImpl {
                     req.sort_direction,
                     admin_proto::SortDirection::Desc,
                 )?,
-                category_id: String::new(),
-                label_ids: Vec::new(),
+                category_id: req.category_id,
+                label_ids: req.label_ids,
             })
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
+    }
+
+    async fn list_room_categories(
+        &self,
+        request: Request<admin_proto::ListRoomCategoriesRequest>,
+    ) -> Result<Response<admin_proto::ListRoomCategoriesResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .list_room_categories(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn upsert_room_category(
+        &self,
+        request: Request<admin_proto::UpsertRoomCategoryRequest>,
+    ) -> Result<Response<admin_proto::UpsertRoomCategoryResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .upsert_room_category(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn delete_room_category(
+        &self,
+        request: Request<admin_proto::DeleteRoomCategoryRequest>,
+    ) -> Result<Response<admin_proto::DeleteRoomCategoryResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .delete_room_category(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn list_room_labels(
+        &self,
+        request: Request<admin_proto::ListRoomLabelsRequest>,
+    ) -> Result<Response<admin_proto::ListRoomLabelsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .list_room_labels(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn upsert_room_label(
+        &self,
+        request: Request<admin_proto::UpsertRoomLabelRequest>,
+    ) -> Result<Response<admin_proto::UpsertRoomLabelResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .upsert_room_label(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn delete_room_label(
+        &self,
+        request: Request<admin_proto::DeleteRoomLabelRequest>,
+    ) -> Result<Response<admin_proto::DeleteRoomLabelResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .delete_room_label(request.into_inner())
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
+    }
+
+    async fn update_room_taxonomy(
+        &self,
+        request: Request<admin_proto::UpdateRoomTaxonomyRequest>,
+    ) -> Result<Response<admin_proto::UpdateRoomTaxonomyResponse>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        self.admin_api
+            .update_room_taxonomy(request.into_inner(), &validated.user_id)
+            .await
+            .map(Response::new)
+            .map_err(map_api_error)
     }
 
     async fn get_room(

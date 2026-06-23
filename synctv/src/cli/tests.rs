@@ -2,8 +2,12 @@ use super::*;
 use clap::{CommandFactory, Parser};
 use serde_json::json;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
+use synctv_core::config::default_management_unix_socket_path;
+use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
+use synctv_management::proto as management_proto;
 
 fn acquire_time_test_lock() -> MutexGuard<'static, ()> {
     static TIME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -937,6 +941,34 @@ fn cli_parses_room_list_creator_username_filter() {
 }
 
 #[test]
+fn cli_parses_room_list_taxonomy_filters() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "list",
+        "--category-id",
+        "roomcat_anime",
+        "--label-id",
+        "roomlbl_hot,roomlbl_new",
+        "--label-id",
+        "roomlbl_weekly",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command: RoomSubcommand::List(args),
+            ..
+        }) => {
+            assert_eq!(args.category_id.as_deref(), Some("roomcat_anime"));
+            assert_eq!(
+                args.label_ids,
+                ["roomlbl_hot", "roomlbl_new", "roomlbl_weekly"]
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_room_list_is_banned_as_bare_true_flag() {
     let cli = Cli::parse_from(["synctv", "room", "list", "--is-banned"]);
     match cli.command {
@@ -1053,6 +1085,274 @@ fn cli_parses_room_create() {
             assert_eq!(args.name, "CLI Room");
             assert_eq!(args.actor.username.as_deref(), Some("alice"));
         }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_create_taxonomy_fields() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "create",
+        "CLI Room",
+        "--username",
+        "alice",
+        "--category-id",
+        "roomcat_anime",
+        "--label-id",
+        "roomlbl_hot",
+        "--label-id",
+        "roomlbl_new,roomlbl_weekly",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command: RoomSubcommand::Create(args),
+            ..
+        }) => {
+            assert_eq!(args.name, "CLI Room");
+            assert_eq!(args.category_id.as_deref(), Some("roomcat_anime"));
+            assert_eq!(
+                args.label_ids,
+                ["roomlbl_hot", "roomlbl_new", "roomlbl_weekly"]
+            );
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_category_commands() {
+    let list = Cli::parse_from(["synctv", "room", "category", "list", "--include-disabled"]);
+    match list.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Category(RoomCategoryCommand {
+                    command: RoomCategorySubcommand::List(args),
+                }),
+            ..
+        }) => assert!(args.include_disabled),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let upsert = Cli::parse_from([
+        "synctv",
+        "room",
+        "category",
+        "upsert",
+        "anime",
+        "--name",
+        "Anime",
+        "--description",
+        "Animation rooms",
+        "--sort-order",
+        "10",
+        "--enabled",
+        "true",
+    ]);
+    match upsert.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Category(RoomCategoryCommand {
+                    command: RoomCategorySubcommand::Upsert(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.key, "anime");
+            assert_eq!(args.name, "Anime");
+            assert_eq!(args.description.as_deref(), Some("Animation rooms"));
+            assert_eq!(args.sort_order, 10);
+            assert_eq!(args.enabled, Some(true));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let delete = Cli::parse_from(["synctv", "room", "category", "delete", "roomcat_anime"]);
+    match delete.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Category(RoomCategoryCommand {
+                    command: RoomCategorySubcommand::Delete(args),
+                }),
+            ..
+        }) => assert_eq!(args.category_id, "roomcat_anime"),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_label_commands() {
+    let list = Cli::parse_from([
+        "synctv",
+        "room",
+        "label",
+        "list",
+        "--include-disabled",
+        "--category-id",
+        "roomcat_anime",
+    ]);
+    match list.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Label(RoomLabelCommand {
+                    command: RoomLabelSubcommand::List(args),
+                }),
+            ..
+        }) => {
+            assert!(args.include_disabled);
+            assert_eq!(args.category_id.as_deref(), Some("roomcat_anime"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let upsert = Cli::parse_from([
+        "synctv",
+        "room",
+        "label",
+        "upsert",
+        "featured",
+        "--name",
+        "Featured",
+        "--description",
+        "Featured rooms",
+        "--color",
+        "#ffcc00",
+        "--category-id",
+        "roomcat_anime",
+        "--sort-order",
+        "3",
+        "--enabled",
+        "false",
+    ]);
+    match upsert.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Label(RoomLabelCommand {
+                    command: RoomLabelSubcommand::Upsert(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.key, "featured");
+            assert_eq!(args.name, "Featured");
+            assert_eq!(args.description.as_deref(), Some("Featured rooms"));
+            assert_eq!(args.color.as_deref(), Some("#ffcc00"));
+            assert_eq!(args.category_id.as_deref(), Some("roomcat_anime"));
+            assert_eq!(args.sort_order, 3);
+            assert_eq!(args.enabled, Some(false));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let delete = Cli::parse_from(["synctv", "room", "label", "delete", "roomlbl_featured"]);
+    match delete.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Label(RoomLabelCommand {
+                    command: RoomLabelSubcommand::Delete(args),
+                }),
+            ..
+        }) => assert_eq!(args.label_id, "roomlbl_featured"),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_taxonomy_set_commands() {
+    let set = Cli::parse_from([
+        "synctv",
+        "room",
+        "taxonomy",
+        "set",
+        "room_abc",
+        "--category-id",
+        "roomcat_anime",
+        "--label-id",
+        "roomlbl_hot,roomlbl_new",
+    ]);
+    match set.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Taxonomy(RoomTaxonomyCommand {
+                    command: RoomTaxonomySubcommand::Set(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.room_id, "room_abc");
+            assert_eq!(args.category_id.as_deref(), Some("roomcat_anime"));
+            assert!(!args.clear_category);
+            assert_eq!(args.label_ids, ["roomlbl_hot", "roomlbl_new"]);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let clear = Cli::parse_from([
+        "synctv",
+        "room",
+        "taxonomy",
+        "set",
+        "room_abc",
+        "--clear-category",
+    ]);
+    match clear.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Taxonomy(RoomTaxonomyCommand {
+                    command: RoomTaxonomySubcommand::Set(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.room_id, "room_abc");
+            assert!(args.clear_category);
+            assert_eq!(args.category_id, None);
+            assert!(args.label_ids.is_empty());
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_room_taxonomy_category_and_clear_category() {
+    let result = Cli::try_parse_from([
+        "synctv",
+        "room",
+        "taxonomy",
+        "set",
+        "room_abc",
+        "--category-id",
+        "roomcat_anime",
+        "--clear-category",
+    ]);
+    assert!(
+        result.is_err(),
+        "room taxonomy set must reject conflicting category flags"
+    );
+}
+
+#[test]
+fn root_global_flags_propagate_to_room_taxonomy() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "--endpoint",
+        "http://127.0.0.1:50052",
+        "room",
+        "taxonomy",
+        "set",
+        "room_abc",
+        "--category-id",
+        "roomcat_anime",
+    ]);
+    let cli = apply_root_global_overrides(cli);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Taxonomy(RoomTaxonomyCommand {
+                    command: RoomTaxonomySubcommand::Set(args),
+                }),
+            ..
+        }) => assert_eq!(
+            args.remote.global.endpoint.as_deref(),
+            Some("http://127.0.0.1:50052")
+        ),
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
@@ -3660,10 +3960,7 @@ fn cli_parses_room_member_permissions_subcommand() {
             assert_eq!(args.user.username.as_deref(), Some("alice"));
             assert_eq!(args.user.user_id, None);
             assert_eq!(args.role, Some(CliRoomMemberRole::Admin));
-            assert_eq!(
-                args.admin_added_permissions,
-                Some(PermissionOverrideBits(7))
-            );
+            assert_eq!(args.admin_added_permissions.map(u64::from), Some(7));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }

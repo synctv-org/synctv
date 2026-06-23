@@ -355,8 +355,9 @@ fn test_admin_update_room_taxonomy_request_defaults_optional_fields_from_json() 
     }))
     .expect("request should deserialize");
 
-    assert!(request.category_id.is_empty());
+    assert_eq!(request.category_id, None);
     assert!(request.label_ids.is_empty());
+    assert!(!request.clear_category);
 }
 
 #[test]
@@ -365,8 +366,9 @@ fn test_admin_update_room_taxonomy_request_defaults_path_room_id_from_json() {
         serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
 
     assert!(request.room_id.is_empty());
-    assert!(request.category_id.is_empty());
+    assert_eq!(request.category_id, None);
     assert!(request.label_ids.is_empty());
+    assert!(!request.clear_category);
 }
 
 #[test]

@@ -491,13 +491,13 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .unwrap();
 
     for _attempt in 0..4 {
-        let err = opaque_room_login(
+        let err = Box::pin(opaque_room_login(
             &client_api,
             &member.id,
             &room_public_id,
             "WrongPassword",
             "192.168.1.100",
-        )
+        ))
         .await
         .unwrap_err();
         assert!(
@@ -506,13 +506,13 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         );
     }
 
-    opaque_room_login(
+    Box::pin(opaque_room_login(
         &client_api,
         &member.id,
         &room_public_id,
         "CorrectPassword123",
         "192.168.1.100",
-    )
+    ))
     .await
     .expect("successful password check should pass");
 
@@ -521,13 +521,13 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
         .await
         .expect("member should be able to leave after successful join");
 
-    let err = opaque_room_login(
+    let err = Box::pin(opaque_room_login(
         &client_api,
         &member.id,
         &room_public_id,
         "WrongPassword",
         "192.168.1.100",
-    )
+    ))
     .await
     .expect_err("successful join must reset room password brute-force counter");
     assert!(

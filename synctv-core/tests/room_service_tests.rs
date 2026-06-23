@@ -23,7 +23,7 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService},
         notification::{GuestKickReason, RoomEvent},
-        room::RoomServiceOptions,
+        room::{CreateRoomWithTaxonomyRequest, RoomCategoryUpdate, RoomServiceOptions},
         InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, SettingsRegistry,
         SettingsService, UserService,
     },
@@ -6796,26 +6796,30 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
 
     let (movie_room, _) = room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Movie".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-            Some(movie.id),
-            vec![anime.id],
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Movie".to_string(),
+                description: String::new(),
+                created_by: owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(movie.id),
+                label_ids: vec![anime.id],
+            },
             None,
         )
         .await
         .checked("test operation should succeed");
     let (game_room, _) = room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Game".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-            Some(game.id),
-            Vec::new(),
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Game".to_string(),
+                description: String::new(),
+                created_by: owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(game.id),
+                label_ids: Vec::new(),
+            },
             None,
         )
         .await
@@ -6941,13 +6945,15 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
 
     let mismatch = room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Mismatch".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-            Some(movie.id),
-            vec![coop.id],
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Mismatch".to_string(),
+                description: String::new(),
+                created_by: owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(movie.id),
+                label_ids: vec![coop.id],
+            },
             None,
         )
         .await;
@@ -6958,13 +6964,15 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
 
     let disabled_label = room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Disabled Label".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-            Some(movie.id),
-            vec![disabled.id],
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Disabled Label".to_string(),
+                description: String::new(),
+                created_by: owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(movie.id),
+                label_ids: vec![disabled.id],
+            },
             None,
         )
         .await;
@@ -6985,13 +6993,15 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         .checked("test operation should succeed");
     let disabled_category = room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Disabled Category".to_string(),
-            String::new(),
-            owner.id,
-            None,
-            None,
-            Some(inactive.id),
-            Vec::new(),
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Disabled Category".to_string(),
+                description: String::new(),
+                created_by: owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(inactive.id),
+                label_ids: Vec::new(),
+            },
             None,
         )
         .await;
@@ -7000,8 +7010,33 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         "disabled categories should be rejected"
     );
 
+    room_service
+        .update_room_taxonomy(
+            movie_room.id,
+            RoomCategoryUpdate::Preserve,
+            &[anime.id],
+            Some(owner.id),
+        )
+        .await
+        .checked("preserve category update should succeed");
+    let preserved_room = RoomRepository::new(pool.clone())
+        .get_by_id(&movie_room.id)
+        .await
+        .checked("updated room should load")
+        .checked("updated room should exist");
+    assert_eq!(
+        preserved_room.category.as_ref().map(|category| category.id),
+        Some(movie.id),
+        "taxonomy update without category should keep the current category"
+    );
+
     let invalid_update = room_service
-        .update_room_taxonomy(movie_room.id, Some(movie.id), &[coop.id], Some(owner.id))
+        .update_room_taxonomy(
+            movie_room.id,
+            RoomCategoryUpdate::Set(Some(movie.id)),
+            &[coop.id],
+            Some(owner.id),
+        )
         .await;
     assert!(
         matches!(invalid_update, Err(Error::InvalidInput(ref msg)) if msg.contains("selected category")),
@@ -7054,13 +7089,15 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         .checked("test operation should succeed");
     let (pending_room, _) = review_room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Pending Review".to_string(),
-            String::new(),
-            review_owner.id,
-            None,
-            None,
-            Some(movie.id),
-            vec![anime.id],
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Pending Review".to_string(),
+                description: String::new(),
+                created_by: review_owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(movie.id),
+                label_ids: vec![anime.id],
+            },
             None,
         )
         .await
@@ -7096,13 +7133,15 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
 
     let (stale_pending_room, _) = review_room_service
         .create_room_with_taxonomy_outbox(
-            "Taxonomy Stale Pending Review".to_string(),
-            String::new(),
-            review_owner.id,
-            None,
-            None,
-            Some(movie.id),
-            vec![anime.id],
+            CreateRoomWithTaxonomyRequest {
+                name: "Taxonomy Stale Pending Review".to_string(),
+                description: String::new(),
+                created_by: review_owner.id,
+                password: None,
+                settings: None,
+                category_id: Some(movie.id),
+                label_ids: vec![anime.id],
+            },
             None,
         )
         .await

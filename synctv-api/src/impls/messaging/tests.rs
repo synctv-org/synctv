@@ -2,7 +2,9 @@ use super::event_messages::realtime_event_to_server_messages;
 use super::*;
 use crate::runtime::{RealtimeDeliveryOutcome, RealtimeDeliveryRequirement};
 use std::collections::VecDeque;
+use std::future::Future;
 use std::ops::Deref;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -2252,91 +2254,103 @@ impl StreamMessageHandlerTestRuntimeExt for &StreamMessageHandler {
 /// registered user, created room, and accepted membership so that
 /// `start()` (which calls `pre_join_after_registration`) can pass the
 /// admission revalidation checks.
-async fn create_start_handler_fixture(
+type StartFixtureFuture<'a> = Pin<Box<dyn Future<Output = StartTestFixture> + 'a>>;
+
+fn create_start_handler_fixture(
     node_id: &str,
     sender: Arc<dyn MessageSender>,
-) -> StartTestFixture {
-    create_start_handler_fixture_with_runtime(node_id, sender, test_stream_handler_runtime()).await
+) -> StartFixtureFuture<'_> {
+    Box::pin(create_start_handler_fixture_with_runtime(
+        node_id,
+        sender,
+        test_stream_handler_runtime(),
+    ))
 }
 
-async fn create_start_handler_fixture_with_runtime(
+fn create_start_handler_fixture_with_runtime(
     node_id: &str,
     sender: Arc<dyn MessageSender>,
     runtime: StreamMessageHandlerRuntime,
-) -> StartTestFixture {
-    create_start_handler_fixture_with_runtime_builder(node_id, sender, |_, _| runtime).await
+) -> StartFixtureFuture<'_> {
+    Box::pin(create_start_handler_fixture_with_runtime_builder(
+        node_id,
+        sender,
+        |_, _| runtime,
+    ))
 }
 
-async fn create_start_handler_fixture_with_runtime_builder<F>(
-    node_id: &str,
+fn create_start_handler_fixture_with_runtime_builder<'a, F>(
+    node_id: &'a str,
     sender: Arc<dyn MessageSender>,
     build_runtime: F,
-) -> StartTestFixture
+) -> StartFixtureFuture<'a>
 where
-    F: FnOnce(RoomId, UserId) -> StreamMessageHandlerRuntime,
+    F: FnOnce(RoomId, UserId) -> StreamMessageHandlerRuntime + 'a,
 {
-    let (container, pool) = synctv_core_testing::create_test_pool().await;
-    let event_service = test_realtime_manager(node_id).await;
-    let connection_service = test_connection_manager();
-    let room_service = test_room_service(pool.clone());
-    let user_service = room_service.user_service().clone();
+    Box::pin(async move {
+        let (container, pool) = synctv_core_testing::create_test_pool().await;
+        let event_service = test_realtime_manager(node_id).await;
+        let connection_service = test_connection_manager();
+        let room_service = test_room_service(pool.clone());
+        let user_service = room_service.user_service().clone();
 
-    let owner = register_test_user(
-        &user_service,
-        bounded_fixture_username(&format!("{node_id}_owner")),
-        format!("fixture-{node_id}-owner@test.invalid"),
-    )
-    .await;
-
-    let (room, _) = room_service
-        .create_room(
-            format!("Fixture Room {node_id}"),
-            "test".to_string(),
-            owner.id,
-            None,
-            None,
+        let owner = register_test_user(
+            &user_service,
+            bounded_fixture_username(&format!("{node_id}_owner")),
+            format!("fixture-{node_id}-owner@test.invalid"),
         )
-        .await
-        .checked("fixture room should be created");
+        .await;
 
-    let user = register_test_user(
-        &user_service,
-        bounded_fixture_username(&format!("{node_id}_member")),
-        format!("fixture-{node_id}-member@test.invalid"),
-    )
-    .await;
-    room_service
-        .join_room(room.id, user.id, None)
-        .await
-        .checked("fixture member should join room");
-    let runtime = build_runtime(room.id, user.id);
+        let (room, _) = room_service
+            .create_room(
+                format!("Fixture Room {node_id}"),
+                "test".to_string(),
+                owner.id,
+                None,
+                None,
+            )
+            .await
+            .checked("fixture room should be created");
 
-    let handler = StreamMessageHandler::new_with_runtime(
-        StreamMessageHandlerConfig {
-            room_id: room.id,
-            principal: RealtimePrincipal::user(user.id, user.username.clone()),
-            connection_id: None,
-            room_service: Arc::clone(&room_service),
-            chat_service: test_chat_service(pool.clone()),
-            event_service: event_service.clone(),
-            connection_service: connection_service.clone(),
-            rate_limiter: Arc::new(RateLimiter::local_only(format!("test:fixture:{node_id}:"))),
-            rate_limit_config: Arc::new(RateLimitConfig::default()),
-            content_filter: Arc::new(ContentFilter::new()),
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
-            sender,
-            concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
-        },
-        runtime,
-    );
+        let user = register_test_user(
+            &user_service,
+            bounded_fixture_username(&format!("{node_id}_member")),
+            format!("fixture-{node_id}-member@test.invalid"),
+        )
+        .await;
+        room_service
+            .join_room(room.id, user.id, None)
+            .await
+            .checked("fixture member should join room");
+        let runtime = build_runtime(room.id, user.id);
 
-    StartTestFixture {
-        _container: container,
-        pool,
-        event_service,
-        connection_service,
-        handler,
-    }
+        let handler = StreamMessageHandler::new_with_runtime(
+            StreamMessageHandlerConfig {
+                room_id: room.id,
+                principal: RealtimePrincipal::user(user.id, user.username.clone()),
+                connection_id: None,
+                room_service: Arc::clone(&room_service),
+                chat_service: test_chat_service(pool.clone()),
+                event_service: event_service.clone(),
+                connection_service: connection_service.clone(),
+                rate_limiter: Arc::new(RateLimiter::local_only(format!("test:fixture:{node_id}:"))),
+                rate_limit_config: Arc::new(RateLimitConfig::default()),
+                content_filter: Arc::new(ContentFilter::new()),
+                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                sender,
+                concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
+            },
+            runtime,
+        );
+
+        StartTestFixture {
+            _container: container,
+            pool,
+            event_service,
+            connection_service,
+            handler,
+        }
+    })
 }
 
 struct StartTestFixture {

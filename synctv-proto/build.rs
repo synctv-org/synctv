@@ -664,6 +664,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.admin.UpdateRoomTaxonomyRequest.room_id",
             ".synctv.admin.UpdateRoomTaxonomyRequest.category_id",
             ".synctv.admin.UpdateRoomTaxonomyRequest.label_ids",
+            ".synctv.admin.UpdateRoomTaxonomyRequest.clear_category",
             ".synctv.admin.GetRoomMembersRequest.page",
             ".synctv.admin.GetRoomMembersRequest.page_size",
             ".synctv.admin.GetRoomMembersRequest.search",

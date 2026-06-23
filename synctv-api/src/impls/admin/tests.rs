@@ -1554,6 +1554,101 @@ async fn create_db_user(
     )
 }
 
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
+    let user_repo = UserRepository::new(pool.clone());
+
+    let owner = create_db_user(&user_repo, "taxonomy_management_owner", UserRole::User).await;
+    let category = core_ok(
+        admin_api
+            .room_service
+            .upsert_room_category(synctv_core::models::UpsertRoomCategory {
+                key: "management_taxonomy".to_string(),
+                name: "Management Taxonomy".to_string(),
+                description: String::new(),
+                sort_order: 1,
+                is_enabled: true,
+            })
+            .await,
+    )?;
+    let label = core_ok(
+        admin_api
+            .room_service
+            .upsert_room_label(synctv_core::models::UpsertRoomLabel {
+                key: "management_taxonomy_label".to_string(),
+                name: "Management Label".to_string(),
+                description: String::new(),
+                color: String::new(),
+                category_id: Some(category.id),
+                sort_order: 1,
+                is_enabled: true,
+            })
+            .await,
+    )?;
+    let room = core_ok(
+        admin_api
+            .room_service
+            .create_room_with_taxonomy_outbox(
+                synctv_core::service::room::CreateRoomWithTaxonomyRequest {
+                    name: "management taxonomy room".to_string(),
+                    description: String::new(),
+                    created_by: owner.id,
+                    password: None,
+                    settings: None,
+                    category_id: Some(category.id),
+                    label_ids: Vec::new(),
+                },
+                None,
+            )
+            .await,
+    )?
+    .0;
+
+    let response = api_ok(
+        admin_api
+            .update_room_taxonomy(
+                synctv_proto::admin::UpdateRoomTaxonomyRequest {
+                    room_id: public_room_id(&admin_api, room.id),
+                    category_id: None,
+                    label_ids: vec![fixture_value(
+                        admin_api.public_id_codec.encode_room_label_id(label.id),
+                        "label id should encode",
+                    )],
+                    clear_category: false,
+                },
+                &LOCAL_MANAGEMENT_ACTOR_USER_ID,
+            )
+            .await,
+    )?;
+
+    let response_room = some_value(response.room, "response should include room")?;
+    assert_eq!(response_room.labels.len(), 1);
+    assert_eq!(
+        response_room.labels[0].id,
+        fixture_value(
+            admin_api.public_id_codec.encode_room_label_id(label.id),
+            "label id should encode"
+        )
+    );
+
+    let assigned_by = sqlx::query_scalar!(
+        r#"
+        SELECT assigned_by AS "assigned_by: UserId"
+        FROM room_label_assignments
+        WHERE room_id = $1 AND label_id = $2
+        "#,
+        room.id as RoomId,
+        label.id as synctv_core::models::RoomLabelId,
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(assigned_by, None);
+    Ok(())
+}
+
 #[test]
 fn test_admin_user_to_proto_all_roles() -> TestResult {
     let public_id_codec = synctv_core::PublicIdCodec::plain();

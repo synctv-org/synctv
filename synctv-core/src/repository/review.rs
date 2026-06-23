@@ -74,6 +74,21 @@ struct RoomCreationReviewRow {
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+struct RoomCreationLabelRow {
+    request_id: RoomId,
+    id: RoomLabelId,
+    key: String,
+    name: String,
+    description: String,
+    color: String,
+    category_id: Option<RoomCategoryId>,
+    sort_order: i32,
+    is_enabled: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct RoomJoinReviewRecord {
     pub id: ReviewRequestId,
     pub room_id: RoomId,
@@ -202,22 +217,8 @@ impl ReviewRepository {
             return Ok(std::collections::HashMap::new());
         }
         let ids: Vec<i64> = request_ids.iter().map(RoomId::as_i64).collect();
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            request_id: RoomId,
-            id: RoomLabelId,
-            key: String,
-            name: String,
-            description: String,
-            color: String,
-            category_id: Option<RoomCategoryId>,
-            sort_order: i32,
-            is_enabled: bool,
-            created_at: DateTime<Utc>,
-            updated_at: DateTime<Utc>,
-        }
         let rows = sqlx::query_as!(
-            Row,
+            RoomCreationLabelRow,
             r#"
             SELECT rcrl.request_id AS "request_id: RoomId",
                    rl.id AS "id: RoomLabelId",

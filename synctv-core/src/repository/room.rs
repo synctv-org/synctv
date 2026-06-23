@@ -9,7 +9,7 @@ use super::{
 };
 use crate::{
     models::{
-        OpaquePasswordRecord, PageParams, Room, RoomCategoryId, RoomId, RoomListQuery,
+        OpaquePasswordRecord, PageParams, Room, RoomCategoryId, RoomId, RoomLabelId, RoomListQuery,
         RoomListSortBy, RoomSettings, RoomStatus, UserId,
     },
     Error, Result,
@@ -654,7 +654,8 @@ impl RoomRepository {
         let mut seen = HashSet::with_capacity(label_ids.len());
         label_ids
             .iter()
-            .filter_map(|id| seen.insert(*id).then(|| id.as_i64()))
+            .filter(|id| seen.insert(**id))
+            .map(RoomLabelId::as_i64)
             .collect()
     }
 

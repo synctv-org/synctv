@@ -5,11 +5,13 @@ use synctv_common::time as app_time;
 #[cfg(test)]
 use anyhow::Result;
 
+use super::args::{
+    CLI_ADMIN_NAMED_PERMISSIONS, CLI_MEMBER_NAMED_PERMISSIONS, CLI_NAMED_PERMISSIONS,
+};
 use super::output_dto::{
     GetPlaybackCliOutput, KickStreamCliOutput, PlaybackStartCliOutput, PlaybackStopCliOutput,
     UserMutationCliOutput,
 };
-use super::{CLI_ADMIN_NAMED_PERMISSIONS, CLI_MEMBER_NAMED_PERMISSIONS, CLI_NAMED_PERMISSIONS};
 
 pub(in crate::cli) trait ToHuman {
     type Human: Serialize;
@@ -151,6 +153,29 @@ pub(in crate::cli) struct HumanAdminRoom {
     description: String,
     is_banned: bool,
     version: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomCategory {
+    id: String,
+    key: String,
+    name: String,
+    description: String,
+    sort_order: i32,
+    is_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomLabel {
+    id: String,
+    key: String,
+    name: String,
+    description: String,
+    color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category_id: Option<String>,
+    sort_order: i32,
+    is_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -560,6 +585,31 @@ pub(in crate::cli) struct HumanBanRecordsResponse<T> {
     total: i32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomCategoriesResponse<T> {
+    categories: Vec<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomCategoryResponse<T> {
+    category: Option<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomLabelsResponse<T> {
+    labels: Vec<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanRoomLabelResponse<T> {
+    label: Option<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanDeleteResponse {
+    success: bool,
+}
+
 fn parse_json_bytes(bytes: &[u8]) -> Value {
     if bytes.is_empty() {
         Value::Null
@@ -642,6 +692,38 @@ impl ToHuman for synctv_proto::admin::AdminRoom {
             description: self.description.clone(),
             is_banned: self.is_banned,
             version: self.version,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::RoomCategory {
+    type Human = HumanRoomCategory;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomCategory {
+            id: self.id.clone(),
+            key: self.key.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            sort_order: self.sort_order,
+            is_enabled: self.is_enabled,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::RoomLabel {
+    type Human = HumanRoomLabel;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomLabel {
+            id: self.id.clone(),
+            key: self.key.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            color: self.color.clone(),
+            category_id: (!self.category_id.is_empty()).then(|| self.category_id.clone()),
+            sort_order: self.sort_order,
+            is_enabled: self.is_enabled,
         }
     }
 }
@@ -1274,6 +1356,76 @@ impl ToHuman for synctv_proto::admin::BanRoomResponse {
 }
 
 impl ToHuman for synctv_proto::admin::UnbanRoomResponse {
+    type Human = HumanRoomResponse<HumanAdminRoom>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomResponse {
+            room: self.room.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::ListRoomCategoriesResponse {
+    type Human = HumanRoomCategoriesResponse<HumanRoomCategory>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomCategoriesResponse {
+            categories: self.categories.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::UpsertRoomCategoryResponse {
+    type Human = HumanRoomCategoryResponse<HumanRoomCategory>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomCategoryResponse {
+            category: self.category.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::DeleteRoomCategoryResponse {
+    type Human = HumanDeleteResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanDeleteResponse {
+            success: self.success,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::ListRoomLabelsResponse {
+    type Human = HumanRoomLabelsResponse<HumanRoomLabel>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomLabelsResponse {
+            labels: self.labels.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::UpsertRoomLabelResponse {
+    type Human = HumanRoomLabelResponse<HumanRoomLabel>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomLabelResponse {
+            label: self.label.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::DeleteRoomLabelResponse {
+    type Human = HumanDeleteResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanDeleteResponse {
+            success: self.success,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::admin::UpdateRoomTaxonomyResponse {
     type Human = HumanRoomResponse<HumanAdminRoom>;
 
     fn to_human(&self) -> Self::Human {

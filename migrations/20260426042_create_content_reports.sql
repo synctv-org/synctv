@@ -41,3 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_content_reports_target_chat_message
     WHERE target_chat_message_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_content_reports_status_created
     ON content_reports(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_content_reports_reason_code_trgm
+    ON content_reports USING gin(reason_code gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_content_reports_reason_trgm
+    ON content_reports USING gin(reason gin_trgm_ops);

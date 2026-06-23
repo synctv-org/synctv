@@ -13,8 +13,9 @@ use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
-    current_database_date, len_to_i32, len_to_i64, quote_ident, size_centi_mib, table_exists,
-    wait_for_initial_leader, PartitionNameRow, PartitionSizeRow, STARTUP_RUNS_RETENTION_CLEANUP,
+    current_database_date, len_to_i32, len_to_i64, partition_index_sql, quote_ident,
+    size_centi_mib, table_exists, wait_for_initial_leader, PartitionIndexSpec, PartitionNameRow,
+    PartitionSizeRow, STARTUP_RUNS_RETENTION_CLEANUP,
 };
 use crate::{Error, Result};
 
@@ -23,6 +24,72 @@ const DEFAULT_RETENTION_DAYS: i32 = 90;
 
 /// Default days to create ahead
 const DEFAULT_DAYS_AHEAD: i32 = 30;
+
+const CHAT_PARTITION_INDEXES: &[PartitionIndexSpec] = &[
+    PartitionIndexSpec {
+        suffix: "idx_room_pagination",
+        definition: "(room_id, created_at DESC, id DESC)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_user_created",
+        definition: "(user_id, created_at DESC)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_created_at",
+        definition: "(created_at DESC)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_status",
+        definition: "(room_id, status, created_at DESC, id DESC)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_reply_target",
+        definition: "(reply_to_message_id, reply_to_message_created_at)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_content_search",
+        definition: "USING gin(content_search)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_content_trgm",
+        definition: "USING gin(content gin_trgm_ops)",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_playback_media",
+        definition: r"(
+            room_id,
+            ((metadata #>> '{playback,media_id}')),
+            (
+                CASE
+                    WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
+                    THEN (metadata #>> '{playback,position_seconds}')::double precision
+                    ELSE NULL
+                END
+            ),
+            created_at,
+            id
+        )
+        WHERE metadata ? 'playback'",
+    },
+    PartitionIndexSpec {
+        suffix: "idx_playback_playlist_target",
+        definition: r"(
+            room_id,
+            ((metadata #>> '{playback,playlist_id}')),
+            ((metadata #>> '{playback,target_hex}')),
+            (
+                CASE
+                    WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
+                    THEN (metadata #>> '{playback,position_seconds}')::double precision
+                    ELSE NULL
+                END
+            ),
+            created_at,
+            id
+        )
+        WHERE metadata ? 'playback'",
+    },
+];
 
 /// Health check result for chat message partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,37 +149,18 @@ impl ChatPartitionManager {
             .await
             .map_err(|e| Error::Internal(format!("Failed to create chat partition: {e}")))?;
 
-            sqlx::query(trusted_dynamic_sql(format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, created_at DESC, id DESC)",
-                quote_ident(&format!("{partition_name}_idx_room_pagination"))
-            )))
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
-
-            sqlx::query(trusted_dynamic_sql(format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(user_id, created_at DESC)",
-                quote_ident(&format!("{partition_name}_idx_user_created"))
-            )))
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
-
-            sqlx::query(trusted_dynamic_sql(format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(created_at DESC)",
-                quote_ident(&format!("{partition_name}_idx_created_at"))
-            )))
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
-
-            sqlx::query(trusted_dynamic_sql(format!(
-                "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(room_id, status, created_at DESC, id DESC)",
-                quote_ident(&format!("{partition_name}_idx_status"))
-            )))
-            .execute(&mut *conn)
-            .await
-            .map_err(|e| Error::Internal(format!("Failed to create chat partition index: {e}")))?;
+            for spec in CHAT_PARTITION_INDEXES {
+                sqlx::query(trusted_dynamic_sql(partition_index_sql(
+                    &partition_name,
+                    &partition_ident,
+                    *spec,
+                )))
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to create chat partition index: {e}"))
+                })?;
+            }
         }
 
         let total_requested = days_ahead + 1;
@@ -412,5 +460,33 @@ mod tests {
         assert_eq!(health.missing_count, 1);
         assert_eq!(health.health_status, "warning");
         assert_eq!(health.missing_partitions.len(), 1);
+    }
+
+    #[test]
+    fn chat_partition_indexes_match_search_and_playback_paths() {
+        let partition_name = "chat_messages_2026_06_23";
+        let partition_ident = quote_ident(partition_name);
+        let sql = CHAT_PARTITION_INDEXES
+            .iter()
+            .map(|spec| partition_index_sql(partition_name, &partition_ident, *spec))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(CHAT_PARTITION_INDEXES.len(), 9);
+        assert!(sql.contains(
+            r#"CREATE INDEX IF NOT EXISTS "chat_messages_2026_06_23_idx_content_search" ON "chat_messages_2026_06_23" USING gin(content_search)"#
+        ));
+        assert!(sql.contains(
+            r#"CREATE INDEX IF NOT EXISTS "chat_messages_2026_06_23_idx_content_trgm" ON "chat_messages_2026_06_23" USING gin(content gin_trgm_ops)"#
+        ));
+        assert!(sql.contains(
+            r#"CREATE INDEX IF NOT EXISTS "chat_messages_2026_06_23_idx_reply_target" ON "chat_messages_2026_06_23" (reply_to_message_id, reply_to_message_created_at)"#
+        ));
+        assert!(sql.contains(
+            r#"CREATE INDEX IF NOT EXISTS "chat_messages_2026_06_23_idx_playback_media" ON "chat_messages_2026_06_23""#
+        ));
+        assert!(sql.contains(
+            r#"CREATE INDEX IF NOT EXISTS "chat_messages_2026_06_23_idx_playback_playlist_target" ON "chat_messages_2026_06_23""#
+        ));
     }
 }

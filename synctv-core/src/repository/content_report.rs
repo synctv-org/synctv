@@ -1,6 +1,6 @@
 use sqlx::PgPool;
 
-use crate::repository::pools::RepoPools;
+use crate::repository::{pools::RepoPools, query_builder::ilike_contains_pattern};
 use crate::{
     models::{
         ContentReport, ContentReportAdminRow, ContentReportId, ContentReportStatus,
@@ -222,7 +222,7 @@ impl ContentReportRepository {
         let target_member_room_id = query.target_member_room_id.map(|id| id.as_i64());
         let target_member_user_id = query.target_member_user_id.map(|id| id.as_i64());
         let scope_filter = query.scope.filter();
-        let search = normalize_search(&query.search);
+        let search = ilike_contains_pattern(&query.search);
         let pool = self.pools.read();
 
         let total = sqlx::query_scalar!(
@@ -256,16 +256,16 @@ impl ContentReportRepository {
               AND ($9::bigint IS NULL OR cr.target_chat_message_id = $9)
               AND (
                 $16::text IS NULL
-                OR lower(cr.reason_code) LIKE $16
-                OR lower(cr.reason) LIKE $16
-                OR lower(COALESCE(reporter.username, '')) LIKE $16
-                OR lower(COALESCE(room_ctx.name, '')) LIKE $16
-                OR lower(COALESCE(target_room.name, '')) LIKE $16
-                OR lower(COALESCE(target_user.username, '')) LIKE $16
-                OR lower(COALESCE(target_member_user.username, '')) LIKE $16
-                OR lower(COALESCE(chat.content, '')) LIKE $16
-                OR cr.id::text LIKE $16
-                OR cr.target_chat_message_id::text LIKE $16
+                OR cr.reason_code ILIKE $16 ESCAPE '\'
+                OR cr.reason ILIKE $16 ESCAPE '\'
+                OR COALESCE(reporter.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(room_ctx.name, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_room.name, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_user.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_member_user.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(chat.content, '') ILIKE $16 ESCAPE '\'
+                OR cr.id::text ILIKE $16 ESCAPE '\'
+                OR cr.target_chat_message_id::text ILIKE $16 ESCAPE '\'
               )
             "#,
             status,
@@ -349,16 +349,16 @@ impl ContentReportRepository {
               AND ($9::bigint IS NULL OR cr.target_chat_message_id = $9)
               AND (
                 $16::text IS NULL
-                OR lower(cr.reason_code) LIKE $16
-                OR lower(cr.reason) LIKE $16
-                OR lower(COALESCE(reporter.username, '')) LIKE $16
-                OR lower(COALESCE(room_ctx.name, '')) LIKE $16
-                OR lower(COALESCE(target_room.name, '')) LIKE $16
-                OR lower(COALESCE(target_user.username, '')) LIKE $16
-                OR lower(COALESCE(target_member_user.username, '')) LIKE $16
-                OR lower(COALESCE(chat.content, '')) LIKE $16
-                OR cr.id::text LIKE $16
-                OR cr.target_chat_message_id::text LIKE $16
+                OR cr.reason_code ILIKE $16 ESCAPE '\'
+                OR cr.reason ILIKE $16 ESCAPE '\'
+                OR COALESCE(reporter.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(room_ctx.name, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_room.name, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_user.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(target_member_user.username, '') ILIKE $16 ESCAPE '\'
+                OR COALESCE(chat.content, '') ILIKE $16 ESCAPE '\'
+                OR cr.id::text ILIKE $16 ESCAPE '\'
+                OR cr.target_chat_message_id::text ILIKE $16 ESCAPE '\'
               )
             ORDER BY cr.created_at DESC, cr.id DESC
             LIMIT $17 OFFSET $18
@@ -511,15 +511,6 @@ impl ContentReportRepository {
         .await?
         .ok_or_else(|| Error::NotFound("Content report not found".to_string()))?;
         Ok(updated)
-    }
-}
-
-fn normalize_search(search: &str) -> Option<String> {
-    let trimmed = search.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(format!("%{}%", trimmed.to_ascii_lowercase()))
     }
 }
 

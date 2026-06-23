@@ -805,26 +805,59 @@ pub(crate) fn build_create_websocket_ticket_request(
 pub(super) type ChatHistoryCursor = (chrono::DateTime<chrono::Utc>, i64);
 pub(super) type ChatReactionUsersCursor = (chrono::DateTime<chrono::Utc>, UserId);
 
+fn parse_chat_history_cursor(cursor: &str) -> Result<Option<ChatHistoryCursor>, ApiError> {
+    if cursor.is_empty() {
+        return Ok(None);
+    }
+    let Some((ts_str, id)) = cursor.split_once('|') else {
+        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
+    };
+    let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
+        .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+    let id = id
+        .parse::<i64>()
+        .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+    Ok(Some((ts, id)))
+}
+
 pub(super) fn build_get_chat_history_request(
     req: &synctv_proto::client::GetChatHistoryRequest,
 ) -> Result<(i32, Option<ChatHistoryCursor>), ApiError> {
     crate::impls::validate_proto_request(req)?;
 
     let limit = if req.limit > 0 { req.limit } else { 50 };
-    let cursor = if req.cursor.is_empty() {
-        None
-    } else if let Some((ts_str, id)) = req.cursor.split_once('|') {
-        let ts = synctv_common::time::parse_datetime_to_utc(ts_str)
-            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        let id = id
-            .parse::<i64>()
-            .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-        Some((ts, id))
-    } else {
-        return Err(ApiError::InvalidInput("Invalid cursor format".to_string()));
-    };
+    let cursor = parse_chat_history_cursor(&req.cursor)?;
 
     Ok((limit, cursor))
+}
+
+pub(super) fn build_search_chat_messages_query(
+    room_id: synctv_core::models::RoomId,
+    req: &synctv_proto::client::SearchChatMessagesRequest,
+    public_id_codec: &synctv_core::PublicIdCodec,
+) -> Result<synctv_core::models::ChatSearchMessagesQuery, ApiError> {
+    crate::impls::validate_proto_request(req)?;
+    let limit = if req.limit > 0 { req.limit } else { 50 };
+    let cursor = parse_chat_history_cursor(&req.cursor)?
+        .map(|(created_at, id)| synctv_core::models::ChatHistoryCursor { created_at, id });
+    let user_id = if req.user_id.trim().is_empty() {
+        None
+    } else {
+        Some(
+            public_id_codec
+                .decode_user_id(&req.user_id)
+                .map_err(ApiError::InvalidInput)?,
+        )
+    };
+
+    Ok(synctv_core::models::ChatSearchMessagesQuery {
+        room_id,
+        query: req.query.clone(),
+        cursor,
+        limit,
+        include_deleted: req.include_deleted,
+        user_id,
+    })
 }
 
 pub(super) fn build_list_chat_reaction_users_request(

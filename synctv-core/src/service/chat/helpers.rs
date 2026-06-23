@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{
         ChatAttachment, ChatMessage, ChatMessageEventLog, ChatPlaybackMessagesQuery, ChatReadState,
-        CreateChatAttachmentUploadSession, CreateFileUploadSession, DeleteChatMessage,
-        EditChatMessage, NewStoredFile, PinChatMessage, RoomId, SendChatMessage,
+        ChatSearchMessagesQuery, CreateChatAttachmentUploadSession, CreateFileUploadSession,
+        DeleteChatMessage, EditChatMessage, NewStoredFile, PinChatMessage, RoomId, SendChatMessage,
         SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
         CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
         CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
@@ -53,6 +53,25 @@ pub(super) fn validate_chat_playback_query(
     if !(1..=500).contains(&query.limit) {
         return Err(Error::InvalidInput(
             "chat playback query limit must be between 1 and 500".to_string(),
+        ));
+    }
+    Ok(query)
+}
+
+pub(super) fn validate_chat_search_query(
+    mut query: ChatSearchMessagesQuery,
+) -> Result<ChatSearchMessagesQuery> {
+    query.query = crate::repository::query_builder::normalize_search_text(&query.query)
+        .ok_or_else(|| Error::InvalidInput("chat search query is required".to_string()))?;
+    let query_chars = query.query.chars().count();
+    if !(2..=120).contains(&query_chars) {
+        return Err(Error::InvalidInput(
+            "chat search query must be between 2 and 120 characters".to_string(),
+        ));
+    }
+    if !(1..=100).contains(&query.limit) {
+        return Err(Error::InvalidInput(
+            "chat search limit must be between 1 and 100".to_string(),
         ));
     }
     Ok(query)

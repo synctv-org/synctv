@@ -1358,6 +1358,102 @@ fn root_global_flags_propagate_to_room_taxonomy() {
 }
 
 #[test]
+fn cli_parses_room_chat_search() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "chat",
+        "search",
+        "--room-id",
+        "room_abc",
+        "--username",
+        "alice",
+        "--sender-username",
+        "bob",
+        "--cursor",
+        "2026-06-23T10:00:00Z|msg_1",
+        "--limit",
+        "25",
+        "--include-deleted",
+        "hello",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Chat(RoomChatCommand {
+                    command: RoomChatSubcommand::Search(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.room.room_id, "room_abc");
+            assert_eq!(args.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.sender.sender_username.as_deref(), Some("bob"));
+            assert_eq!(args.sender.sender_user_id, None);
+            assert_eq!(args.cursor.as_deref(), Some("2026-06-23T10:00:00Z|msg_1"));
+            assert_eq!(args.limit, 25);
+            assert!(args.include_deleted);
+            assert_eq!(args.query, "hello");
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_conflicting_room_chat_sender_filters() {
+    let result = Cli::try_parse_from([
+        "synctv",
+        "room",
+        "chat",
+        "search",
+        "--room-id",
+        "room_abc",
+        "--username",
+        "alice",
+        "--sender-username",
+        "bob",
+        "--sender-user-id",
+        "usr_abc",
+        "hello",
+    ]);
+
+    assert!(
+        result.is_err(),
+        "room chat search must accept a single sender filter"
+    );
+}
+
+#[test]
+fn root_global_flags_propagate_to_room_chat_search() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "--endpoint",
+        "http://127.0.0.1:50052",
+        "room",
+        "chat",
+        "search",
+        "--room-id",
+        "room_abc",
+        "--username",
+        "alice",
+        "hello",
+    ]);
+    let cli = apply_root_global_overrides(cli);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Chat(RoomChatCommand {
+                    command: RoomChatSubcommand::Search(args),
+                }),
+            ..
+        }) => assert_eq!(
+            args.room.remote.global.endpoint.as_deref(),
+            Some("http://127.0.0.1:50052")
+        ),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_room_transfer_owner() {
     let cli = Cli::parse_from([
         "synctv",

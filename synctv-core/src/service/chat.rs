@@ -18,12 +18,13 @@ use crate::{
         ChatMessageOperationKind, ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
         ChatMessageWithAttachments, ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery,
         ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadStateWithUnread,
-        CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileBlob,
-        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
-        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
-        UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
+        ChatSearchMessagesPage, ChatSearchMessagesQuery, CompleteFileUploadSession,
+        CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
+        EditChatMessage, FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, MarkChatRead, PinChatMessage, RoomId,
+        SendChatMessage, SetChatReaction, StoreFileUpload, StoreFileUploadResult,
+        SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
+        CHAT_PIN_NOTE_MAX_CHARS,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -621,6 +622,21 @@ impl ChatService {
         self.attach_attachment_view_metadata(&mut messages, viewer_user_id)
             .await?;
         Ok(messages)
+    }
+
+    pub async fn search_messages_with_attachments_for_viewer(
+        &self,
+        query: ChatSearchMessagesQuery,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatSearchMessagesPage> {
+        let query = validate_chat_search_query(query)?;
+        let mut page = self
+            .chat_repository
+            .search_messages_for_viewer(&query, viewer_user_id)
+            .await?;
+        self.attach_attachment_view_metadata(&mut page.messages, viewer_user_id)
+            .await?;
+        Ok(page)
     }
 
     pub async fn get_message_with_attachments(

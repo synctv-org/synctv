@@ -14,7 +14,7 @@ pub const KICK_COOLDOWN_DENIED_MESSAGE: &str =
     "User was recently kicked from this room and cannot access it yet";
 
 use super::{
-    query_builder::{escape_ilike, WhereClauseBuilder},
+    query_builder::{ilike_contains_pattern, WhereClauseBuilder},
     required_count,
     room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
 };
@@ -972,7 +972,7 @@ impl RoomMemberRepository {
     ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT COUNT(*) FROM room_members rm JOIN users u ON rm.user_id = u.id WHERE rm.room_id = ",
@@ -984,9 +984,9 @@ impl RoomMemberRepository {
         if let Some(pattern) = &search_pattern {
             count_builder.push(" AND (u.username ILIKE ");
             count_builder.push_bind(pattern);
-            count_builder.push(" OR rm.user_id::text ILIKE ");
+            count_builder.push(" ESCAPE '\\' OR rm.user_id::text ILIKE ");
             count_builder.push_bind(pattern);
-            count_builder.push(")");
+            count_builder.push(" ESCAPE '\\')");
         }
         if let Some(role) = &query.role {
             count_builder.push(" AND rm.role = ");
@@ -1016,9 +1016,9 @@ impl RoomMemberRepository {
         if let Some(pattern) = &search_pattern {
             list_builder.push(" AND (u.username ILIKE ");
             list_builder.push_bind(pattern);
-            list_builder.push(" OR rm.user_id::text ILIKE ");
+            list_builder.push(" ESCAPE '\\' OR rm.user_id::text ILIKE ");
             list_builder.push_bind(pattern);
-            list_builder.push(")");
+            list_builder.push(" ESCAPE '\\')");
         }
         if let Some(role) = &query.role {
             list_builder.push(" AND rm.role = ");
@@ -2413,7 +2413,7 @@ impl RoomMemberRepository {
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
         let wb = Self::build_my_room_list_conditions(query);
         let (count_where_sql, _) = wb.build(2)?;
         let (where_sql, _) = wb.build(4)?;
@@ -2497,7 +2497,7 @@ impl RoomMemberRepository {
     ) -> Result<(Vec<(crate::models::Room, RoomRole, MemberStatus, i32)>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
         let wb = Self::build_my_room_list_conditions(query);
         let (count_where_sql, _) = wb.build(2)?;
         let (where_sql, _) = wb.build(4)?;

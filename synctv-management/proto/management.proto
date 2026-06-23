@@ -45,6 +45,7 @@ service ManagementService {
     rpc DeleteRoomLabel(synctv.admin.DeleteRoomLabelRequest) returns (synctv.admin.DeleteRoomLabelResponse);
     rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.UpdateRoomTaxonomyResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
+    rpc SearchChatMessages(SearchChatMessagesRequest) returns (synctv.client.SearchChatMessagesResponse);
     rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
@@ -434,6 +435,16 @@ message GetRoomMembersRequest {
     synctv.common.RoomMemberRole role = 5;
     RoomMemberListSortBy sort_by = 7;
     SortDirection sort_direction = 8;
+}
+
+message SearchChatMessagesRequest {
+    string room_id = 1;
+    UserRef actor = 2;
+    string query = 3;
+    string cursor = 4;
+    int32 limit = 5;
+    bool include_deleted = 6;
+    UserRef user = 7;
 }
 
 message TransferRoomOwnershipRequest {

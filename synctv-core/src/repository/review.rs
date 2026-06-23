@@ -6,7 +6,7 @@ use crate::models::{
     RoomCategoryId, RoomId, RoomLabel, RoomLabelId, SignupMethod, UserId,
 };
 use crate::repository::pools::RepoPools;
-use crate::repository::query_builder::escape_ilike;
+use crate::repository::query_builder::ilike_contains_pattern;
 use crate::repository::required_count;
 use crate::repository::room_taxonomy::{
     optional_room_category_from_parts, OptionalRoomCategoryRowParts,
@@ -335,7 +335,7 @@ impl ReviewRepository {
         let search = query
             .search
             .as_deref()
-            .map(escape_ilike)
+            .and_then(ilike_contains_pattern)
             .unwrap_or_default();
         let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(
@@ -566,7 +566,7 @@ impl ReviewRepository {
         let search = query
             .search
             .as_deref()
-            .map(escape_ilike)
+            .and_then(ilike_contains_pattern)
             .unwrap_or_default();
         let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(
@@ -825,7 +825,7 @@ impl ReviewRepository {
         let search = query
             .search
             .as_deref()
-            .map(escape_ilike)
+            .and_then(ilike_contains_pattern)
             .unwrap_or_default();
         let pool = self.pools.read();
         let total_count = sqlx::query_scalar!(

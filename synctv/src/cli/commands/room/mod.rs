@@ -2,6 +2,7 @@ use super::prelude::*;
 
 mod batch;
 mod category;
+mod chat;
 mod label;
 mod member;
 mod playback;
@@ -11,6 +12,7 @@ mod taxonomy;
 
 pub use batch::*;
 pub use category::*;
+pub use chat::*;
 pub use label::*;
 pub use member::*;
 pub use playback::*;
@@ -40,6 +42,8 @@ pub enum RoomSubcommand {
     Label(RoomLabelCommand),
     /// Assign room category and labels
     Taxonomy(RoomTaxonomyCommand),
+    /// Search room chat history
+    Chat(RoomChatCommand),
     /// Transfer room ownership to another existing member
     TransferOwner(RoomTransferOwnerArgs),
     /// Manage room members

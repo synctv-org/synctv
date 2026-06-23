@@ -109,6 +109,25 @@ pub(super) async fn get_chat_history(
     Ok(Response::new(response))
 }
 
+pub(super) async fn search_chat_messages(
+    service: &ClientServiceImpl,
+    request: Request<SearchChatMessagesRequest>,
+) -> Result<Response<SearchChatMessagesResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .execute_room_actor_endpoint(
+            metadata,
+            room_id,
+            EndpointRateLimitCategory::Read,
+            move |client_api, actor| async move {
+                client_api.search_chat_messages_for_actor(&actor, req).await
+            },
+        )
+        .await?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn get_chat_message(
     service: &ClientServiceImpl,
     request: Request<GetChatMessageRequest>,

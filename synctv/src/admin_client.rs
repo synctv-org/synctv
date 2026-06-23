@@ -366,12 +366,12 @@ mod tests {
         MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-        SendTestEmailRequest, SetUserPasswordRequest, StartPlaybackRequest, StopPlaybackRequest,
-        StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest,
-        UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest,
-        UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-        UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
-        UpdateUserUsernameRequest,
+        SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
+        StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
+        TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+        UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+        UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
+        UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_proto::{
@@ -744,6 +744,13 @@ mod tests {
             &self,
             _: Request<GetRoomMembersRequest>,
         ) -> std::result::Result<Response<admin_proto::GetRoomMembersResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn search_chat_messages(
+            &self,
+            _: Request<SearchChatMessagesRequest>,
+        ) -> std::result::Result<Response<client_proto::SearchChatMessagesResponse>, Status>
+        {
             unavailable_test_management_response()
         }
         async fn add_member(

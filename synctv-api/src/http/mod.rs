@@ -1076,6 +1076,10 @@ fn register_read_routes() -> Router<AppState> {
             get(room::get_chat_history),
         )
         .route(
+            "/api/rooms/{room_id}/chat/search",
+            get(room::search_chat_messages),
+        )
+        .route(
             "/api/rooms/{room_id}/chat/playback-messages",
             get(room::get_chat_playback_messages),
         )

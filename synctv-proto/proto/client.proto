@@ -132,6 +132,7 @@ service RoomService {
   rpc EditChatMessage(EditChatMessageRequest) returns (ChatMessageEventResponse);
   rpc DeleteChatMessage(DeleteChatMessageRequest) returns (ChatMessageEventResponse);
   rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
+  rpc SearchChatMessages(SearchChatMessagesRequest) returns (SearchChatMessagesResponse);
   rpc GetChatMessage(GetChatMessageRequest) returns (GetChatMessageResponse);
   rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
   rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
@@ -3569,6 +3570,33 @@ message GetChatHistoryResponse {
   repeated ChatMessageReceive messages = 1;
   string next_cursor = 2; // Pass this as cursor in the next request. Empty when no more messages.
   EventCursor event_cursor = 3; // Chat event watermark captured before the page read; observe chat events after this cursor to avoid gaps.
+}
+
+message SearchChatMessagesRequest {
+  option (buf.validate.message).cel = {
+    id: "search_chat_messages.query"
+    message: "query must be between 2 and 120 characters"
+    expression: "size(this.query.trim()) >= 2 && size(this.query.trim()) <= 120"
+  };
+  option (buf.validate.message).cel = {
+    id: "search_chat_messages.limit"
+    message: "limit must be 0 (use default) or between 1 and 100"
+    expression: "this.limit == 0 || (this.limit >= 1 && this.limit <= 100)"
+  };
+  string query = 1 [(buf.validate.field).string.max_len = 120];
+  string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
+  int32 limit = 3; // Max page size (clamped to 100 server-side). Default: 50.
+  bool include_deleted = 4;
+  string user_id = 5 [(buf.validate.field).string = {
+    max_len: 64
+    pattern: "^$|^usr_[A-Za-z0-9]+$"
+  }];
+}
+
+message SearchChatMessagesResponse {
+  repeated ChatMessageReceive messages = 1;
+  string next_cursor = 2;
+  EventCursor event_cursor = 3;
 }
 
 message EventCursor {

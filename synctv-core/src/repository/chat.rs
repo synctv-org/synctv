@@ -12,11 +12,12 @@ use crate::{
         ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
         ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
         ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
-        ChatReadState, EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
-        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
-        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
-        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS,
-        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery, EventCursor, NewStoredFile,
+        RoomId, SetChatReaction, User, UserId, CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
+        CHAT_ATTACHMENT_ID_MAX_CHARS, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
+        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS,
+        CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
+        FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     repository::{
         pools::RepoPools, room_resource_event::insert_room_resource_event_with_executor,
@@ -1889,6 +1890,132 @@ impl ChatRepository {
             .await?;
 
         Ok(ChatHistoryPage {
+            messages,
+            next_cursor,
+            event_cursor,
+        })
+    }
+
+    pub async fn search_messages_for_viewer(
+        &self,
+        query: &ChatSearchMessagesQuery,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<ChatSearchMessagesPage> {
+        let event_cursor = self.latest_event_cursor_for_room(&query.room_id).await?;
+        let pattern = crate::repository::query_builder::ilike_contains_pattern(&query.query)
+            .ok_or_else(|| Error::InvalidInput("chat search query is required".to_string()))?;
+        let limit = query.limit.clamp(1, 100);
+        let fetch_limit = i64::from(limit) + 1;
+        let user_id = query.user_id.map(|id| id.as_i64());
+        let pool = self.pool();
+        let mut messages = if let Some(cursor) = query.cursor {
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                WITH search_terms AS (
+                    SELECT websearch_to_tsquery('simple', $2) AS tsquery
+                )
+                SELECT m.id AS "id!",
+                       m.room_id AS "room_id!: RoomId",
+                       m.user_id AS "user_id?: UserId",
+                       m.client_message_id,
+                       m.content AS "content!",
+                       m.message_type AS "message_type!: ChatMessageType",
+                       m.status AS "status!: ChatMessageStatus",
+                       m.version AS "version!",
+                       m.reply_to_message_id,
+                       m.reply_to_message_created_at,
+                       m.metadata AS "metadata!: serde_json::Value",
+                       m.edited_at,
+                       m.deleted_at,
+                       m.deleted_by AS "deleted_by?: UserId",
+                       m.delete_reason,
+                       m.created_at AS "created_at!"
+                FROM chat_messages m
+                CROSS JOIN search_terms st
+                WHERE m.room_id = $1
+                  AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
+                  AND ($4 OR m.status <> $5)
+                  AND ($6::bigint IS NULL OR m.user_id = $6)
+                  AND (m.created_at, m.id) < ($7, $8)
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT $9
+                "#,
+                query.room_id.as_i64(),
+                &query.query,
+                &pattern,
+                query.include_deleted,
+                i16::from(ChatMessageStatus::Deleted),
+                user_id,
+                cursor.created_at,
+                cursor.id,
+                fetch_limit
+            )
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as!(
+                ChatMessage,
+                r#"
+                WITH search_terms AS (
+                    SELECT websearch_to_tsquery('simple', $2) AS tsquery
+                )
+                SELECT m.id AS "id!",
+                       m.room_id AS "room_id!: RoomId",
+                       m.user_id AS "user_id?: UserId",
+                       m.client_message_id,
+                       m.content AS "content!",
+                       m.message_type AS "message_type!: ChatMessageType",
+                       m.status AS "status!: ChatMessageStatus",
+                       m.version AS "version!",
+                       m.reply_to_message_id,
+                       m.reply_to_message_created_at,
+                       m.metadata AS "metadata!: serde_json::Value",
+                       m.edited_at,
+                       m.deleted_at,
+                       m.deleted_by AS "deleted_by?: UserId",
+                       m.delete_reason,
+                       m.created_at AS "created_at!"
+                FROM chat_messages m
+                CROSS JOIN search_terms st
+                WHERE m.room_id = $1
+                  AND (m.content_search @@ st.tsquery OR m.content ILIKE $3 ESCAPE '\')
+                  AND ($4 OR m.status <> $5)
+                  AND ($6::bigint IS NULL OR m.user_id = $6)
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT $7
+                "#,
+                query.room_id.as_i64(),
+                &query.query,
+                &pattern,
+                query.include_deleted,
+                i16::from(ChatMessageStatus::Deleted),
+                user_id,
+                fetch_limit
+            )
+            .fetch_all(pool)
+            .await?
+        };
+
+        let page_size = usize::try_from(limit)
+            .map_err(|_| Error::Internal("chat search limit overflowed usize".to_string()))?;
+        let has_next = messages.len() > page_size;
+        if has_next {
+            messages.truncate(page_size);
+        }
+        let next_cursor =
+            has_next
+                .then(|| messages.last())
+                .flatten()
+                .map(|message| ChatHistoryCursor {
+                    created_at: message.created_at,
+                    id: message.id,
+                });
+        let messages = self
+            .attach_attachments_and_reactions_to_messages_from_pool(pool, messages, viewer_user_id)
+            .await?;
+
+        Ok(ChatSearchMessagesPage {
             messages,
             next_cursor,
             event_cursor,

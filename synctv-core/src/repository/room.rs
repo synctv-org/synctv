@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 
 use super::{
-    query_builder::escape_ilike,
+    query_builder::ilike_contains_pattern,
     required_count,
     room_taxonomy::{optional_room_category_from_parts, OptionalRoomCategoryRowParts},
 };
@@ -697,9 +697,9 @@ impl RoomRepository {
             builder
                 .push("(r.name ILIKE ")
                 .push_bind(pattern)
-                .push(" OR r.description ILIKE ")
+                .push(" ESCAPE '\\' OR r.description ILIKE ")
                 .push_bind(pattern)
-                .push(")");
+                .push(" ESCAPE '\\')");
         }
 
         if let Some(creator_id) = &query.creator_id {
@@ -755,7 +755,7 @@ impl RoomRepository {
     pub async fn list(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM rooms r");
         let mut has_condition = false;
@@ -802,7 +802,7 @@ impl RoomRepository {
     pub async fn list_accessible(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM rooms r");
         let mut has_condition = false;
@@ -857,7 +857,7 @@ impl RoomRepository {
     ) -> Result<(Vec<Room>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|value| escape_ilike(value));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*) FROM rooms r");
         let mut has_condition = false;
@@ -933,7 +933,7 @@ impl RoomRepository {
     ) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder =
             QueryBuilder::<Postgres>::new("SELECT COUNT(DISTINCT r.id) FROM rooms r");

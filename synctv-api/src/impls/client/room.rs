@@ -1561,6 +1561,49 @@ impl ClientApiImpl {
         self.get_chat_history_for_actor(&actor, req).await
     }
 
+    async fn chat_messages_to_proto(
+        &self,
+        messages: Vec<ChatMessageWithAttachments>,
+    ) -> Result<Vec<synctv_proto::client::ChatMessageReceive>, ApiError> {
+        let user_ids: Vec<synctv_core::models::UserId> = messages
+            .iter()
+            .filter_map(|message| message.message.user_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let username_map: std::collections::HashMap<synctv_core::models::UserId, String> = self
+            .user_service
+            .get_usernames(&user_ids)
+            .await
+            .map_err(ApiError::from)?;
+
+        messages
+            .into_iter()
+            .map(|message| {
+                let (user_id_str, username) = match &message.message.user_id {
+                    Some(uid) => {
+                        let uid_str =
+                            self.public_id_codec.encode_user_id(*uid).map_err(|error| {
+                                ApiError::Internal(format!(
+                                    "Failed to encode chat message user id: {error}"
+                                ))
+                            })?;
+                        let name = username_map.get(uid).cloned().ok_or_else(|| {
+                            ApiError::NotFound("Chat message author not found".to_string())
+                        })?;
+                        (uid_str, name)
+                    }
+                    None => (String::new(), "[deleted]".to_string()),
+                };
+
+                let mut proto = chat_message_to_proto(self, &message, username)?;
+                proto.user_id = user_id_str;
+                Ok(proto)
+            })
+            .collect::<Result<Vec<_>, ApiError>>()
+    }
+
     async fn get_chat_history_for_room_id(
         &self,
         rid: &synctv_core::models::RoomId,
@@ -1592,52 +1635,48 @@ impl ClientApiImpl {
             )
         });
 
-        // Collect unique user IDs to batch fetch usernames
-        let user_ids: Vec<synctv_core::models::UserId> = page
-            .messages
-            .iter()
-            .filter_map(|m| m.message.user_id)
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        // Batch fetch usernames (single query instead of N+1)
-        let username_map: std::collections::HashMap<synctv_core::models::UserId, String> = self
-            .user_service
-            .get_usernames(&user_ids)
-            .await
-            .map_err(ApiError::from)?;
-
-        // Convert to proto format
-        let proto_messages = page
-            .messages
-            .into_iter()
-            .map(|m| {
-                let (user_id_str, username) = match &m.message.user_id {
-                    Some(uid) => {
-                        let uid_str =
-                            self.public_id_codec.encode_user_id(*uid).map_err(|error| {
-                                ApiError::Internal(format!(
-                                    "Failed to encode chat message user id: {error}"
-                                ))
-                            })?;
-                        let name = username_map.get(uid).cloned().ok_or_else(|| {
-                            ApiError::NotFound("Chat message author not found".to_string())
-                        })?;
-                        (uid_str, name)
-                    }
-                    None => (String::new(), "[deleted]".to_string()),
-                };
-
-                let mut proto = chat_message_to_proto(self, &m, username)?;
-                proto.user_id = user_id_str;
-                Ok(proto)
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?;
+        let proto_messages = self.chat_messages_to_proto(page.messages).await?;
 
         Ok(synctv_proto::client::GetChatHistoryResponse {
             messages: proto_messages,
             next_cursor: next_cursor_str.unwrap_or_default(),
+            event_cursor: Some(synctv_proto::client::EventCursor {
+                event_id: page.event_cursor.event_id,
+                sequence: page.event_cursor.sequence,
+            }),
+        })
+    }
+
+    async fn search_chat_messages_for_room_id(
+        &self,
+        rid: &synctv_core::models::RoomId,
+        viewer_user_id: Option<UserId>,
+        req: synctv_proto::client::SearchChatMessagesRequest,
+    ) -> Result<synctv_proto::client::SearchChatMessagesResponse, ApiError> {
+        let query = build_search_chat_messages_query(*rid, &req, &self.public_id_codec)?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(chat_service_unavailable_error)?;
+        let page = chat_service
+            .search_messages_with_attachments_for_viewer(query, viewer_user_id.as_ref())
+            .await
+            .map_err(ApiError::from)?;
+        let next_cursor = page
+            .next_cursor
+            .map(|cursor| {
+                format!(
+                    "{}|{}",
+                    synctv_common::time::format_datetime_rfc3339(cursor.created_at),
+                    cursor.id
+                )
+            })
+            .unwrap_or_default();
+        let messages = self.chat_messages_to_proto(page.messages).await?;
+
+        Ok(synctv_proto::client::SearchChatMessagesResponse {
+            messages,
+            next_cursor,
             event_cursor: Some(synctv_proto::client::EventCursor {
                 event_id: page.event_cursor.event_id,
                 sequence: page.event_cursor.sequence,
@@ -2187,6 +2226,20 @@ impl ClientApiImpl {
             .await
     }
 
+    pub async fn search_chat_messages_for_actor(
+        &self,
+        actor: &RoomActor,
+        req: synctv_proto::client::SearchChatMessagesRequest,
+    ) -> Result<synctv_proto::client::SearchChatMessagesResponse, ApiError> {
+        self.require_room_permission(
+            actor,
+            synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
+        )
+        .await?;
+        self.search_chat_messages_for_room_id(&actor.room_id(), actor.user_id(), req)
+            .await
+    }
+
     pub async fn get_chat_message_for_actor(
         &self,
         actor: &RoomActor,
@@ -2300,34 +2353,6 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::GetChatPlaybackMessagesResponse {
             messages: self.chat_messages_to_proto(messages).await?,
         })
-    }
-
-    async fn chat_messages_to_proto(
-        &self,
-        messages: Vec<ChatMessageWithAttachments>,
-    ) -> Result<Vec<synctv_proto::client::ChatMessageReceive>, ApiError> {
-        let mut user_ids: Vec<UserId> = messages
-            .iter()
-            .filter_map(|message| message.message.user_id)
-            .collect();
-        user_ids.sort();
-        user_ids.dedup();
-        let username_map = self
-            .user_service
-            .get_usernames(&user_ids)
-            .await
-            .map_err(ApiError::from)?;
-        let mut converted = Vec::with_capacity(messages.len());
-        for message in messages {
-            let username = match message.message.user_id {
-                Some(user_id) => username_map.get(&user_id).cloned().ok_or_else(|| {
-                    ApiError::NotFound("Chat message author not found".to_string())
-                })?,
-                None => "[deleted]".to_string(),
-            };
-            converted.push(chat_message_to_proto(self, &message, username)?);
-        }
-        Ok(converted)
     }
 
     pub(crate) fn parse_proto_chat_mentions(

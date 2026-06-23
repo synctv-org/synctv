@@ -2,7 +2,7 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.2
 
-use super::query_builder::escape_ilike;
+use super::query_builder::ilike_contains_pattern;
 use sqlx::PgPool;
 use std::collections::{BTreeSet, HashMap};
 
@@ -204,10 +204,11 @@ impl MediaRepository {
         }
 
         if let Some(search) = &query.search {
-            let pattern = escape_ilike(search);
-            builder.push(" AND m.name ILIKE ");
-            builder.push_bind(pattern);
-            builder.push(" ESCAPE '\\'");
+            if let Some(pattern) = ilike_contains_pattern(search) {
+                builder.push(" AND m.name ILIKE ");
+                builder.push_bind(pattern);
+                builder.push(" ESCAPE '\\'");
+            }
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND m.source_provider = ");

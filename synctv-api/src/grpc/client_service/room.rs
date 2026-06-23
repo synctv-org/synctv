@@ -320,6 +320,13 @@ impl RoomService for ClientServiceImpl {
         chat::get_chat_history(self, request).await
     }
 
+    async fn search_chat_messages(
+        &self,
+        request: Request<SearchChatMessagesRequest>,
+    ) -> Result<Response<SearchChatMessagesResponse>, Status> {
+        chat::search_chat_messages(self, request).await
+    }
+
     async fn get_chat_message(
         &self,
         request: Request<GetChatMessageRequest>,

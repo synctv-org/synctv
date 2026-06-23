@@ -184,19 +184,33 @@ impl ProviderInstanceRepository {
             builder.push(" AND tls = ");
             builder.push_bind(tls);
         }
-        if let Some(search) = &query.search {
-            let pattern = super::query_builder::escape_ilike(search);
-            builder.push(" AND (name ILIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" ESCAPE '\\' OR endpoint ILIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" ESCAPE '\\' OR COALESCE(comment, '') ILIKE ");
-            builder.push_bind(pattern);
-            builder.push(" ESCAPE '\\'");
-            if let Ok(provider_code) = provider_type_code(search) {
-                builder.push(" OR ");
+        if let Some(search) = query
+            .search
+            .as_deref()
+            .and_then(super::query_builder::normalize_search_text)
+        {
+            builder.push(" AND (");
+            let mut has_search_condition = false;
+            if let Some(pattern) = super::query_builder::ilike_contains_pattern(&search) {
+                builder.push("name ILIKE ");
+                builder.push_bind(pattern.clone());
+                builder.push(" ESCAPE '\\' OR endpoint ILIKE ");
+                builder.push_bind(pattern.clone());
+                builder.push(" ESCAPE '\\' OR COALESCE(comment, '') ILIKE ");
+                builder.push_bind(pattern);
+                builder.push(" ESCAPE '\\'");
+                has_search_condition = true;
+            }
+            if let Ok(provider_code) = provider_type_code(&search) {
+                if has_search_condition {
+                    builder.push(" OR ");
+                }
                 builder.push_bind(provider_code);
                 builder.push(" = ANY(providers)");
+                has_search_condition = true;
+            }
+            if !has_search_condition {
+                builder.push("FALSE");
             }
             builder.push(")");
         }

@@ -20,6 +20,10 @@ CREATE INDEX IF NOT EXISTS notifications_default_idx_user_unread
 CREATE INDEX IF NOT EXISTS notifications_default_idx_user_type_created
     ON notifications_default(user_id, type, created_at DESC)
     WHERE is_read = FALSE;
+CREATE INDEX IF NOT EXISTS notifications_default_idx_title_trgm
+    ON notifications_default USING gin(title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS notifications_default_idx_content_trgm
+    ON notifications_default USING gin(content gin_trgm_ops);
 
 CREATE TRIGGER trigger_update_notifications_updated_at
     BEFORE UPDATE ON notifications

@@ -217,6 +217,26 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 args.remote.print_output(&response)
             }
         },
+        RoomSubcommand::Chat(chat_command) => match chat_command.command {
+            RoomChatSubcommand::Search(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "search chat messages",
+                    search_chat_messages,
+                    management_proto::SearchChatMessagesRequest {
+                        room_id: args.room.room_id,
+                        actor: Some(args.actor.to_management_proto()?),
+                        query: args.query,
+                        cursor: args.cursor.unwrap_or_default(),
+                        limit: args.limit,
+                        include_deleted: args.include_deleted,
+                        user: args.sender.to_management_proto(),
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
+        },
         RoomSubcommand::Member(member_command) => match member_command.command {
             RoomMemberSubcommand::List(args) => {
                 let session = connect_remote_access(&args.remote).await?;

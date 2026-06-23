@@ -590,6 +590,23 @@ pub struct ChatHistoryPage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSearchMessagesQuery {
+    pub room_id: RoomId,
+    pub query: String,
+    pub cursor: Option<ChatHistoryCursor>,
+    pub limit: i32,
+    pub include_deleted: bool,
+    pub user_id: Option<UserId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatSearchMessagesPage {
+    pub messages: Vec<ChatMessageWithAttachments>,
+    pub next_cursor: Option<ChatHistoryCursor>,
+    pub event_cursor: EventCursor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatPlaybackMessagesQuery {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,

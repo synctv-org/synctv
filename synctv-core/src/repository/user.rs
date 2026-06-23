@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
-use super::query_builder::escape_ilike;
+use super::query_builder::ilike_contains_pattern;
 use crate::repository::pools::RepoPools;
 use crate::{
     models::{SignupMethod, User, UserId, UserListQuery, UserListSortBy, UserRole, UserStatus},
@@ -821,9 +821,9 @@ impl UserRepository {
             builder
                 .push(" AND (u.username ILIKE ")
                 .push_bind(pattern)
-                .push(" OR aei.email ILIKE ")
+                .push(" ESCAPE '\\' OR aei.email ILIKE ")
                 .push_bind(pattern)
-                .push(")");
+                .push(" ESCAPE '\\')");
         }
         if let Some(role) = query.role {
             builder.push(" AND u.role = ").push_bind(i16::from(role));
@@ -856,7 +856,7 @@ impl UserRepository {
     ) -> Result<(Vec<User>, i64)> {
         let limit = query.pagination.limit_i64()?;
         let offset = query.pagination.offset_i64()?;
-        let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
+        let search_pattern = query.search.as_deref().and_then(ilike_contains_pattern);
 
         let mut count_builder = QueryBuilder::<Postgres>::new("SELECT COUNT(*)");
         Self::push_user_list_from_and_filters(

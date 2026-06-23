@@ -534,6 +534,160 @@ fn validate_chat_playback_query_rejects_invalid_limit() {
     ));
 }
 
+async fn send_test_chat_text(
+    service: &ChatService,
+    room_id: RoomId,
+    user_id: UserId,
+    content: &str,
+) -> ChatMessage {
+    ok(
+        service
+            .send_message(room_id, user_id, content.to_string())
+            .await,
+        "chat message should send",
+    )
+}
+
+fn test_chat_search_query(
+    room_id: RoomId,
+    cursor: Option<ChatHistoryCursor>,
+    limit: i32,
+    user_id: Option<UserId>,
+) -> ChatSearchMessagesQuery {
+    ChatSearchMessagesQuery {
+        room_id,
+        query: "production search".to_string(),
+        cursor,
+        limit,
+        include_deleted: false,
+        user_id,
+    }
+}
+
+#[tokio::test]
+async fn chat_search_filters_by_user_and_paginates_matches() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let user_repository = Arc::new(UserRepository::new(pool.clone()));
+    let owner = ok(
+        user_repository
+            .create(&User::new(
+                "chat_search_owner".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "owner should be created",
+    );
+    let member = ok(
+        user_repository
+            .create(&User::new(
+                "chat_search_member".to_string(),
+                SignupMethod::Password,
+            ))
+            .await,
+        "member should be created",
+    );
+    let room_service = ok(
+        RoomService::new_for_tests(
+            pool.clone(),
+            (*test_user_service(
+                &pool,
+                UsernameCache::local_only("test:chat:search:room:".to_string(), 100, 60),
+            ))
+            .clone(),
+        ),
+        "room service should build",
+    );
+    let (room, _) = ok(
+        room_service
+            .create_room(
+                "Chat Search Room".to_string(),
+                String::new(),
+                owner.id,
+                None,
+                None,
+            )
+            .await,
+        "room should be created",
+    );
+    ok(
+        room_service.join_room(room.id, member.id, None).await,
+        "member should join room",
+    );
+    let service = test_chat_service(
+        &pool,
+        UsernameCache::local_only("test:chat:search:".to_string(), 100, 60),
+    );
+
+    let owner_first =
+        send_test_chat_text(&service, room.id, owner.id, "production search owner alpha").await;
+    let member_match = send_test_chat_text(
+        &service,
+        room.id,
+        member.id,
+        "production search member beta",
+    )
+    .await;
+    let owner_second =
+        send_test_chat_text(&service, room.id, owner.id, "production search owner gamma").await;
+    send_test_chat_text(&service, room.id, owner.id, "unrelated chat payload").await;
+
+    let first_page = ok(
+        service
+            .search_messages_with_attachments_for_viewer(
+                test_chat_search_query(room.id, None, 2, None),
+                Some(&owner.id),
+            )
+            .await,
+        "first search page should load",
+    );
+    assert_eq!(
+        first_page
+            .messages
+            .iter()
+            .map(|message| message.message.id)
+            .collect::<Vec<_>>(),
+        vec![owner_second.id, member_match.id]
+    );
+    let cursor = some(first_page.next_cursor, "first page should have cursor");
+
+    let second_page = ok(
+        service
+            .search_messages_with_attachments_for_viewer(
+                test_chat_search_query(room.id, Some(cursor), 2, None),
+                Some(&owner.id),
+            )
+            .await,
+        "second search page should load",
+    );
+    assert_eq!(
+        second_page
+            .messages
+            .iter()
+            .map(|message| message.message.id)
+            .collect::<Vec<_>>(),
+        vec![owner_first.id]
+    );
+    assert!(second_page.next_cursor.is_none());
+
+    let owner_only = ok(
+        service
+            .search_messages_with_attachments_for_viewer(
+                test_chat_search_query(room.id, None, 10, Some(owner.id)),
+                Some(&owner.id),
+            )
+            .await,
+        "owner search page should load",
+    );
+    assert_eq!(
+        owner_only
+            .messages
+            .iter()
+            .map(|message| message.message.id)
+            .collect::<Vec<_>>(),
+        vec![owner_second.id, owner_first.id]
+    );
+}
+
 fn test_chat_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> ChatService {
     test_chat_service_with_file_storage(pool, username_cache, Arc::new(DisabledFileStorageService))
 }

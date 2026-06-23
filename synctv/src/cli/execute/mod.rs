@@ -260,6 +260,9 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::Taxonomy(command) => match &mut command.command {
             RoomTaxonomySubcommand::Set(args) => merge_remote_access_args(&mut args.remote, root),
         },
+        RoomSubcommand::Chat(command) => match &mut command.command {
+            RoomChatSubcommand::Search(args) => merge_room_scoped_remote_args(&mut args.room, root),
+        },
         RoomSubcommand::Member(command) => match &mut command.command {
             RoomMemberSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
             RoomMemberSubcommand::Add(args) => merge_room_scoped_remote_args(&mut args.room, root),

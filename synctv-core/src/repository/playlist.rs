@@ -2,7 +2,7 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.1
 
-use super::{query_builder::escape_ilike, required_count};
+use super::{query_builder::ilike_contains_pattern, required_count};
 use crate::{
     models::{
         normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery,
@@ -177,12 +177,13 @@ impl PlaylistRepository {
         }
 
         if let Some(search) = &query.search {
-            let pattern = escape_ilike(search);
-            builder.push(" AND (p.name ILIKE ");
-            builder.push_bind(pattern.clone());
-            builder.push(" ESCAPE '\\' OR p.description ILIKE ");
-            builder.push_bind(pattern);
-            builder.push(" ESCAPE '\\')");
+            if let Some(pattern) = ilike_contains_pattern(search) {
+                builder.push(" AND (p.name ILIKE ");
+                builder.push_bind(pattern.clone());
+                builder.push(" ESCAPE '\\' OR p.description ILIKE ");
+                builder.push_bind(pattern);
+                builder.push(" ESCAPE '\\')");
+            }
         }
         if let Some(source_provider) = &query.source_provider {
             builder.push(" AND p.source_provider = ");

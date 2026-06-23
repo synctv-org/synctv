@@ -16,7 +16,8 @@ use synctv_proto::client::{
     GetChatMessageResponse, GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse,
     GetChatReadStateRequest, ListChatReactionUsersRequest, ListChatReactionUsersResponse,
     ListPinnedChatMessagesRequest, ListPinnedChatMessagesResponse, MarkChatReadRequest,
-    PinChatMessageRequest, SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
+    PinChatMessageRequest, SearchChatMessagesRequest, SearchChatMessagesResponse,
+    SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
     UnpinChatMessageRequest,
 };
 
@@ -59,6 +60,49 @@ pub async fn get_chat_history(
             },
         )
         .await?;
+
+    Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/chat/search",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            SearchChatMessagesRequest
+        ),
+        responses(
+            (status = 200, description = "Chat search results", body = SearchChatMessagesResponse),
+            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn search_chat_messages(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    ProtoQuery(req): ProtoQuery<SearchChatMessagesRequest>,
+) -> AppResult<Json<SearchChatMessagesResponse>> {
+    let room_id = path.room_id;
+    let response = execute_room_actor_endpoint(
+        &state,
+        request_meta,
+        room_id,
+        EndpointRateLimitCategory::Read,
+        EndpointRateLimitScope::RoomChat,
+        move |client_api, actor| async move {
+            client_api.search_chat_messages_for_actor(&actor, req).await
+        },
+    )
+    .await?;
 
     Ok(Json(response))
 }

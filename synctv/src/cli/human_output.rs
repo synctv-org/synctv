@@ -200,6 +200,45 @@ pub(in crate::cli) struct HumanRoomMember {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanChatMessage {
+    id: String,
+    room_id: String,
+    user_id: String,
+    username: String,
+    content: String,
+    timestamp: String,
+    display_position: String,
+    display_color: String,
+    client_message_id: String,
+    status: String,
+    version: i64,
+    edited_at: String,
+    deleted_at: String,
+    reply_to_message_id: String,
+    attachments: Vec<synctv_proto::client::ChatAttachment>,
+    deleted_by_user_id: String,
+    delete_reason: String,
+    playback_media_id: String,
+    playback_playlist_id: String,
+    playback_target: Value,
+    playback_target_hash: String,
+    playback_position_seconds: Option<f64>,
+    reactions: Vec<synctv_proto::client::ChatReactionSummary>,
+    reaction_count: i32,
+    metadata: Value,
+    mentions: Vec<synctv_proto::client::ChatMention>,
+    pin: Option<HumanChatMessagePin>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanChatMessagePin {
+    pinned_by_user_id: String,
+    pinned_by_username: String,
+    note: String,
+    pinned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(in crate::cli) struct HumanProviderInstance {
     name: String,
     endpoint: String,
@@ -603,6 +642,13 @@ pub(in crate::cli) struct HumanRoomLabelsResponse<T> {
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::cli) struct HumanRoomLabelResponse<T> {
     label: Option<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(in crate::cli) struct HumanChatMessagesResponse<T> {
+    messages: Vec<T>,
+    next_cursor: String,
+    event_cursor: Option<synctv_proto::client::EventCursor>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1016,6 +1062,56 @@ impl ToHuman for synctv_proto::common::RoomMember {
             joined_at: humanize_timestamp(self.joined_at),
             is_online: self.is_online,
             connection_count: self.connection_count,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::ChatMessagePin {
+    type Human = HumanChatMessagePin;
+
+    fn to_human(&self) -> Self::Human {
+        HumanChatMessagePin {
+            pinned_by_user_id: self.pinned_by_user_id.clone(),
+            pinned_by_username: self.pinned_by_username.clone(),
+            note: self.note.clone(),
+            pinned_at: humanize_timestamp(self.pinned_at),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::ChatMessageReceive {
+    type Human = HumanChatMessage;
+
+    fn to_human(&self) -> Self::Human {
+        HumanChatMessage {
+            id: self.id.clone(),
+            room_id: self.room_id.clone(),
+            user_id: self.user_id.clone(),
+            username: self.username.clone(),
+            content: self.content.clone(),
+            timestamp: humanize_timestamp(self.timestamp),
+            display_position: self.display_position.clone(),
+            display_color: self.display_color.clone(),
+            client_message_id: self.client_message_id.clone(),
+            status: humanize_chat_message_status(i64::from(self.status))
+                .unwrap_or_else(|| self.status.to_string()),
+            version: self.version,
+            edited_at: humanize_timestamp(self.edited_at),
+            deleted_at: humanize_timestamp(self.deleted_at),
+            reply_to_message_id: self.reply_to_message_id.clone(),
+            attachments: self.attachments.clone(),
+            deleted_by_user_id: self.deleted_by_user_id.clone(),
+            delete_reason: self.delete_reason.clone(),
+            playback_media_id: self.playback_media_id.clone(),
+            playback_playlist_id: self.playback_playlist_id.clone(),
+            playback_target: parse_json_bytes(&self.playback_target),
+            playback_target_hash: self.playback_target_hash.clone(),
+            playback_position_seconds: self.playback_position_seconds,
+            reactions: self.reactions.clone(),
+            reaction_count: self.reaction_count,
+            metadata: parse_json_bytes(&self.metadata),
+            mentions: self.mentions.clone(),
+            pin: self.pin.to_human(),
         }
     }
 }
@@ -1643,6 +1739,18 @@ impl ToHuman for synctv_proto::client::GetRoomMembersResponse {
     }
 }
 
+impl ToHuman for synctv_proto::client::SearchChatMessagesResponse {
+    type Human = HumanChatMessagesResponse<HumanChatMessage>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanChatMessagesResponse {
+            messages: self.messages.to_human(),
+            next_cursor: self.next_cursor.clone(),
+            event_cursor: self.event_cursor.clone(),
+        }
+    }
+}
+
 impl ToHuman for synctv_proto::client::UpdateMemberPermissionsResponse {
     type Human = HumanMemberResponse<HumanRoomMember>;
 
@@ -1939,6 +2047,20 @@ fn humanize_room_status(raw: i64) -> Option<String> {
             RoomStatus::Unspecified => "unspecified",
             RoomStatus::Active => "active",
             RoomStatus::Closed => "closed",
+        }
+        .to_string(),
+    )
+}
+
+fn humanize_chat_message_status(raw: i64) -> Option<String> {
+    use synctv_proto::client::ChatMessageStatus;
+
+    Some(
+        match ChatMessageStatus::try_from(i64_to_i32(raw)?).ok()? {
+            ChatMessageStatus::Unspecified => "unspecified",
+            ChatMessageStatus::Active => "active",
+            ChatMessageStatus::Edited => "edited",
+            ChatMessageStatus::Deleted => "deleted",
         }
         .to_string(),
     )

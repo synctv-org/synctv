@@ -42,13 +42,13 @@ use crate::proto::{
     MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
     PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-    SendTestEmailRequest, SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode,
-    SliceCacheConfigInfo, SliceCacheNodeFailure, SliceCacheStatsResponse, StartPlaybackRequest,
-    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest,
-    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateRoomSettingsRequest,
-    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
-    UpdateUserUsernameRequest, UserRef,
+    SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
+    ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo, SliceCacheNodeFailure,
+    SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+    StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+    UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
+    UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
 use crate::source_config::{
     alist_media_source_config, alist_playlist_source_config, bilibili_live_source_config,
@@ -1716,6 +1716,36 @@ impl ManagementService for ManagementServiceImpl {
                     admin_proto::SortDirection::Asc,
                 )?,
             })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn search_chat_messages(
+        &self,
+        request: Request<SearchChatMessagesRequest>,
+    ) -> Result<Response<client_proto::SearchChatMessagesResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
+        let actor = self
+            .client_api
+            .room_actor_for_user(&actor_user_id, &req.room_id)
+            .await
+            .map_err(map_api_error)?;
+        let user_id = self.resolve_optional_user_ref(req.user, "user").await?;
+        let response = self
+            .client_api
+            .search_chat_messages_for_actor(
+                &actor,
+                client_proto::SearchChatMessagesRequest {
+                    query: req.query,
+                    cursor: req.cursor,
+                    limit: req.limit,
+                    include_deleted: req.include_deleted,
+                    user_id,
+                },
+            )
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

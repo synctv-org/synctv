@@ -112,6 +112,19 @@ pub fn escape_ilike(search: &str) -> String {
     format!("%{escaped}%")
 }
 
+/// Normalize user-facing database search text before building a query.
+#[must_use]
+pub fn normalize_search_text(search: &str) -> Option<String> {
+    let trimmed = search.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Build an escaped `%...%` ILIKE pattern from normalized search text.
+#[must_use]
+pub fn ilike_contains_pattern(search: &str) -> Option<String> {
+    normalize_search_text(search).map(|normalized| escape_ilike(&normalized))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +195,20 @@ mod tests {
         assert_eq!(escape_ilike("100%"), "%100\\%%");
         assert_eq!(escape_ilike("under_score"), "%under\\_score%");
         assert_eq!(escape_ilike("back\\slash"), "%back\\\\slash%");
+    }
+
+    #[test]
+    fn test_normalize_search_text() {
+        assert_eq!(normalize_search_text("  hello  ").as_deref(), Some("hello"));
+        assert_eq!(normalize_search_text(" \t\n "), None);
+    }
+
+    #[test]
+    fn test_ilike_contains_pattern_normalizes_and_escapes() {
+        assert_eq!(
+            ilike_contains_pattern("  100%_ok  ").as_deref(),
+            Some("%100\\%\\_ok%")
+        );
+        assert_eq!(ilike_contains_pattern("   "), None);
     }
 }

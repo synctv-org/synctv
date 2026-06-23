@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     deleted_by BIGINT,
     delete_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    content_search TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
     CHECK (version >= 1),
     CHECK (jsonb_typeof(metadata) = 'object'),
     CHECK (
@@ -42,6 +43,10 @@ CREATE INDEX IF NOT EXISTS chat_messages_default_idx_status
     ON chat_messages_default(room_id, status, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS chat_messages_default_idx_reply_target
     ON chat_messages_default(reply_to_message_id, reply_to_message_created_at);
+CREATE INDEX IF NOT EXISTS chat_messages_default_idx_content_search
+    ON chat_messages_default USING gin(content_search);
+CREATE INDEX IF NOT EXISTS chat_messages_default_idx_content_trgm
+    ON chat_messages_default USING gin(content gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS chat_messages_default_idx_playback_media
     ON chat_messages_default(
         room_id,

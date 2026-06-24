@@ -3,7 +3,7 @@
 //! Coordinates periodic database maintenance in a single background task:
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
 //! - Cleanup of chat messages older than the configurable retention cap (default: 90 days)
-//! - Cleanup of expired room resource events
+//! - Cleanup of expired chat and room resource events
 //! - Cleanup of delivered realtime outbox rows
 //!
 //! Note: partition creation/retention is owned by dedicated managers:
@@ -101,6 +101,14 @@ impl DatabaseMaintenanceService {
         }
     }
 
+    fn chat_message_event_retention_seconds(&self) -> CoreResult<u64> {
+        let message_retention_days = self.chat_message_retention_days()?;
+        cleanup_ops::effective_chat_message_event_retention_seconds(
+            self.config.chat_message_event_retention_seconds,
+            message_retention_days,
+        )
+    }
+
     fn expired_token_retention_days(&self) -> CoreResult<i32> {
         u32_to_i32(
             self.config.expired_token_retention_days,
@@ -188,6 +196,18 @@ impl DatabaseMaintenanceService {
         .await?;
         if deleted > 0 {
             info!(deleted, "Expired room resource event cleanup completed");
+        }
+        Ok(())
+    }
+
+    pub async fn run_cleanup_chat_message_events(&self) -> crate::Result<()> {
+        let deleted = cleanup_ops::delete_old_chat_message_events(
+            &self.pool,
+            self.chat_message_event_retention_seconds()?,
+        )
+        .await?;
+        if deleted > 0 {
+            info!(deleted, "Expired chat message event cleanup completed");
         }
         Ok(())
     }
@@ -356,6 +376,9 @@ impl DatabaseMaintenanceService {
         if let Err(e) = self.run_cleanup_room_resource_events().await {
             error!(error = %e, "Room resource event cleanup failed");
         }
+        if let Err(e) = self.run_cleanup_chat_message_events().await {
+            error!(error = %e, "Chat message event cleanup failed");
+        }
         if let Err(e) = self.run_cleanup_realtime_outbox().await {
             error!(error = %e, "Realtime outbox cleanup failed");
         }
@@ -430,6 +453,9 @@ impl DatabaseMaintenanceService {
                         }
                         if let Err(e) = service.run_cleanup_room_resource_events().await {
                             error!(error = %e, "Scheduled room resource event cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_chat_message_events().await {
+                            error!(error = %e, "Scheduled chat message event cleanup failed");
                         }
                         if let Err(e) = service.run_cleanup_realtime_outbox().await {
                             error!(error = %e, "Scheduled realtime outbox cleanup failed");

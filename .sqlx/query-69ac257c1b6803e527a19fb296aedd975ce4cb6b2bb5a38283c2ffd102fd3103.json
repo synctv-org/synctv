@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        WITH active_rooms AS (\n            SELECT room_id\n            FROM chat_messages\n            WHERE created_at >= NOW() - make_interval(mins => $1)\n              AND ($5::BIGINT IS NULL OR room_id > $5)\n            GROUP BY room_id\n        )\n        SELECT active_rooms.room_id AS \"room_id: RoomId\"\n        FROM active_rooms\n        WHERE EXISTS (\n            SELECT 1\n            FROM chat_messages m\n            WHERE m.room_id = active_rooms.room_id\n              AND m.created_at > NOW() - make_interval(days => $2)\n            ORDER BY m.created_at DESC, m.id DESC\n            OFFSET $3\n            LIMIT 1\n        )\n        ORDER BY active_rooms.room_id ASC\n        LIMIT $4\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "room_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "69ac257c1b6803e527a19fb296aedd975ce4cb6b2bb5a38283c2ffd102fd3103"
+}

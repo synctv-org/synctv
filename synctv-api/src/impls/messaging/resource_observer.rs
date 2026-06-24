@@ -2603,7 +2603,7 @@ impl ResourceObserver {
         for observation in observations {
             let mut observation = observation;
             let update = self
-                .evaluate_observation_with_force(&mut observation, false)
+                .evaluate_observation_with_force(&mut observation, true)
                 .await?;
             if let Some(changed) = update.changed_message {
                 self.send_server_message(ServerMessage {

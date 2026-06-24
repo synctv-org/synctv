@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_events_room_sequence
 CREATE INDEX IF NOT EXISTS idx_chat_message_events_message_sequence
     ON chat_message_events(room_id, message_id, message_created_at, sequence);
 CREATE INDEX IF NOT EXISTS idx_chat_message_events_created_at
-    ON chat_message_events(created_at);
+    ON chat_message_events(created_at, sequence);
 CREATE INDEX IF NOT EXISTS idx_chat_message_events_type_sequence
     ON chat_message_events(room_id, event_type, sequence);
 

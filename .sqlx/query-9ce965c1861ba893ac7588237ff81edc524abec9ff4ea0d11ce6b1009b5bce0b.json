@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT COUNT(*) AS \"count!\"\n            FROM (\n                SELECT room_id\n                FROM chat_messages\n                WHERE created_at > NOW() - make_interval(days => $2)\n                GROUP BY room_id\n                HAVING COUNT(*) > $3\n                   AND MAX(created_at) >= NOW() - make_interval(mins => $1)\n            ) over_cap\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9ce965c1861ba893ac7588237ff81edc524abec9ff4ea0d11ce6b1009b5bce0b"
+}

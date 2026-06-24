@@ -20,7 +20,9 @@ use synctv_core::service::{
     AlwaysLeader, FileStorageCleanupOrigin, FileStorageContext, FileStorageService, LeaderCheck,
 };
 use synctv_core::Error;
-use synctv_core_testing::{create_test_pool, ensure_chat_partition_for, ok, TestResultExt};
+use synctv_core_testing::{
+    create_test_pool, ensure_chat_partition_for, ok, TestOptionExt, TestResultExt,
+};
 
 /// A `LeaderCheck` that always returns false
 struct NeverLeader;
@@ -92,6 +94,7 @@ async fn test_zero_retention_skips_all_tasks() {
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
         room_resource_event_retention_seconds: 0,
+        chat_message_event_retention_seconds: 0,
         playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
         realtime_outbox_sent_retention_days: 0,
@@ -126,7 +129,207 @@ async fn test_zero_retention_skips_all_tasks() {
         result.chat_messages_deleted, 0,
         "Zero retention should skip chat cleanup"
     );
+    assert_eq!(result.chat_message_events_deleted, 0);
     assert_eq!(result.room_resource_events_deleted, 0);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn chat_message_event_cleanup_uses_retention_window() {
+    let (_container, pool) = create_test_pool().await;
+    let user = create_test_user(&pool).await;
+    let room = create_test_room(user.id, None);
+    let room = ok(
+        RoomRepository::new(pool.clone()).create(&room).await,
+        "test room should be created",
+    );
+    let message_created_at = Utc::now();
+    insert_chat_text_message(&pool, room.id, user.id, 10_101, message_created_at).await;
+    let old_created_at = Utc::now() - Duration::days(91);
+    let new_created_at = Utc::now() - Duration::days(1);
+    insert_chat_event(
+        &pool,
+        &room.id,
+        user.id,
+        10_101,
+        message_created_at,
+        "old-event",
+        old_created_at,
+    )
+    .await;
+    insert_chat_event(
+        &pool,
+        &room.id,
+        user.id,
+        10_101,
+        message_created_at,
+        "new-event",
+        new_created_at,
+    )
+    .await;
+
+    let service = CleanupService::new(
+        pool.clone(),
+        CleanupConfig {
+            soft_delete_retention_days: 0,
+            room_soft_delete_retention_days: 0,
+            expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
+            notification_retention_days: 0,
+            notification_max_retention_days: 0,
+            chat_max_messages_per_room: 0,
+            room_resource_event_retention_seconds: 0,
+            chat_message_event_retention_seconds: 30 * 24 * 60 * 60,
+            playback_progress_retention_days: 0,
+            unreferenced_file_retention_seconds: 0,
+            realtime_outbox_sent_retention_days: 0,
+            realtime_outbox_dead_retention_days: 0,
+        },
+        Arc::new(AlwaysLeader),
+    );
+
+    let result = service.run_all().await;
+
+    assert_eq!(result.chat_message_events_deleted, 1);
+    let remaining = ok(
+        sqlx::query_scalar!(
+            r#"SELECT ARRAY_AGG(event_id ORDER BY event_id) AS "event_ids?: Vec<String>" FROM chat_message_events"#
+        )
+        .fetch_one(&pool)
+        .await,
+        "remaining chat event ids should load",
+    )
+    .unwrap_or_default();
+    assert_eq!(remaining, vec!["new-event".to_string()]);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn active_room_cap_cleanup_progresses_past_first_room_batch() {
+    let (_container, pool) = create_test_pool().await;
+    let user = create_test_user(&pool).await;
+    let room_repository = RoomRepository::new(pool.clone());
+    let now = ok(
+        sqlx::query_scalar!(r#"SELECT NOW() AS "now!: chrono::DateTime<Utc>""#)
+            .fetch_one(&pool)
+            .await,
+        "database time should load",
+    );
+    let mut last_room_id = None;
+    ensure_chat_partition_for(&pool, now).await;
+
+    for room_index in 0..101_i64 {
+        let room = create_test_room(user.id, None);
+        let room = ok(
+            room_repository.create(&room).await,
+            "test room should be created",
+        );
+        last_room_id = Some(room.id);
+        for message_index in 0..2_i64 {
+            let created_at = now - Duration::seconds(10 - message_index);
+            insert_chat_text_message_without_partition_setup(
+                &pool,
+                room.id,
+                user.id,
+                20_000 + room_index * 10 + message_index,
+                created_at,
+            )
+            .await;
+        }
+    }
+
+    let service = CleanupService::new(
+        pool.clone(),
+        CleanupConfig {
+            soft_delete_retention_days: 0,
+            room_soft_delete_retention_days: 0,
+            expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
+            notification_retention_days: 0,
+            notification_max_retention_days: 0,
+            chat_max_messages_per_room: 1,
+            room_resource_event_retention_seconds: 0,
+            chat_message_event_retention_seconds: 0,
+            playback_progress_retention_days: 0,
+            unreferenced_file_retention_seconds: 0,
+            realtime_outbox_sent_retention_days: 0,
+            realtime_outbox_dead_retention_days: 0,
+        },
+        Arc::new(AlwaysLeader),
+    );
+
+    let active_over_cap_count = ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
+            FROM (
+                SELECT room_id
+                FROM chat_messages
+                WHERE created_at > NOW() - make_interval(days => $2)
+                GROUP BY room_id
+                HAVING COUNT(*) > $3
+                   AND MAX(created_at) >= NOW() - make_interval(mins => $1)
+            ) over_cap
+            "#,
+            24 * 60,
+            90,
+            1_i64,
+        )
+        .fetch_one(&pool)
+        .await,
+        "active over-cap room count should load",
+    );
+    assert_eq!(active_over_cap_count, 101);
+    let last_room_id = last_room_id.checked("last room should be created");
+    let deletable_in_last_room = ok(
+        sqlx::query_scalar!(
+            r#"
+            WITH retained AS (
+                SELECT id, created_at
+                FROM chat_messages
+                WHERE room_id = $1
+                  AND created_at > NOW() - make_interval(days => $2)
+                ORDER BY created_at DESC, id DESC
+                LIMIT $3
+            )
+            SELECT COUNT(*) AS "count!"
+            FROM chat_messages m
+            WHERE m.room_id = $1
+              AND m.created_at > NOW() - make_interval(days => $2)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM retained r
+                  WHERE r.id = m.id
+                    AND r.created_at = m.created_at
+              )
+            "#,
+            last_room_id.as_i64(),
+            90,
+            1_i64,
+        )
+        .fetch_one(&pool)
+        .await,
+        "last room deletable count should load",
+    );
+    assert_eq!(deletable_in_last_room, 1);
+
+    let result = service.run_all().await;
+
+    assert_eq!(result.chat_messages_deleted, 101);
+    let last_room_count = ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT COUNT(*) AS "count!"
+            FROM chat_messages
+            WHERE room_id = $1
+            "#,
+            last_room_id.as_i64(),
+        )
+        .fetch_one(&pool)
+        .await,
+        "last room message count should load",
+    );
+    assert_eq!(last_room_count, 1);
 }
 
 // Note: start_periodic checks is_leader() inside the loop. We test that NeverLeader
@@ -188,6 +391,7 @@ async fn test_partial_config_only_some_tasks_enabled() {
         notification_max_retention_days: 0,
         chat_max_messages_per_room: 0,
         room_resource_event_retention_seconds: 0,
+        chat_message_event_retention_seconds: 0,
         playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
         realtime_outbox_sent_retention_days: 0,
@@ -281,6 +485,7 @@ async fn test_realtime_outbox_cleanup_retains_actionable_rows() {
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
             room_resource_event_retention_seconds: 0,
+            chat_message_event_retention_seconds: 0,
             playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
             realtime_outbox_sent_retention_days: 7,
@@ -386,6 +591,7 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 0,
             room_resource_event_retention_seconds: 0,
+            chat_message_event_retention_seconds: 0,
             playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
             realtime_outbox_sent_retention_days: 0,
@@ -483,6 +689,7 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
             notification_max_retention_days: 0,
             chat_max_messages_per_room: 1,
             room_resource_event_retention_seconds: 0,
+            chat_message_event_retention_seconds: 0,
             playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
             realtime_outbox_sent_retention_days: 0,
@@ -625,6 +832,86 @@ async fn insert_chat_message_with_image(
         .execute(pool)
         .await,
         "chat attachment fixture should be inserted",
+    );
+}
+
+async fn insert_chat_text_message(
+    pool: &PgPool,
+    room_id: RoomId,
+    user_id: UserId,
+    message_id: i64,
+    created_at: chrono::DateTime<Utc>,
+) {
+    ensure_chat_partition_for(pool, created_at).await;
+    insert_chat_text_message_without_partition_setup(
+        pool, room_id, user_id, message_id, created_at,
+    )
+    .await;
+}
+
+async fn insert_chat_text_message_without_partition_setup(
+    pool: &PgPool,
+    room_id: RoomId,
+    user_id: UserId,
+    message_id: i64,
+    created_at: chrono::DateTime<Utc>,
+) {
+    ok(
+        sqlx::query!(
+            r#"
+            INSERT INTO chat_messages (
+                id, room_id, user_id, client_message_id, content, message_type, status, version,
+                reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,
+                created_at
+            ) VALUES (
+                $1, $2, $3, NULL, $4, 1, 1, 1,
+                NULL, '{}'::jsonb, NULL, NULL, NULL, NULL,
+                $5
+            )
+            "#,
+            message_id,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            "cleanup text message",
+            created_at,
+        )
+        .execute(pool)
+        .await,
+        "chat text message fixture should be inserted",
+    );
+}
+
+async fn insert_chat_event(
+    pool: &PgPool,
+    room_id: &RoomId,
+    user_id: UserId,
+    message_id: i64,
+    message_created_at: chrono::DateTime<Utc>,
+    event_id: &str,
+    created_at: chrono::DateTime<Utc>,
+) {
+    ok(
+        sqlx::query!(
+            r#"
+            INSERT INTO chat_message_events (
+                event_id, room_id, actor_user_id, message_id, message_created_at,
+                event_type, event_version, message_version, payload, summary, occurred_at, created_at
+            ) VALUES (
+                $1, $2, $3, $4, $5,
+                'chat_message_created', 1, 1, '{}'::jsonb, '{}'::jsonb, $6, $7
+            )
+            "#,
+            event_id,
+            room_id.as_i64(),
+            user_id.as_i64(),
+            message_id,
+            message_created_at,
+            created_at,
+            created_at,
+        )
+        .execute(pool)
+        .await,
+        "chat event fixture should be inserted",
     );
 }
 

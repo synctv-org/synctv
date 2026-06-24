@@ -29,6 +29,10 @@ use crate::service::partitioning::u32_to_i32;
 use crate::{InternalExt, Result};
 
 const DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
+const DEFAULT_CHAT_MESSAGE_EVENT_RETENTION_SECONDS: u64 = 90 * 24 * 60 * 60;
+// Cover the full message count-pruning window so rooms inactive for up to 90 days
+// are still trimmed to keep_count.  Must match CHAT_MESSAGE_COUNT_PRUNING_DAYS.
+const CHAT_CAP_ACTIVITY_WINDOW_MINUTES: i32 = cleanup_ops::CHAT_MESSAGE_COUNT_PRUNING_DAYS * 24 * 60;
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -49,6 +53,8 @@ pub struct CleanupConfig {
     pub chat_max_messages_per_room: i64,
     /// Seconds to retain room resource events for watch resume and audit diagnostics (0 = disabled)
     pub room_resource_event_retention_seconds: u64,
+    /// Seconds to retain chat message events for reconnect replay and diagnostics (0 = disabled)
+    pub chat_message_event_retention_seconds: u64,
     /// Days to retain playback progress rows not referenced by current playback (0 = disabled)
     pub playback_progress_retention_days: u32,
     /// Seconds to keep uploaded file objects that have no active product reference (0 = disabled)
@@ -70,6 +76,7 @@ impl Default for CleanupConfig {
             notification_max_retention_days: 90,
             chat_max_messages_per_room: 0, // unlimited by default
             room_resource_event_retention_seconds: DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS,
+            chat_message_event_retention_seconds: DEFAULT_CHAT_MESSAGE_EVENT_RETENTION_SECONDS,
             playback_progress_retention_days: 15,
             unreferenced_file_retention_seconds: 86_400,
             realtime_outbox_sent_retention_days: 7,
@@ -95,6 +102,8 @@ pub struct CleanupResult {
     pub chat_messages_deleted: u64,
     /// Number of expired room resource events deleted
     pub room_resource_events_deleted: u64,
+    /// Number of expired chat message events deleted
+    pub chat_message_events_deleted: u64,
     /// Number of stale playback progress rows deleted
     pub playback_progress_deleted: u64,
     /// Number of expired token blacklist entries deleted
@@ -168,6 +177,17 @@ impl CleanupService {
             }),
             None => Ok(Self::chat_max_messages_per_room_from_config(&self.config)),
         }
+    }
+
+    fn chat_message_event_retention_seconds(&self) -> Result<u64> {
+        let message_retention_days = match self.settings_registry.as_ref() {
+            Some(registry) => registry.chat_message_retention_days.get()?,
+            None => 90,
+        };
+        cleanup_ops::effective_chat_message_event_retention_seconds(
+            self.config.chat_message_event_retention_seconds,
+            message_retention_days,
+        )
     }
 
     /// Run all cleanup tasks once
@@ -296,6 +316,31 @@ impl CleanupService {
         }
 
         // 7. Cleanup expired room resource events (prevents unbounded durable watch/audit log growth)
+        let chat_message_event_retention_seconds = match self.chat_message_event_retention_seconds()
+        {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Skipping chat message event cleanup because retention could not be loaded"
+                );
+                0
+            }
+        };
+        if chat_message_event_retention_seconds > 0 {
+            match self
+                .cleanup_chat_message_events(chat_message_event_retention_seconds)
+                .await {
+                Ok(count) => {
+                    result.chat_message_events_deleted = count;
+                    if count > 0 {
+                        info!(count, "Deleted expired chat message events");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to cleanup chat message events"),
+            }
+        }
+
         if self.config.room_resource_event_retention_seconds > 0 {
             match self.cleanup_room_resource_events().await {
                 Ok(count) => {
@@ -572,6 +617,10 @@ impl CleanupService {
         .await
     }
 
+    async fn cleanup_chat_message_events(&self, retention_seconds: u64) -> Result<u64> {
+        cleanup_ops::delete_old_chat_message_events(&self.pool, retention_seconds).await
+    }
+
     async fn cleanup_realtime_outbox(&self) -> Result<u64> {
         cleanup_ops::delete_delivered_realtime_outbox(
             &self.pool,
@@ -622,12 +671,15 @@ impl CleanupService {
 
     /// Cleanup chat messages exceeding per-room cap
     ///
-    /// Uses window functions for efficient batch cleanup across all rooms.
+    /// Processes rooms with messages within the last 90 days in bounded batches.
     async fn cleanup_chat_messages(&self, keep_count: i64) -> Result<u64> {
         cleanup_ops::cleanup_chat_messages_with_files(
             &self.pool,
             self.file_storage_service.as_ref(),
-            cleanup_ops::ChatMessageCleanupScope::AllRoomsCap { keep_count },
+            cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
+                keep_count,
+                activity_window_minutes: CHAT_CAP_ACTIVITY_WINDOW_MINUTES,
+            },
             super::FileStorageCleanupOrigin::ReferenceCapExceeded,
             "per-room cap purge",
         )
@@ -704,6 +756,7 @@ impl CleanupService {
                     + result.credentials_deleted
                     + result.notifications_deleted
                     + result.chat_messages_deleted
+                    + result.chat_message_events_deleted
                     + result.room_resource_events_deleted
                     + result.realtime_outbox_deleted
                     + result.token_blacklist_deleted;
@@ -716,6 +769,7 @@ impl CleanupService {
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
                         chat_messages = result.chat_messages_deleted,
+                        chat_message_events = result.chat_message_events_deleted,
                         room_resource_events = result.room_resource_events_deleted,
                         realtime_outbox = result.realtime_outbox_deleted,
                         total,
@@ -743,6 +797,42 @@ mod tests {
         assert_eq!(
             CleanupService::chat_max_messages_per_room_from_config(&config),
             500
+        );
+    }
+
+    #[tokio::test]
+    async fn test_chat_message_event_retention_fallback_to_config() {
+        let service = CleanupService::new(
+            PgPool::connect_lazy("postgresql://unused").expect("test pool url should parse"),
+            CleanupConfig {
+                chat_message_event_retention_seconds: 120 * 24 * 60 * 60,
+                ..CleanupConfig::default()
+            },
+            Arc::new(crate::service::AlwaysLeader),
+        );
+
+        assert_eq!(
+            service
+                .chat_message_event_retention_seconds()
+                .expect("retention should resolve"),
+            // config floor (120 days) > message retention default (90 days) → 120 days
+            120 * 24 * 60 * 60
+        );
+    }
+
+    #[tokio::test]
+    async fn test_default_chat_message_event_retention_matches_message_retention() {
+        let service = CleanupService::new(
+            PgPool::connect_lazy("postgresql://unused").expect("test pool url should parse"),
+            CleanupConfig::default(),
+            Arc::new(crate::service::AlwaysLeader),
+        );
+
+        assert_eq!(
+            service
+                .chat_message_event_retention_seconds()
+                .expect("default retention should resolve"),
+            90 * 24 * 60 * 60
         );
     }
 }

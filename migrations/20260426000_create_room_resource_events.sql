@@ -40,4 +40,4 @@ CREATE INDEX IF NOT EXISTS idx_room_resource_events_resource_sequence
     ON room_resource_events(resource_type, resource_id, sequence);
 
 CREATE INDEX IF NOT EXISTS idx_room_resource_events_created_at
-    ON room_resource_events(created_at);
+    ON room_resource_events(created_at, sequence);

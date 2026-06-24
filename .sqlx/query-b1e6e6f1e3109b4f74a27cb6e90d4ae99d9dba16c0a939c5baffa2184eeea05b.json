@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO chat_messages (\n                id, room_id, user_id, client_message_id, content, message_type, status, version,\n                reply_to_message_id, metadata, edited_at, deleted_at, deleted_by, delete_reason,\n                created_at\n            ) VALUES (\n                $1, $2, $3, NULL, $4, 1, 1, 1,\n                NULL, '{}'::jsonb, NULL, NULL, NULL, NULL,\n                $5\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b1e6e6f1e3109b4f74a27cb6e90d4ae99d9dba16c0a939c5baffa2184eeea05b"
+}

@@ -25,9 +25,9 @@ use crate::service::file_upload_policies::chat_attachment_upload_policy;
 pub(super) const CHAT_ATTACHMENT_REUSE_SOURCE_KIND: &str = "chat_message_attachment";
 const CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS: i64 = 3600;
 
-pub(super) fn max_messages_to_keep_count(max_messages: u64) -> Result<i32> {
-    i32::try_from(max_messages)
-        .map_err(|_| Error::InvalidInput("chat max_messages exceeds i32::MAX".to_string()))
+pub(super) fn max_messages_to_keep_count(max_messages: u64) -> Result<i64> {
+    i64::try_from(max_messages)
+        .map_err(|_| Error::InvalidInput("chat max_messages exceeds i64::MAX".to_string()))
 }
 
 pub(super) fn validate_chat_playback_query(

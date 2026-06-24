@@ -12,16 +12,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
-CREATE TABLE IF NOT EXISTS audit_logs_default PARTITION OF audit_logs DEFAULT;
-
-CREATE INDEX IF NOT EXISTS audit_logs_default_idx_actor_created
-    ON audit_logs_default(actor_id, created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor_created
+    ON audit_logs(actor_id, created_at DESC)
     WHERE actor_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS audit_logs_default_idx_action_created
-    ON audit_logs_default(action, created_at DESC);
-CREATE INDEX IF NOT EXISTS audit_logs_default_idx_target_created
-    ON audit_logs_default(target_type, target_id, created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created
+    ON audit_logs(action, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target_created
+    ON audit_logs(target_type, target_id, created_at DESC)
     WHERE target_type IS NOT NULL;
-CREATE INDEX IF NOT EXISTS audit_logs_default_idx_ip_address
-    ON audit_logs_default(ip_address)
+CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_address
+    ON audit_logs(ip_address)
     WHERE ip_address IS NOT NULL;

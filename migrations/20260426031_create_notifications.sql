@@ -11,19 +11,18 @@ CREATE TABLE IF NOT EXISTS notifications (
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
-CREATE TABLE IF NOT EXISTS notifications_default PARTITION OF notifications DEFAULT;
-CREATE INDEX IF NOT EXISTS notifications_default_idx_user_read_created
-    ON notifications_default(user_id, is_read, created_at DESC);
-CREATE INDEX IF NOT EXISTS notifications_default_idx_user_unread
-    ON notifications_default(user_id, created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read_created
+    ON notifications(user_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+    ON notifications(user_id, created_at DESC)
     WHERE is_read = FALSE;
-CREATE INDEX IF NOT EXISTS notifications_default_idx_user_type_created
-    ON notifications_default(user_id, type, created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_notifications_user_type_created
+    ON notifications(user_id, type, created_at DESC)
     WHERE is_read = FALSE;
-CREATE INDEX IF NOT EXISTS notifications_default_idx_title_trgm
-    ON notifications_default USING gin(title gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS notifications_default_idx_content_trgm
-    ON notifications_default USING gin(content gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_notifications_title_trgm
+    ON notifications USING gin(title gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_notifications_content_trgm
+    ON notifications USING gin(content gin_trgm_ops);
 
 CREATE TRIGGER trigger_update_notifications_updated_at
     BEFORE UPDATE ON notifications

@@ -28,24 +28,6 @@ pub(crate) struct PartitionSizeRow {
     pub(crate) size_bytes: i64,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct PartitionIndexSpec {
-    pub(crate) suffix: &'static str,
-    pub(crate) definition: &'static str,
-}
-
-pub(crate) fn partition_index_sql(
-    partition_name: &str,
-    partition_ident: &str,
-    spec: PartitionIndexSpec,
-) -> String {
-    format!(
-        "CREATE INDEX IF NOT EXISTS {} ON {partition_ident} {}",
-        quote_ident(&format!("{partition_name}_{}", spec.suffix)),
-        spec.definition
-    )
-}
-
 pub(crate) fn len_to_i32(len: usize, field: &'static str) -> Result<i32> {
     i32::try_from(len).map_err(|_| Error::Internal(format!("{field} exceeds i32::MAX")))
 }

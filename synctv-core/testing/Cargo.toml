@@ -9,6 +9,8 @@ synctv-core = { path = "..", default-features = false, features = ["test-support
 synctv-common.workspace = true
 
 async-trait.workspace = true
+chrono.workspace = true
+hex.workspace = true
 opaque-ke.workspace = true
 rand.workspace = true
 serde_json.workspace = true

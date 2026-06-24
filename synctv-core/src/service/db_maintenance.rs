@@ -4,6 +4,7 @@
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
 //! - Cleanup of chat messages older than the configurable retention cap (default: 90 days)
 //! - Cleanup of expired room resource events
+//! - Cleanup of delivered realtime outbox rows
 //!
 //! Note: partition creation/retention is owned by dedicated managers:
 //! - `AuditPartitionManager` for `audit_logs`
@@ -191,6 +192,19 @@ impl DatabaseMaintenanceService {
         Ok(())
     }
 
+    pub async fn run_cleanup_realtime_outbox(&self) -> crate::Result<()> {
+        let deleted = cleanup_ops::delete_delivered_realtime_outbox(
+            &self.pool,
+            self.config.realtime_outbox_sent_retention_days,
+            self.config.realtime_outbox_dead_retention_days,
+        )
+        .await?;
+        if deleted > 0 {
+            info!(deleted, "Delivered realtime outbox cleanup completed");
+        }
+        Ok(())
+    }
+
     pub async fn run_cleanup_playback_progress(&self) -> crate::Result<()> {
         let deleted = cleanup_ops::delete_stale_playback_progress(
             &self.pool,
@@ -324,7 +338,8 @@ impl DatabaseMaintenanceService {
     /// Run all maintenance tasks. Logs errors but does not fail.
     ///
     /// Partition maintenance is intentionally excluded here:
-    /// `AuditPartitionManager` and `ChatPartitionManager` are the single owners.
+    /// `AuditPartitionManager`, `ChatPartitionManager`, and
+    /// `NotificationPartitionManager` are the single owners.
     pub async fn run_all_maintenance(&self) {
         if let Err(e) = self.run_cleanup_email_tokens().await {
             error!(error = %e, "Email token cleanup failed");
@@ -340,6 +355,9 @@ impl DatabaseMaintenanceService {
         }
         if let Err(e) = self.run_cleanup_room_resource_events().await {
             error!(error = %e, "Room resource event cleanup failed");
+        }
+        if let Err(e) = self.run_cleanup_realtime_outbox().await {
+            error!(error = %e, "Realtime outbox cleanup failed");
         }
         if let Err(e) = self.run_cleanup_playback_progress().await {
             error!(error = %e, "Playback progress cleanup failed");
@@ -412,6 +430,9 @@ impl DatabaseMaintenanceService {
                         }
                         if let Err(e) = service.run_cleanup_room_resource_events().await {
                             error!(error = %e, "Scheduled room resource event cleanup failed");
+                        }
+                        if let Err(e) = service.run_cleanup_realtime_outbox().await {
+                            error!(error = %e, "Scheduled realtime outbox cleanup failed");
                         }
                         if let Err(e) = service.run_cleanup_playback_progress().await {
                             error!(error = %e, "Scheduled playback progress cleanup failed");

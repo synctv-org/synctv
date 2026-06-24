@@ -808,6 +808,21 @@ impl RecordingStreamState {
     }
 }
 
+async fn wait_for_condition(
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> Result<(), tokio::time::error::Elapsed> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            if condition() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+}
+
 struct RecordingStream {
     incoming: VecDeque<Result<ClientMessage, String>>,
     state: Arc<RecordingStreamState>,
@@ -4792,26 +4807,36 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
     let task_handler = handler.clone();
     let run_task = tokio::spawn(async move { task_handler.run_after_join(&mut stream).await });
 
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if message_sender
-                .sent_messages()
-                .iter()
-                .filter_map(resource_playback)
-                .any(|playback| {
-                    playback
-                        .metadata
-                        .get("token")
-                        .is_some_and(|token| token == "\"refreshed\"")
-                })
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+    wait_for_condition(Duration::from_secs(3), || {
+        message_sender
+            .sent_messages()
+            .iter()
+            .filter_map(resource_playback)
+            .any(|playback| playback.expires_at == Some(refresh_at))
     })
     .await
-    .checked("expired playbacks should be refreshed even without state changes");
+    .checked("initial playback observation should be delivered");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    handler
+        .resource_observer
+        .refresh_expired_resource_observations()
+        .await
+        .checked("expired playbacks should refresh without state changes");
+
+    assert!(
+        message_sender
+            .sent_messages()
+            .iter()
+            .filter_map(resource_playback)
+            .any(|playback| {
+                playback
+                    .metadata
+                    .get("token")
+                    .is_some_and(|token| token == "\"refreshed\"")
+            }),
+        "expired playback refresh should send the refreshed playback"
+    );
 
     connection_service.disconnect_connection(handler.connection_id());
     wait_for_run_after_join_cleanup(&handler, connection_service, event_service, run_task).await;

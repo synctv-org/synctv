@@ -3,9 +3,11 @@
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use chrono::{Datelike, NaiveDate};
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, PgSslMode};
 use sqlx::Connection as _;
 use sqlx::PgPool;
@@ -115,6 +117,8 @@ fn postgres_ephemeral_tuning_args() -> impl Iterator<Item = &'static str> {
 static SHARED_POSTGRES: OnceCell<Arc<SharedPostgresServer>> = OnceCell::const_new();
 static TEST_DATABASE_COUNTER: AtomicU64 = AtomicU64::new(1);
 static TEMPLATE_CLONE_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+static EMBEDDED_MIGRATIONS_FINGERPRINT: LazyLock<String> =
+    LazyLock::new(embedded_migrations_fingerprint);
 
 struct SharedPostgresServer {
     // Intentionally held but never dropped: the shared container survives
@@ -593,6 +597,61 @@ fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+fn start_of_month(date: NaiveDate) -> NaiveDate {
+    NaiveDate::from_ymd_opt(date.year(), date.month(), 1)
+        .expect("valid test fixture month should normalize")
+}
+
+fn add_months(date: NaiveDate, months: i32) -> NaiveDate {
+    let month_index = date.year() * 12 + i32::try_from(date.month0()).unwrap_or(0) + months;
+    let year = month_index.div_euclid(12);
+    let month =
+        u32::try_from(month_index.rem_euclid(12) + 1).expect("valid month index should fit u32");
+    NaiveDate::from_ymd_opt(year, month, 1).expect("valid test fixture target month")
+}
+
+async fn ensure_range_partition(
+    pool: &PgPool,
+    parent_table: &str,
+    partition_name: &str,
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) {
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} FOR VALUES FROM ('{start_date}') TO ('{end_date}')",
+        quote_identifier(partition_name),
+        quote_identifier(parent_table),
+    );
+    sqlx::query(trusted_dynamic_sql(sql))
+        .execute(pool)
+        .await
+        .expect("test fixture partition creation should succeed");
+}
+
+pub async fn ensure_chat_partition_for(pool: &PgPool, timestamp: chrono::DateTime<chrono::Utc>) {
+    let start_date = timestamp.date_naive();
+    let end_date = start_date + chrono::Duration::days(1);
+    let partition_name = format!("chat_messages_{}", start_date.format("%Y_%m_%d"));
+    ensure_range_partition(pool, "chat_messages", &partition_name, start_date, end_date).await;
+}
+
+pub async fn ensure_notification_partition_for(
+    pool: &PgPool,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) {
+    let start_date = start_of_month(timestamp.date_naive());
+    let end_date = add_months(start_date, 1);
+    let partition_name = format!("notifications_{}", start_date.format("%Y_%m"));
+    ensure_range_partition(pool, "notifications", &partition_name, start_date, end_date).await;
+}
+
+pub async fn ensure_audit_partition_for(pool: &PgPool, timestamp: chrono::DateTime<chrono::Utc>) {
+    let start_date = start_of_month(timestamp.date_naive());
+    let end_date = add_months(start_date, 1);
+    let partition_name = format!("audit_logs_{}", start_date.format("%Y_%m"));
+    ensure_range_partition(pool, "audit_logs", &partition_name, start_date, end_date).await;
+}
+
 fn shared_container_name() -> String {
     shared_container_name_from(std::env::var("NEXTEST_RUN_ID").ok().as_deref())
 }
@@ -606,11 +665,25 @@ fn template_database_name() -> String {
 }
 
 fn template_database_name_from(run_id: Option<&str>) -> String {
+    let migrations_fingerprint = EMBEDDED_MIGRATIONS_FINGERPRINT.as_str();
     let raw = format!(
-        "{TEMPLATE_DATABASE_PREFIX}_{}",
-        current_test_run_id_from(run_id)
+        "{TEMPLATE_DATABASE_PREFIX}_{}_{}",
+        current_test_run_id_from(run_id),
+        migrations_fingerprint
     );
     truncate_database_identifier(&sanitize_database_component(&raw))
+}
+
+fn embedded_migrations_fingerprint() -> String {
+    use sha2_010::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    let migrator = sqlx::migrate!("../../migrations");
+    for migration in migrator.migrations.iter() {
+        hasher.update(migration.version.to_be_bytes());
+        hasher.update(migration.checksum.as_ref());
+    }
+    hex::encode(hasher.finalize()).chars().take(12).collect()
 }
 
 fn postgres_data_volume_name(container_name: &str) -> String {
@@ -764,6 +837,15 @@ async fn recreate_template_database(
         .run(&template_pool)
         .await
         .expect("template database migrations should succeed");
+    synctv_core::service::ensure_chat_partitions_on_startup(&template_pool)
+        .await
+        .expect("template database chat partitions should be initialized");
+    synctv_core::service::ensure_notification_partitions_on_startup(&template_pool)
+        .await
+        .expect("template database notification partitions should be initialized");
+    synctv_core::service::ensure_audit_partitions_on_startup(&template_pool)
+        .await
+        .expect("template database audit partitions should be initialized");
 
     template_pool.close().await;
 
@@ -1293,6 +1375,10 @@ mod tests {
         assert!(
             name.starts_with("synctv_template_run_id_42"),
             "template database should be namespaced by nextest run id: {name}"
+        );
+        assert!(
+            name.ends_with(EMBEDDED_MIGRATIONS_FINGERPRINT.as_str()),
+            "template database should change when embedded migrations change: {name}"
         );
     }
 

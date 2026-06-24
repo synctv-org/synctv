@@ -14,7 +14,9 @@ use tracing::warn;
 use super::partitioning::{len_to_u64, retention_seconds_to_i64, u32_to_i32};
 use super::{FileStorageCleanupOrigin, FileStorageService};
 use crate::models::{ChatAttachment, FileReferenceTarget, RoomId};
-use crate::repository::{FileStorageRepository, RoomResourceEventRepository};
+use crate::repository::{
+    realtime_outbox::RealtimeOutboxStatus, FileStorageRepository, RoomResourceEventRepository,
+};
 use crate::{InternalExt, Result};
 
 const UNREFERENCED_FILE_REFERENCE_KIND: &str = "unreferenced_file";
@@ -518,6 +520,43 @@ pub(super) async fn delete_old_room_resource_events(
     RoomResourceEventRepository::new(pool.clone())
         .delete_older_than(retention_seconds)
         .await
+}
+
+/// Delete delivered realtime outbox rows after their diagnostic retention windows.
+pub(super) async fn delete_delivered_realtime_outbox(
+    pool: &PgPool,
+    sent_retention_days: u32,
+    dead_retention_days: u32,
+) -> Result<u64> {
+    if sent_retention_days == 0 && dead_retention_days == 0 {
+        return Ok(0);
+    }
+    let sent_days = u32_to_i32(sent_retention_days, "realtime_outbox_sent_retention_days")?;
+    let dead_days = u32_to_i32(dead_retention_days, "realtime_outbox_dead_retention_days")?;
+    let result = sqlx::query!(
+        r"
+            DELETE FROM realtime_outbox
+            WHERE (
+                    $1 > 0
+                AND status = $2
+                AND dispatched_at IS NOT NULL
+                AND dispatched_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+            )
+            OR (
+                    $3 > 0
+                AND status = $4
+                AND created_at < CURRENT_TIMESTAMP - make_interval(days => $3)
+            )
+            ",
+        sent_days,
+        RealtimeOutboxStatus::Sent.as_i16(),
+        dead_days,
+        RealtimeOutboxStatus::Dead.as_i16(),
+    )
+    .execute(pool)
+    .await
+    .internal_with_err("Failed to cleanup delivered realtime outbox rows")?;
+    Ok(result.rows_affected())
 }
 
 /// Release file references whose reference-level lifetime has expired and

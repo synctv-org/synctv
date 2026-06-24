@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM realtime_outbox\n                WHERE status = $2\n                  AND next_retry_at <= NOW()\n                ORDER BY created_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE realtime_outbox o\n            SET status = $3,\n                locked_by = $4,\n                locked_at = NOW()\n            FROM picked\n            WHERE o.id = picked.id\n            RETURNING\n                o.id,\n                o.aggregate_type,\n                o.aggregate_id,\n                o.event_type,\n                o.event_version,\n                o.aggregate_version,\n                o.payload AS \"payload!: serde_json::Value\",\n                o.status,\n                o.attempts,\n                o.next_retry_at,\n                o.locked_by,\n                o.locked_at,\n                o.created_at,\n                o.dispatched_at,\n                o.last_error\n            ",
+  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM realtime_outbox\n                WHERE status = 1\n                  AND next_retry_at <= NOW()\n                ORDER BY next_retry_at, created_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE realtime_outbox o\n            SET status = $2,\n                locked_by = $3,\n                locked_at = NOW()\n            FROM picked\n            WHERE o.id = picked.id\n            RETURNING\n                o.id,\n                o.aggregate_type,\n                o.aggregate_id,\n                o.event_type,\n                o.event_version,\n                o.aggregate_version,\n                o.payload AS \"payload!: serde_json::Value\",\n                o.status,\n                o.attempts,\n                o.next_retry_at,\n                o.locked_by,\n                o.locked_at,\n                o.created_at,\n                o.dispatched_at,\n                o.last_error\n            ",
   "describe": {
     "columns": [
       {
@@ -173,7 +173,6 @@
       "Left": [
         "Int8",
         "Int2",
-        "Int2",
         "Text"
       ]
     },
@@ -195,5 +194,5 @@
       true
     ]
   },
-  "hash": "9e2a8120b524e01768e97ab07bcf49b10089dead0976f1da1f15ebe1056818d0"
+  "hash": "fa048ee1f8d21cedcd3273866cf59aea15d4bb5e8a4c616ca1d6ecf3d5069246"
 }

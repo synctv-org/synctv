@@ -3,7 +3,8 @@
 //! Automatically manages audit log partition creation and maintenance
 
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::pool::PoolConnection;
+use sqlx::{PgPool, Postgres};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -66,7 +67,6 @@ pub struct PartitionCreationDetail {
     pub partition_name: String,
     pub start_date: String,
     pub end_date: String,
-    pub indexes_created: i32,
 }
 
 #[derive(sqlx::FromRow)]
@@ -111,11 +111,17 @@ impl AuditPartitionManager {
         }
 
         let current_month = start_of_month(current_database_date(&self.pool).await?)?;
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for partition creation")?;
         let mut partitions = Vec::new();
         for offset in 0..=months_ahead {
             partitions.push(
-                self.create_partition_detail(add_months(current_month, offset)?)
-                    .await?,
+                Self::create_partition_detail_with_connection(
+                    &mut conn,
+                    add_months(current_month, offset)?,
+                )
+                .await?,
             );
         }
 
@@ -138,7 +144,12 @@ impl AuditPartitionManager {
     pub async fn create_partition(&self, date: chrono::NaiveDate) -> Result<PartitionInfo> {
         info!("Creating audit log partition for date: {}", date);
 
-        let partition_name = self.create_partition_detail(date).await?.partition_name;
+        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
+            .await
+            .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
+        let partition_name = Self::create_partition_detail_with_connection(&mut conn, date)
+            .await?
+            .partition_name;
 
         Ok(PartitionInfo {
             partition: partition_name,
@@ -147,63 +158,27 @@ impl AuditPartitionManager {
         })
     }
 
-    async fn create_partition_detail(
-        &self,
+    async fn create_partition_detail_with_connection(
+        conn: &mut PoolConnection<Postgres>,
         date: chrono::NaiveDate,
     ) -> Result<PartitionCreationDetail> {
         let start_date = start_of_month(date)?;
         let end_date = add_months(start_date, 1)?;
         let partition_name = format!("audit_logs_{}", start_date.format("%Y_%m"));
         let partition_ident = quote_ident(&partition_name);
-        let mut conn = acquire_unbounded_ddl_connection(&self.pool)
-            .await
-            .internal_with_err("Failed to acquire DDL connection for single partition creation")?;
 
         sqlx::query(trusted_dynamic_sql(format!(
             "CREATE TABLE IF NOT EXISTS {partition_ident} PARTITION OF audit_logs \
              FOR VALUES FROM ('{start_date}') TO ('{end_date}')"
         )))
-        .execute(&mut *conn)
+        .execute(&mut **conn)
         .await
         .internal_with_err("Failed to create audit partition")?;
-
-        sqlx::query(trusted_dynamic_sql(format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(actor_id, created_at DESC) WHERE actor_id IS NOT NULL",
-            quote_ident(&format!("{partition_name}_idx_actor_created"))
-        )))
-        .execute(&mut *conn)
-        .await
-        .internal_with_err("Failed to create audit partition index")?;
-
-        sqlx::query(trusted_dynamic_sql(format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(action, created_at DESC)",
-            quote_ident(&format!("{partition_name}_idx_action_created"))
-        )))
-        .execute(&mut *conn)
-        .await
-        .internal_with_err("Failed to create audit partition index")?;
-
-        sqlx::query(trusted_dynamic_sql(format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(target_type, target_id, created_at DESC) WHERE target_type IS NOT NULL",
-            quote_ident(&format!("{partition_name}_idx_target_created"))
-        )))
-        .execute(&mut *conn)
-        .await
-        .internal_with_err("Failed to create audit partition index")?;
-
-        sqlx::query(trusted_dynamic_sql(format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {partition_ident}(ip_address) WHERE ip_address IS NOT NULL",
-            quote_ident(&format!("{partition_name}_idx_ip_address"))
-        )))
-        .execute(&mut *conn)
-        .await
-        .internal_with_err("Failed to create audit partition index")?;
 
         Ok(PartitionCreationDetail {
             partition_name,
             start_date: start_date.to_string(),
             end_date: end_date.to_string(),
-            indexes_created: 4,
         })
     }
 
@@ -587,8 +562,7 @@ mod tests {
                 {
                     "partition_name": "audit_logs_2026_05",
                     "start_date": "2026-05-01",
-                    "end_date": "2026-06-01",
-                    "indexes_created": 4
+                    "end_date": "2026-06-01"
                 }
             ]
         }"#;
@@ -600,7 +574,6 @@ mod tests {
         assert_eq!(result.total_requested, 7);
         assert_eq!(result.success_count, 7);
         assert_eq!(result.partitions.len(), 1);
-        assert_eq!(result.partitions[0].indexes_created, 4);
     }
 
     #[test]

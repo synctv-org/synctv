@@ -12,7 +12,7 @@ use synctv_core::{
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, ok, some};
+use synctv_core_testing::{create_test_pool, ensure_chat_partition_for, ok, some};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -263,6 +263,8 @@ async fn test_get_by_id_old_message_succeeds() {
     let old_date = Utc::now() - Duration::days(100);
     let msg_id = synctv_core::models::generate_id();
 
+    ensure_chat_partition_for(&pool, old_date).await;
+
     // Insert directly with backdated created_at
     ok(
         sqlx::query!(
@@ -304,6 +306,8 @@ async fn test_get_by_id_very_old_message_succeeds() {
 
     let very_old_date = Utc::now() - Duration::days(365);
     let msg_id = synctv_core::models::generate_id();
+
+    ensure_chat_partition_for(&pool, very_old_date).await;
 
     // Insert directly with backdated created_at (1 year ago)
     ok(
@@ -462,8 +466,7 @@ async fn test_created_at_index_exists_for_partition_pruning() {
 
     let (_container, pool) = create_test_pool().await;
 
-    // Check that the index exists on at least one partition (they all have the same structure)
-    // The index should be created as part of partition creation
+    // Parent partitioned indexes propagate to current and future partitions.
     let index_exists = ok(
         sqlx::query_scalar!(
             r#"
@@ -756,6 +759,8 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     // Insert a message older than 90 days via raw SQL
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
+    ensure_chat_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
@@ -808,6 +813,8 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
     // Insert a message older than 90 days via raw SQL
     let old_date = Utc::now() - Duration::days(100);
     let old_msg_id = synctv_core::models::generate_id();
+    ensure_chat_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r#"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)

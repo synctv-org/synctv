@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS chat_message_reactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_message
-    ON chat_message_reactions(room_id, message_id, message_created_at, reaction_key);
+    ON chat_message_reactions(room_id, message_id, message_created_at, reaction_key, updated_at DESC, user_id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_message_summary
+    ON chat_message_reactions(message_id, message_created_at, reaction_key, user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_reactions_user
     ON chat_message_reactions(user_id, updated_at DESC);

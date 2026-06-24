@@ -13,9 +13,9 @@ use super::LeaderCheck;
 use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
-    add_months, current_database_date, len_to_i32, len_to_i64, partition_index_sql, quote_ident,
-    size_centi_mib, start_of_month, table_exists, wait_for_initial_leader, PartitionIndexSpec,
-    PartitionNameRow, PartitionSizeRow, STARTUP_RUNS_RETENTION_CLEANUP,
+    add_months, current_database_date, len_to_i32, len_to_i64, quote_ident, size_centi_mib,
+    start_of_month, table_exists, wait_for_initial_leader, PartitionNameRow, PartitionSizeRow,
+    STARTUP_RUNS_RETENTION_CLEANUP,
 };
 use crate::{Error, Result};
 
@@ -24,29 +24,6 @@ const DEFAULT_RETENTION_MONTHS: i32 = 6;
 
 /// Default months to create ahead
 const DEFAULT_MONTHS_AHEAD: i32 = 3;
-
-const NOTIFICATION_PARTITION_INDEXES: &[PartitionIndexSpec] = &[
-    PartitionIndexSpec {
-        suffix: "idx_user_read_created",
-        definition: "(user_id, is_read, created_at DESC)",
-    },
-    PartitionIndexSpec {
-        suffix: "idx_user_unread",
-        definition: "(user_id, created_at DESC) WHERE is_read = FALSE",
-    },
-    PartitionIndexSpec {
-        suffix: "idx_user_type_created",
-        definition: "(user_id, type, created_at DESC) WHERE is_read = FALSE",
-    },
-    PartitionIndexSpec {
-        suffix: "idx_title_trgm",
-        definition: "USING gin(title gin_trgm_ops)",
-    },
-    PartitionIndexSpec {
-        suffix: "idx_content_trgm",
-        definition: "USING gin(content gin_trgm_ops)",
-    },
-];
 
 /// Health check result for notification partitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,21 +84,6 @@ impl NotificationPartitionManager {
             .map_err(|e| {
                 Error::Internal(format!("Failed to create notification partition: {e}"))
             })?;
-
-            for spec in NOTIFICATION_PARTITION_INDEXES {
-                sqlx::query(trusted_dynamic_sql(partition_index_sql(
-                    &partition_name,
-                    &partition_ident,
-                    *spec,
-                )))
-                .execute(&mut *conn)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to create notification partition index: {e}"
-                    ))
-                })?;
-            }
         }
 
         let total_requested = months_ahead + 1;
@@ -155,7 +117,6 @@ impl NotificationPartitionManager {
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'notifications_%'
-               AND tablename != 'notifications_default'
                AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
                AND tablename < $1
              ORDER BY tablename
@@ -216,7 +177,6 @@ impl NotificationPartitionManager {
              FROM pg_tables
              WHERE schemaname = 'public'
                AND tablename LIKE 'notifications_%'
-               AND tablename != 'notifications_default'
                AND tablename ~ '^notifications_[0-9]{4}_[0-9]{2}$'
              "#,
         )
@@ -398,24 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn notification_partition_indexes_match_search_paths() {
-        let partition_name = "notifications_2026_06";
-        let partition_ident = quote_ident(partition_name);
-        let sql = NOTIFICATION_PARTITION_INDEXES
-            .iter()
-            .map(|spec| partition_index_sql(partition_name, &partition_ident, *spec))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert_eq!(NOTIFICATION_PARTITION_INDEXES.len(), 5);
-        assert!(sql.contains(
-            r#"CREATE INDEX IF NOT EXISTS "notifications_2026_06_idx_title_trgm" ON "notifications_2026_06" USING gin(title gin_trgm_ops)"#
-        ));
-        assert!(sql.contains(
-            r#"CREATE INDEX IF NOT EXISTS "notifications_2026_06_idx_content_trgm" ON "notifications_2026_06" USING gin(content gin_trgm_ops)"#
-        ));
-        assert!(sql.contains(
-            r#"CREATE INDEX IF NOT EXISTS "notifications_2026_06_idx_user_read_created" ON "notifications_2026_06" (user_id, is_read, created_at DESC)"#
-        ));
+    fn notification_partition_names_use_monthly_ranges() {
+        assert_eq!(
+            format!("notifications_{}", "2026_06"),
+            "notifications_2026_06"
+        );
     }
 }

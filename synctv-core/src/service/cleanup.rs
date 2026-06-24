@@ -8,6 +8,7 @@
 //! - Old chat messages (per-room cap)
 //! - Expired room resource events
 //! - Stale playback progress rows
+//! - Delivered realtime outbox rows
 //!
 //! Runs as a background task with configurable intervals and retention periods.
 //!
@@ -52,6 +53,10 @@ pub struct CleanupConfig {
     pub playback_progress_retention_days: u32,
     /// Seconds to keep uploaded file objects that have no active product reference (0 = disabled)
     pub unreferenced_file_retention_seconds: u64,
+    /// Days to retain successfully dispatched realtime outbox rows (0 = disabled)
+    pub realtime_outbox_sent_retention_days: u32,
+    /// Days to retain dead-lettered realtime outbox rows (0 = disabled)
+    pub realtime_outbox_dead_retention_days: u32,
 }
 
 impl Default for CleanupConfig {
@@ -67,6 +72,8 @@ impl Default for CleanupConfig {
             room_resource_event_retention_seconds: DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS,
             playback_progress_retention_days: 15,
             unreferenced_file_retention_seconds: 86_400,
+            realtime_outbox_sent_retention_days: 7,
+            realtime_outbox_dead_retention_days: 30,
         }
     }
 }
@@ -96,6 +103,8 @@ pub struct CleanupResult {
     pub unreferenced_files_deleted: u64,
     /// Number of expired file upload sessions cleaned
     pub expired_file_upload_sessions_deleted: u64,
+    /// Number of delivered realtime outbox rows deleted
+    pub realtime_outbox_deleted: u64,
 }
 
 #[derive(Clone, Default)]
@@ -355,6 +364,16 @@ impl CleanupService {
             }
         }
 
+        match self.cleanup_realtime_outbox().await {
+            Ok(count) => {
+                result.realtime_outbox_deleted = count;
+                if count > 0 {
+                    info!(count, "Deleted delivered realtime outbox rows");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to cleanup realtime outbox"),
+        }
+
         result
     }
 
@@ -553,6 +572,15 @@ impl CleanupService {
         .await
     }
 
+    async fn cleanup_realtime_outbox(&self) -> Result<u64> {
+        cleanup_ops::delete_delivered_realtime_outbox(
+            &self.pool,
+            self.config.realtime_outbox_sent_retention_days,
+            self.config.realtime_outbox_dead_retention_days,
+        )
+        .await
+    }
+
     async fn cleanup_stale_playback_progress(&self) -> Result<u64> {
         cleanup_ops::delete_stale_playback_progress(
             &self.pool,
@@ -677,6 +705,7 @@ impl CleanupService {
                     + result.notifications_deleted
                     + result.chat_messages_deleted
                     + result.room_resource_events_deleted
+                    + result.realtime_outbox_deleted
                     + result.token_blacklist_deleted;
 
                 if total > 0 {
@@ -688,6 +717,7 @@ impl CleanupService {
                         notifications = result.notifications_deleted,
                         chat_messages = result.chat_messages_deleted,
                         room_resource_events = result.room_resource_events_deleted,
+                        realtime_outbox = result.realtime_outbox_deleted,
                         total,
                         "Data cleanup completed"
                     );

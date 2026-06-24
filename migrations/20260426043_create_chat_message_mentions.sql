@@ -18,4 +18,4 @@ CREATE TABLE IF NOT EXISTS chat_message_mentions (
 CREATE INDEX IF NOT EXISTS idx_chat_message_mentions_user
     ON chat_message_mentions(room_id, mentioned_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_message_mentions_message
-    ON chat_message_mentions(message_id, message_created_at);
+    ON chat_message_mentions(message_id, message_created_at, start_char, mentioned_user_id);

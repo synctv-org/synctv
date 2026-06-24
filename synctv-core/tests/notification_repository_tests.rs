@@ -13,7 +13,7 @@ use synctv_core::{
     },
     repository::{NotificationRepository, UserRepository},
 };
-use synctv_core_testing::{create_test_pool, ok, some};
+use synctv_core_testing::{create_test_pool, ensure_notification_partition_for, ok, some};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -201,6 +201,8 @@ async fn test_delete_older_than_boundary() {
     let user = create_user(&pool, "notif_user_delete").await;
 
     let old_date = Utc::now() - Duration::days(31);
+    ensure_notification_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
@@ -354,6 +356,8 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
 
     // Insert a notification older than 6 months via raw SQL
     let old_date = Utc::now() - Duration::days(200);
+    ensure_notification_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
@@ -410,6 +414,8 @@ async fn test_count_by_user_has_partition_pruning() {
 
     // Insert a notification older than 6 months
     let old_date = Utc::now() - Duration::days(200);
+    ensure_notification_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)
@@ -453,6 +459,8 @@ async fn test_count_unread_has_partition_pruning() {
 
     // Insert an old unread notification (> 6 months)
     let old_date = Utc::now() - Duration::days(200);
+    ensure_notification_partition_for(&pool, old_date).await;
+
     ok(
         sqlx::query!(
             r"INSERT INTO notifications (user_id, type, title, content, data, is_read, created_at, updated_at)

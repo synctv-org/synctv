@@ -80,6 +80,12 @@ impl From<sqlx::Error> for Error {
                     // PostgreSQL foreign_key_violation
                     "23503" => Self::NotFound("Referenced resource not found".to_string()),
                     // PostgreSQL check_violation
+                    "23514" if db_err.message().contains("no partition of relation") => {
+                        Self::Internal(format!(
+                            "Partition range is not initialized: {}",
+                            db_err.message()
+                        ))
+                    }
                     "23514" => Self::InvalidInput("Constraint check failed".to_string()),
                     // PostgreSQL not_null_violation
                     "23502" => Self::InvalidInput("Required field is missing".to_string()),

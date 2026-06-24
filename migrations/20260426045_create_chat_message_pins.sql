@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS chat_message_pins (
 CREATE INDEX IF NOT EXISTS idx_chat_message_pins_room_pinned
     ON chat_message_pins(room_id, pinned_at DESC, message_id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_chat_message_pins_message
+    ON chat_message_pins(message_id, message_created_at);
+
 CREATE INDEX IF NOT EXISTS idx_chat_message_pins_pinned_by
     ON chat_message_pins(pinned_by, pinned_at DESC)
     WHERE pinned_by IS NOT NULL;

@@ -34,8 +34,9 @@ pub use postgres::{
     connect_test_pool_url, create_test_database, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,
     create_test_pool, create_test_pool_with_db, create_test_pool_with_db_and_label,
-    create_test_pool_with_options_and_label, postgres_connection_url_with_credentials,
-    TestContainer, TestDatabase,
+    create_test_pool_with_options_and_label, ensure_audit_partition_for, ensure_chat_partition_for,
+    ensure_notification_partition_for, postgres_connection_url_with_credentials, TestContainer,
+    TestDatabase,
 };
 pub use redis::{
     redis_connection_manager, redis_multiplexed_connection, start_dedicated_redis,

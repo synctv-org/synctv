@@ -32,23 +32,22 @@ CREATE TABLE IF NOT EXISTS chat_messages (
         ON DELETE SET NULL (reply_to_message_id, reply_to_message_created_at)
 ) PARTITION BY RANGE (created_at);
 
-CREATE TABLE IF NOT EXISTS chat_messages_default PARTITION OF chat_messages DEFAULT;
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_room_pagination
-    ON chat_messages_default(room_id, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_user_created
-    ON chat_messages_default(user_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_created_at
-    ON chat_messages_default(created_at DESC);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_status
-    ON chat_messages_default(room_id, status, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_reply_target
-    ON chat_messages_default(reply_to_message_id, reply_to_message_created_at);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_content_search
-    ON chat_messages_default USING gin(content_search);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_content_trgm
-    ON chat_messages_default USING gin(content gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_playback_media
-    ON chat_messages_default(
+CREATE INDEX IF NOT EXISTS idx_chat_messages_room_pagination
+    ON chat_messages(room_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_created
+    ON chat_messages(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at
+    ON chat_messages(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_status
+    ON chat_messages(room_id, status, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_reply_target
+    ON chat_messages(reply_to_message_id, reply_to_message_created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_content_search
+    ON chat_messages USING gin(content_search);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_content_trgm
+    ON chat_messages USING gin(content gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_playback_media
+    ON chat_messages(
         room_id,
         ((metadata #>> '{playback,media_id}')),
         (
@@ -62,8 +61,8 @@ CREATE INDEX IF NOT EXISTS chat_messages_default_idx_playback_media
         id
     )
     WHERE metadata ? 'playback';
-CREATE INDEX IF NOT EXISTS chat_messages_default_idx_playback_playlist_target
-    ON chat_messages_default(
+CREATE INDEX IF NOT EXISTS idx_chat_messages_playback_playlist_target
+    ON chat_messages(
         room_id,
         ((metadata #>> '{playback,playlist_id}')),
         ((metadata #>> '{playback,target_hex}')),
@@ -161,7 +160,7 @@ CREATE TABLE IF NOT EXISTS chat_message_attachments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_message
-    ON chat_message_attachments(message_id, message_created_at);
+    ON chat_message_attachments(message_id, message_created_at, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_attachments_room
     ON chat_message_attachments(room_id, created_at DESC);
 

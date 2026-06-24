@@ -15,7 +15,7 @@ use synctv_core::{
     },
     Error,
 };
-use synctv_core_testing::{create_test_pool, ok};
+use synctv_core_testing::{create_test_pool, ensure_chat_partition_for, ok};
 
 #[derive(Default)]
 struct RecordingFileStorageService {
@@ -473,6 +473,8 @@ async fn insert_old_chat_message_with_image(
     object_key: &str,
     created_at: chrono::DateTime<Utc>,
 ) -> Result<(), sqlx::Error> {
+    ensure_chat_partition_for(pool, created_at).await;
+
     sqlx::query!(
         r#"
         INSERT INTO chat_messages (

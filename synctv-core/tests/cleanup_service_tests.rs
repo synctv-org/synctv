@@ -13,13 +13,14 @@ use synctv_core::models::{
     CreateFileUploadSession, FileReferenceTarget, FileUploadSessionCreateResult, NewStoredFile,
     Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
 };
+use synctv_core::repository::realtime_outbox::RealtimeOutboxStatus;
 use synctv_core::repository::{RoomRepository, UserRepository};
 use synctv_core::service::{
     cleanup::{CleanupConfig, CleanupService, CleanupServiceOptions},
     AlwaysLeader, FileStorageCleanupOrigin, FileStorageContext, FileStorageService, LeaderCheck,
 };
 use synctv_core::Error;
-use synctv_core_testing::{create_test_pool, ok, TestResultExt};
+use synctv_core_testing::{create_test_pool, ensure_chat_partition_for, ok, TestResultExt};
 
 /// A `LeaderCheck` that always returns false
 struct NeverLeader;
@@ -93,6 +94,8 @@ async fn test_zero_retention_skips_all_tasks() {
         room_resource_event_retention_seconds: 0,
         playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
+        realtime_outbox_sent_retention_days: 0,
+        realtime_outbox_dead_retention_days: 0,
     };
 
     let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
@@ -187,6 +190,8 @@ async fn test_partial_config_only_some_tasks_enabled() {
         room_resource_event_retention_seconds: 0,
         playback_progress_retention_days: 0,
         unreferenced_file_retention_seconds: 0,
+        realtime_outbox_sent_retention_days: 0,
+        realtime_outbox_dead_retention_days: 0,
     };
 
     let service = CleanupService::new(pool, config, Arc::new(AlwaysLeader));
@@ -205,6 +210,106 @@ async fn test_partial_config_only_some_tasks_enabled() {
     assert_eq!(
         result.chat_messages_deleted, 0,
         "Disabled tasks should return 0"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_realtime_outbox_cleanup_retains_actionable_rows() {
+    let (_container, pool) = create_test_pool().await;
+    let now = Utc::now();
+    let old_sent_at = now - Duration::days(10);
+    let new_sent_at = now - Duration::days(1);
+    let old_dead_at = now - Duration::days(40);
+    let old_pending_at = now - Duration::days(40);
+
+    for (id, status, created_at, dispatched_at) in [
+        (
+            "outbox-sent-old",
+            RealtimeOutboxStatus::Sent,
+            old_sent_at,
+            Some(old_sent_at),
+        ),
+        (
+            "outbox-sent-new",
+            RealtimeOutboxStatus::Sent,
+            new_sent_at,
+            Some(new_sent_at),
+        ),
+        (
+            "outbox-dead-old",
+            RealtimeOutboxStatus::Dead,
+            old_dead_at,
+            None,
+        ),
+        (
+            "outbox-pending-old",
+            RealtimeOutboxStatus::Pending,
+            old_pending_at,
+            None,
+        ),
+    ] {
+        ok(
+            sqlx::query!(
+                r#"
+                INSERT INTO realtime_outbox (
+                    id, aggregate_type, aggregate_id, event_type, payload, status,
+                    next_retry_at, created_at, dispatched_at
+                )
+                VALUES ($1, 'room', '1', 'room_updated', '{}'::jsonb, $2, $3, $4, $5)
+                "#,
+                id,
+                status.as_i16(),
+                created_at,
+                created_at,
+                dispatched_at,
+            )
+            .execute(&pool)
+            .await,
+            "outbox fixture row should be inserted",
+        );
+    }
+
+    let service = CleanupService::new(
+        pool.clone(),
+        CleanupConfig {
+            soft_delete_retention_days: 0,
+            room_soft_delete_retention_days: 0,
+            expired_token_retention_days: 0,
+            expired_credential_buffer_hours: 0,
+            notification_retention_days: 0,
+            notification_max_retention_days: 0,
+            chat_max_messages_per_room: 0,
+            room_resource_event_retention_seconds: 0,
+            playback_progress_retention_days: 0,
+            unreferenced_file_retention_seconds: 0,
+            realtime_outbox_sent_retention_days: 7,
+            realtime_outbox_dead_retention_days: 30,
+        },
+        Arc::new(AlwaysLeader),
+    );
+
+    let result = service.run_all().await;
+    assert_eq!(result.realtime_outbox_deleted, 2);
+
+    let remaining_ids = ok(
+        sqlx::query_scalar!(
+            r#"
+            SELECT id
+            FROM realtime_outbox
+            ORDER BY id
+            "#
+        )
+        .fetch_all(&pool)
+        .await,
+        "remaining outbox rows should be listed",
+    );
+    assert_eq!(
+        remaining_ids,
+        vec![
+            "outbox-pending-old".to_string(),
+            "outbox-sent-new".to_string()
+        ]
     );
 }
 
@@ -283,6 +388,8 @@ async fn test_run_all_purges_soft_deleted_user_after_room_and_membership_cleanup
             room_resource_event_retention_seconds: 0,
             playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
+            realtime_outbox_sent_retention_days: 0,
+            realtime_outbox_dead_retention_days: 0,
         },
         Arc::new(AlwaysLeader),
     );
@@ -378,6 +485,8 @@ async fn test_chat_message_cap_cleanup_deletes_image_objects() {
             room_resource_event_retention_seconds: 0,
             playback_progress_retention_days: 0,
             unreferenced_file_retention_seconds: 0,
+            realtime_outbox_sent_retention_days: 0,
+            realtime_outbox_dead_retention_days: 0,
         },
         Arc::new(AlwaysLeader),
         CleanupServiceOptions {
@@ -464,6 +573,8 @@ async fn insert_chat_message_with_image(
     image_id: &str,
     object_key: &str,
 ) {
+    ensure_chat_partition_for(pool, created_at).await;
+
     ok(
         sqlx::query!(
             r#"

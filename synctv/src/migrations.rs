@@ -87,9 +87,8 @@ fn describe_migration_error(err: &sqlx::migrate::MigrateError) -> String {
         sqlx::migrate::MigrateError::VersionMismatch(version) => format!(
             "Migration failed: migration {version} was previously applied but has been modified. \
              This database was initialized from a different migration history than the one embedded \
-             in the current binary. For disposable local/dev databases, recreate the database or \
-             Docker volumes from scratch instead of editing _sqlx_migrations by hand. For persistent \
-             environments, restore the original migration file and add a new forward-only corrective migration."
+             in the current binary. Recreate the database or Docker volumes from scratch instead \
+             of editing _sqlx_migrations by hand."
         ),
         sqlx::migrate::MigrateError::Dirty(version) => format!(
             "Migration failed: migration {version} is marked dirty. Resolve the partial migration \
@@ -205,8 +204,8 @@ mod tests {
         ));
 
         assert!(message.contains("20260426004"));
-        assert!(message.contains("recreate the database or Docker volumes"));
-        assert!(message.contains("forward-only corrective migration"));
+        assert!(message.contains("Recreate the database or Docker volumes"));
+        assert!(message.contains("_sqlx_migrations"));
     }
 
     #[test]

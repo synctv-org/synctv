@@ -1224,6 +1224,7 @@ impl Application {
                         notifications_deleted = cleanup_result.notifications_deleted,
                         chat_messages_deleted = cleanup_result.chat_messages_deleted,
                         room_resource_events_deleted = cleanup_result.room_resource_events_deleted,
+                        realtime_outbox_deleted = cleanup_result.realtime_outbox_deleted,
                         token_blacklist_deleted = cleanup_result.token_blacklist_deleted,
                         unreferenced_files_deleted = cleanup_result.unreferenced_files_deleted,
                         "Deferred cleanup completed after leadership gain"

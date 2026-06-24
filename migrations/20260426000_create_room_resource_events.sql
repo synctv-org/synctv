@@ -25,6 +25,10 @@ CREATE INDEX IF NOT EXISTS idx_room_resource_events_room_sequence
     ON room_resource_events(room_id, sequence)
     WHERE room_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_room_resource_events_room_resource_sequence
+    ON room_resource_events(room_id, resource_type, sequence)
+    WHERE room_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_room_resource_events_user_sequence
     ON room_resource_events(user_id, sequence)
     WHERE user_id IS NOT NULL;

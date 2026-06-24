@@ -269,15 +269,15 @@ impl RealtimeOutboxRepository {
             WITH picked AS (
                 SELECT id
                 FROM realtime_outbox
-                WHERE status = $2
+                WHERE status = 1
                   AND next_retry_at <= NOW()
-                ORDER BY created_at, id
+                ORDER BY next_retry_at, created_at, id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
             UPDATE realtime_outbox o
-            SET status = $3,
-                locked_by = $4,
+            SET status = $2,
+                locked_by = $3,
                 locked_at = NOW()
             FROM picked
             WHERE o.id = picked.id
@@ -299,7 +299,6 @@ impl RealtimeOutboxRepository {
                 o.last_error
             "#,
             limit,
-            RealtimeOutboxStatus::Pending.as_i16(),
             RealtimeOutboxStatus::Processing.as_i16(),
             worker_id,
         )
@@ -369,12 +368,11 @@ impl RealtimeOutboxRepository {
                 locked_by = NULL,
                 locked_at = NULL,
                 next_retry_at = NOW()
-            WHERE status = $3
+            WHERE status = 2
               AND locked_at < NOW() - ($1::BIGINT::TEXT || ' seconds')::INTERVAL
             ",
             stale_after_seconds,
             RealtimeOutboxStatus::Pending.as_i16(),
-            RealtimeOutboxStatus::Processing.as_i16()
         )
         .execute(&self.pool)
         .await?;

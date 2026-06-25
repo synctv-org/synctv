@@ -721,8 +721,10 @@ impl ResourceObserver {
                 synctv_proto::client::observe_resource::Resource::PlaybackState(observe) => {
                     observe.after_event_sequence
                 }
-                synctv_proto::client::observe_resource::Resource::Playback(_)
-                | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+                synctv_proto::client::observe_resource::Resource::Playback(observe) => {
+                    observe.after_event_sequence
+                }
+                synctv_proto::client::observe_resource::Resource::OnlineCount(_)
                 | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => None,
                 synctv_proto::client::observe_resource::Resource::RoomSettings(observe) => {
                     observe.after_event_sequence
@@ -3312,7 +3314,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_observation_has_no_requested_event_sequence() {
+    fn playback_observation_uses_requested_event_sequence() {
         let observation = playback_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),
@@ -3320,14 +3322,18 @@ mod tests {
             resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
                 synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
+                    after_event_sequence: Some(42),
                 },
             )),
         };
 
-        assert_eq!(ResourceObserver::requested_replay_sequence(&request), None);
+        assert_eq!(
+            ResourceObserver::requested_replay_sequence(&request),
+            Some(42)
+        );
         assert_eq!(
             ResourceObserver::observation_start_sequence(&observation, &request),
-            0
+            42
         );
     }
 
@@ -3399,6 +3405,7 @@ mod tests {
             resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
                 synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
+                    after_event_sequence: None,
                 },
             )),
         };

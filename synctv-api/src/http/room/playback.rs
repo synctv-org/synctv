@@ -181,16 +181,18 @@ pub async fn watch_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    _headers: HeaderMap,
+    headers: HeaderMap,
     Query(query): Query<WatchPlaybackQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
         playback: Some(synctv_proto::client::ObservePlayback {
             playback_client_profile,
+            after_event_sequence,
         }),
     };
     let observe = crate::impls::messaging::watch_playback_observe(request)

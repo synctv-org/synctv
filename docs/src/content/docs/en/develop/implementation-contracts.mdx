@@ -101,12 +101,12 @@ File storage has one object registry and separate byte/session tables:
 
 - `file_objects` is the object registry. `validated_at` marks a fully usable object; `NULL` marks a pending session placeholder.
 - `file_blob_parts` stores database-backend object bytes. Pending uploads write parts under the `upload_session_key`, then finalization promotes those rows to the final `object_key` with an `UPDATE`.
-- `file_upload_sessions` stores resumable upload state for database multipart and S3 multipart.
+- `file_upload_sessions` stores upload state for database and S3 single-object or multipart sessions.
 - `file_upload_session_parts` stores uploaded part progress and provider ETags/checksums.
 
 Database multipart uploads validate per-part SHA-256 while writing each part. Finalization recomputes the manifest digest from the stored part checksums, then uses `UPDATE` to promote `file_blob_parts.object_key` from the `upload_session_key` to the final `object_key`. Pending bytes and final bytes share the same part table and use the object key as state, which keeps resume/idempotency checks cheap.
 
-S3 uploads default to direct client-to-S3 presigned URLs. Server-proxy upload/download paths remain available for environments that need them. Database backend URLs point at SyncTV because the database bytes live behind the application.
+Single-object upload sessions still use the server-decided manifest plan, but write the complete object in one `PUT` and complete the session without part progress rows. S3 multipart sessions return direct client-to-S3 presigned part URLs. Server-proxy upload/download paths remain available for environments that need them. Database backend URLs point at SyncTV because the database bytes live behind the application.
 
 Downloads are streaming. HTTP responses are normal binary responses backed by a streamed body; gRPC responses are protobuf chunk streams. Core services return `FileObjectDownload` so both transports share the same storage implementation and avoid full-object buffering on the main path.
 

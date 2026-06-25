@@ -218,10 +218,10 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
         "format=json&media_id=media_1&extra=true"
     )
     .is_err());
-    assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
-        "format=json&after_event_sequence=12"
-    )
-    .is_err());
+    let playback_watch =
+        serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&after_event_sequence=12")
+            .expect("watch playback should accept a replay cursor");
+    assert_eq!(playback_watch.after_event_sequence, Some(12));
     assert!(
         serde_urlencoded::from_str::<ChatAttachmentObjectQuery>("token=token&extra=true").is_err()
     );

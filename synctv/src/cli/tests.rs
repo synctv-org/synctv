@@ -42,6 +42,7 @@ fn direct_url_media_source_config(
                 synctv_proto::source_config::DirectUrlMediaSourceConfig {
                     is_live: None,
                     duration_seconds: None,
+                    prefer_proxy: None,
                     medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
                         name: String::new(),
                         url: url.to_string(),

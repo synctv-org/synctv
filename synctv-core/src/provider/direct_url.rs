@@ -213,11 +213,17 @@ fn playback_media(
     }
 }
 
-fn mark_direct_url_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
+fn mark_direct_url_playback_resources(
+    result: &mut PlaybackResult,
+    version: &str,
+    expires_at: i64,
+    prefer_proxy_default: bool,
+) {
     // Direct URL usually keeps the upstream mode as default. When headers are
     // required, the proxy sibling becomes default because the server must own
     // those transport headers for browser and app clients alike.
-    let prefer_proxy_default = super::signed_playback_default_needs_proxy(result);
+    let prefer_proxy_default =
+        prefer_proxy_default || super::signed_playback_default_needs_proxy(result);
     let original_default_mode = result.default_mode.clone();
     let mut selected_default_mode = original_default_mode.clone();
     let original_modes = result
@@ -480,7 +486,14 @@ impl MediaProvider for DirectUrlProvider {
                         cached,
                         Self::NAME,
                         _ctx,
-                        mark_direct_url_playback_resources,
+                        |result, version, expires_at| {
+                            mark_direct_url_playback_resources(
+                                result,
+                                version,
+                                expires_at,
+                                config.prefer_proxy == Some(true),
+                            );
+                        },
                     )
                     .await;
                 }
@@ -608,7 +621,14 @@ impl MediaProvider for DirectUrlProvider {
             &cache_key,
             cache_ttl,
             _ctx,
-            mark_direct_url_playback_resources,
+            |result, version, expires_at| {
+                mark_direct_url_playback_resources(
+                    result,
+                    version,
+                    expires_at,
+                    config.prefer_proxy == Some(true),
+                );
+            },
         )
         .await
     }
@@ -667,6 +687,29 @@ mod tests {
 
         assert_eq!(result.is_live, None);
         assert_eq!(result.duration_seconds, None);
+    }
+
+    #[tokio::test]
+    async fn generate_playback_uses_proxy_default_when_requested() {
+        let provider = DirectUrlProvider::new();
+        let ctx = test_context();
+        let mut config = crate::models::DirectUrlMediaSourceConfig::single(
+            "https://example.com/video.mp4".to_string(),
+            HashMap::new(),
+        );
+        config.prefer_proxy = Some(true);
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(config)
+            .into_provider_json()
+            .expect("direct url config should serialize");
+
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .expect("direct url playback should generate");
+
+        assert_eq!(result.default_mode, "proxy_direct");
+        assert!(result.playback_infos.contains_key("direct"));
+        assert!(result.playback_infos.contains_key("proxy_direct"));
     }
 
     #[test]

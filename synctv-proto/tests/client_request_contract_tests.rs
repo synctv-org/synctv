@@ -39,6 +39,7 @@ fn direct_url_media_source_config(
                     default_danmaku_index: None,
                     is_live: None,
                     duration_seconds: None,
+                    prefer_proxy: None,
                 },
             ),
         ),

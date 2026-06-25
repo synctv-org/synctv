@@ -43,6 +43,7 @@ message DirectUrlMediaSourceConfig {
   optional uint32 default_danmaku_index = 6;
   optional bool is_live = 7;
   optional double duration_seconds = 8;
+  optional bool prefer_proxy = 9;
 }
 
 message AlistMediaSourceConfig {

@@ -28,8 +28,10 @@ use crate::{
         file_part_manifest_digest, file_reuse_grant, file_storage_object_base_path,
         mark_upload_session_ownership_proof_verified, new_public_file_id,
         optional_file_storage_public_url, optional_payload_bool, payload_len_i64,
-        register_upload_session_reference, strip_internal_file_metadata, upload_manifest_metadata,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_metadata,
+        register_upload_session_reference, strip_internal_file_metadata,
+        upload_manifest_is_single_object, upload_manifest_metadata,
+        upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
+        upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
         upload_session_public_file_id, validate_create_file_upload_session,
@@ -923,6 +925,42 @@ impl S3CompatibleFileStorageService {
             uploaded_parts,
         })
     }
+
+    async fn complete_single_upload_session(
+        &self,
+        session: &crate::models::FileUploadSessionRecord,
+    ) -> Result<FileBlob> {
+        self.validate_completed_s3_object_size(&session.object_key, session.size_bytes)
+            .await?;
+        let repository = self.repository()?;
+        let upload_policy = upload_session_policy(&session.metadata)?;
+        let metadata = upload_session_object_metadata(&session.metadata)?;
+        let mut blob = super::session_record_blob(session, Vec::new(), metadata.clone());
+        if let Err(error) =
+            super::complete_uploaded_file_object(self, repository, &mut blob, &upload_policy).await
+        {
+            self.delete_invalid_upload_object(&session.object_key, "media_validation_failed")
+                .await;
+            repository
+                .delete_object(&self.config.storage_backend, &session.object_key)
+                .await?;
+            return Err(error);
+        }
+        repository
+            .mark_object_validated(&self.config.storage_backend, &session.object_key)
+            .await?;
+        repository
+            .update_object_metadata(
+                &self.config.storage_backend,
+                &session.object_key,
+                &blob.metadata,
+            )
+            .await?;
+        repository
+            .complete_upload_session(&self.config.storage_backend, &session.upload_session_key)
+            .await?;
+        Ok(blob)
+    }
 }
 
 #[async_trait::async_trait]
@@ -1088,15 +1126,26 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 &request.mime_type,
             )
         };
-        let upload_id = if let Some(session) = existing_session
+        let single_object_upload =
+            upload_manifest_is_single_object(request.size_bytes, &request.parts);
+        let session_kind = if single_object_upload {
+            FileUploadSessionKind::S3Single
+        } else {
+            FileUploadSessionKind::S3Multipart
+        };
+        let upload_id = if single_object_upload {
+            None
+        } else if let Some(session) = existing_session
             .as_ref()
             .filter(|session| session.completed_at.is_none() && session.expires_at > now)
             .and_then(|session| session.upload_id.clone())
         {
-            session
+            Some(session)
         } else {
-            self.create_multipart_upload(&object_key, &request.mime_type)
-                .await?
+            Some(
+                self.create_multipart_upload(&object_key, &request.mime_type)
+                    .await?,
+            )
         };
         let public_file_id = if let Some(existing) = existing_session.as_ref() {
             upload_session_public_file_id(&existing.metadata)?
@@ -1131,8 +1180,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 storage_backend: &self.config.storage_backend,
                 upload_session_key: &upload_session_key,
                 object_key: &object_key,
-                session_kind: FileUploadSessionKind::S3Multipart,
-                upload_id: Some(&upload_id),
+                session_kind,
+                upload_id: upload_id.as_deref(),
                 user_id: request.user_id,
                 storage_scope: &request.storage_scope,
                 mime_type: &request.mime_type,
@@ -1191,9 +1240,13 @@ impl FileStorageService for S3CompatibleFileStorageService {
         let part_urls = s3_upload_part_urls(
             self,
             &file.object_key,
-            &upload_id,
+            upload_id.as_deref().unwrap_or_default(),
             expires_at,
-            &request.parts,
+            if single_object_upload {
+                &[]
+            } else {
+                &request.parts
+            },
         )?;
         let mut upload_headers = BTreeMap::new();
         upload_headers.insert(
@@ -1231,11 +1284,11 @@ impl FileStorageService for S3CompatibleFileStorageService {
             upload_headers,
             expires_at: Some(expires_at),
             max_size_bytes: request.policy.max_size_bytes,
-            resumable: true,
+            resumable: !single_object_upload,
             part_size_bytes: plan.part_size_bytes,
             uploaded_size_bytes,
             uploaded_parts,
-            upload_id: Some(upload_id),
+            upload_id,
             part_urls,
         }))
     }
@@ -1509,11 +1562,6 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 "file upload session is not active".to_string(),
             ));
         }
-        if session.session_kind != FileUploadSessionKind::S3Multipart {
-            return Err(Error::InvalidInput(
-                "file upload session is not an S3 multipart session".to_string(),
-            ));
-        }
         let mime_type = payload
             .get("mime_type")
             .and_then(serde_json::Value::as_str)
@@ -1567,6 +1615,44 @@ impl FileStorageService for S3CompatibleFileStorageService {
         {
             return Err(Error::InvalidInput(
                 "file upload part does not match manifest".to_string(),
+            ));
+        }
+        if upload_session_is_single_object(session.session_kind) {
+            if range.start != 0 || part_size != expected_size {
+                return Err(Error::InvalidInput(
+                    "file upload object does not match manifest".to_string(),
+                ));
+            }
+            let actual_content_manifest_sha256 = file_part_manifest_digest(
+                expected_size,
+                session.part_size_bytes,
+                [(
+                    expected_part.part_number,
+                    part_size,
+                    actual_part_checksum.as_str(),
+                )],
+            )?;
+            if !constant_time_eq(
+                actual_content_manifest_sha256.as_bytes(),
+                session.content_manifest_sha256.as_bytes(),
+            ) {
+                return Err(Error::InvalidInput(
+                    "file manifest does not match uploaded object".to_string(),
+                ));
+            }
+            self.operator
+                .write_with(&session.object_key, data)
+                .content_type(&session.mime_type)
+                .await
+                .map_err(|error| {
+                    Error::Internal(format!("failed to write S3 file object: {error}"))
+                })?;
+            let blob = self.complete_single_upload_session(&session).await?;
+            return Ok(StoreFileUploadResult::Complete(blob));
+        }
+        if !upload_session_is_multipart(session.session_kind) {
+            return Err(Error::InvalidInput(
+                "file upload session kind is invalid".to_string(),
             ));
         }
         let existing_parts = repository
@@ -1736,9 +1822,32 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 uploaded_parts: Vec::new(),
             });
         }
+        if upload_session_is_single_object(session.session_kind) && session.completed_at.is_some() {
+            return Ok(CompleteFileUploadSessionResult {
+                object: Some(super::session_record_blob(
+                    &session,
+                    Vec::new(),
+                    upload_session_object_metadata(&session.metadata)?,
+                )),
+                uploaded_size_bytes: session.size_bytes,
+                uploaded_parts: vec![1],
+            });
+        }
         if session.completed_at.is_some() || session.expires_at <= Utc::now() {
             return Err(Error::InvalidInput(
                 "file upload session is not active".to_string(),
+            ));
+        }
+        if upload_session_is_single_object(session.session_kind) {
+            return Ok(CompleteFileUploadSessionResult {
+                object: None,
+                uploaded_size_bytes: 0,
+                uploaded_parts: Vec::new(),
+            });
+        }
+        if !upload_session_is_multipart(session.session_kind) {
+            return Err(Error::InvalidInput(
+                "file upload session kind is invalid".to_string(),
             ));
         }
         let upload_id = request

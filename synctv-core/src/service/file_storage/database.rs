@@ -24,8 +24,10 @@ use crate::{
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
         media_processing::attach_variants_to_files, new_public_file_id, optional_payload_bool,
         ownership_proof_ranges_from_payload, payload_len_i64, process_file_variants_for_object,
-        register_upload_session_reference, strip_internal_file_metadata, upload_manifest_metadata,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_metadata,
+        register_upload_session_reference, strip_internal_file_metadata,
+        upload_manifest_is_single_object, upload_manifest_metadata,
+        upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
+        upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
         upload_session_public_file_id, validate_create_file_upload_session,
@@ -275,6 +277,45 @@ impl DatabaseFileStorageService {
         }
         self.repository
             .mark_object_validated(&self.storage_backend, &session.object_key)
+            .await?;
+        self.repository
+            .update_object_metadata(&self.storage_backend, &session.object_key, &blob.metadata)
+            .await?;
+        self.repository
+            .complete_upload_session(&self.storage_backend, &session.upload_session_key)
+            .await?;
+        Ok(blob)
+    }
+
+    async fn complete_single_upload_session(
+        &self,
+        session: &crate::models::FileUploadSessionRecord,
+        data: Vec<u8>,
+    ) -> Result<FileBlob> {
+        let metadata = upload_session_object_metadata(&session.metadata)?;
+        let upload_policy = upload_session_policy(&session.metadata)?;
+        let mut blob = super::session_record_blob(session, data, metadata);
+        if let Err(error) = super::complete_uploaded_file_object(
+            self,
+            self.repository.as_ref(),
+            &mut blob,
+            &upload_policy,
+        )
+        .await
+        {
+            self.repository
+                .delete_blob_parts(&self.storage_backend, &session.object_key)
+                .await?;
+            self.repository
+                .delete_object(&self.storage_backend, &session.object_key)
+                .await?;
+            return Err(error);
+        }
+        self.repository
+            .mark_object_validated(&self.storage_backend, &session.object_key)
+            .await?;
+        self.repository
+            .update_object_metadata(&self.storage_backend, &session.object_key, &blob.metadata)
             .await?;
         self.repository
             .complete_upload_session(&self.storage_backend, &session.upload_session_key)
@@ -638,6 +679,13 @@ impl FileStorageService for DatabaseFileStorageService {
         });
         let session_metadata =
             upload_session_metadata_with_manifest(&session_metadata, &request.parts)?;
+        let single_object_upload =
+            upload_manifest_is_single_object(request.size_bytes, &request.parts);
+        let session_kind = if single_object_upload {
+            FileUploadSessionKind::DatabaseSingle
+        } else {
+            FileUploadSessionKind::DatabaseMultipart
+        };
 
         let mut file = NewStoredFile {
             id: public_file_id,
@@ -687,25 +735,26 @@ impl FileStorageService for DatabaseFileStorageService {
                 metadata: &upload_manifest_metadata(&request.parts)?,
             })
             .await?;
-        self.repository
-            .upsert_pending_object(UpsertFileObject {
-                storage_backend: &self.storage_backend,
-                object_key: &upload_session_key,
-                mime_type: file
-                    .mime_type
-                    .as_deref()
-                    .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?,
-                size_bytes: request.size_bytes,
-                content_manifest_sha256: &content_manifest_sha256,
-                metadata: &session_metadata,
-            })
-            .await?;
+        if !single_object_upload {
+            self.repository
+                .upsert_pending_object(UpsertFileObject {
+                    storage_backend: &self.storage_backend,
+                    object_key: &upload_session_key,
+                    mime_type: file.mime_type.as_deref().ok_or_else(|| {
+                        Error::InvalidInput("file mime_type is required".to_string())
+                    })?,
+                    size_bytes: request.size_bytes,
+                    content_manifest_sha256: &content_manifest_sha256,
+                    metadata: &session_metadata,
+                })
+                .await?;
+        }
         self.repository
             .upsert_upload_session(UpsertFileUploadSession {
                 storage_backend: &self.storage_backend,
                 upload_session_key: &upload_session_key,
                 object_key: &file.object_key,
-                session_kind: FileUploadSessionKind::DatabaseMultipart,
+                session_kind,
                 upload_id: None,
                 user_id: request.user_id,
                 storage_scope: &request.storage_scope,
@@ -765,7 +814,7 @@ impl FileStorageService for DatabaseFileStorageService {
             upload_headers,
             expires_at: Some(expires_at),
             max_size_bytes,
-            resumable: true,
+            resumable: !single_object_upload,
             part_size_bytes: plan.part_size_bytes,
             uploaded_size_bytes,
             uploaded_parts,
@@ -1013,12 +1062,71 @@ impl FileStorageService for DatabaseFileStorageService {
             .ok_or_else(|| {
                 Error::InvalidInput("file upload part is not in manifest".to_string())
             })?;
+        let part_size = payload_len_i64(data.len())?;
         if expected_part.offset_bytes != range.start
-            || expected_part.size_bytes != payload_len_i64(data.len())?
+            || expected_part.size_bytes != part_size
             || expected_part.checksum_sha256 != actual_part_checksum
         {
             return Err(Error::InvalidInput(
                 "file upload part does not match manifest".to_string(),
+            ));
+        }
+        if upload_session_is_single_object(session.session_kind) {
+            if range.start != 0 || part_size != expected_size {
+                return Err(Error::InvalidInput(
+                    "file upload object does not match manifest".to_string(),
+                ));
+            }
+            let actual_content_manifest_sha256 = file_part_manifest_digest(
+                expected_size,
+                session.part_size_bytes,
+                [(
+                    expected_part.part_number,
+                    part_size,
+                    actual_part_checksum.as_str(),
+                )],
+            )?;
+            if !constant_time_eq(
+                actual_content_manifest_sha256.as_bytes(),
+                session.content_manifest_sha256.as_bytes(),
+            ) {
+                return Err(Error::InvalidInput(
+                    "file manifest does not match uploaded object".to_string(),
+                ));
+            }
+            let metadata = upload_session_object_metadata(&session.metadata)?;
+            self.repository
+                .upsert_pending_object(UpsertFileObject {
+                    storage_backend: &self.storage_backend,
+                    object_key: &session.object_key,
+                    mime_type,
+                    size_bytes: expected_size,
+                    content_manifest_sha256: &session.content_manifest_sha256,
+                    metadata: &metadata,
+                })
+                .await?;
+            let original_data = data.clone();
+            let (compression, stored_data) = compress_payload(self.compression, data).await?;
+            self.repository
+                .upsert_blob_part(UpsertFileBlobPart {
+                    storage_backend: &self.storage_backend,
+                    object_key: &session.object_key,
+                    part_index: 0,
+                    offset_bytes: 0,
+                    size_bytes: expected_size,
+                    checksum_sha256: &actual_part_checksum,
+                    compression,
+                    data: stored_data,
+                })
+                .await?;
+            let blob = self
+                .complete_single_upload_session(&session, original_data)
+                .await?;
+            return Ok(StoreFileUploadResult::Complete(blob));
+        }
+        if !upload_session_is_multipart(session.session_kind) {
+            return Err(Error::InvalidInput(
+                "file upload session kind is invalid".to_string(),
             ));
         }
         if let Some(existing) = self
@@ -1029,7 +1137,7 @@ impl FileStorageService for DatabaseFileStorageService {
             .find(|part| part.part_index == part_index)
         {
             if existing.offset_bytes != range.start
-                || existing.size_bytes != payload_len_i64(data.len())?
+                || existing.size_bytes != part_size
                 || existing.checksum_sha256.as_deref() != Some(actual_part_checksum.as_str())
             {
                 return Err(Error::InvalidInput(
@@ -1046,7 +1154,6 @@ impl FileStorageService for DatabaseFileStorageService {
                 uploaded_parts,
             });
         }
-        let part_size = payload_len_i64(data.len())?;
         let (compression, stored_data) = compress_payload(self.compression, data).await?;
         self.repository
             .upsert_blob_part(UpsertFileBlobPart {
@@ -1215,7 +1322,25 @@ impl FileStorageService for DatabaseFileStorageService {
             .get_upload_session(&self.storage_backend, &decoded_object_key)
             .await?
             .ok_or_else(|| Error::InvalidInput("file upload session was not found".to_string()))?;
+        if upload_session_is_single_object(session.session_kind) && session.completed_at.is_some() {
+            return Ok(CompleteFileUploadSessionResult {
+                object: Some(super::session_record_blob(
+                    &session,
+                    Vec::new(),
+                    upload_session_object_metadata(&session.metadata)?,
+                )),
+                uploaded_size_bytes: session.size_bytes,
+                uploaded_parts: vec![1],
+            });
+        }
         ensure_session_open(&session)?;
+        if upload_session_is_single_object(session.session_kind) {
+            return Ok(CompleteFileUploadSessionResult {
+                object: None,
+                uploaded_size_bytes: 0,
+                uploaded_parts: Vec::new(),
+            });
+        }
         let parts = self
             .repository
             .list_upload_session_parts(&self.storage_backend, &decoded_object_key)

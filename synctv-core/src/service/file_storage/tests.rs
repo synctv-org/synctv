@@ -136,6 +136,18 @@ fn upload_request(input: UploadRequestInput<'_>) -> (CreateFileUploadSession, St
     )
 }
 
+fn complete_parts_from_manifest(parts: &[FileUploadManifestPart]) -> Vec<CompleteFileUploadPart> {
+    parts
+        .iter()
+        .map(|part| CompleteFileUploadPart {
+            part_number: part.part_number,
+            etag: format!("\"etag-{}\"", part.part_number),
+            size_bytes: part.size_bytes,
+            checksum_sha256: Some(part.checksum_sha256.clone()),
+        })
+        .collect()
+}
+
 fn simple_upload_request(
     user_id: UserId,
     storage_scope: &str,
@@ -677,6 +689,24 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
         "upload session should be created",
     );
     let session = expect_upload_session(session, "upload session should be created");
+    let upload_session_key = ok(
+        decode_database_file_object_key(&session.encoded_object_key),
+        "upload session key should decode",
+    );
+    let session_record = some(
+        ok(
+            repository
+                .get_upload_session("database", &upload_session_key)
+                .await,
+            "upload session should load",
+        ),
+        "upload session should exist",
+    );
+    assert_eq!(
+        session_record.session_kind,
+        FileUploadSessionKind::DatabaseSingle
+    );
+    assert!(!session.resumable);
     let upload_url = some(
         session.upload_url.as_deref(),
         "database upload url should be returned",
@@ -705,6 +735,29 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
     assert_eq!(stored.size_bytes, payload_size(&payload));
     assert_eq!(stored.content_manifest_sha256, content_manifest_sha256);
     assert_eq!(stored.data, payload);
+    let complete = ok(
+        storage
+            .complete_upload_session(CompleteFileUploadSession {
+                file_id: None,
+                encoded_object_key: encoded_object_key.clone(),
+                upload_token: upload_token.to_string(),
+                upload_id: None,
+                ownership_proof: None,
+                parts: Vec::new(),
+            })
+            .await,
+        "completed single-object upload session should be idempotent",
+    );
+    assert!(complete.object.is_some());
+    assert_eq!(complete.uploaded_size_bytes, payload_size(&payload));
+    assert_eq!(complete.uploaded_parts, vec![1]);
+    let session_blob_rows = ok(
+        repository
+            .list_blob_parts("database", &upload_session_key)
+            .await,
+        "session blob parts should load",
+    );
+    assert!(session_blob_rows.is_empty());
 
     let row = ok(
         sqlx::query!(
@@ -3202,7 +3255,9 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
     )
     .with_operator(operator.clone())
     .with_test_multipart_upload_id("test-upload-id");
-    let payload = vec![b's'; 5 * 1024 * 1024];
+    let mut payload = Vec::with_capacity(12 * 1024 * 1024);
+    payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    payload.extend(vec![b'b'; 4 * 1024 * 1024]);
     let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, _) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
@@ -3234,14 +3289,139 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
     assert!(session
         .upload_headers
         .contains_key(FILE_UPLOAD_TOKEN_HEADER));
+    assert!(session.resumable);
     let upload_id = some(session.upload_id.clone(), "S3 upload_id should be returned");
-    assert_eq!(session.part_urls.len(), 1);
+    assert_eq!(session.part_urls.len(), 2);
     assert_eq!(session.part_urls[0].part_number, 1);
     assert_eq!(session.part_urls[0].offset_bytes, 0);
-    assert_eq!(session.part_urls[0].size_bytes, payload_size(&payload));
+    assert_eq!(session.part_urls[0].size_bytes, 8 * 1024 * 1024);
     assert_eq!(session.part_urls[0].upload_method, "PUT");
     assert!(session.part_urls[0].upload_url.contains("X-Amz-Signature="));
+    assert_eq!(session.part_urls[1].part_number, 2);
+    assert_eq!(session.part_urls[1].offset_bytes, 8 * 1024 * 1024);
+    assert_eq!(session.part_urls[1].size_bytes, 4 * 1024 * 1024);
+    assert_eq!(session.part_urls[1].upload_method, "PUT");
+    assert!(session.part_urls[1].upload_url.contains("X-Amz-Signature="));
     assert_eq!(upload_id, "test-upload-id");
+}
+
+#[tokio::test]
+async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
+    let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+    let repository = Arc::new(FileStorageRepository::new(pool));
+    let operator = ok(
+        opendal::Operator::new(opendal::services::Memory::default())
+            .map(opendal::OperatorBuilder::finish),
+        "memory operator should build",
+    );
+    let storage = ok(
+        S3CompatibleFileStorageService::new_with_repository(
+            S3FileStorageConfig {
+                endpoint: "http://s3.invalid".to_string(),
+                access_key_id: "test-access-key".to_string(),
+                secret_access_key: "test-secret-key".to_string(),
+                bucket: "synctv-test".to_string(),
+                region: "us-east-1".to_string(),
+                base_path: "files".to_string(),
+                public_base_url: Some("https://cdn.example.test".to_string()),
+                upload_expires_seconds: 900,
+                storage_backend: "s3_public".to_string(),
+                upload_token_secret: "test-file-storage-secret".to_string(),
+            },
+            Some(repository.clone()),
+        ),
+        "s3 storage should build",
+    )
+    .with_operator(operator.clone())
+    .with_test_multipart_upload_id("test-upload-id");
+    let payload = b"single-object-s3-upload".to_vec();
+    let policy = generic_binary_upload_policy(payload_size(&payload));
+    let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
+        user_id: UserId::expect_positive(1),
+        storage_scope: "users/1/avatars",
+        client_file_id: "avatar-s3-single",
+        filename: None,
+        mime_type: "application/pdf",
+        payload: &payload,
+        width: Some(16),
+        height: Some(16),
+        metadata: serde_json::Value::Object(Default::default()),
+        policy,
+    });
+    let session = ok(
+        storage.create_upload_session(request).await,
+        "single-object S3 upload session should be created",
+    );
+    assert!(!session.resumable);
+    assert!(session.upload_id.is_none());
+    assert!(session.part_urls.is_empty());
+    let upload_session_key = ok(
+        decode_database_file_object_key(&session.encoded_object_key),
+        "upload session key should decode",
+    );
+    let session_record = some(
+        ok(
+            repository
+                .get_upload_session("s3_public", &upload_session_key)
+                .await,
+            "S3 upload session should load",
+        ),
+        "S3 upload session should exist",
+    );
+    assert_eq!(session_record.session_kind, FileUploadSessionKind::S3Single);
+    let upload_token = some(
+        session
+            .upload_headers
+            .get(FILE_UPLOAD_TOKEN_HEADER)
+            .map(String::as_str),
+        "upload token should exist",
+    );
+    let stored = ok(
+        storage
+            .store_upload(StoreFileUpload {
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token: upload_token.to_string(),
+                content_type: Some("application/pdf".to_string()),
+                range: None,
+                data: payload.clone(),
+            })
+            .await,
+        "single-object S3 upload should store",
+    );
+    let StoreFileUploadResult::Complete(blob) = stored else {
+        panic!("single-object S3 upload should complete");
+    };
+    assert_eq!(blob.content_manifest_sha256, content_manifest_sha256);
+    assert_eq!(
+        ok(
+            operator.read(&blob.object_key).await,
+            "S3 object should read"
+        )
+        .to_vec(),
+        payload
+    );
+    assert!(ok(
+        repository
+            .object_validated("s3_public", &blob.object_key)
+            .await,
+        "S3 object validation should load"
+    ));
+    let complete = ok(
+        storage
+            .complete_upload_session(CompleteFileUploadSession {
+                file_id: Some(session.file.id.clone()),
+                encoded_object_key: session.encoded_object_key.clone(),
+                upload_token: upload_token.to_string(),
+                upload_id: None,
+                ownership_proof: None,
+                parts: Vec::new(),
+            })
+            .await,
+        "single-object S3 upload completion should be idempotent",
+    );
+    assert!(complete.object.is_some());
+    assert_eq!(complete.uploaded_size_bytes, payload_size(&payload));
+    assert_eq!(complete.uploaded_parts, vec![1]);
 }
 
 #[tokio::test]
@@ -3356,7 +3536,9 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     )
     .with_operator(operator.clone())
     .with_test_multipart_upload_id("test-upload-id");
-    let payload = b"s3-completed-object".to_vec();
+    let mut payload = Vec::with_capacity(12 * 1024 * 1024);
+    payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    payload.extend(vec![b'b'; 4 * 1024 * 1024]);
     let policy = generic_binary_upload_policy(payload_size(&payload));
     let (request, content_manifest_sha256) = upload_request(UploadRequestInput {
         user_id: UserId::expect_positive(1),
@@ -3370,7 +3552,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
         metadata: serde_json::Value::Object(Default::default()),
         policy,
     });
-    let part_checksum_sha256 = request.parts[0].checksum_sha256.clone();
+    let complete_parts = complete_parts_from_manifest(&request.parts);
     let session = ok(
         storage.create_upload_session(request).await,
         "upload session should be created",
@@ -3399,12 +3581,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
                 upload_token,
                 upload_id: session.upload_id.clone(),
                 ownership_proof: None,
-                parts: vec![CompleteFileUploadPart {
-                    part_number: 1,
-                    etag: "\"etag-1\"".to_string(),
-                    size_bytes: payload_size(&payload),
-                    checksum_sha256: Some(part_checksum_sha256),
-                }],
+                parts: complete_parts,
             })
             .await,
         "S3 multipart upload should complete",
@@ -3412,7 +3589,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     let blob = some(complete.object, "completed object should be returned");
     assert_eq!(blob.content_manifest_sha256, content_manifest_sha256);
     assert_eq!(complete.uploaded_size_bytes, payload_size(&payload));
-    assert_eq!(complete.uploaded_parts, vec![1]);
+    assert_eq!(complete.uploaded_parts, vec![1, 2]);
     assert!(ok(
         repository
             .object_validated("s3_public", &session.file.object_key)
@@ -3822,8 +3999,12 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     )
     .with_operator(operator.clone())
     .with_test_multipart_upload_id("test-upload-id");
-    let expected_payload = b"declared-s3-object".to_vec();
-    let actual_payload = b"tampered-s3-object".to_vec();
+    let mut expected_payload = Vec::with_capacity(12 * 1024 * 1024);
+    expected_payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    expected_payload.extend(vec![b'b'; 4 * 1024 * 1024]);
+    let mut actual_payload = Vec::with_capacity(12 * 1024 * 1024);
+    actual_payload.extend(vec![b'a'; 8 * 1024 * 1024]);
+    actual_payload.extend(vec![b'c'; 4 * 1024 * 1024]);
     assert_eq!(expected_payload.len(), actual_payload.len());
     let policy = generic_binary_upload_policy(payload_size(&expected_payload));
     let (request, expected_content_manifest_sha256) = upload_request(UploadRequestInput {
@@ -3838,7 +4019,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         metadata: serde_json::Value::Object(Default::default()),
         policy,
     });
-    let actual_part_checksum = hex::encode(Sha256::digest(&actual_payload));
+    let actual_parts = complete_parts_from_manifest(&manifest_parts_from_payload(&actual_payload));
     let session = ok(
         storage.create_upload_session(request).await,
         "upload session should be created",
@@ -3868,12 +4049,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
                 upload_token,
                 upload_id: session.upload_id.clone(),
                 ownership_proof: None,
-                parts: vec![CompleteFileUploadPart {
-                    part_number: 1,
-                    etag: "\"etag-1\"".to_string(),
-                    size_bytes: payload_size(&expected_payload),
-                    checksum_sha256: Some(actual_part_checksum),
-                }],
+                parts: actual_parts,
             })
             .await,
         "S3 multipart checksum mismatch should fail",

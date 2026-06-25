@@ -121,10 +121,13 @@ pub use types::{
     RoomCoverObjectQuery,
 };
 #[cfg(feature = "openapi")]
-pub(crate) use watch::__path_watch_chat_events;
+pub(crate) use watch::{__path_watch_chat_events, __path_watch_chat_pin_events};
 #[cfg(test)]
 use watch::{sse_event_from_server_message, sse_event_id_from_resource_event, CancelOnDropStream};
-pub use watch::{watch_chat_events, watch_playlist_items, watch_room_members, watch_room_settings};
+pub use watch::{
+    watch_chat_events, watch_chat_pin_events, watch_playlist_items, watch_room_members,
+    watch_room_settings,
+};
 
 #[cfg(test)]
 mod tests;

@@ -203,6 +203,8 @@ pub struct FileBlobPart {
 pub enum FileUploadSessionKind {
     DatabaseMultipart = 1,
     S3Multipart = 2,
+    DatabaseSingle = 3,
+    S3Single = 4,
 }
 
 impl From<FileUploadSessionKind> for i16 {
@@ -210,6 +212,8 @@ impl From<FileUploadSessionKind> for i16 {
         match value {
             FileUploadSessionKind::DatabaseMultipart => 1,
             FileUploadSessionKind::S3Multipart => 2,
+            FileUploadSessionKind::DatabaseSingle => 3,
+            FileUploadSessionKind::S3Single => 4,
         }
     }
 }
@@ -221,6 +225,8 @@ impl TryFrom<i16> for FileUploadSessionKind {
         match value {
             1 => Ok(Self::DatabaseMultipart),
             2 => Ok(Self::S3Multipart),
+            3 => Ok(Self::DatabaseSingle),
+            4 => Ok(Self::S3Single),
             _ => Err(()),
         }
     }

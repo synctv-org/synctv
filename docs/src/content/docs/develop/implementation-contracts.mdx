@@ -95,12 +95,12 @@ Provider 手动验证覆盖完整 `PlaybackResult`：
 
 - `file_objects` 是对象注册表。`validated_at` 表示对象已经可用，`NULL` 表示 pending session placeholder。
 - `file_blob_parts` 保存 database 后端对象字节。Pending upload 先把 part 写到 `upload_session_key`，finalize 时用 `UPDATE` 把这些行提升到最终 `object_key`。
-- `file_upload_sessions` 保存 database multipart 和 S3 multipart 的可恢复上传状态。
+- `file_upload_sessions` 保存 database 与 S3 的 single-object 或 multipart 上传状态。
 - `file_upload_session_parts` 保存已上传 part 进度，以及 provider ETag/checksum。
 
 Database multipart 上传在写入每个 part 时校验该 part 的 SHA-256。Finalize 使用已保存的 part checksum 重新计算 manifest digest，然后用 `UPDATE` 把 `file_blob_parts.object_key` 从 `upload_session_key` 提升到最终 `object_key`。Pending bytes 和 final bytes 使用同一张 part 表，通过 object key 表达状态，resume/idempotency 校验开销较低。
 
-S3 默认返回客户端直传 S3 的 presigned URL。服务端代理上传/下载路径作为兼容能力保留。Database 后端的 URL 指向 SyncTV，因为字节存储在应用背后的数据库里。
+Single-object 上传 session 仍使用服务端决定的 manifest plan，但通过一次 `PUT` 写入完整对象，并在 complete 时不写 part 进度行。S3 multipart session 返回客户端直传 S3 的 presigned part URL。服务端代理上传/下载路径作为需要部署兼容时的能力保留。Database 后端的 URL 指向 SyncTV，因为字节存储在应用背后的数据库里。
 
 下载是流式的。HTTP 返回普通二进制响应，body 由服务端 stream 驱动；gRPC 返回 protobuf chunk stream。Core service 返回 `FileObjectDownload`，让两种传输共享同一个 storage 实现，主路径按 chunk 推进对象读取。
 

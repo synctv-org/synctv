@@ -56,9 +56,7 @@ pub(super) fn effective_chat_message_event_retention_seconds(
         return Ok(0);
     }
     let message_retention_seconds = u64::try_from(message_retention_days)
-        .map_err(|_| {
-            crate::Error::Internal("chat_message_retention_days is negative".to_string())
-        })?
+        .map_err(|_| crate::Error::Internal("chat_message_retention_days is negative".to_string()))?
         .saturating_mul(24 * 60 * 60);
     Ok(config_floor.max(message_retention_seconds))
 }
@@ -423,7 +421,10 @@ pub(super) async fn cleanup_chat_messages_with_files(
             )
             .await
         }
-        ChatMessageCleanupScope::RoomCap { room_id, keep_count } => {
+        ChatMessageCleanupScope::RoomCap {
+            room_id,
+            keep_count,
+        } => {
             let mut tx = pool.begin().await?;
             let batch = cleanup_room_chat_messages_batch(&mut tx, room_id, keep_count).await?;
             tx.commit()

@@ -569,6 +569,7 @@ fn watch_playback_observe_builds_playback_resource_only() {
                 subtitle_preference: synctv_proto::client::PlaybackSubtitlePreference::Unspecified
                     as i32,
             }),
+            after_event_sequence: Some(12),
         }),
     })
     .checked("watch playback observe should build");
@@ -579,6 +580,7 @@ fn watch_playback_observe_builds_playback_resource_only() {
         Some(synctv_proto::client::observe_resource::Resource::Playback(
             synctv_proto::client::ObservePlayback {
                 playback_client_profile: Some(_),
+                after_event_sequence: Some(12),
             },
         ))
     ));
@@ -881,6 +883,7 @@ fn observe_playback_message(
             resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
                 synctv_proto::client::ObservePlayback {
                     playback_client_profile,
+                    after_event_sequence: None,
                 },
             )),
         },
@@ -3236,6 +3239,7 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
         resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
             synctv_proto::client::ObservePlayback {
                 playback_client_profile: None,
+                after_event_sequence: None,
             },
         )),
     };

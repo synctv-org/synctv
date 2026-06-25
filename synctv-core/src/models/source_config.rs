@@ -31,6 +31,8 @@ pub struct DirectUrlMediaSourceConfig {
     pub is_live: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_seconds: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_proxy: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub medias: Vec<DirectUrlMediaResourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,6 +55,7 @@ impl DirectUrlMediaSourceConfig {
         Self {
             is_live: None,
             duration_seconds: None,
+            prefer_proxy: None,
             medias: vec![DirectUrlMediaResourceConfig {
                 name: String::new(),
                 url,
@@ -383,6 +386,7 @@ mod tests {
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
                 is_live: Some(false),
                 duration_seconds: serde_json::Number::from_f64(120.5),
+                prefer_proxy: Some(true),
                 medias: vec![DirectUrlMediaResourceConfig {
                     name: "1080p".to_string(),
                     url: "https://example.com/video.mp4".to_string(),
@@ -409,6 +413,7 @@ mod tests {
             &json!({
                 "is_live": false,
                 "duration_seconds": 120.5,
+                "prefer_proxy": true,
                 "medias": [{
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",

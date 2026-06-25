@@ -39,6 +39,7 @@ pub fn direct_url_media_source_config_with_headers<S: BuildHasher>(
     media_storage(MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
         is_live: None,
         duration_seconds: None,
+        prefer_proxy: None,
         medias: vec![DirectUrlMediaResourceConfig {
             name: String::new(),
             url: url.into(),

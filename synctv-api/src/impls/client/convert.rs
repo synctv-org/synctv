@@ -295,6 +295,7 @@ fn proto_direct_url_media_source_config_to_core(
         duration_seconds: config
             .duration_seconds
             .and_then(serde_json::Number::from_f64),
+        prefer_proxy: config.prefer_proxy,
         medias: config
             .medias
             .into_iter()

@@ -2277,6 +2277,8 @@ message ObservePlaybackState {
 message ObservePlayback {
   // Player-ready aggregate for the current playback source.
   PlaybackClientProfile playback_client_profile = 4;
+  // Unset starts from the current snapshot and live changes.
+  optional int64 after_event_sequence = 5;
 }
 
 message ObserveRoomSettings {
@@ -3576,7 +3578,7 @@ message SearchChatMessagesRequest {
   option (buf.validate.message).cel = {
     id: "search_chat_messages.query"
     message: "query must be between 2 and 120 characters"
-    expression: "size(this.query.trim()) >= 2 && size(this.query.trim()) <= 120"
+    expression: "size(this.query) >= 2 && size(this.query) <= 120"
   };
   option (buf.validate.message).cel = {
     id: "search_chat_messages.limit"

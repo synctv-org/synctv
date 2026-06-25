@@ -141,7 +141,7 @@ export default defineConfig({
             { label: '使用入口', translations: { en: 'Use Overview' }, slug: 'use' },
             { label: '登录与账号安全', translations: { en: 'Sign In and Account Security' }, slug: 'use/accounts-security' },
             { label: '创建和加入房间', translations: { en: 'Create and Join Rooms' }, slug: 'use/rooms' },
-            { label: '同步观看', translations: { en: 'Watch Together' }, slug: 'use/watch-together' },
+            { label: '同步观看', translations: { en: 'Synchronized Playback' }, slug: 'use/synchronized-playback' },
             { label: '聊天', translations: { en: 'Chat' }, slug: 'use/chat' },
             {
               label: '房间、权限与用户偏好',

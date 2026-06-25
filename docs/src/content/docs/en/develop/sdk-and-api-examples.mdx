@@ -78,7 +78,7 @@ ACCESS_TOKEN=paste-access-token
 curl -sS "$BASE_URL/api/rooms" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Friday Watch","description":"Team movie night"}'
+  -d '{"name":"Friday Sync","description":"Team movie night"}'
 ```
 
 Save `room.id`; HTTP, gRPC metadata, and WebSocket URLs all need it.

@@ -1150,6 +1150,10 @@ fn register_read_routes() -> Router<AppState> {
             "/api/rooms/{room_id}/watch/chat-events",
             get(room::watch_chat_events),
         )
+        .route(
+            "/api/rooms/{room_id}/watch/chat-pin-events",
+            get(room::watch_chat_pin_events),
+        )
 }
 
 fn register_chat_attachment_object_routes() -> Router<AppState> {

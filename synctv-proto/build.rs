@@ -783,6 +783,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ] {
         prost_config.message_attribute(path, attr);
     }
+    // Upload-session responses use `oneof result { plan; session; }`, which
+    // prost+serde serializes as `{"result":{"Plan":{...}}}`. The Defs flatten
+    // it to proto3-JSON `{"plan":{...}}` / `{"session":{...}}` so proto-JSON
+    // clients (Flutter app) can parse them.
+    for (path, def) in [
+        (
+            ".synctv.client.CreateChatAttachmentUploadSessionResponse",
+            "crate::http_serde::CreateChatAttachmentUploadSessionResponseDef",
+        ),
+        (
+            ".synctv.client.CreateUserAvatarUploadSessionResponse",
+            "crate::http_serde::CreateUserAvatarUploadSessionResponseDef",
+        ),
+        (
+            ".synctv.client.CreateMediaCoverUploadSessionResponse",
+            "crate::http_serde::CreateMediaCoverUploadSessionResponseDef",
+        ),
+        (
+            ".synctv.client.CreateRoomCoverUploadSessionResponse",
+            "crate::http_serde::CreateRoomCoverUploadSessionResponseDef",
+        ),
+        (
+            ".synctv.client.CreatePlaylistCoverUploadSessionResponse",
+            "crate::http_serde::CreatePlaylistCoverUploadSessionResponseDef",
+        ),
+    ] {
+        prost_config.message_attribute(path, format!("#[serde(into = \"{def}\")]"));
+    }
     add_field_attributes(
         &mut main_field_attributes,
         &[
@@ -934,10 +962,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.client.UpdatePlaylistCoverRequest.cover_reference",
             ".synctv.client.SendChatMessageRequest.reply_to_message_id",
             ".synctv.client.SendChatMessageRequest.metadata",
+            ".synctv.client.ReportContentRequest.metadata",
             ".synctv.client.SendChatMessageRequest.display_position",
             ".synctv.client.SendChatMessageRequest.display_color",
             ".synctv.client.MarkAllAsReadRequest.before",
             ".synctv.admin.UpdateRoomSettingsRequest.settings",
+            ".synctv.client.CreateUserAvatarUploadSessionRequest.parts",
+            ".synctv.client.CreateChatAttachmentUploadSessionRequest.parts",
+            ".synctv.client.CreateMediaCoverUploadSessionRequest.parts",
+            ".synctv.client.CreateRoomCoverUploadSessionRequest.parts",
+            ".synctv.client.CreatePlaylistCoverUploadSessionRequest.parts",
         ],
         "#[serde(default)]",
     );
@@ -952,6 +986,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ".synctv.source_config.DirectUrlMediaSourceConfig.danmakus",
             ".synctv.source_config.DirectUrlMediaSourceConfig.is_live",
             ".synctv.source_config.DirectUrlMediaSourceConfig.duration_seconds",
+            ".synctv.source_config.DirectUrlMediaSourceConfig.prefer_proxy",
             ".synctv.source_config.DirectUrlSubtitleSourceConfig.name",
             ".synctv.source_config.DirectUrlSubtitleSourceConfig.language",
             ".synctv.source_config.DirectUrlSubtitleSourceConfig.headers",

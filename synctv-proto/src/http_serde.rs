@@ -798,6 +798,73 @@ impl TryFrom<MovePlaylistRequestDef> for crate::client::MovePlaylistRequest {
     }
 }
 
+/// Flattens a `oneof result { FileUploadPlan plan; <Session> session; }`
+/// upload-session response into proto3-JSON shape (`{"plan": {...}}` or
+/// `{"session": {...}}`). prost+serde otherwise emits the oneof nested under
+/// `result` with a PascalCase variant tag (e.g. `{"result":{"Plan":{...}}}`),
+/// which proto-JSON clients such as the Flutter app cannot parse.
+macro_rules! upload_session_response_def {
+    ($def:ident, $response:ident, $result_mod:ident, $session:ty) => {
+        #[derive(serde::Serialize)]
+        pub struct $def {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            plan: Option<crate::client::FileUploadPlan>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            session: Option<$session>,
+        }
+
+        impl From<crate::client::$response> for $def {
+            fn from(response: crate::client::$response) -> Self {
+                match response.result {
+                    Some(crate::client::$result_mod::Result::Plan(plan)) => Self {
+                        plan: Some(plan),
+                        session: None,
+                    },
+                    Some(crate::client::$result_mod::Result::Session(session)) => Self {
+                        plan: None,
+                        session: Some(session),
+                    },
+                    None => Self {
+                        plan: None,
+                        session: None,
+                    },
+                }
+            }
+        }
+    };
+}
+
+upload_session_response_def!(
+    CreateChatAttachmentUploadSessionResponseDef,
+    CreateChatAttachmentUploadSessionResponse,
+    create_chat_attachment_upload_session_response,
+    crate::client::ChatAttachmentUploadSession
+);
+upload_session_response_def!(
+    CreateUserAvatarUploadSessionResponseDef,
+    CreateUserAvatarUploadSessionResponse,
+    create_user_avatar_upload_session_response,
+    crate::client::UserAvatarUploadSession
+);
+upload_session_response_def!(
+    CreateMediaCoverUploadSessionResponseDef,
+    CreateMediaCoverUploadSessionResponse,
+    create_media_cover_upload_session_response,
+    crate::client::MediaCoverUploadSession
+);
+upload_session_response_def!(
+    CreateRoomCoverUploadSessionResponseDef,
+    CreateRoomCoverUploadSessionResponse,
+    create_room_cover_upload_session_response,
+    crate::client::RoomCoverUploadSession
+);
+upload_session_response_def!(
+    CreatePlaylistCoverUploadSessionResponseDef,
+    CreatePlaylistCoverUploadSessionResponse,
+    create_playlist_cover_upload_session_response,
+    crate::client::PlaylistCoverUploadSession
+);
+
 #[cfg(test)]
 mod room_http_serde_tests {
     use super::{

@@ -64,6 +64,7 @@ pub struct WatchQuery {
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<String>,
     pub format: Option<String>,
+    pub after_event_sequence: Option<i64>,
     pub stream_preference: Option<String>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,

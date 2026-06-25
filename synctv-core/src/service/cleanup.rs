@@ -32,7 +32,8 @@ const DEFAULT_ROOM_RESOURCE_EVENT_RETENTION_SECONDS: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_CHAT_MESSAGE_EVENT_RETENTION_SECONDS: u64 = 90 * 24 * 60 * 60;
 // Cover the full message count-pruning window so rooms inactive for up to 90 days
 // are still trimmed to keep_count.  Must match CHAT_MESSAGE_COUNT_PRUNING_DAYS.
-const CHAT_CAP_ACTIVITY_WINDOW_MINUTES: i32 = cleanup_ops::CHAT_MESSAGE_COUNT_PRUNING_DAYS * 24 * 60;
+const CHAT_CAP_ACTIVITY_WINDOW_MINUTES: i32 =
+    cleanup_ops::CHAT_MESSAGE_COUNT_PRUNING_DAYS * 24 * 60;
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -330,7 +331,8 @@ impl CleanupService {
         if chat_message_event_retention_seconds > 0 {
             match self
                 .cleanup_chat_message_events(chat_message_event_retention_seconds)
-                .await {
+                .await
+            {
                 Ok(count) => {
                     result.chat_message_events_deleted = count;
                     if count > 0 {

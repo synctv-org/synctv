@@ -1489,7 +1489,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
         .get(FILE_UPLOAD_TOKEN_HEADER)
         .map(String::as_str)
         .is_some());
-    assert_eq!(session.upload_id.as_deref(), Some("test-upload-id"));
+    assert!(session.upload_id.is_none());
     assert!(session.file.id.starts_with("file_"));
     assert_eq!(session.file.storage_backend, "s3");
     assert!(session
@@ -1514,13 +1514,11 @@ async fn s3_file_storage_creates_resumable_upload_session() {
         session.file.url.as_deref(),
         Some(expected_public_url.as_str())
     );
-    assert!(session.resumable);
+    assert!(!session.resumable);
     assert_eq!(session.part_size_bytes, upload_session_part_size());
     assert_eq!(session.uploaded_size_bytes, 0);
     assert!(session.uploaded_parts.is_empty());
-    assert_eq!(session.part_urls.len(), 1);
-    assert_eq!(session.part_urls[0].part_number, 1);
-    assert_eq!(session.part_urls[0].upload_method, "PUT");
+    assert!(session.part_urls.is_empty());
     assert!(session.expires_at.is_some());
     assert_eq!(session.max_size_bytes, MAX_CHAT_ATTACHMENT_SIZE_BYTES);
 }

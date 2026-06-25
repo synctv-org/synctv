@@ -2368,6 +2368,7 @@ mod tests {
                         default_danmaku_index: None,
                         is_live: None,
                         duration_seconds: None,
+                        prefer_proxy: None,
                     },
                 ),
             ),

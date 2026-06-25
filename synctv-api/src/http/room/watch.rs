@@ -22,8 +22,8 @@ use crate::impls::messaging::{
 };
 use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
-    ListPlaylistItemsRequest, WatchChatEventsRequest, WatchPlaylistItemsRequest,
-    WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,
+    ListPlaylistItemsRequest, WatchChatEventsRequest, WatchChatPinEventsRequest,
+    WatchPlaylistItemsRequest, WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,
 };
 
 struct HttpWatchMessageSender {
@@ -359,6 +359,51 @@ pub async fn watch_chat_events(
         }),
     };
     let observe = crate::impls::messaging::watch_chat_events_observe(request)
+        .map_err(super::super::AppError::bad_request)?;
+    open_resource_watch_sse(state, request_meta, room_id, observe, format).await
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/rooms/{room_id}/watch/chat-pin-events",
+        tag = "Room",
+        params(
+            ("room_id" = String, Path, description = "Room ID"),
+            ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
+            ("after_event_sequence" = Option<i64>, Query, description = "Replay chat pin events strictly after this durable event sequence"),
+            ("delivery_mode" = Option<String>, Query, description = "Resource watch delivery mode")
+        ),
+        responses(
+            (status = 200, description = "SSE stream of chat pin resource events"),
+            (status = 400, description = "Invalid request or event cursor", body = synctv_proto::client::ApiErrorResponse),
+            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
+            (status = 503, description = "Realtime manager unavailable", body = synctv_proto::client::ApiErrorResponse)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn watch_chat_pin_events(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomPathRequest>,
+    headers: HeaderMap,
+    Query(query): Query<WatchQuery>,
+) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+    let room_id = path.room_id;
+    let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
+    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = WatchChatPinEventsRequest {
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        chat_pin_events: Some(synctv_proto::client::ObserveChatPinEvents {
+            after_event_sequence,
+        }),
+    };
+    let observe = crate::impls::messaging::watch_chat_pin_events_observe(request)
         .map_err(super::super::AppError::bad_request)?;
     open_resource_watch_sse(state, request_meta, room_id, observe, format).await
 }

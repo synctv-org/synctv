@@ -185,6 +185,7 @@ use synctv_proto::client;
         room::finish_room_password_registration,
         room::clear_room_password,
         room::watch_chat_events,
+        room::watch_chat_pin_events,
         room::get_chat_history,
         room::search_chat_messages,
         room::get_chat_message,

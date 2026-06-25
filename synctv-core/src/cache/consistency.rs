@@ -381,8 +381,8 @@ impl VersionFenceStore for LocalVersionFenceStore {
             return Err(Error::OptimisticLockConflict);
         }
 
-        if state.pending.contains_key(domain) {
-            if observed_version <= current_version {
+        if let Some(pending) = state.pending.get(domain) {
+            if observed_version < current_version || observed_version != pending.version {
                 return Err(Error::OptimisticLockConflict);
             }
 
@@ -391,9 +391,7 @@ impl VersionFenceStore for LocalVersionFenceStore {
             // its fence commit was lost. Finalize it before installing a new
             // pending reservation; otherwise a later abort could erase the only
             // evidence of the committed write.
-            if observed_version > current_version {
-                state.versions.insert(domain.clone(), observed_version);
-            }
+            state.versions.insert(domain.clone(), observed_version);
             state.pending.remove(domain);
         } else if observed_version > current_version {
             state.versions.insert(domain.clone(), observed_version);
@@ -742,7 +740,7 @@ impl VersionFenceStore for RedisVersionFenceStore {
                         return -1
                     end
                     if pending then
-                        if observed <= committed then
+                        if observed < committed or observed ~= pending then
                             return -1
                         end
                         redis.call('SET', KEYS[1], observed)
@@ -2036,6 +2034,37 @@ mod tests {
             .checked("operation should succeed");
         assert_eq!(state.committed_version, 7);
         assert_eq!(state.pending_version, None);
+    }
+
+    #[tokio::test]
+    async fn local_begin_accepts_pending_version_observed_in_database() {
+        let store = Arc::new(LocalVersionFenceStore::new());
+        let coordinator = ConsistencyCoordinator::new(store.clone());
+        let domain = room_settings_domain(1);
+
+        let first = coordinator
+            .begin_observed_write(&domain, 0)
+            .await
+            .checked("operation should succeed")
+            .checked("first writer should reserve");
+        assert_eq!(first.version, 1);
+
+        let second = coordinator
+            .begin_observed_write(&domain, 1)
+            .await
+            .checked("writer that observed pending version in DB should reserve next version")
+            .checked("second writer should reserve");
+        assert_eq!(second.version, 2);
+        assert_ne!(second.token, first.token);
+
+        let state = coordinator
+            .current_state(&domain)
+            .await
+            .checked("operation should succeed")
+            .checked("operation should succeed");
+        assert_eq!(state.committed_version, 1);
+        assert_eq!(state.pending_version, Some(2));
+        assert_eq!(state.pending_token.as_deref(), Some(second.token.as_str()));
     }
 
     #[tokio::test]

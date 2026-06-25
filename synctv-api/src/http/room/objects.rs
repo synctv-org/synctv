@@ -493,7 +493,7 @@ pub async fn get_media_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
-        EndpointRateLimitScope::RoomChat,
+        EndpointRateLimitScope::MediaCover,
         move |client_api| async move { client_api.get_media_cover_object(req).await },
     )
     .await?;
@@ -663,7 +663,7 @@ pub async fn get_playlist_cover_object(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
-        EndpointRateLimitScope::MediaCover,
+        EndpointRateLimitScope::PlaylistCover,
         move |client_api| async move { client_api.get_playlist_cover_object(req).await },
     )
     .await?;

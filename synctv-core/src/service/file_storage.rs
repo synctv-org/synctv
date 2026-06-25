@@ -14,9 +14,9 @@ use crate::{
         FileBlob, FileBlobCompression, FileByteRange, FileObjectDownload, FileObjectMetadata,
         FileOwnershipProofRange, FileRangeRequest, FileReferenceTarget, FileUploadManifestPart,
         FileUploadPlan, FileUploadPlanPart, FileUploadRange, FileUploadSessionCreateResult,
-        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
-        SubmittedFileReference, SubmittedFileReferenceKind, UserId,
-        FILE_GENERATED_VARIANTS_METADATA_KEY,
+        FileUploadSessionKind, FileUploadSessionRecord, GetFileObject, NewStoredFile,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        UserId, FILE_GENERATED_VARIANTS_METADATA_KEY,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -80,8 +80,9 @@ pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
 //   the same table stores pending and final parts through different object keys.
 // - part_size_bytes is planned per session and persisted; validators must read
 //   the session plan so changing the default only affects new sessions.
-// - S3 upload sessions default to direct client-to-S3 presigned URLs; SyncTV
-//   proxy upload/download paths remain available as a deployment fallback.
+// - Single-object sessions upload one complete object through SyncTV; S3
+//   multipart sessions return direct client-to-S3 presigned part URLs.
+//   SyncTV proxy upload/download paths remain available as a deployment fallback.
 // - downloads return FileObjectDownload streams; HTTP wraps that as a normal
 //   binary body and gRPC wraps it as protobuf chunks.
 // See docs/src/content/docs/en/develop/implementation-contracts.mdx.
@@ -320,6 +321,19 @@ pub(super) fn upload_manifest_parts_from_metadata(
     })
 }
 
+pub(super) fn upload_manifest_is_single_object(
+    size_bytes: i64,
+    parts: &[FileUploadManifestPart],
+) -> bool {
+    matches!(
+        parts,
+        [part]
+            if part.part_number == 1
+                && part.offset_bytes == 0
+                && part.size_bytes == size_bytes
+    )
+}
+
 pub(super) fn resolve_file_range(
     request: Option<FileRangeRequest>,
     total_size_bytes: i64,
@@ -418,6 +432,40 @@ pub(super) fn upload_session_parts_progress(
     uploaded_parts.sort_unstable();
     uploaded_parts.dedup();
     Ok((uploaded_size, uploaded_parts))
+}
+
+pub(super) const fn upload_session_is_single_object(kind: FileUploadSessionKind) -> bool {
+    matches!(
+        kind,
+        FileUploadSessionKind::DatabaseSingle | FileUploadSessionKind::S3Single
+    )
+}
+
+pub(super) const fn upload_session_is_multipart(kind: FileUploadSessionKind) -> bool {
+    matches!(
+        kind,
+        FileUploadSessionKind::DatabaseMultipart | FileUploadSessionKind::S3Multipart
+    )
+}
+
+pub(super) fn session_record_blob(
+    session: &FileUploadSessionRecord,
+    data: Vec<u8>,
+    metadata: serde_json::Value,
+) -> FileBlob {
+    FileBlob {
+        storage_backend: session.storage_backend.clone(),
+        object_key: session.object_key.clone(),
+        mime_type: session.mime_type.clone(),
+        size_bytes: session.size_bytes,
+        total_size_bytes: session.size_bytes,
+        content_manifest_sha256: session.content_manifest_sha256.clone(),
+        compression: FileBlobCompression::None,
+        range: None,
+        data,
+        metadata,
+        created_at: Utc::now(),
+    }
 }
 
 pub(super) fn new_public_file_id() -> String {

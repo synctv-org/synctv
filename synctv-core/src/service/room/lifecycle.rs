@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, PageParams, ReviewStatus, Room, RoomId, RoomMember,
-        RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId,
+        AuditAction, AuditDetails, AuditTargetType, PageParams, ReviewStatus, Room, RoomId,
+        RoomMember, RoomPermission, RoomPermissionSet, RoomRole, RoomStatus, UserId,
     },
     repository::ReviewRepository,
     Error, Result,
@@ -212,14 +212,15 @@ impl RoomService {
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "reason": "Room deleted by user",
-                "playlists_deleted": impact.deleted_playlist_ids.len(),
-                "media_deleted": impact.deleted_media_ids.len(),
-                "members_deleted": impact.members_deleted,
-                "settings_deleted": impact.settings_deleted,
-                "chat_deleted": impact.chat_deleted,
-            }),
+            AuditDetails {
+                reason: Some("Room deleted by user".to_string()),
+                playlists_deleted: Some(impact.deleted_playlist_ids.len()),
+                media_deleted: Some(impact.deleted_media_ids.len()),
+                members_deleted: Some(impact.members_deleted),
+                settings_deleted: Some(impact.settings_deleted),
+                chat_deleted: Some(impact.chat_deleted),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -348,11 +349,12 @@ impl RoomService {
             AuditAction::RoomApproved,
             AuditTargetType::Room,
             Some(updated.id.to_string()),
-            serde_json::json!({
-                "request_id": request_id.to_string(),
-                "previous_review_status": "pending",
-                "new_review_status": "approved",
-            }),
+            AuditDetails {
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("approved".to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -428,11 +430,12 @@ impl RoomService {
             AuditAction::RoomRejected,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "previous_review_status": "pending",
-                "new_review_status": "rejected",
-                "reason": reason,
-            }),
+            AuditDetails {
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("rejected".to_string()),
+                reason,
+                ..Default::default()
+            },
         )
         .await;
 

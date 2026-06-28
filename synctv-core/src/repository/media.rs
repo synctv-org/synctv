@@ -24,7 +24,7 @@ struct MediaRow {
     description: String,
     position: f64,
     source_provider: ProviderTypeName,
-    source_config: serde_json::Value,
+    source_config: crate::models::MediaSourceConfig,
     provider_instance_name: Option<String>,
     cover_file_reference_id: Option<i64>,
     added_at: chrono::DateTime<chrono::Utc>,
@@ -34,6 +34,7 @@ struct MediaRow {
 
 impl From<MediaRow> for Media {
     fn from(row: MediaRow) -> Self {
+        let source_provider = row.source_provider.0;
         Self {
             id: row.id,
             playlist_id: row.playlist_id,
@@ -42,7 +43,7 @@ impl From<MediaRow> for Media {
             name: row.name,
             description: row.description,
             position: row.position,
-            source_provider: row.source_provider.0,
+            source_provider,
             source_config: row.source_config,
             provider_instance_name: row.provider_instance_name,
             cover_file_reference_id: row.cover_file_reference_id,
@@ -63,7 +64,7 @@ struct MediaListRow {
     description: String,
     position: f64,
     source_provider: ProviderTypeName,
-    source_config: serde_json::Value,
+    source_config: crate::models::MediaSourceConfig,
     provider_instance_name: Option<String>,
     cover_file_reference_id: Option<i64>,
     added_at: chrono::DateTime<chrono::Utc>,
@@ -74,6 +75,7 @@ struct MediaListRow {
 
 impl From<MediaListRow> for MediaListItem {
     fn from(row: MediaListRow) -> Self {
+        let source_provider = row.source_provider.0;
         Self {
             media: Media {
                 id: row.id,
@@ -83,7 +85,7 @@ impl From<MediaListRow> for MediaListItem {
                 name: row.name,
                 description: row.description,
                 position: row.position,
-                source_provider: row.source_provider.0,
+                source_provider,
                 source_config: row.source_config,
                 provider_instance_name: row.provider_instance_name,
                 cover_file_reference_id: row.cover_file_reference_id,
@@ -311,8 +313,7 @@ impl MediaRepository {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let source_config_json = serde_json::to_value(&media.source_config)?;
-
+        let source_config = sqlx::types::Json(&media.source_config);
         let row = sqlx::query_as!(
             MediaRow,
             r#"
@@ -327,7 +328,7 @@ impl MediaRepository {
                        description,
                        position,
                        source_provider as "source_provider: ProviderTypeName",
-                       source_config,
+                       source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
                        added_at, updated_at, version
@@ -339,7 +340,7 @@ impl MediaRepository {
             media.description,
             media.position,
             media.source_provider.as_i16(),
-            source_config_json,
+            source_config as _,
             normalize_provider_instance_name(media.provider_instance_name.as_deref()),
             media.added_at
         )
@@ -398,7 +399,6 @@ impl MediaRepository {
             .iter()
             .map(|item| item.source_provider.as_i16())
             .collect::<Vec<_>>();
-
         let mut query_builder = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "INSERT INTO media (playlist_id, room_id, creator_id, name, description, position,
                                source_provider, source_config, provider_instance_name, added_at, updated_at, version) ",
@@ -413,7 +413,7 @@ impl MediaRepository {
                     .push_bind(&item.description)
                     .push_bind(item.position)
                     .push_bind(provider_code)
-                    .push_bind(&item.source_config)
+                    .push_bind(sqlx::types::Json(&item.source_config))
                     .push_bind(normalize_provider_instance_name(
                         item.provider_instance_name.as_deref(),
                     ))
@@ -490,7 +490,7 @@ impl MediaRepository {
                        description,
                        position,
                        source_provider as "source_provider: ProviderTypeName",
-                       source_config,
+                       source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
                        added_at, updated_at, version
@@ -554,7 +554,7 @@ impl MediaRepository {
                        description,
                        position,
                        source_provider as "source_provider: ProviderTypeName",
-                       source_config,
+                       source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
                        added_at, updated_at, version
@@ -584,7 +584,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -616,7 +616,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -652,7 +652,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -695,7 +695,7 @@ impl MediaRepository {
                        description,
                        position,
                        source_provider as "source_provider: ProviderTypeName",
-                       source_config,
+                       source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
                        added_at, updated_at, version
@@ -741,7 +741,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -782,7 +782,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -819,7 +819,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -850,7 +850,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -880,7 +880,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -913,7 +913,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -960,7 +960,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1013,7 +1013,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1056,7 +1056,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1093,7 +1093,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1327,7 +1327,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1390,7 +1390,7 @@ impl MediaRepository {
                        description,
                        position,
                        source_provider as "source_provider: ProviderTypeName",
-                       source_config,
+                       source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
                        added_at, updated_at, version
@@ -1518,7 +1518,7 @@ impl MediaRepository {
                               description,
                               position,
                               source_provider as "source_provider: ProviderTypeName",
-                              source_config,
+                              source_config as "source_config: crate::models::MediaSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                               cover_file_reference_id,
                               added_at, updated_at, version
@@ -1719,7 +1719,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1746,7 +1746,7 @@ impl MediaRepository {
                    description,
                    position,
                    source_provider as "source_provider: ProviderTypeName",
-                   source_config,
+                   source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
                    added_at, updated_at, version
@@ -1827,7 +1827,7 @@ impl MediaRepository {
                               description,
                               position,
                               source_provider as "source_provider: ProviderTypeName",
-                              source_config,
+                              source_config as "source_config: crate::models::MediaSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                               cover_file_reference_id,
                               added_at, updated_at, version

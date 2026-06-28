@@ -55,7 +55,7 @@ pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
     BilibiliLiveDanmakuStream, DirectoryItem, DynamicBrowsePathSegment, DynamicFolder,
     DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    ProviderCredentialDependency, SourceConfig, SourceConfigKind,
+    PreparedSourceConfig, ProviderCredentialDependency, SourceConfig, SourceConfigKind,
 };
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
@@ -174,52 +174,6 @@ impl ProviderSet {
     }
 }
 
-/// Parse a `serde_json::Value` into a typed source config.
-///
-/// Common helper for provider `TryFrom<&Value>` implementations.
-pub fn parse_source_config<T: serde::de::DeserializeOwned>(
-    value: &serde_json::Value,
-    provider_name: &str,
-) -> std::result::Result<T, ProviderError> {
-    T::deserialize(value).map_err(|e| {
-        ProviderError::InvalidConfig(format!(
-            "Failed to parse {provider_name} source config: {e}"
-        ))
-    })
-}
-
-pub(crate) fn reject_source_config_provider_instance_name(
-    source_config: &serde_json::Value,
-    provider_name: &str,
-) -> std::result::Result<(), ProviderError> {
-    if source_config
-        .as_object()
-        .is_some_and(|object| object.contains_key("provider_instance_name"))
-    {
-        return Err(ProviderError::InvalidConfig(format!(
-            "{provider_name} source_config must not contain provider_instance_name; use the media/playlist top-level provider_instance_name field instead"
-        )));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn reject_source_config_credential_ref(
-    source_config: &serde_json::Value,
-    provider_name: &str,
-) -> std::result::Result<(), ProviderError> {
-    if source_config
-        .as_object()
-        .is_some_and(|object| object.contains_key("credential_ref"))
-    {
-        return Err(ProviderError::InvalidConfig(format!(
-            "{provider_name} source_config must not contain credential_ref; provider credentials are resolved from the media/playlist creator at runtime"
-        )));
-    }
-
-    Ok(())
-}
-
 pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> Option<&'a str> {
     normalize_provider_instance_name(ctx.provider_instance_name())
 }
@@ -231,7 +185,6 @@ pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
 
 #[must_use]
 pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult {
-    use serde_json::json;
     use std::collections::HashMap;
 
     let live_expires_at = chrono::Utc::now().timestamp() + 30;
@@ -284,10 +237,12 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         },
     );
 
-    let mut metadata = HashMap::new();
-    metadata.insert("is_live".to_string(), json!(true));
-    metadata.insert("media_id".to_string(), json!(media_id));
-    metadata.insert("room_id".to_string(), json!(room_id));
+    let metadata = crate::models::PlaybackMetadata {
+        is_live: Some(true),
+        media_id: Some(media_id),
+        room_id: Some(room_id),
+        ..Default::default()
+    };
 
     PlaybackResult {
         playback_infos,

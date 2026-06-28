@@ -6,8 +6,9 @@
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        AddMemberOptions, AuditAction, AuditTargetType, MemberStatus, MyRoomListQuery, PageParams,
-        Room, RoomId, RoomMember, RoomMemberWithUser, RoomRole, UserId,
+        AddMemberOptions, AuditAction, AuditDetails, AuditTargetType, MemberStatus,
+        MyRoomListQuery, PageParams, Room, RoomId, RoomMember, RoomMemberWithUser, RoomRole,
+        UserId,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::audit::{AuditEventParams, AuditService},
@@ -189,7 +190,7 @@ impl MemberService {
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
-        details: serde_json::Value,
+        details: AuditDetails,
     ) {
         if let Some(ref audit) = self.audit_service {
             if let Err(e) = audit
@@ -532,11 +533,12 @@ impl MemberService {
             AuditAction::MemberRoleUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "old_role": format!("{:?}", old_role),
-                "new_role": format!("{:?}", role),
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                old_role: Some(format!("{old_role:?}")),
+                new_role: Some(format!("{role:?}")),
+                ..Default::default()
+            },
         )
         .await;
 

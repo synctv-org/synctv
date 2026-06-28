@@ -925,7 +925,7 @@ mod tests {
         consistency::VersionFenceState, CacheDomain, LocalVersionFenceStore,
         VersionFenceReservation, VersionFenceStore,
     };
-    use crate::models::settings::{get_default_settings, SettingsGroup};
+    use crate::models::settings::SettingsGroup;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -947,12 +947,6 @@ mod tests {
             Some(value) => value,
             None => std::panic::panic_any(context.to_string()),
         }
-    }
-
-    #[test]
-    fn test_unknown_group_returns_none() {
-        assert!(get_default_settings("nonexistent").is_none());
-        assert!(get_default_settings("").is_none());
     }
 
     struct TestSettingProvider;
@@ -1244,9 +1238,15 @@ mod tests {
         let service =
             SettingsService::new_without_backend_for_tests(SettingsServiceRuntime::local_only());
 
+        let server_settings = synctv_proto::admin::ServerSettings {
+            allow_room_creation: true,
+            max_rooms_per_user: 0,
+            max_members_per_room: 0,
+            max_chat_messages: 0,
+        };
         let existing = SettingsGroup::new(
             "server".to_string(),
-            serde_json::json!({"allow_room_creation": true}).to_string(),
+            serde_json::to_string(&server_settings).expect("server settings should serialize"),
         );
         service.cache.insert(existing.key.clone(), existing.clone());
 

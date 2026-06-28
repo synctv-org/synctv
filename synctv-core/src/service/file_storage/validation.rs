@@ -2,17 +2,17 @@ use std::collections::HashSet;
 
 use crate::{
     models::{
-        CreateFileUploadSession, FileUploadPolicy, NewStoredFile, FILE_ID_MAX_CHARS,
+        CreateFileUploadSession, FileMetadata, FileUploadPolicy, NewStoredFile, FILE_ID_MAX_CHARS,
         FILE_OBJECT_KEY_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
-    service::file_storage::{S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY, FILE_UPLOAD_TOKEN_KEY},
+    service::file_storage::S3FileStorageConfig,
     Error, Result,
 };
 
-pub(super) fn validate_file_metadata(metadata: &serde_json::Value) -> Result<()> {
-    if !metadata.is_object() {
+pub(crate) fn validate_file_metadata(metadata: &FileMetadata) -> Result<()> {
+    if metadata.upload_token.is_some() || metadata.ownership_proof.is_some() {
         return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
+            "file metadata includes internal fields".to_string(),
         ));
     }
     Ok(())
@@ -20,10 +20,7 @@ pub(super) fn validate_file_metadata(metadata: &serde_json::Value) -> Result<()>
 
 pub(super) fn strip_internal_file_metadata(files: &mut [NewStoredFile]) {
     for file in files {
-        if let Some(metadata) = file.metadata.as_object_mut() {
-            metadata.remove(FILE_UPLOAD_TOKEN_KEY);
-            metadata.remove(FILE_OWNERSHIP_PROOF_KEY);
-        }
+        file.metadata = file.metadata.public();
     }
 }
 
@@ -146,20 +143,7 @@ pub(crate) fn validate_create_file_upload_session(request: &CreateFileUploadSess
             ));
         }
     }
-    if !request.metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
-        ));
-    }
-    if request
-        .metadata
-        .as_object()
-        .is_some_and(|metadata| metadata.keys().any(|key| key.starts_with("_synctv_")))
-    {
-        return Err(Error::InvalidInput(
-            "file metadata uses a reserved key".to_string(),
-        ));
-    }
+    validate_file_metadata(&request.metadata)?;
     Ok(())
 }
 

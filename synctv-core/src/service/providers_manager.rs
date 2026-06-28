@@ -12,66 +12,55 @@ use crate::provider::{
 };
 use crate::service::RemoteProviderManager;
 use crate::Result;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Debug, Clone, Default)]
+pub struct LocalProviderConfig {
+    pub http: Option<LocalProviderHttpConfig>,
+}
+
+impl LocalProviderConfig {
+    #[must_use]
+    pub const fn with_http(http: LocalProviderHttpConfig) -> Self {
+        Self { http: Some(http) }
+    }
+}
+
 fn provider_http_client_from_config(
-    config: &Value,
+    config: &LocalProviderConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> std::result::Result<Option<reqwest::Client>, crate::Error> {
-    fn parse_timeout_seconds(config: &Value, key: &str) -> Result<Option<u64>> {
-        config
-            .get(key)
-            .map(|value| {
-                value.as_u64().ok_or_else(|| {
-                    crate::Error::InvalidInput(format!(
-                        "{key} must be a positive integer number of seconds"
-                    ))
-                })
-            })
-            .transpose()
-    }
-
-    let request_timeout_seconds = parse_timeout_seconds(config, "request_timeout_seconds")?;
-    let connect_timeout_seconds = parse_timeout_seconds(config, "connect_timeout_seconds")?;
-
-    if request_timeout_seconds.is_none() && connect_timeout_seconds.is_none() {
+    let Some(http) = &config.http else {
         return Ok(None);
-    }
+    };
 
-    let defaults = LocalProviderHttpConfig::default();
-    let request_timeout_seconds =
-        request_timeout_seconds.unwrap_or(defaults.request_timeout_seconds);
-    let connect_timeout_seconds =
-        connect_timeout_seconds.unwrap_or(defaults.connect_timeout_seconds);
-
-    if request_timeout_seconds == 0 {
+    if http.request_timeout_seconds == 0 {
         return Err(crate::Error::InvalidInput(
             "request_timeout_seconds must be greater than 0".to_string(),
         ));
     }
-    if request_timeout_seconds > 300 {
+    if http.request_timeout_seconds > 300 {
         return Err(crate::Error::InvalidInput(
             "request_timeout_seconds should not exceed 300 seconds (5 minutes)".to_string(),
         ));
     }
-    if connect_timeout_seconds == 0 {
+    if http.connect_timeout_seconds == 0 {
         return Err(crate::Error::InvalidInput(
             "connect_timeout_seconds must be greater than 0".to_string(),
         ));
     }
-    if connect_timeout_seconds > request_timeout_seconds {
+    if http.connect_timeout_seconds > http.request_timeout_seconds {
         return Err(crate::Error::InvalidInput(
             "connect_timeout_seconds should not exceed request_timeout_seconds".to_string(),
         ));
     }
 
     let client = synctv_media_providers::provider_http_client_builder(ssrf_guard.clone())
-        .request_timeout(std::time::Duration::from_secs(request_timeout_seconds))
-        .read_timeout(std::time::Duration::from_secs(request_timeout_seconds))
-        .connect_timeout(std::time::Duration::from_secs(connect_timeout_seconds))
+        .request_timeout(std::time::Duration::from_secs(http.request_timeout_seconds))
+        .read_timeout(std::time::Duration::from_secs(http.request_timeout_seconds))
+        .connect_timeout(std::time::Duration::from_secs(http.connect_timeout_seconds))
         .build()
         .map_err(|e| {
             crate::Error::Internal(format!("Failed to build provider HTTP client: {e}"))
@@ -82,7 +71,7 @@ fn provider_http_client_from_config(
 
 /// Factory function type for creating `MediaProvider` instances.
 pub type MediaProviderFactory = Box<
-    dyn Fn(&str, &Value, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>>
+    dyn Fn(&str, &LocalProviderConfig, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>>
         + Send
         + Sync,
 >;
@@ -205,7 +194,7 @@ impl ProvidersManager {
 
         // Helper to select client manager based on config
         let select_client_manager =
-            |config: &Value, ssrf_guard: &synctv_common::ssrf::SsrfGuard| {
+            |config: &LocalProviderConfig, ssrf_guard: &synctv_common::ssrf::SsrfGuard| {
                 provider_http_client_from_config(config, ssrf_guard).map(|client_opt| {
                     client_opt.map(|client| {
                         Arc::new(ProviderClientManager::new_with_provider_http_client(client))
@@ -304,12 +293,12 @@ impl ProvidersManager {
     /// # Arguments
     /// * `provider_type` - Type of provider ("alist", "bilibili", etc.)
     /// * `instance_id` - Unique instance identifier
-    /// * `config` - Provider configuration (JSON)
+    /// * `config` - Typed local provider configuration
     pub async fn create_provider(
         &self,
         provider_type: &str,
         instance_id: &str,
-        config: &Value,
+        config: &LocalProviderConfig,
     ) -> Result<Arc<dyn MediaProvider>> {
         let factory = self.factories.get(provider_type).ok_or_else(|| {
             crate::Error::NotFound(format!("Unknown provider type: {provider_type}"))
@@ -330,6 +319,15 @@ impl ProvidersManager {
         );
 
         Ok(provider)
+    }
+
+    pub async fn create_provider_with_default_config(
+        &self,
+        provider_type: &str,
+        instance_id: &str,
+    ) -> Result<Arc<dyn MediaProvider>> {
+        self.create_provider(provider_type, instance_id, &LocalProviderConfig::default())
+            .await
     }
 
     /// Create missing built-in default provider instances.
@@ -359,16 +357,11 @@ impl ProvidersManager {
             }
 
             let provider_config = match provider_type.as_str() {
-                AlistProvider::NAME => serde_json::to_value(&config.alist),
-                BilibiliProvider::NAME => serde_json::to_value(&config.bilibili),
-                EmbyProvider::NAME => serde_json::to_value(&config.emby),
-                _ => Ok(serde_json::json!({})),
-            }
-            .map_err(|e| {
-                crate::Error::Internal(format!(
-                    "Failed to serialize local provider config for '{provider_type}': {e}"
-                ))
-            })?;
+                AlistProvider::NAME => LocalProviderConfig::with_http(config.alist.clone()),
+                BilibiliProvider::NAME => LocalProviderConfig::with_http(config.bilibili.clone()),
+                EmbyProvider::NAME => LocalProviderConfig::with_http(config.emby.clone()),
+                _ => LocalProviderConfig::default(),
+            };
 
             self.create_provider(&provider_type, &instance_id, &provider_config)
                 .await?;
@@ -507,6 +500,16 @@ mod tests {
         ProvidersManager::new(test_instance_manager()).checked("providers manager should build")
     }
 
+    fn provider_config(
+        request_timeout_seconds: u64,
+        connect_timeout_seconds: u64,
+    ) -> LocalProviderConfig {
+        LocalProviderConfig::with_http(LocalProviderHttpConfig {
+            request_timeout_seconds,
+            connect_timeout_seconds,
+        })
+    }
+
     #[tokio::test]
     async fn test_providers_manager_creation() {
         let manager = test_manager();
@@ -535,9 +538,8 @@ mod tests {
     async fn test_provider_config_without_timeout() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
         let provider = manager
-            .create_provider("alist", "test_alist", &config)
+            .create_provider_with_default_config("alist", "test_alist")
             .await;
         assert!(provider.is_ok());
 
@@ -549,10 +551,7 @@ mod tests {
     async fn test_provider_config_with_timeout() {
         let manager = test_manager();
 
-        let config = serde_json::json!({
-            "request_timeout_seconds": 30,
-            "connect_timeout_seconds": 10
-        });
+        let config = provider_config(30, 10);
         let provider = manager
             .create_provider("alist", "test_alist_timeout", &config)
             .await;
@@ -566,10 +565,7 @@ mod tests {
     async fn test_bilibili_provider_config_with_timeout() {
         let manager = test_manager();
 
-        let config = serde_json::json!({
-            "request_timeout_seconds": 45,
-            "connect_timeout_seconds": 10
-        });
+        let config = provider_config(45, 10);
         let provider = manager
             .create_provider("bilibili", "test_bilibili_timeout", &config)
             .await;
@@ -583,10 +579,7 @@ mod tests {
     async fn test_emby_provider_config_with_timeout() {
         let manager = test_manager();
 
-        let config = serde_json::json!({
-            "request_timeout_seconds": 60,
-            "connect_timeout_seconds": 10
-        });
+        let config = provider_config(60, 10);
         let provider = manager
             .create_provider("emby", "test_emby_timeout", &config)
             .await;
@@ -602,26 +595,19 @@ mod tests {
 
         for (config, expected_message) in [
             (
-                serde_json::json!({"request_timeout_seconds": "invalid"}),
-                "request_timeout_seconds must be a positive integer number of seconds",
-            ),
-            (
-                serde_json::json!({"connect_timeout_seconds": "invalid"}),
-                "connect_timeout_seconds must be a positive integer number of seconds",
-            ),
-            (
-                serde_json::json!({"request_timeout_seconds": 0}),
+                provider_config(0, 1),
                 "request_timeout_seconds must be greater than 0",
             ),
             (
-                serde_json::json!({"request_timeout_seconds": 301}),
+                provider_config(301, 1),
                 "request_timeout_seconds should not exceed 300 seconds",
             ),
             (
-                serde_json::json!({
-                    "request_timeout_seconds": 10,
-                    "connect_timeout_seconds": 11,
-                }),
+                provider_config(10, 0),
+                "connect_timeout_seconds must be greater than 0",
+            ),
+            (
+                provider_config(10, 11),
                 "connect_timeout_seconds should not exceed request_timeout_seconds",
             ),
         ] {
@@ -633,7 +619,7 @@ mod tests {
             };
             assert!(
                 error.to_string().contains(expected_message),
-                "unexpected error for {config}: {error}"
+                "unexpected error for {config:?}: {error}"
             );
         }
     }
@@ -675,7 +661,7 @@ mod tests {
                 .create_provider(
                     provider_type,
                     &format!("{provider_type}_default"),
-                    &serde_json::json!({}),
+                    &LocalProviderConfig::default(),
                 )
                 .await
                 .checked("default provider should be created");
@@ -703,14 +689,7 @@ mod tests {
         let default_marker = manager.default_client_manager_marker();
 
         let provider = manager
-            .create_provider(
-                "alist",
-                "alist_override",
-                &serde_json::json!({
-                    "request_timeout_seconds": 30,
-                    "connect_timeout_seconds": 4
-                }),
-            )
+            .create_provider("alist", "alist_override", &provider_config(30, 4))
             .await
             .checked("provider with timeout override should be created");
 
@@ -727,8 +706,9 @@ mod tests {
     async fn test_rtmp_provider_no_longer_requires_base_url() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
-        let provider = manager.create_provider("rtmp", "test_rtmp", &config).await;
+        let provider = manager
+            .create_provider_with_default_config("rtmp", "test_rtmp")
+            .await;
         assert!(provider.is_ok());
     }
 
@@ -736,9 +716,8 @@ mod tests {
     async fn test_live_proxy_provider_no_longer_requires_base_url() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
         let provider = manager
-            .create_provider("live_proxy", "test_live_proxy", &config)
+            .create_provider_with_default_config("live_proxy", "test_live_proxy")
             .await;
         assert!(provider.is_ok());
     }
@@ -747,9 +726,8 @@ mod tests {
     async fn test_provider_lookup_by_instance_id() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
         manager
-            .create_provider("alist", "my_alist_instance", &config)
+            .create_provider_with_default_config("alist", "my_alist_instance")
             .await
             .checked("provider should be created");
 
@@ -768,9 +746,8 @@ mod tests {
     async fn test_provider_lookup_by_type() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
         manager
-            .create_provider("alist", "alist", &config)
+            .create_provider_with_default_config("alist", "alist")
             .await
             .checked("provider should be created");
 
@@ -790,7 +767,7 @@ mod tests {
         let manager = test_manager();
 
         manager
-            .create_provider("alist", "alist", &serde_json::json!({}))
+            .create_provider_with_default_config("alist", "alist")
             .await
             .checked("default provider should be created");
 
@@ -816,7 +793,7 @@ mod tests {
         let manager = test_manager();
 
         manager
-            .create_provider("alist", "alist_alt", &serde_json::json!({}))
+            .create_provider_with_default_config("alist", "alist_alt")
             .await
             .checked("explicit provider should be created");
 
@@ -846,14 +823,14 @@ mod tests {
     async fn test_provider_singleton_pattern() {
         let manager = test_manager();
 
-        let config1 = serde_json::json!({"request_timeout_seconds": 10});
+        let config1 = provider_config(10, 10);
         let provider1 = manager
             .create_provider("alist", "alist_singleton", &config1)
             .await
             .checked("first provider should be created");
         assert_eq!(provider1.name(), "alist");
 
-        let config2 = serde_json::json!({"request_timeout_seconds": 30});
+        let config2 = provider_config(30, 10);
         let provider2 = manager
             .create_provider("alist", "alist_singleton", &config2)
             .await
@@ -877,15 +854,15 @@ mod tests {
         assert!(list.is_empty());
 
         manager
-            .create_provider("alist", "alist1", &serde_json::json!({}))
+            .create_provider_with_default_config("alist", "alist1")
             .await
             .checked("alist provider should be created");
         manager
-            .create_provider("bilibili", "bilibili1", &serde_json::json!({}))
+            .create_provider_with_default_config("bilibili", "bilibili1")
             .await
             .checked("bilibili provider should be created");
         manager
-            .create_provider("emby", "emby1", &serde_json::json!({}))
+            .create_provider_with_default_config("emby", "emby1")
             .await
             .checked("emby provider should be created");
 
@@ -903,7 +880,7 @@ mod tests {
         let manager = test_manager();
 
         manager
-            .create_provider("alist", "alist_remove", &serde_json::json!({}))
+            .create_provider_with_default_config("alist", "alist_remove")
             .await
             .checked("provider should be created");
 
@@ -922,9 +899,8 @@ mod tests {
     async fn test_provider_factory_unknown_type() {
         let manager = test_manager();
 
-        let config = serde_json::json!({});
         let result = manager
-            .create_provider("unknown_type", "test", &config)
+            .create_provider_with_default_config("unknown_type", "test")
             .await;
 
         assert!(result.is_err());
@@ -949,7 +925,7 @@ mod tests {
             let mgr = manager.clone();
             handles.push(tokio::spawn(async move {
                 let instance_id = format!("alist_concurrent_{i}");
-                mgr.create_provider("alist", &instance_id, &serde_json::json!({}))
+                mgr.create_provider_with_default_config("alist", &instance_id)
                     .await
             }));
         }

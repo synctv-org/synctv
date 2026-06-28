@@ -32,7 +32,10 @@ impl AdminApiImpl {
             banned_rooms: i64_to_i32_api(stats.banned_rooms, "banned room total")?,
             total_media,
             provider_instances: provider_count,
-            additional_stats: vec![],
+            additional_stats: Some(synctv_proto::admin::SystemAdditionalStats {
+                active_streams: 0,
+                open_reports: 0,
+            }),
             presence: Some(presence),
         })
     }

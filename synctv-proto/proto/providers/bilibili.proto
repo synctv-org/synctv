@@ -11,9 +11,11 @@ syntax = "proto3";
 
 package synctv.provider.bilibili;
 
+import "proto/buf/validate/validate.proto";
+
 // Parse video URL request
 message ParseRequest {
-  string url = 1;
+  string url = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2; // Optional provider instance name
 }
 
@@ -47,7 +49,7 @@ message QRCodeResponse {
 
 // Check QR status request
 message CheckQRRequest {
-  string key = 1;
+  string key = 1 [(buf.validate.field).string.min_len = 1];
   string instance_name = 2; // Optional provider instance name
 }
 

@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sqlx::PgPool;
 
 use crate::{
-    models::{EventCursor, RoomId},
+    models::{ChatPinEvent, EventCursor, RealtimeEvent, RoomId},
     Error, Result,
 };
 
@@ -43,6 +42,200 @@ impl TryFrom<i16> for RoomResourceEventScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RoomResourceKind {
+    PlaybackState,
+    Playback,
+    RoomSettings,
+    PlaylistItems,
+    RoomMemberEvents,
+    ChatPins,
+    OnlineCount,
+    Room,
+    Media,
+    Playlist,
+    PlaybackStream,
+}
+
+impl RoomResourceKind {
+    #[must_use]
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::PlaybackState => "playback_state",
+            Self::Playback => "playback",
+            Self::RoomSettings => "room_settings",
+            Self::PlaylistItems => "playlist_items",
+            Self::RoomMemberEvents => "room_member_events",
+            Self::ChatPins => "chat_pins",
+            Self::OnlineCount => "online_count",
+            Self::Room => "room",
+            Self::Media => "media",
+            Self::Playlist => "playlist",
+            Self::PlaybackStream => "playback_stream",
+        }
+    }
+}
+
+impl TryFrom<&str> for RoomResourceKind {
+    type Error = String;
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        match value {
+            "playback_state" => Ok(Self::PlaybackState),
+            "playback" => Ok(Self::Playback),
+            "room_settings" => Ok(Self::RoomSettings),
+            "playlist_items" => Ok(Self::PlaylistItems),
+            "room_member_events" => Ok(Self::RoomMemberEvents),
+            "chat_pins" => Ok(Self::ChatPins),
+            "online_count" => Ok(Self::OnlineCount),
+            "room" => Ok(Self::Room),
+            "media" => Ok(Self::Media),
+            "playlist" => Ok(Self::Playlist),
+            "playback_stream" => Ok(Self::PlaybackStream),
+            other => Err(format!("Unknown room resource kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoomResourceEventPayload {
+    Realtime { event: RealtimeEvent },
+    ChatPin { event: ChatPinEvent },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoomResourceEventSummary {
+    pub event_type: String,
+    pub room_id: Option<i64>,
+    pub actor_user_id: Option<i64>,
+    pub resource_type: RoomResourceKind,
+    pub details: RoomResourceEventSummaryDetails,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoomResourceEventSummaryDetails {
+    PlaybackState {
+        user_id: Option<i64>,
+        username: Option<String>,
+        playback_version: Option<i64>,
+        is_playing: bool,
+        position: f64,
+        speed: f64,
+        media_id: Option<i64>,
+        playlist_id: Option<i64>,
+        target_hash: String,
+    },
+    RoomSettings {
+        user_id: Option<i64>,
+        username: Option<String>,
+        settings_version: Option<i64>,
+    },
+    Media {
+        user_id: Option<i64>,
+        username: Option<String>,
+        media_id: i64,
+        media_title: Option<String>,
+    },
+    PlaylistItems {
+        user_id: Option<i64>,
+        username: Option<String>,
+        media_ids: Vec<i64>,
+    },
+    Playlist {
+        user_id: Option<i64>,
+        username: Option<String>,
+        playlist_id: i64,
+        playlist_name: Option<String>,
+        parent_id: Option<i64>,
+    },
+    RoomMember {
+        member: RoomMemberResourceSummary,
+    },
+    PlaybackStream {
+        media_id: i64,
+        reason: Option<String>,
+    },
+    Room {
+        room_name: Option<String>,
+        creator_id: Option<i64>,
+        deleted_by: Option<i64>,
+        banned_by: Option<i64>,
+        owner_id: Option<i64>,
+        triggered_by: Option<i64>,
+    },
+    ChatPin {
+        event_kind: i16,
+        message_id: i64,
+        message_created_at: DateTime<Utc>,
+        message_version: i64,
+        actor_user_id: i64,
+        pinned: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RoomMemberResourceSummary {
+    User {
+        user_id: i64,
+        username: Option<String>,
+        role: Option<i64>,
+        permissions: Option<i64>,
+        added_permissions: Option<i64>,
+        removed_permissions: Option<i64>,
+        admin_added_permissions: Option<i64>,
+        admin_removed_permissions: Option<i64>,
+        joined_at: Option<DateTime<Utc>>,
+    },
+    Guest {
+        guest_id: String,
+        username: Option<String>,
+        role: Option<i64>,
+        permissions: Option<i64>,
+        joined_at: Option<DateTime<Utc>>,
+    },
+    UserLeft {
+        user_id: i64,
+        username: Option<String>,
+    },
+    GuestLeft {
+        guest_id: String,
+        username: Option<String>,
+    },
+    PermissionChanged {
+        target_user_id: i64,
+        target_username: Option<String>,
+        changed_by: Option<i64>,
+        changed_by_username: Option<String>,
+        role_changed: bool,
+        role: Option<i64>,
+        new_permissions: Option<i64>,
+        added_permissions: Option<i64>,
+        removed_permissions: Option<i64>,
+        admin_added_permissions: Option<i64>,
+        admin_removed_permissions: Option<i64>,
+    },
+    Kicked {
+        user_id: i64,
+        reason: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewRoomResourceEvent {
     pub event_id: String,
@@ -51,14 +244,14 @@ pub struct NewRoomResourceEvent {
     pub user_id: Option<i64>,
     pub aggregate_type: String,
     pub aggregate_id: String,
-    pub resource_type: String,
+    pub resource_type: RoomResourceKind,
     pub resource_id: String,
     pub event_type: String,
     pub event_version: i64,
     pub aggregate_version: Option<i64>,
     pub actor_user_id: Option<i64>,
-    pub payload: Option<Value>,
-    pub summary: Value,
+    pub payload: Option<RoomResourceEventPayload>,
+    pub summary: RoomResourceEventSummary,
     pub occurred_at: DateTime<Utc>,
 }
 
@@ -66,9 +259,32 @@ pub struct NewRoomResourceEvent {
 pub struct RoomResourceEventLog {
     pub event_id: String,
     pub sequence: i64,
-    pub resource_type: String,
+    pub resource_type: RoomResourceKind,
     pub event_type: String,
-    pub payload: Option<Value>,
+    pub payload: Option<RoomResourceEventPayload>,
+}
+
+struct RoomResourceEventLogRow {
+    event_id: String,
+    sequence: i64,
+    resource_type: String,
+    event_type: String,
+    payload: Option<sqlx::types::Json<RoomResourceEventPayload>>,
+}
+
+impl TryFrom<RoomResourceEventLogRow> for RoomResourceEventLog {
+    type Error = Error;
+
+    fn try_from(row: RoomResourceEventLogRow) -> Result<Self> {
+        Ok(Self {
+            event_id: row.event_id,
+            sequence: row.sequence,
+            resource_type: RoomResourceKind::try_from(row.resource_type.as_str())
+                .map_err(Error::Internal)?,
+            event_type: row.event_type,
+            payload: row.payload.map(|payload| payload.0),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -89,7 +305,7 @@ impl RoomResourceEventRepository {
     pub async fn latest_room_event_cursor_for_resource_types(
         &self,
         room_id: &RoomId,
-        resource_types: &[&str],
+        resource_types: &[RoomResourceKind],
     ) -> Result<EventCursor> {
         if resource_types.is_empty() {
             return Ok(EventCursor {
@@ -97,10 +313,7 @@ impl RoomResourceEventRepository {
                 sequence: 0,
             });
         }
-        let resource_types: Vec<String> = resource_types
-            .iter()
-            .map(|resource_type| (*resource_type).to_string())
-            .collect();
+        let resource_types = room_resource_type_db_values(resource_types);
 
         let row = sqlx::query!(
             r"
@@ -132,7 +345,7 @@ impl RoomResourceEventRepository {
     pub async fn list_room_events_after_sequence_for_resource_types(
         &self,
         room_id: &RoomId,
-        resource_types: &[&str],
+        resource_types: &[RoomResourceKind],
         after_sequence: i64,
         limit: i32,
     ) -> Result<Vec<RoomResourceEventLog>> {
@@ -142,19 +355,16 @@ impl RoomResourceEventRepository {
 
         let limit = i64::from(limit.clamp(1, 500));
         let after_sequence = after_sequence.max(0);
-        let resource_types: Vec<String> = resource_types
-            .iter()
-            .map(|resource_type| (*resource_type).to_string())
-            .collect();
+        let resource_types = room_resource_type_db_values(resource_types);
 
         let rows = sqlx::query_as!(
-            RoomResourceEventLog,
+            RoomResourceEventLogRow,
             r#"
             SELECT event_id AS "event_id!",
                    sequence,
                    resource_type AS "resource_type!",
                    event_type AS "event_type!",
-                   payload
+                   payload AS "payload?: sqlx::types::Json<RoomResourceEventPayload>"
             FROM room_resource_events
             WHERE room_id = $1
               AND sequence > $2
@@ -170,22 +380,19 @@ impl RoomResourceEventRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows)
+        rows.into_iter().map(TryInto::try_into).collect()
     }
 
     pub async fn retained_room_event_sequence_bounds_for_resource_types(
         &self,
         room_id: &RoomId,
-        resource_types: &[&str],
+        resource_types: &[RoomResourceKind],
     ) -> Result<Option<(i64, i64)>> {
         if resource_types.is_empty() {
             return Ok(None);
         }
 
-        let resource_types: Vec<String> = resource_types
-            .iter()
-            .map(|resource_type| (*resource_type).to_string())
-            .collect();
+        let resource_types = room_resource_type_db_values(resource_types);
 
         let row = sqlx::query!(
             r"
@@ -206,7 +413,7 @@ impl RoomResourceEventRepository {
     pub async fn is_room_event_sequence_retained_for_resource_types(
         &self,
         room_id: &RoomId,
-        resource_types: &[&str],
+        resource_types: &[RoomResourceKind],
         after_sequence: i64,
     ) -> Result<bool> {
         let after_sequence = after_sequence.max(0);
@@ -287,7 +494,7 @@ fn validate_new_room_resource_event(event: &NewRoomResourceEvent) -> Result<()> 
         ROOM_RESOURCE_EVENT_AGGREGATE_ID_MAX_CHARS,
     )?;
     validate_required_text(
-        &event.resource_type,
+        event.resource_type.as_db_str(),
         "room resource resource_type",
         ROOM_RESOURCE_EVENT_RESOURCE_TYPE_MAX_CHARS,
     )?;
@@ -304,20 +511,6 @@ fn validate_new_room_resource_event(event: &NewRoomResourceEvent) -> Result<()> 
     if event.event_version < 1 {
         return Err(Error::InvalidInput(
             "room resource event_version must be positive".to_string(),
-        ));
-    }
-    if !event.summary.is_object() {
-        return Err(Error::InvalidInput(
-            "room resource summary must be a JSON object".to_string(),
-        ));
-    }
-    if event
-        .payload
-        .as_ref()
-        .is_some_and(|payload| !payload.is_object())
-    {
-        return Err(Error::InvalidInput(
-            "room resource payload must be a JSON object".to_string(),
         ));
     }
     match event.scope_type {
@@ -346,6 +539,8 @@ where
     E: sqlx::PgExecutor<'e>,
 {
     validate_new_room_resource_event(event)?;
+    let payload = event.payload.as_ref().map(sqlx::types::Json);
+    let summary = sqlx::types::Json(&event.summary);
     sqlx::query!(
         r"
         INSERT INTO room_resource_events (
@@ -362,19 +557,26 @@ where
         event.user_id,
         &event.aggregate_type,
         &event.aggregate_id,
-        &event.resource_type,
+        event.resource_type.as_db_str(),
         &event.resource_id,
         &event.event_type,
         event.event_version,
         event.aggregate_version,
         event.actor_user_id,
-        event.payload.as_ref(),
-        &event.summary,
+        payload as _,
+        summary as _,
         event.occurred_at
     )
     .execute(executor)
     .await?;
     Ok(())
+}
+
+fn room_resource_type_db_values(resource_types: &[RoomResourceKind]) -> Vec<String> {
+    resource_types
+        .iter()
+        .map(|resource_type| resource_type.as_db_str().to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -389,14 +591,32 @@ mod tests {
             user_id: None,
             aggregate_type: "room".to_string(),
             aggregate_id: "1".to_string(),
-            resource_type: "room_member_events".to_string(),
+            resource_type: RoomResourceKind::RoomMemberEvents,
             resource_id: "1".to_string(),
             event_type: "user_joined".to_string(),
             event_version: 1,
             aggregate_version: Some(1),
             actor_user_id: Some(1),
-            payload: Some(serde_json::json!({})),
-            summary: serde_json::json!({}),
+            payload: None,
+            summary: RoomResourceEventSummary {
+                event_type: "user_joined".to_string(),
+                room_id: Some(1),
+                actor_user_id: Some(1),
+                resource_type: RoomResourceKind::RoomMemberEvents,
+                details: RoomResourceEventSummaryDetails::RoomMember {
+                    member: RoomMemberResourceSummary::User {
+                        user_id: 1,
+                        username: None,
+                        role: None,
+                        permissions: None,
+                        added_permissions: None,
+                        removed_permissions: None,
+                        admin_added_permissions: None,
+                        admin_removed_permissions: None,
+                        joined_at: None,
+                    },
+                },
+            },
             occurred_at: Utc::now(),
         }
     }
@@ -426,21 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn validates_room_resource_event_shape_in_rust() {
-        let mut event = valid_event();
-        event.summary = serde_json::json!([]);
-        assert!(matches!(
-            validate_new_room_resource_event(&event),
-            Err(Error::InvalidInput(message)) if message.contains("summary")
-        ));
-
-        let mut event = valid_event();
-        event.payload = Some(serde_json::json!("payload"));
-        assert!(matches!(
-            validate_new_room_resource_event(&event),
-            Err(Error::InvalidInput(message)) if message.contains("payload")
-        ));
-
+    fn validates_room_resource_event_scope_in_rust() {
         let mut event = valid_event();
         event.room_id = None;
         assert!(matches!(

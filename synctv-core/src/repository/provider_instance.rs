@@ -4,11 +4,12 @@
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{
     normalize_provider_instance_name, provider_type_code_from_name, provider_type_name_from_code,
-    ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy, SourceProvider,
-    UserId, UserProviderCredential,
+    ProviderCredential, ProviderInstance, ProviderInstanceListQuery, ProviderInstanceListSortBy,
+    SourceProvider, UserId, UserProviderCredential,
 };
 use crate::repository::pools::RepoPools;
 use crate::Result;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -62,28 +63,53 @@ struct UserProviderCredentialRow {
     provider: i16,
     server_id: String,
     provider_instance_name: Option<String>,
-    credential_data: serde_json::Value,
+    credential_data: EncryptedProviderCredential,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-impl TryFrom<UserProviderCredentialRow> for UserProviderCredential {
-    type Error = crate::Error;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct EncryptedProviderCredential(serde_json::Value);
 
-    fn try_from(row: UserProviderCredentialRow) -> Result<Self> {
-        Ok(Self {
-            id: row.id,
-            user_id: row.user_id,
-            provider: provider_type_name_from_code(row.provider)
-                .map_err(crate::Error::InvalidInput)?,
-            server_id: row.server_id,
-            provider_instance_name: row.provider_instance_name,
-            credential_data: row.credential_data,
-            expires_at: row.expires_at,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
+impl EncryptedProviderCredential {
+    fn as_json_value(&self) -> &serde_json::Value {
+        &self.0
+    }
+
+    #[cfg(test)]
+    fn from_json_value_for_test(value: serde_json::Value) -> Self {
+        Self(value)
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for EncryptedProviderCredential {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for EncryptedProviderCredential {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> std::result::Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for EncryptedProviderCredential {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(value) =
+            <sqlx::types::Json<Self> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(value)
     }
 }
 
@@ -643,23 +669,28 @@ impl std::fmt::Debug for UserProviderCredentialRepository {
 impl UserProviderCredentialRepository {
     fn encrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
-        data: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        match encryption {
-            Some(enc) => enc.encrypt_to_value(data),
+        data: &ProviderCredential,
+    ) -> Result<EncryptedProviderCredential> {
+        let value = serde_json::to_value(data)?;
+        let encrypted = match encryption {
+            Some(enc) => enc.encrypt_to_value(&value),
             None => Err(crate::Error::Internal(
                 "Credential encryption must be configured before storing provider credentials"
                     .to_string(),
             )),
-        }
+        }?;
+        Ok(EncryptedProviderCredential(encrypted))
     }
 
     fn decrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
-        data: &serde_json::Value,
-    ) -> Result<serde_json::Value> {
+        data: &EncryptedProviderCredential,
+    ) -> Result<ProviderCredential> {
         match encryption {
-            Some(enc) => enc.decrypt_value(data),
+            Some(enc) => {
+                let value = enc.decrypt_value(&data.0)?;
+                serde_json::from_value(value).map_err(crate::Error::from)
+            }
             None => Err(crate::Error::Internal(
                 "Credential encryption must be configured before reading provider credentials"
                     .to_string(),
@@ -685,28 +716,31 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    fn encrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
+    fn encrypt_credential(&self, data: &ProviderCredential) -> Result<EncryptedProviderCredential> {
         Self::encrypt_credential_with(self.encryption.as_ref(), data)
     }
 
-    fn decrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
+    fn decrypt_credential(&self, data: &EncryptedProviderCredential) -> Result<ProviderCredential> {
         Self::decrypt_credential_with(self.encryption.as_ref(), data)
-    }
-
-    /// Decrypt credentials on a `UserProviderCredential` in place.
-    fn decrypt_in_credential(
-        &self,
-        mut cred: UserProviderCredential,
-    ) -> Result<UserProviderCredential> {
-        cred.credential_data = self.decrypt_credential(&cred.credential_data)?;
-        Ok(cred)
     }
 
     fn decrypt_credential_row(
         &self,
         row: UserProviderCredentialRow,
     ) -> Result<UserProviderCredential> {
-        self.decrypt_in_credential(row.try_into()?)
+        let credential_data = self.decrypt_credential(&row.credential_data)?;
+        Ok(UserProviderCredential {
+            id: row.id,
+            user_id: row.user_id,
+            provider: provider_type_name_from_code(row.provider)
+                .map_err(crate::Error::InvalidInput)?,
+            server_id: row.server_id,
+            provider_instance_name: row.provider_instance_name,
+            credential_data,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
     }
 
     /// Decrypt credentials on a list of `UserProviderCredentialRow`.
@@ -754,7 +788,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1
@@ -774,7 +808,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE id = $1
@@ -801,7 +835,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
@@ -830,7 +864,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
@@ -857,7 +891,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
@@ -887,14 +921,14 @@ impl UserProviderCredentialRepository {
             (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, user_id as "user_id: UserId", provider, server_id,
-                      provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                      provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data,
+            encrypted_data.as_json_value(),
             credential.expires_at,
         )
         .fetch_one(&self.pool)
@@ -927,14 +961,14 @@ impl UserProviderCredentialRepository {
                 expires_at = EXCLUDED.expires_at,
                 updated_at = NOW()
             RETURNING id, user_id as "user_id: UserId", provider, server_id,
-                      provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                      provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data,
+            encrypted_data.as_json_value(),
             credential.expires_at,
         )
         .fetch_one(&self.pool)
@@ -955,7 +989,7 @@ impl UserProviderCredentialRepository {
             ",
             credential.id,
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data,
+            encrypted_data.as_json_value(),
             credential.expires_at,
         )
         .execute(&self.pool)
@@ -1014,7 +1048,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: serde_json::Value",
+                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE expires_at IS NOT NULL AND expires_at <= NOW()

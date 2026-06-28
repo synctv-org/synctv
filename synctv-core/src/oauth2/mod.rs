@@ -11,7 +11,7 @@ pub mod providers;
 
 pub use providers::{GitHubConfig, GoogleConfig, LogtoConfig, OidcConfig};
 
-use crate::Error;
+use crate::{service::OAuth2ProviderPrivateConfig, Error};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -104,7 +104,7 @@ pub struct OAuth2UserInfo {
 /// create instances of that provider with configuration.
 /// All parameters (`client_id`, `client_secret`, `redirect_url`, etc.) are in config.
 pub type OAuth2ProviderFactory =
-    Arc<dyn Fn(&serde_json::Value) -> Result<Box<dyn Provider>, Error> + Send + Sync>;
+    Arc<dyn Fn(&OAuth2ProviderPrivateConfig) -> Result<Box<dyn Provider>, Error> + Send + Sync>;
 
 /// Instance-based provider registry.
 ///
@@ -149,7 +149,7 @@ impl ProviderRegistry {
     pub fn create_provider(
         &self,
         provider_type: &str,
-        config: &serde_json::Value,
+        config: &OAuth2ProviderPrivateConfig,
     ) -> Result<Box<dyn Provider>, Error> {
         let factory = self.get_factory(provider_type).ok_or_else(|| {
             Error::InvalidInput(format!("Unknown provider type: {provider_type}"))

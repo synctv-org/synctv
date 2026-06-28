@@ -20,6 +20,7 @@ use crate::http::{
 };
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlistIndexedPath {
     pub version: String,
     pub mode_name: String,
@@ -27,6 +28,7 @@ pub struct AlistIndexedPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlistSubtitlePath {
     pub version: String,
     pub mode_name: String,
@@ -67,12 +69,12 @@ impl PlaybackProviderHttpResponse for AlistThumbnailResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/files/{mode_name}/{url_index}",
+        path = "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -106,12 +108,12 @@ pub fn get_alist_file_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/alist/{version}/files/{mode_name}/{url_index}",
+        path = "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -186,12 +188,12 @@ async fn alist_file_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{mode_name}/{url_index}",
+        path = "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -250,7 +252,7 @@ pub async fn get_alist_transcoded_hls_manifest(
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("target_url" = String, Query),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -258,7 +260,7 @@ pub async fn get_alist_transcoded_hls_manifest(
         ),
         responses(
             (status = 200, description = "Alist transcoded HLS segment"),
-            (status = 400, description = "Invalid target_url", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         )
     )
@@ -288,7 +290,7 @@ pub fn get_alist_transcoded_hls_segment(
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("target_url" = String, Query),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -296,7 +298,7 @@ pub fn get_alist_transcoded_hls_segment(
         ),
         responses(
             (status = 200, description = "Alist transcoded HLS segment metadata"),
-            (status = 400, description = "Invalid target_url", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         )
     )
@@ -362,12 +364,12 @@ async fn alist_transcoded_hls_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/alist/{version}/subtitles/{mode_name}/{subtitle_index}",
+        path = "/api/playback-providers/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Alist Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("subtitle_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),

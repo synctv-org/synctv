@@ -568,14 +568,6 @@ impl RoomSettingsService {
                             )
                             .await?
                     };
-                    if let Err(error) = self
-                        .repo
-                        .delete_auxiliary_with_executor(room_id, &mut *tx)
-                        .await
-                    {
-                        self.abort_write(&domain, reservation.as_ref()).await;
-                        return Err(error);
-                    }
                     if let Err(error) = tx.commit().await {
                         self.abort_write(&domain, reservation.as_ref()).await;
                         return Err(error.into());
@@ -705,19 +697,11 @@ impl RoomSettingsService {
 
     /// Notify connected clients about settings change
     fn notify_settings_changed(&self, room_id: &RoomId, settings: &RoomSettings, version: i64) {
-        let settings_value = match serde_json::to_value(settings) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("Failed to serialize settings: {}", e);
-                return;
-            }
-        };
-
         let subscriber_count = self.notification_service.notify_settings_updated(
             room_id,
             None,
             "",
-            settings_value,
+            settings.clone(),
             version,
         );
         if subscriber_count == 0 {

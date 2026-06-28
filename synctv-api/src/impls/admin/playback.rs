@@ -1,7 +1,5 @@
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-
 use synctv_core::{
-    models::{PlaybackSourceIdentity, PlaylistId, RoomId, UserId, UserStatus},
+    models::{PlaybackSourceIdentity, PlaylistId, ProviderTarget, RoomId, UserId, UserStatus},
     service::{PlaybackStatePatch, PlaybackStateUpdateRequest},
 };
 
@@ -19,7 +17,7 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     room_id_model: &'a RoomId,
     user_id_model: &'a UserId,
     playlist_id: &'a PlaylistId,
-    target: &'a [u8],
+    target: &'a ProviderTarget,
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
 }
 
@@ -137,11 +135,7 @@ impl AdminApiImpl {
             let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
-        for (key, value) in provider_result.metadata {
-            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
-                builder = builder.add_metadata(key, value);
-            }
-        }
+        builder = builder.metadata(provider_result.metadata);
 
         let full_result = builder
             .build()
@@ -245,7 +239,7 @@ impl AdminApiImpl {
         let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
             self.provider_stores.as_ref(),
-            PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target),
+            PlaybackSourceIdentity::dynamic_playlist(*room_id_model, *playlist_id, target)?,
             provider_result.is_live,
             provider_result.duration_seconds,
         )
@@ -267,17 +261,10 @@ impl AdminApiImpl {
             let info = provider_playback_info_to_model(&provider_info);
             builder = builder.add_mode(mode_name, info);
         }
-        for (key, value) in provider_result.metadata {
-            if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
-                builder = builder.add_metadata(key, value);
-            }
-        }
+        builder = builder.metadata(provider_result.metadata);
 
         let full_result = builder
-            .add_metadata(
-                "target".to_string(),
-                serde_json::Value::String(BASE64_STANDARD.encode(target)),
-            )
+            .target(target.clone())
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
         let signing = PlaybackHttpSigningContext {
@@ -317,12 +304,17 @@ impl AdminApiImpl {
         }
 
         if let Some(ref playlist_id) = state.playing_playlist_id {
+            let target = state.target.as_ref().ok_or_else(|| {
+                ApiError::InvalidInput(
+                    "dynamic playlist playback state requires target".to_string(),
+                )
+            })?;
             return self
                 .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
                     room_id_model: room_id,
                     user_id_model: user_id,
                     playlist_id,
-                    target: &state.target,
+                    target,
                     playback_client_profile,
                 })
                 .await;
@@ -339,12 +331,13 @@ impl AdminApiImpl {
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            provider: String::new(),
+            provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
             expires_at: None,
             duration_seconds: None,
             is_live: false,
+            target: None,
         })
     }
 

@@ -1,5 +1,8 @@
 use synctv_core::{
-    models::{AuditAction, AuditTargetType, ContentReportStatus, ContentReportTargetType, UserId},
+    models::{
+        AuditAction, AuditDetails, AuditTargetType, ContentReportStatus, ContentReportTargetType,
+        UserId,
+    },
     service::{ContentReportListQuery, ContentReportListScope},
 };
 
@@ -122,12 +125,13 @@ impl AdminApiImpl {
             AuditAction::ContentReportStatusUpdated,
             AuditTargetType::ContentReport,
             Some(report.id.to_string()),
-            serde_json::json!({
-                "report_id": report.id.to_string(),
-                "status": report.status.as_str(),
-                "target_type": report.target_type.as_str(),
-                "reporter_user_id": report.reporter_user_id.to_string(),
-            }),
+            AuditDetails {
+                report_id: Some(report.id.to_string()),
+                status: Some(report.status.as_str().to_string()),
+                target_type: Some(report.target_type.as_str().to_string()),
+                reporter_user_id: Some(report.reporter_user_id.to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;

@@ -110,7 +110,7 @@ OPAQUE setup secret 是密码认证协议的长期服务端 secret。除非你�
 | Rate limit | 登录、验证码、WebSocket、API 都配置合理限制 |
 | WebAuthn | `rp_origin` 与真实 HTTPS origin 一致 |
 | OAuth2 | redirect URL 精确匹配，state 存储依赖 Redis |
-| Provider | 凭据加密，禁止把 token 写入 `source_config` |
+| Provider | 凭据加密，禁止把 token 写入 `sourceConfig` |
 | Logs | JSON 日志，不输出 secret、Cookie、JWT |
 | Metrics | 不公网暴露，启用 bearer 或平台鉴权 |
 | Backups | 数据库和 secret 一起备份、一起演练恢复 |

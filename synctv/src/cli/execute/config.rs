@@ -19,7 +19,10 @@ pub(super) fn execute_config(config_command: ConfigCommand) -> Result<()> {
             match args.output {
                 ConfigOutputFormat::Yaml => print_yaml(&rendered)?,
                 ConfigOutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&rendered)?);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&config_json_for_display(&config)?)?
+                    );
                 }
                 ConfigOutputFormat::Toml => print_toml(&rendered)?,
             }

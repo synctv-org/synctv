@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use synctv_core::models::{
-    normalize_provider_instance_name, validate_provider_instance_name, NewProviderInstance,
-    ProviderInstance, UserProviderCredential,
+    normalize_provider_instance_name, validate_provider_instance_name, AuditDetails,
+    NewProviderInstance, ProviderCredential, ProviderInstance, UserProviderCredential,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
 use synctv_core::provider::ProviderError;
@@ -43,32 +43,6 @@ fn i64_to_i32(value: i64, field: &'static str) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-fn required_credential_string_field(
-    credential: &UserProviderCredential,
-    field: &str,
-) -> Result<String, ApiError> {
-    let value = credential
-        .credential_data
-        .get(field)
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| {
-            ApiError::Internal(format!(
-                "Provider credential {} for {} is missing required field '{field}'",
-                credential.id, credential.provider
-            ))
-        })?
-        .trim();
-
-    if value.is_empty() {
-        return Err(ApiError::Internal(format!(
-            "Provider credential {} for {} has empty required field '{field}'",
-            credential.id, credential.provider
-        )));
-    }
-
-    Ok(value.to_string())
-}
-
 fn filter_provider_binds(
     credentials: Vec<UserProviderCredential>,
     user_field_key: &str,
@@ -76,15 +50,35 @@ fn filter_provider_binds(
     credentials
         .into_iter()
         .map(|credential| {
-            let host = required_credential_string_field(&credential, "host")?;
-            let label_value = required_credential_string_field(&credential, user_field_key)?;
+            let (host, label_value) = match (&credential.credential_data, user_field_key) {
+                (ProviderCredential::Alist { host, username, .. }, "username") => {
+                    (host.clone(), username.clone())
+                }
+                (ProviderCredential::Emby { host, api_key, .. }, "api_key") => {
+                    (host.clone(), api_key.clone())
+                }
+                _ => {
+                    return Err(ApiError::Internal(format!(
+                        "Provider credential {} for {} has unexpected credential shape",
+                        credential.id, credential.provider
+                    )));
+                }
+            };
+            let host = host.trim();
+            let label_value = label_value.trim();
+            if host.is_empty() || label_value.is_empty() {
+                return Err(ApiError::Internal(format!(
+                    "Provider credential {} for {} has empty bind fields",
+                    credential.id, credential.provider
+                )));
+            }
 
             Ok(ProviderBind {
                 id: credential.id.to_string(),
                 server_id: credential.server_id,
-                host,
+                host: host.to_string(),
                 label_key: user_field_key.to_string(),
-                label_value,
+                label_value: label_value.to_string(),
                 created_at: credential.created_at.timestamp(),
                 created_at_str: synctv_common::time::format_datetime_rfc3339(credential.created_at),
                 provider_instance_name: provider_instance_name_for_response(
@@ -328,7 +322,7 @@ impl ProviderCommonApiImpl {
         action: synctv_core::models::AuditAction,
         target_type: synctv_core::models::AuditTargetType,
         target_id: Option<String>,
-        details: serde_json::Value,
+        details: synctv_core::models::AuditDetails,
         ctx: &RequestContext,
     ) {
         let admin_username = match self.user_service.get_user(admin_user_id).await {
@@ -509,10 +503,11 @@ impl ProviderCommonApiImpl {
             synctv_core::models::AuditAction::ProviderInstanceCreated,
             synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
-            serde_json::json!({
-                "instance_name": instance.name,
-                "endpoint": mask_url_credentials(&instance.endpoint),
-            }),
+            AuditDetails {
+                instance_name: Some(instance.name.clone()),
+                endpoint: Some(mask_url_credentials(&instance.endpoint)),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -611,7 +606,10 @@ impl ProviderCommonApiImpl {
             synctv_core::models::AuditAction::ProviderInstanceUpdated,
             synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
-            serde_json::json!({ "instance_name": instance.name }),
+            AuditDetails {
+                instance_name: Some(instance.name.clone()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -643,7 +641,10 @@ impl ProviderCommonApiImpl {
             synctv_core::models::AuditAction::ProviderInstanceDeleted,
             synctv_core::models::AuditTargetType::ProviderInstance,
             Some(req.name.clone()),
-            serde_json::json!({ "instance_name": req.name }),
+            AuditDetails {
+                instance_name: Some(req.name),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -678,10 +679,11 @@ impl ProviderCommonApiImpl {
             synctv_core::models::AuditAction::ProviderInstanceReconnected,
             synctv_core::models::AuditTargetType::ProviderInstance,
             Some(instance.name.clone()),
-            serde_json::json!({
-                "instance_name": instance.name,
-                "endpoint": mask_url_credentials(&instance.endpoint),
-            }),
+            AuditDetails {
+                instance_name: Some(instance.name.clone()),
+                endpoint: Some(mask_url_credentials(&instance.endpoint)),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -932,7 +934,6 @@ pub(crate) async fn delete_credential_and_notify(
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
-    use serde_json::json;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::ProviderInstance;
@@ -958,7 +959,7 @@ mod tests {
 
     fn provider_credential_with_data(
         id: i64,
-        credential_data: serde_json::Value,
+        credential_data: ProviderCredential,
     ) -> UserProviderCredential {
         let now = Utc::now();
 
@@ -1000,10 +1001,12 @@ mod tests {
     fn filter_provider_binds_uses_required_credential_fields() -> TestResult {
         let credential = provider_credential_with_data(
             7,
-            json!({
-                "host": " https://alist.example ",
-                "username": " alice ",
-            }),
+            ProviderCredential::alist(
+                " https://alist.example ".to_string(),
+                " alice ".to_string(),
+                "hashed-password".to_string(),
+                None,
+            ),
         );
 
         let binds = api_ok(filter_provider_binds(vec![credential], "username"))?;
@@ -1018,15 +1021,16 @@ mod tests {
     }
 
     #[test]
-    fn filter_provider_binds_rejects_missing_host() {
-        let credential = provider_credential_with_data(8, json!({ "username": "alice" }));
+    fn filter_provider_binds_rejects_unexpected_credential_shape() {
+        let credential =
+            provider_credential_with_data(8, ProviderCredential::bilibili(Default::default()));
 
         assert!(matches!(
             filter_provider_binds(vec![credential], "username"),
             Err(ApiError::Internal(message))
                 if message.contains("credential 8")
                     && message.contains("alist")
-                    && message.contains("host")
+                    && message.contains("unexpected credential shape")
         ));
     }
 
@@ -1034,10 +1038,12 @@ mod tests {
     fn filter_provider_binds_rejects_empty_label_value() {
         let credential = provider_credential_with_data(
             9,
-            json!({
-                "host": "https://alist.example",
-                "username": "   ",
-            }),
+            ProviderCredential::alist(
+                "https://alist.example".to_string(),
+                "   ".to_string(),
+                "hashed-password".to_string(),
+                None,
+            ),
         );
 
         assert!(matches!(
@@ -1045,7 +1051,7 @@ mod tests {
             Err(ApiError::Internal(message))
                 if message.contains("credential 9")
                     && message.contains("alist")
-                    && message.contains("username")
+                    && message.contains("empty bind fields")
         ));
     }
 

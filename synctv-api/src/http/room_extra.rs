@@ -14,10 +14,10 @@ use crate::impls::EndpointRateLimitCategory;
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/members",
+        path = "/api/rooms/{roomId}/members",
         tag = "Room Member",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = synctv_proto::client::AddMemberRequest,
         responses(
@@ -62,9 +62,9 @@ pub async fn add_member(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/reviews/joins",
+        path = "/api/rooms/{roomId}/reviews/joins",
         tag = "Room Member",
-        params(("room_id" = String, Path, description = "Room ID"), synctv_proto::client::ListRoomJoinReviewsRequest),
+        params(("roomId" = String, Path, description = "Room ID"), synctv_proto::client::ListRoomJoinReviewsRequest),
         responses(
             (status = 200, description = "Room join reviews", body = synctv_proto::client::ListRoomJoinReviewsResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -103,11 +103,11 @@ pub async fn list_room_join_reviews(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/reviews/joins/{request_id}/approve",
+        path = "/api/rooms/{roomId}/reviews/joins/{requestId}/approve",
         tag = "Room Member",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("request_id" = String, Path, description = "Review request ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("requestId" = String, Path, description = "Review request ID")
         ),
         responses(
             (status = 200, description = "Room join review approved", body = synctv_proto::client::ApproveRoomJoinReviewResponse),
@@ -152,11 +152,11 @@ pub async fn approve_room_join_review(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/reviews/joins/{request_id}/reject",
+        path = "/api/rooms/{roomId}/reviews/joins/{requestId}/reject",
         tag = "Room Member",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("request_id" = String, Path, description = "Review request ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("requestId" = String, Path, description = "Review request ID")
         ),
         request_body = synctv_proto::client::RejectRoomJoinReviewRequest,
         responses(
@@ -204,11 +204,11 @@ pub async fn reject_room_join_review(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/members/{user_id}",
+        path = "/api/rooms/{roomId}/members/{userId}",
         tag = "Room Member",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
         ),
         request_body = synctv_proto::client::KickMemberRequest,
         responses(
@@ -253,11 +253,11 @@ pub async fn kick_member(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/members/{user_id}",
+        path = "/api/rooms/{roomId}/members/{userId}",
         tag = "Room Member",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
         ),
         request_body = synctv_proto::client::UpdateMemberPermissionsRequest,
         responses(
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn test_room_member_target_path_request_deserializes_proto_field_names() -> TestResult {
         let req: synctv_proto::client::RoomMemberTargetPathRequest =
-            serde_json::from_str(r#"{"room_id":"room_1","user_id":"usr_1"}"#)?;
+            serde_json::from_str(r#"{"roomId":"room_1","userId":"usr_1"}"#)?;
 
         assert_eq!(req.room_id, "room_1");
         assert_eq!(req.user_id, "usr_1");
@@ -313,22 +313,21 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_room_join_review_body_deserializes_proto_request_without_path_field(
-    ) -> TestResult {
-        let req: synctv_proto::client::RejectRoomJoinReviewRequest =
-            serde_json::from_str(r#"{"reason":"denied"}"#)?;
-
-        assert!(req.request_id.is_empty());
+    fn test_reject_room_join_review_request_overrides_path_request_id() -> TestResult {
+        let mut req: synctv_proto::client::RejectRoomJoinReviewRequest =
+            serde_json::from_str(r#"{"requestId":"rev_body","reason":"denied"}"#)?;
+        req.request_id = "rev_1".to_string();
+        assert_eq!(req.request_id, "rev_1");
         assert_eq!(req.reason, "denied");
         Ok(())
     }
 
     #[test]
-    fn test_update_member_permissions_body_deserializes_without_path_field() -> TestResult {
-        let req: synctv_proto::client::UpdateMemberPermissionsRequest =
-            serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)?;
-
-        assert!(req.user_id.is_empty());
+    fn test_update_member_permissions_request_overrides_path_user_id() -> TestResult {
+        let mut req: synctv_proto::client::UpdateMemberPermissionsRequest =
+            serde_json::from_str(r#"{"userId":"usr_body","role":2,"addedPermissions":1}"#)?;
+        req.user_id = "usr_1".to_string();
+        assert_eq!(req.user_id, "usr_1");
         assert_eq!(req.role, 2);
         assert_eq!(req.added_permissions, 1);
         Ok(())

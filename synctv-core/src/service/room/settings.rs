@@ -1,13 +1,12 @@
 use crate::{
     cache::{CacheDomain, ConsistencyCoordinator, VersionFenceReservation},
-    models::{AuditAction, AuditTargetType, RoomId, RoomSettings, UserId},
+    models::{AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings, UserId},
     service::optimistic_retry,
     Error, InternalExt, Result,
 };
 
 use super::{
-    ensure_actor_has_room_permission_now_tx, merge_json_object_patch,
-    RealtimeOutboxSettingsEventFactory, RoomService,
+    ensure_actor_has_room_permission_now_tx, RealtimeOutboxSettingsEventFactory, RoomService,
 };
 
 impl RoomService {
@@ -125,15 +124,16 @@ impl RoomService {
             .await?;
 
         if audit_service.is_some() {
-            let settings_json = serde_json::to_value(&snapshot.settings)
-                .internal_with_err("Failed to serialize settings")?;
             self.write_audit_event(
                 &user_id,
                 &user_id.to_string(),
                 AuditAction::RoomSettingsUpdated,
                 AuditTargetType::Room,
                 Some(room_id.to_string()),
-                settings_json,
+                AuditDetails {
+                    room_settings: Some(Box::new(snapshot.settings.clone())),
+                    ..Default::default()
+                },
             )
             .await?;
         }
@@ -318,26 +318,11 @@ impl RoomService {
         .await
     }
 
-    /// Patch room settings with optimistic locking.
-    ///
-    /// The patch is merged into the current stored settings inside each CAS retry,
-    /// so concurrent updates to different fields are preserved instead of being
-    /// overwritten by a stale pre-merge snapshot.
-    pub async fn patch_settings(
+    pub async fn set_settings_with_outbox(
         &self,
         room_id: RoomId,
         user_id: UserId,
-        patch: serde_json::Value,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        self.patch_settings_with_outbox(room_id, user_id, patch, None)
-            .await
-    }
-
-    pub async fn patch_settings_with_outbox(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        patch: serde_json::Value,
+        settings: RoomSettings,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
         self.permission_service
@@ -348,32 +333,27 @@ impl RoomService {
             )
             .await?;
 
+        settings.validate()?;
+
         self.room_repo
             .get_by_id(&room_id)
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-        let patch = std::sync::Arc::new(patch);
+        let settings = std::sync::Arc::new(settings);
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock_timeout(
                 Self::MAX_RETRIES,
                 Self::BACKOFF_BASE_MS,
                 std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
-                "Settings patch failed after maximum retry attempts",
+                "Settings update failed after maximum retry attempts",
                 || {
-                    let patch = patch.clone();
+                    let settings = settings.clone();
                     let outbox_event_factory = outbox_event_factory.clone();
                     async move {
                         let (current, version) =
                             self.room_settings_repo.get_with_version(&room_id).await?;
-                        let mut merged_json = serde_json::to_value(&current)
-                            .internal_with_err("Failed to serialize current room settings")?;
-                        merge_json_object_patch(&mut merged_json, (*patch).clone())?;
-                        let merged_settings: RoomSettings = serde_json::from_value(merged_json)
-                            .map_err(|e| {
-                                Error::InvalidInput(format!("Invalid settings JSON: {e}"))
-                            })?;
-                        merged_settings.validate()?;
+                        let updated_settings = (*settings).clone();
                         let mut tx = self.pool.begin().await?;
                         ensure_actor_has_room_permission_now_tx(
                             &mut tx,
@@ -390,7 +370,7 @@ impl RoomService {
                                 .room_settings_repo
                                 .set_settings_with_exact_version_with_executor(
                                     &room_id,
-                                    &merged_settings,
+                                    &updated_settings,
                                     version,
                                     reservation.version,
                                     &mut *tx,
@@ -408,7 +388,7 @@ impl RoomService {
                             self.room_settings_repo
                                 .set_settings_with_version_with_executor(
                                     &room_id,
-                                    &merged_settings,
+                                    &updated_settings,
                                     version,
                                     &mut *tx,
                                 )
@@ -416,7 +396,7 @@ impl RoomService {
                         };
                         let outbox_event = outbox_event_factory
                             .as_ref()
-                            .map(|factory| factory(&merged_settings, new_version))
+                            .map(|factory| factory(&updated_settings, new_version))
                             .transpose()?;
                         if let Err(error) = self
                             .insert_realtime_outbox_tx(&mut tx, outbox_event.as_ref())
@@ -435,10 +415,10 @@ impl RoomService {
                             &domain,
                             reservation.as_ref(),
                             new_version,
-                            "patch_settings_with_outbox",
+                            "set_settings_with_outbox",
                         )
                         .await;
-                        Ok((current, merged_settings, new_version))
+                        Ok((current, updated_settings, new_version))
                     }
                 },
             )
@@ -455,15 +435,16 @@ impl RoomService {
             )
             .await?;
 
-        let settings_json = serde_json::to_value(&snapshot.settings)
-            .internal_with_err("Failed to serialize settings")?;
         self.write_audit_event(
             &user_id,
             &user_id.to_string(),
             AuditAction::RoomSettingsUpdated,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            settings_json,
+            AuditDetails {
+                room_settings: Some(Box::new(snapshot.settings.clone())),
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -579,13 +560,11 @@ impl RoomService {
         self.notify_room_invalidation(room_id).await;
         self.notify_room_settings_invalidation(room_id).await;
 
-        let settings_json = serde_json::to_value(updated_settings)
-            .internal_with_err("Failed to serialize settings")?;
         let subscriber_count = self.notification_service.notify_settings_updated(
             room_id,
             actor_user_id,
             actor_username,
-            settings_json.clone(),
+            updated_settings.clone(),
             version,
         );
         super::outbox::log_if_no_local_subscribers(

@@ -124,7 +124,11 @@ where
 
 /// Cache invalidation message types
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum InvalidationMessage {
     /// Invalidate remote provider instance channel cache for a named instance
     ProviderInstance { instance_name: String },
@@ -1797,7 +1801,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&msg).checked("operation should succeed");
-        assert!(json.contains("user_permission"));
+        assert!(json.contains("userPermission"));
 
         let decoded: InvalidationMessage =
             serde_json::from_str(&json).checked("operation should succeed");
@@ -2155,7 +2159,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&msg).checked("operation should succeed");
-        assert!(json.contains("room_settings"));
+        assert!(json.contains("roomSettings"));
         assert!(json.contains("room_abc"));
 
         let decoded: InvalidationMessage =

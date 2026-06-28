@@ -18,9 +18,6 @@ pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
-pub use events::{
-    CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,
-};
 pub use realtime_manager::{
     BroadcastResult, RealtimeConfig, RealtimeManager, RealtimeManagerRuntime, RealtimeMetrics,
 };
@@ -32,6 +29,9 @@ pub use room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub, Subscriber}
 pub use runtime::{
     build_connection_manager, build_connection_runtime, build_room_message_runtime,
     ConnectionRuntime, RoomMessageRuntime,
+};
+pub use synctv_core::models::{
+    CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,
 };
 pub use transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,

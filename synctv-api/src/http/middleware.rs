@@ -114,7 +114,7 @@ pub async fn request_id_middleware(mut request: Request, next: Next) -> Response
         .map_or_else(|| synctv_common::snanoid!(12), str::to_owned);
 
     // Record in current tracing span for log correlation.
-    tracing::Span::current().record("request_id", request_id.as_str());
+    tracing::Span::current().record("requestId", request_id.as_str());
     tracing::debug!(request_id = %request_id, "Request received");
 
     // Store in request extensions so error responses can include it

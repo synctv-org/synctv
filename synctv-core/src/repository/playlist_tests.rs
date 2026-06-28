@@ -1,9 +1,19 @@
 use super::*;
-use crate::models::{ProviderInstance, SourceProvider};
+use crate::models::{
+    AlistPlaylistSourceConfig, PlaylistSourceConfig, ProviderInstance, SourceProvider,
+};
 use crate::repository::ProviderInstanceRepository;
 use crate::test_helpers::{TestOptionExt, TestResultExt};
 use sqlx::Execute;
 use synctv_core_testing::create_test_pool;
+
+fn alist_playlist_source_config(path: impl Into<String>) -> PlaylistSourceConfig {
+    PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
+        server_id: "alist-server".to_string(),
+        path: path.into(),
+        password: None,
+    })
+}
 
 async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
     let now = chrono::Utc::now();
@@ -263,7 +273,7 @@ async fn test_create_normalizes_blank_provider_instance_name_to_default_binding(
         .with_name("Dynamic Default Provider")
         .build();
     playlist.source_provider = Some(SourceProvider::Alist);
-    playlist.source_config = Some(serde_json::json!({ "path": "/movies" }));
+    playlist.source_config = Some(alist_playlist_source_config("/movies"));
     playlist.provider_instance_name = Some("   ".to_string());
 
     let created = playlist_repo
@@ -325,7 +335,7 @@ async fn test_list_filtered_by_parent_matches_default_provider_instance_name() {
         .with_creator(owner.id)
         .build();
     default_provider_playlist.source_provider = Some(SourceProvider::Alist);
-    default_provider_playlist.source_config = Some(serde_json::json!({ "path": "/default" }));
+    default_provider_playlist.source_config = Some(alist_playlist_source_config("/default"));
     default_provider_playlist.provider_instance_name = None;
     let default_provider_playlist = playlist_repo
         .create(&default_provider_playlist)
@@ -338,7 +348,7 @@ async fn test_list_filtered_by_parent_matches_default_provider_instance_name() {
         .with_creator(owner.id)
         .build();
     explicit_provider_playlist.source_provider = Some(SourceProvider::Alist);
-    explicit_provider_playlist.source_config = Some(serde_json::json!({ "path": "/explicit" }));
+    explicit_provider_playlist.source_config = Some(alist_playlist_source_config("/explicit"));
     explicit_provider_playlist.provider_instance_name = Some("alist_home".to_string());
     insert_test_provider_instance(&pool, "alist_home", "alist").await;
     let _explicit_provider_playlist = playlist_repo
@@ -492,7 +502,7 @@ async fn test_update_with_current_version() {
     updated.name = "Updated Name".to_string();
     updated.position = 5.0;
     updated.source_provider = Some(SourceProvider::Alist);
-    updated.source_config = Some(serde_json::json!({"path": "/changed"}));
+    updated.source_config = Some(alist_playlist_source_config("/changed"));
     updated.provider_instance_name = Some("changed-instance".to_string());
 
     let result = playlist_repo

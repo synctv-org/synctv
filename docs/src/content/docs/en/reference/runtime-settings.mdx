@@ -22,14 +22,14 @@ Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-
 
 ```bash
 synctv settings list
-synctv settings get user.enable_password_signup
-synctv settings update user --set enable_password_signup=true
+synctv settings get user
+synctv settings update user --set enablePasswordSignup=true
 ```
 
 If the command supports grouped `--set` form:
 
 ```bash
-synctv settings update email --set whitelist_enabled=true --set whitelist=example.com
+synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
 ```
 
 Check the current binary with `synctv settings --help`.
@@ -42,7 +42,7 @@ Semantics:
 
 - Each setting key has a registered typed provider.
 - Writes are type-checked and value-validated before persistence.
-- Cross-key invariants use transactional validation, for example `room.room_must_need_pwd` and `room.room_must_no_need_pwd` cannot both be true.
+- Cross-key invariants use transactional validation, for example room policy is validated in a single transaction.
 - If a replica misses notifications, it refreshes from a full snapshot.
 
 ## Keys
@@ -51,18 +51,18 @@ Semantics:
 
 | Key | Type | Default | Validation | Meaning |
 | --- | --- | --- | --- | --- |
-| `server.allow_room_creation` | bool | `true` | bool | Whether users can create rooms |
-| `server.max_rooms_per_user` | i64 | `10` | `1..=1000` | Maximum rooms per user |
-| `server.max_members_per_room` | i64 | `100` | `1..=10000` | Maximum members per room |
-| `server.max_chat_messages` | u64 | `500` | `<=10000`; `0` means unlimited | Service-level public chat message cap policy; cleanup uses `chat.max_messages_per_room` |
+| `server.allowRoomCreation` | bool | `true` | bool | Whether users can create rooms |
+| `server.maxRoomsPerUser` | i64 | `10` | `1..=1000` | Maximum rooms per user |
+| `server.maxMembersPerRoom` | i64 | `100` | `1..=10000` | Maximum members per room |
+| `server.maxChatMessages` | u64 | `500` | `<=10000`; `0` means unlimited | Service-level public chat message cap policy; cleanup uses `chat.maxMessagesPerRoom` |
 
 ### Permissions
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `permissions.admin_default` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
-| `permissions.member_default` | Permission-name array | Built-in member permission set | Global default permissions for room member |
-| `permissions.guest_default` | Permission-name array | `[]` | Global default permissions for room guest; only `view_member_list`, `view_chat_history`, and `use_webrtc` are accepted |
+| `permissions.adminDefaultPermissions` | Permission-name array | Built-in admin permission set | Global default permissions for room admin |
+| `permissions.memberDefaultPermissions` | Permission-name array | Built-in member permission set | Global default permissions for room member |
+| `permissions.guestDefaultPermissions` | Permission-name array | `[]` | Global default permissions for room guest; only `view_member_list`, `view_chat_history`, and `use_webrtc` are accepted |
 
 These settings are stored as JSON arrays of stable permission names, for example:
 
@@ -70,7 +70,7 @@ These settings are stored as JSON arrays of stable permission names, for example
 ["send_chat", "create_media_resource", "view_media_resources", "view_member_list"]
 ```
 
-`permissions.guest_default` has a dedicated guest ceiling. It rejects `view_media_resources`, `send_chat`, media-resource, playback-control, and administration permissions. Valid example:
+`permissions.guestDefaultPermissions` has a dedicated guest ceiling. It rejects `view_media_resources`, `send_chat`, media-resource, playback-control, and administration permissions. Valid example:
 
 ```json
 ["view_member_list", "view_chat_history", "use_webrtc"]
@@ -82,22 +82,21 @@ See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/) for perm
 
 | Key | Type | Default | Validation | Meaning |
 | --- | --- | --- | --- | --- |
-| `room.disable_create_room` | bool | `false` | bool | Disable room creation |
-| `room.create_room_need_review` | bool | `false` | bool | Require review for room creation |
-| `room.room_must_need_pwd` | bool | `false` | Mutually exclusive with `room.room_must_no_need_pwd` | Force rooms to require passwords |
-| `room.room_must_no_need_pwd` | bool | `false` | Mutually exclusive with `room.room_must_need_pwd` | Force rooms to not require passwords |
+| `room.disableCreateRoom` | bool | `false` | bool | Disable room creation |
+| `room.createRoomNeedReview` | bool | `false` | bool | Require review for room creation |
+| `room.passwordPolicy` | enum string | `optional` | `optional`, `required`, `forbidden` | Room password policy |
 
 ### User
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `user.enable_password_signup` | bool | `false` | Allow local password signup, including OPAQUE registration and direct password transport registration |
-| `user.password_signup_need_review` | bool | `false` | Require review for password signup |
-| `user.enable_email_signup` | bool | `false` | Allow email registration where confirmation sets local password credentials |
-| `user.email_signup_need_review` | bool | `false` | Require review for email signup |
-| `user.enable_webauthn_signup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
-| `user.webauthn_signup_need_review` | bool | `false` | Require review for WebAuthn signup; the review queue stores the pending passkey and approval creates the account with its WebAuthn credential |
-| `user.enable_guest` | bool | `true` | Allow guest capability |
+| `user.enablePasswordSignup` | bool | `false` | Allow local password signup, including OPAQUE registration and direct password transport registration |
+| `user.passwordSignupNeedReview` | bool | `false` | Require review for password signup |
+| `user.enableEmailSignup` | bool | `false` | Allow email registration where confirmation sets local password credentials |
+| `user.emailSignupNeedReview` | bool | `false` | Require review for email signup |
+| `user.enableWebauthnSignup` | bool | `false` | Allow WebAuthn/passkey as the initial account registration method; authenticated passkey binding is not signup |
+| `user.webauthnSignupNeedReview` | bool | `false` | Require review for WebAuthn signup; the review queue stores the pending passkey and approval creates the account with its WebAuthn credential |
+| `user.enableGuest` | bool | `true` | Allow guest capability |
 
 All registration modes are disabled by default. Production deployments should enable only the intended entry points and configure review independently for each mode.
 
@@ -105,37 +104,37 @@ All registration modes are disabled by default. Production deployments should en
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `oauth2.providers` | JSON object | `{}` | OAuth2/OIDC provider instance registry. Each key is an instance name. Each value contains `type`, `enable_signup`, `signup_need_review`, and provider-private `config` |
+| `oauth2.providers` | JSON array | `[]` | OAuth2/OIDC provider instance registry. Each element is an `OAuth2ProviderSettings` ProtoJSON object |
 
-`oauth2.providers` is the only OAuth2 configuration entry point. Provider instances are no longer defined in the static config file, environment variables, or Helm values. Instance names may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. The outer envelope is fixed; the nested `config` object is parsed by the selected provider:
+`oauth2.providers` is the OAuth2 configuration entry point. `instanceName` may contain only ASCII letters, digits, `_`, and `-`, and must be at most 64 bytes. Each element uses one provider oneof field such as `github` or `oidc`:
 
 ```json
-{
-  "github": {
-    "type": "github",
-    "enable_signup": true,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "github-client-id",
-      "client_secret": "github-client-secret",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   },
-  "corp_oidc": {
-    "type": "oidc",
-    "enable_signup": false,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "synctv",
-      "client_secret": "oidc-client-secret",
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
       "issuer": "https://idp.example.com",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}
+]
 ```
 
-A missing provider instance means that login entry point is unavailable. Missing or false `enable_signup` blocks first-time OAuth2 account creation while existing linked OAuth2 logins continue to work. `signup_need_review=true` stores first-time OAuth2 signup in the user registration review queue; approval creates the local account and OAuth2 binding.
+A missing provider instance means that login entry point is unavailable. Missing or false `enableSignup` blocks first-time OAuth2 account creation while existing linked OAuth2 logins continue to work. `signupNeedReview=true` stores first-time OAuth2 signup in the user registration review queue; approval creates the local account and OAuth2 binding.
 
 User-level 2FA and notification preferences are user preferences, not runtime settings. Provider instance bindings are stored on provider credentials created during provider login. See [Rooms, Permissions, and Preferences](../../use/rooms-permissions/).
 
@@ -143,8 +142,8 @@ User-level 2FA and notification preferences are user preferences, not runtime se
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `proxy.movie_proxy` | bool | `true` | Allow media proxy paths |
-| `proxy.live_proxy` | bool | `true` | Allow livestream proxy paths |
+| `proxy.movieProxy` | bool | `true` | Allow media proxy paths |
+| `proxy.liveProxy` | bool | `true` | Allow livestream proxy paths |
 
 These are business proxy policy switches, not startup setting `proxy_slice_cache.enabled`. Slice-cache enablement is startup-only.
 
@@ -152,17 +151,17 @@ These are business proxy policy switches, not startup setting `proxy_slice_cache
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `rtmp.custom_publish_host` | string | `""` | Custom publish host returned to stream publishers |
-| `rtmp.ts_disguised_as_png` | bool | `false` | Disguise TS segments as PNG paths or responses |
+| `rtmp.customPublishHost` | string | `""` | Custom publish host returned to stream publishers |
+| `rtmp.tsDisguisedAsPng` | bool | `false` | Disguise TS segments as PNG paths or responses |
 
 ### Email
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `email.whitelist_enabled` | bool | `false` | Enable email allowlist |
-| `email.whitelist` | string | `""` | Email allowlist content as comma-separated domains or email addresses |
+| `email.whitelistEnabled` | bool | `false` | Enable email allowlist |
+| `email.whitelistDomains` | string | `""` | Email allowlist content as comma-separated domains or email addresses |
 
-When `email.whitelist_enabled=true` but `email.whitelist` is empty, no email domain is rejected. Matching is enforced only when the allowlist has entries.
+When `email.whitelistEnabled=true` but `email.whitelistDomains` is empty, no email domain is rejected. Matching is enforced only when the allowlist has entries.
 
 SMTP host, password, and sender configuration remain startup settings. See [Email and OAuth2](../../configuration/email-oauth2/).
 
@@ -170,7 +169,7 @@ SMTP host, password, and sender configuration remain startup settings. See [Emai
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `webrtc.external_ice_servers` | JSON/string structure | two Google STUN entries | External ICE servers returned to native clients |
+| `webrtc.externalIceServers` | JSON/string structure | two Google STUN entries | External ICE servers returned to native clients |
 
 Default value:
 
@@ -187,14 +186,15 @@ Built-in STUN listener configuration is startup configuration. See [WebRTC Confi
 
 | Key | Type | Default | Validation | Meaning |
 | --- | --- | --- | --- | --- |
-| `chat.max_messages_per_room` | u64 | `500` | `<=100000`; `0` means unlimited | Maximum retained chat messages per room |
-| `chat.message_retention_days` | i64 days | `90` | `1..=3650` | Maximum chat message retention age |
+| `chat.maxMessagesPerRoom` | u64 | `500` | `<=100000`; `0` means unlimited | Maximum retained chat messages per room |
+| `chat.maxPinnedMessagesPerRoom` | u64 | `20` | `<=1000` | Maximum retained pinned chat messages per room |
+| `chat.messageRetentionDays` | i64 days | `90` | `1..=3650` | Maximum chat message retention age |
 
 ### CORS
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `cors.allowed_origins` | JSON/string structure | `[]` | Runtime CORS allowed origins for proxy-related paths |
+| `cors.allowedOrigins` | JSON/string structure | `[]` | Runtime CORS allowed origins for proxy-related paths |
 
 Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for policy that can change while the service runs.
 
@@ -204,46 +204,46 @@ Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for 
   <TabItem label="Enable password signup" icon="setting">
 
 ```bash
-synctv settings update user --set enable_password_signup=true
+synctv settings update user --set enablePasswordSignup=true
 ```
 
   </TabItem>
   <TabItem label="Review password signup" icon="approve-check-circle">
 
 ```bash
-synctv settings update user --set password_signup_need_review=true
+synctv settings update user --set passwordSignupNeedReview=true
 ```
 
   </TabItem>
   <TabItem label="Limit room count" icon="document">
 
 ```bash
-synctv settings update server --set max_rooms_per_user=20
+synctv settings update server --set maxRoomsPerUser=20
 ```
 
   </TabItem>
   <TabItem label="Chat retention" icon="warning">
 
 ```bash
-synctv settings update chat --set max_messages_per_room=1000 --set message_retention_days=180
+synctv settings update chat --set maxMessagesPerRoom=1000 --set messageRetentionDays=180
 ```
 
   </TabItem>
   <TabItem label="Configure OAuth2" icon="document">
 
 ```bash
-synctv settings update oauth2 --set providers='{
-  "github": {
-    "type": "github",
-    "enable_signup": true,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "github-client-id",
-      "client_secret": "github-client-secret",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+synctv settings update oauth2 --set providers='[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}'
+]'
 ```
 
   </TabItem>

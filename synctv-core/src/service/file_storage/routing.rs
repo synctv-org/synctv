@@ -3,15 +3,15 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileObjectDownload, FileObjectVariant, FileReferenceTarget,
+        FileBlob, FileMetadata, FileObjectDownload, FileObjectVariant, FileReferenceTarget,
         FileUploadSessionCreateResult, GetFileObject, NewStoredFile, StoreFileUpload,
         StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
         database_file_read_token_storage_backend, file_upload_token_storage_backend,
-        upload_session_reference_target, validation::validate_stored_files, CreateFileReuseGrant,
-        FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext,
-        FileStorageService, ValidatedFileReuseGrant,
+        prepare_upload_reference_file, upload_session_reference_target,
+        validation::validate_stored_files, CreateFileReuseGrant, FileObjectReader, FileReuseGrant,
+        FileStorageCleanupOrigin, FileStorageContext, FileStorageService, ValidatedFileReuseGrant,
     },
     Error, Result,
 };
@@ -140,13 +140,15 @@ impl FileStorageService for RoutedFileStorageService {
                         ));
                     }
                     let (reference_kind, reference_id) = upload_session_reference_target(id);
-                    let session = repository
-                        .get_upload_session_by_reference(reference_kind, &reference_id)
-                        .await?
-                        .ok_or_else(|| {
-                            Error::InvalidInput("file reference was not found".to_string())
-                        })?;
-                    session.storage_backend
+                    prepare_upload_reference_file(
+                        &repository,
+                        context,
+                        reference_kind,
+                        &reference_id,
+                        id,
+                    )
+                    .await?
+                    .storage_backend
                 }
                 SubmittedFileReferenceKind::Reuse => self.write_backend.clone(),
             };
@@ -305,7 +307,7 @@ impl FileStorageService for RoutedFileStorageService {
         object_key: &str,
         mime_type: &str,
         data: Vec<u8>,
-        metadata: serde_json::Value,
+        metadata: FileMetadata,
     ) -> Result<FileBlob> {
         self.registry
             .backend(storage_backend)?

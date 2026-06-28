@@ -174,7 +174,7 @@ impl UserService {
             USER_AVATAR_REFERENCE_KIND,
             &user_id.as_i64().to_string(),
             None,
-            &file.metadata,
+            &crate::models::FileReferenceMetadata::File(crate::models::FileMetadata::default()),
         )
         .await?
         .ok_or_else(|| Error::InvalidInput("avatar file object is not registered".to_string()))?;

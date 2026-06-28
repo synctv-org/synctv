@@ -151,6 +151,7 @@ impl CachedMembership {
 }
 
 // Re-use the canonical role proto mapper from client::convert.
+use crate::impls::client::convert::chat_metadata_from_proto;
 use crate::impls::client::room_role_to_proto;
 
 mod transport;
@@ -1318,12 +1319,13 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(RealtimeEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
+                        Ok(RealtimeEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref data, ref notification_id, timestamp, .. }) => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if *user_id == self.user_id {
                                 let msg = user_notification_server_message(
                                     notification_id.clone(),
-                                    notification_type.clone(),
+                                    *notification_type,
+                                    data,
                                     title.clone(),
                                     content.clone(),
                                     timestamp,
@@ -1418,21 +1420,18 @@ impl StreamMessageHandler {
                         Ok(event) => {
                             // Only push if this notification targets the connected user
                             if event.user_id == self.user_id {
-                                let data = serde_json::json!({
-                                    "type": "user_notification",
-                                    "notification_id": event.notification.id.to_string(),
-                                    "notification_type": event.notification.notification_type.to_string(),
-                                    "title": &event.notification.title,
-                                    "content": &event.notification.content,
-                                });
                                 let msg = ServerMessage {
                                     message: Some(synctv_proto::client::server_message::Message::Notification(
                                         synctv_proto::client::UserNotification {
                                             notification_id: event.notification.id.to_string(),
-                                            notification_type: event.notification.notification_type.to_string(),
+                                            notification_type: crate::impls::notification::notification_type_to_proto(
+                                                event.notification.notification_type,
+                                            ) as i32,
                                             title: event.notification.title,
                                             content: event.notification.content,
-                                            data: data.to_string(),
+                                            data: Some(crate::impls::notification::notification_data_to_proto(
+                                                &event.notification.data,
+                                            )),
                                             timestamp: event.notification.created_at.timestamp(),
                                         },
                                     )),
@@ -2276,11 +2275,12 @@ impl StreamMessageHandler {
 
                         admin_event = admin_rx.recv() => {
                             // Uses the dedicated Notification variant (not ErrorMessage abuse).
-                            if let Ok(RealtimeEvent::UserNotification { user_id: uid, title, content, notification_type, notification_id, timestamp, .. }) = &admin_event {
+                            if let Ok(RealtimeEvent::UserNotification { user_id: uid, title, content, notification_type, data, notification_id, timestamp, .. }) = &admin_event {
                                 if *uid == user_id {
                                     let msg = user_notification_server_message(
                                         notification_id.clone(),
-                                        notification_type.clone(),
+                                        *notification_type,
+                                        data,
                                         title.clone(),
                                         content.clone(),
                                         *timestamp,
@@ -2594,7 +2594,8 @@ impl StreamMessageHandler {
             .await
             .map_err(|error| format!("Failed to load playback state for chat metadata: {error}"))?;
         let metadata = chat_metadata_for_send(
-            serde_json::Value::Object(Default::default()),
+            chat_metadata_from_proto(chat_msg.metadata.as_ref())
+                .map_err(|error| error.to_string())?,
             &chat_msg.display_position,
             &chat_msg.display_color,
             Some(&playback_state),

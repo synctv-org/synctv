@@ -1,6 +1,6 @@
 use super::*;
 use crate::credential_encryption::CredentialEncryption;
-use crate::models::SortDirection;
+use crate::models::{ProviderCredential, SortDirection};
 use crate::test_helpers::{err, ok};
 use serde_json::json;
 
@@ -64,7 +64,9 @@ async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encrypti
     let err = err(
         UserProviderCredentialRepository::decrypt_credential_with(
             Some(&encryption),
-            &json!({"token": "plaintext"}),
+            &super::EncryptedProviderCredential::from_json_value_for_test(json!({
+                "token": "plaintext"
+            })),
         ),
         "plaintext credential should fail",
     );
@@ -136,7 +138,12 @@ async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
     let err = err(
         UserProviderCredentialRepository::encrypt_credential_with(
             None,
-            &json!({"token": "plaintext"}),
+            &ProviderCredential::alist(
+                "https://alist.example.com".to_string(),
+                "user".to_string(),
+                "plaintext".to_string(),
+                None,
+            ),
         ),
         "credential storage should require encryption",
     );
@@ -150,7 +157,10 @@ async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
 #[tokio::test]
 async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
     let err = err(
-        UserProviderCredentialRepository::decrypt_credential_with(None, &json!("enc:placeholder")),
+        UserProviderCredentialRepository::decrypt_credential_with(
+            None,
+            &super::EncryptedProviderCredential::from_json_value_for_test(json!("enc:placeholder")),
+        ),
         "encrypted credential should require encryption",
     );
     assert!(

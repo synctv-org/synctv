@@ -1192,7 +1192,7 @@ mod tests {
 
         assert_eq!(chunk.status, 200);
         assert!(body.contains("/api/playback-providers/direct-url/v1/hls-segments?"));
-        assert!(body.contains("target_url="));
+        assert!(body.contains("targetUrl="));
         Ok(())
     }
 }

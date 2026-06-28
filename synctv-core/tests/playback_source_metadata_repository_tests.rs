@@ -5,8 +5,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        Media, MediaId, PlaybackDurationStatus, PlaybackSourceIdentity, Playlist, PlaylistId, Room,
-        RoomId, SourceProvider, User, UserId, UserRole, UserStatus,
+        Media, MediaId, PlaybackDurationStatus, PlaybackSourceIdentity, Playlist, PlaylistId,
+        ProviderTarget, Room, RoomId, SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{
         MediaRepository, PlaybackSourceMetadataRepository, PlaylistRepository,
@@ -91,7 +91,7 @@ async fn create_media_with_source_config(
     room_id: RoomId,
     owner_id: UserId,
     name: &str,
-    source_config: serde_json::Value,
+    source_config: synctv_core::models::MediaSourceConfig,
 ) -> Media {
     let media = Media {
         id: MediaId::new(),
@@ -121,7 +121,7 @@ async fn create_room_with_media_source_config(
     owner_id: UserId,
     room_name: &str,
     media_name: &str,
-    source_config: serde_json::Value,
+    source_config: synctv_core::models::MediaSourceConfig,
 ) -> (Room, Media, synctv_core::models::RoomPlaybackState) {
     let (room, _) = room_service
         .create_room(room_name.to_string(), String::new(), owner_id, None, None)
@@ -136,7 +136,7 @@ async fn create_room_with_media_source_config(
         .checked("playback state should exist");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     state.is_playing = true;
     let state = playback_repo
@@ -166,7 +166,7 @@ async fn create_room_with_media(
         .checked("playback state should exist");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     state.is_playing = true;
     let state = playback_repo
@@ -177,9 +177,8 @@ async fn create_room_with_media(
     (room, media, state)
 }
 
-fn dynamic_target(relative_path: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "relative_path": relative_path }))
-        .checked("dynamic playback target should serialize")
+fn alist_target(relative_path: &str) -> ProviderTarget {
+    ProviderTarget::alist(relative_path.to_string())
 }
 
 async fn create_dynamic_playlist(
@@ -233,7 +232,7 @@ async fn create_room_with_dynamic_playlist(
         .checked("playback state should exist");
     state.playing_media_id = None;
     state.playing_playlist_id = Some(playlist.id);
-    state.target = dynamic_target(target_path);
+    state.target = Some(alist_target(target_path));
     state.position = 0.0;
     state.is_playing = true;
     let state = playback_repo
@@ -276,15 +275,16 @@ async fn claim_duration_probe_for_active_source_claims_only_current_source() {
         .checked("playback state should exist");
     state.playing_media_id = Some(active_media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     state.is_playing = true;
     let state = playback_repo
         .update(&state)
         .await
         .checked("playback state should update");
-    let active_identity =
-        PlaybackSourceIdentity::from_state(&state).checked("active source identity should exist");
+    let active_identity = PlaybackSourceIdentity::from_state(&state)
+        .checked("source identity hash should compute")
+        .checked("active source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::static_media(room.id, inactive_media.id);
     metadata_repo
         .mark_probeable_unknown_if_absent(&active_identity)
@@ -335,26 +335,28 @@ async fn room_scoped_duration_probe_claims_only_active_rooms() {
         .create(&make_user("room_scoped_duration_probe_owner"))
         .await
         .checked("test owner should be created");
-    let (active_room, active_media, active_state) = create_room_with_media(
+    let (active_room, active_media, active_state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Active Probe Room",
         "Active Probe Media",
-    )
+    ))
     .await;
-    let (inactive_room, inactive_media, inactive_state) = create_room_with_media(
+    let (inactive_room, inactive_media, inactive_state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Inactive Probe Room",
         "Inactive Probe Media",
-    )
+    ))
     .await;
 
     let active_identity = PlaybackSourceIdentity::from_state(&active_state)
+        .checked("source identity hash should compute")
         .checked("active source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
+        .checked("source identity hash should compute")
         .checked("inactive source identity should exist");
     metadata_repo
         .mark_probeable_unknown_if_absent(&active_identity)
@@ -411,15 +413,16 @@ async fn room_scoped_duration_probe_skips_live_sources() {
         .create(&make_user("room_scoped_live_duration_probe_owner"))
         .await
         .checked("test owner should be created");
-    let (room, live_media, live_state) = create_room_with_media(
+    let (room, live_media, live_state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Live Probe Room",
         "Live Probe Media",
-    )
+    ))
     .await;
     let live_identity = PlaybackSourceIdentity::from_state(&live_state)
+        .checked("source identity hash should compute")
         .checked("live source identity should exist");
 
     metadata_repo
@@ -466,17 +469,18 @@ async fn duration_probe_initializes_plain_direct_url_as_probeable() {
         .create(&make_user("duration_probe_direct_url_owner"))
         .await
         .checked("test owner should be created");
-    let (room, _media, state) = create_room_with_media_source_config(
+    let (room, _media, state) = Box::pin(create_room_with_media_source_config(
         &pool,
         &room_service,
         owner.id,
         "DirectUrl Probe Room",
         "DirectUrl Probe Media",
         synctv_core_testing::direct_url_media_source_config("http://127.0.0.1/video.mp4"),
-    )
+    ))
     .await;
-    let identity =
-        PlaybackSourceIdentity::from_state(&state).checked("source identity should exist");
+    let identity = PlaybackSourceIdentity::from_state(&state)
+        .checked("source identity hash should compute")
+        .checked("source identity should exist");
 
     let probe_service = PlaybackDurationProbeService::new(
         room_service.playback_service().clone(),
@@ -521,34 +525,38 @@ async fn room_scoped_duration_probe_claims_dynamic_playlist_current_targets_only
         .create(&make_user("room_scoped_dynamic_duration_probe_owner"))
         .await
         .checked("test owner should be created");
-    let (active_room, active_playlist, active_state) = create_room_with_dynamic_playlist(
+    let (active_room, active_playlist, active_state) = Box::pin(create_room_with_dynamic_playlist(
         &pool,
         &room_service,
         owner.id,
         "Active Dynamic Probe Room",
         "Active Dynamic Probe Playlist",
         "/episode-1.mp4",
-    )
+    ))
     .await;
-    let (inactive_room, inactive_playlist, inactive_state) = create_room_with_dynamic_playlist(
-        &pool,
-        &room_service,
-        owner.id,
-        "Inactive Dynamic Probe Room",
-        "Inactive Dynamic Probe Playlist",
-        "/episode-1.mp4",
-    )
-    .await;
+    let (inactive_room, inactive_playlist, inactive_state) =
+        Box::pin(create_room_with_dynamic_playlist(
+            &pool,
+            &room_service,
+            owner.id,
+            "Inactive Dynamic Probe Room",
+            "Inactive Dynamic Probe Playlist",
+            "/episode-1.mp4",
+        ))
+        .await;
 
     let active_identity = PlaybackSourceIdentity::from_state(&active_state)
+        .checked("source identity hash should compute")
         .checked("active dynamic source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
+        .checked("source identity hash should compute")
         .checked("inactive dynamic source identity should exist");
     let stale_identity = PlaybackSourceIdentity::dynamic_playlist(
         active_room.id,
         active_playlist.id,
-        &dynamic_target("/episode-0.mp4"),
-    );
+        &alist_target("/episode-0.mp4"),
+    )
+    .checked("stale dynamic source identity hash should compute");
 
     metadata_repo
         .mark_probeable_unknown_if_absent(&active_identity)
@@ -577,7 +585,7 @@ async fn room_scoped_duration_probe_claims_dynamic_playlist_current_targets_only
         claims[0].state.playing_playlist_id,
         Some(active_playlist.id)
     );
-    assert_eq!(claims[0].state.target, dynamic_target("/episode-1.mp4"));
+    assert_eq!(claims[0].state.target, Some(alist_target("/episode-1.mp4")));
 
     let inactive_metadata = metadata_repo
         .get(&inactive_identity)
@@ -618,26 +626,28 @@ async fn room_scoped_auto_advance_candidates_only_include_active_rooms() {
         .create(&make_user("room_scoped_auto_advance_owner"))
         .await
         .checked("test owner should be created");
-    let (active_room, active_media, active_state) = create_room_with_media(
+    let (active_room, active_media, active_state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Active Auto Advance Room",
         "Active Auto Advance Media",
-    )
+    ))
     .await;
-    let (inactive_room, inactive_media, inactive_state) = create_room_with_media(
+    let (inactive_room, inactive_media, inactive_state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Inactive Auto Advance Room",
         "Inactive Auto Advance Media",
-    )
+    ))
     .await;
 
     let active_identity = PlaybackSourceIdentity::from_state(&active_state)
+        .checked("source identity hash should compute")
         .checked("active source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
+        .checked("source identity hash should compute")
         .checked("inactive source identity should exist");
     metadata_repo
         .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
@@ -689,17 +699,18 @@ async fn room_scoped_auto_advance_candidates_skip_paused_sources() {
         .create(&make_user("paused_auto_advance_owner"))
         .await
         .checked("test owner should be created");
-    let (room, _media, mut state) = create_room_with_media(
+    let (room, _media, mut state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Paused Auto Advance Room",
         "Paused Auto Advance Media",
-    )
+    ))
     .await;
 
-    let identity =
-        PlaybackSourceIdentity::from_state(&state).checked("source identity should exist");
+    let identity = PlaybackSourceIdentity::from_state(&state)
+        .checked("source identity hash should compute")
+        .checked("source identity should exist");
     metadata_repo
         .upsert_provider_source_metadata(&identity, false, Some(30.0))
         .await
@@ -740,34 +751,38 @@ async fn room_scoped_auto_advance_candidates_include_dynamic_playlist_current_ta
         .create(&make_user("room_scoped_dynamic_auto_advance_owner"))
         .await
         .checked("test owner should be created");
-    let (active_room, active_playlist, active_state) = create_room_with_dynamic_playlist(
+    let (active_room, active_playlist, active_state) = Box::pin(create_room_with_dynamic_playlist(
         &pool,
         &room_service,
         owner.id,
         "Active Dynamic Auto Advance Room",
         "Active Dynamic Auto Advance Playlist",
         "/episode-1.mp4",
-    )
+    ))
     .await;
-    let (inactive_room, inactive_playlist, inactive_state) = create_room_with_dynamic_playlist(
-        &pool,
-        &room_service,
-        owner.id,
-        "Inactive Dynamic Auto Advance Room",
-        "Inactive Dynamic Auto Advance Playlist",
-        "/episode-1.mp4",
-    )
-    .await;
+    let (inactive_room, inactive_playlist, inactive_state) =
+        Box::pin(create_room_with_dynamic_playlist(
+            &pool,
+            &room_service,
+            owner.id,
+            "Inactive Dynamic Auto Advance Room",
+            "Inactive Dynamic Auto Advance Playlist",
+            "/episode-1.mp4",
+        ))
+        .await;
 
     let active_identity = PlaybackSourceIdentity::from_state(&active_state)
+        .checked("source identity hash should compute")
         .checked("active dynamic source identity should exist");
     let inactive_identity = PlaybackSourceIdentity::from_state(&inactive_state)
+        .checked("source identity hash should compute")
         .checked("inactive dynamic source identity should exist");
     let stale_identity = PlaybackSourceIdentity::dynamic_playlist(
         active_room.id,
         active_playlist.id,
-        &dynamic_target("/episode-0.mp4"),
-    );
+        &alist_target("/episode-0.mp4"),
+    )
+    .checked("stale dynamic source identity hash should compute");
 
     metadata_repo
         .upsert_provider_source_metadata(&active_identity, false, Some(30.0))
@@ -796,7 +811,7 @@ async fn room_scoped_auto_advance_candidates_include_dynamic_playlist_current_ta
         candidates[0].1.playing_playlist_id,
         Some(active_playlist.id)
     );
-    assert_eq!(candidates[0].1.target, dynamic_target("/episode-1.mp4"));
+    assert_eq!(candidates[0].1.target, Some(alist_target("/episode-1.mp4")));
 
     let inactive_metadata = metadata_repo
         .get(&inactive_identity)
@@ -837,16 +852,17 @@ async fn duration_probe_service_skips_initialization_without_active_rooms() {
         .create(&make_user("duration_probe_empty_active_owner"))
         .await
         .checked("test owner should be created");
-    let (_room, _media, state) = create_room_with_media(
+    let (_room, _media, state) = Box::pin(create_room_with_media(
         &pool,
         &room_service,
         owner.id,
         "Empty Active Probe Room",
         "Empty Active Probe Media",
-    )
+    ))
     .await;
-    let identity =
-        PlaybackSourceIdentity::from_state(&state).checked("source identity should exist");
+    let identity = PlaybackSourceIdentity::from_state(&state)
+        .checked("source identity hash should compute")
+        .checked("source identity should exist");
 
     let probe_service = PlaybackDurationProbeService::new(
         room_service.playback_service().clone(),

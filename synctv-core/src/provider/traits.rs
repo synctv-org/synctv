@@ -5,7 +5,6 @@ use super::{ProviderContext, ProviderError};
 use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 
@@ -59,7 +58,7 @@ pub struct PlaybackResult {
 
     /// Additional provider metadata for display-only fields.
     #[serde(default)]
-    pub metadata: HashMap<String, Value>,
+    pub metadata: crate::models::PlaybackMetadata,
 }
 
 /// Bilibili-owned live danmaku event stream.
@@ -164,48 +163,76 @@ impl std::fmt::Display for SourceConfigKind {
 }
 
 /// Provider source-config plus the domain object it belongs to.
-///
-/// Media and dynamic playlists can share the same provider and JSON shape, but
-/// they are different domain objects with different lifecycle constraints. This
-/// wrapper keeps the JSON value and its usage together at the provider boundary.
 #[derive(Debug, Clone, Copy)]
-pub struct SourceConfig<'a>(SourceConfigKind, &'a Value);
+pub enum SourceConfig<'a> {
+    Media(&'a crate::models::MediaSourceConfig),
+    DynamicPlaylist(&'a crate::models::PlaylistSourceConfig),
+}
+
+#[derive(Debug, Clone)]
+pub enum PreparedSourceConfig {
+    Media(crate::models::MediaSourceConfig),
+    DynamicPlaylist(crate::models::PlaylistSourceConfig),
+}
 
 impl<'a> SourceConfig<'a> {
     #[must_use]
-    pub const fn media(value: &'a Value) -> Self {
-        Self(SourceConfigKind::Media, value)
+    pub const fn media(value: &'a crate::models::MediaSourceConfig) -> Self {
+        Self::Media(value)
     }
 
     #[must_use]
-    pub const fn dynamic_playlist(value: &'a Value) -> Self {
-        Self(SourceConfigKind::DynamicPlaylist, value)
+    pub const fn dynamic_playlist(value: &'a crate::models::PlaylistSourceConfig) -> Self {
+        Self::DynamicPlaylist(value)
     }
 
     #[must_use]
     pub const fn kind(self) -> SourceConfigKind {
-        self.0
-    }
-
-    #[must_use]
-    pub const fn value(self) -> &'a Value {
-        self.1
+        match self {
+            Self::Media(_) => SourceConfigKind::Media,
+            Self::DynamicPlaylist(_) => SourceConfigKind::DynamicPlaylist,
+        }
     }
 
     #[must_use]
     pub const fn is_media(self) -> bool {
-        matches!(self.0, SourceConfigKind::Media)
+        matches!(self, Self::Media(_))
     }
 
     #[must_use]
     pub const fn is_dynamic_playlist(self) -> bool {
-        matches!(self.0, SourceConfigKind::DynamicPlaylist)
+        matches!(self, Self::DynamicPlaylist(_))
     }
 }
 
-impl AsRef<Value> for SourceConfig<'_> {
-    fn as_ref(&self) -> &Value {
-        self.1
+impl From<SourceConfig<'_>> for PreparedSourceConfig {
+    fn from(value: SourceConfig<'_>) -> Self {
+        match value {
+            SourceConfig::Media(config) => Self::Media(config.clone()),
+            SourceConfig::DynamicPlaylist(config) => Self::DynamicPlaylist(config.clone()),
+        }
+    }
+}
+
+impl PreparedSourceConfig {
+    pub fn into_media(self) -> Result<crate::models::MediaSourceConfig, ProviderError> {
+        match self {
+            Self::Media(config) => Ok(config),
+            Self::DynamicPlaylist(_) => Err(ProviderError::InvalidConfig(
+                "expected media source_config".to_string(),
+            )),
+        }
+    }
+
+    pub fn into_dynamic_playlist(
+        self,
+    ) -> Result<crate::models::PlaylistSourceConfig, ProviderError> {
+        match self {
+            Self::DynamicPlaylist(config) => Ok(config),
+            Self::Media(_) => Err(ProviderError::InvalidConfig(
+                "expected dynamic playlist source_config".to_string(),
+            )),
+        }
     }
 }
 
@@ -227,7 +254,7 @@ pub struct DirectoryItem {
     pub item_type: ItemType,
 
     /// Provider-facing target payload for this item
-    pub target: Vec<u8>,
+    pub target: crate::models::ProviderTarget,
 
     /// File size in bytes (for files)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -319,7 +346,7 @@ pub trait MediaProvider: Send + Sync {
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError>;
 
     /// Cast to `DynamicFolder` trait if supported
@@ -370,7 +397,7 @@ pub trait MediaProvider: Send + Sync {
     fn credential_dependencies(
         &self,
         _ctx: &ProviderContext<'_>,
-        _source_config: &Value,
+        _source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
         Ok(Vec::new())
     }
@@ -383,9 +410,9 @@ pub trait MediaProvider: Send + Sync {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
-    ) -> Result<Value, ProviderError> {
-        Ok(source_config) // Default: no transformation
+        source_config: SourceConfig<'_>,
+    ) -> Result<PreparedSourceConfig, ProviderError> {
+        Ok(source_config.into()) // Default: no transformation
     }
 
     /// Called when playback starts
@@ -397,7 +424,7 @@ pub trait MediaProvider: Send + Sync {
         &self,
         _ctx: &ProviderContext<'_>,
         _session_id: &str,
-        _source_config: &Value,
+        _source_config: &crate::models::MediaSourceConfig,
     ) -> Result<(), ProviderError> {
         Ok(()) // Default: no-op
     }
@@ -411,7 +438,7 @@ pub trait MediaProvider: Send + Sync {
         &self,
         _ctx: &ProviderContext<'_>,
         _session_id: &str,
-        _source_config: &Value,
+        _source_config: &crate::models::MediaSourceConfig,
         _position: f64,
     ) -> Result<(), ProviderError> {
         Ok(()) // Default: no-op
@@ -426,7 +453,7 @@ pub trait MediaProvider: Send + Sync {
         &self,
         _ctx: &ProviderContext<'_>,
         _session_id: &str,
-        _source_config: &Value,
+        _source_config: &crate::models::MediaSourceConfig,
         _position: f64,
         _is_paused: bool,
     ) -> Result<(), ProviderError> {
@@ -448,7 +475,7 @@ pub trait BilibiliLiveDanmakuProvider: Send + Sync {
     async fn watch_bilibili_live_danmaku(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<BilibiliLiveDanmakuStream, ProviderError>;
 }
 
@@ -478,7 +505,7 @@ pub trait DynamicFolder: MediaProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError>;
 
@@ -490,7 +517,7 @@ pub trait DynamicFolder: MediaProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>, ProviderError>;
 
     /// Get next item for auto-play
@@ -528,8 +555,7 @@ pub trait DynamicFolder: MediaProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        playing_media: &crate::models::Media,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError>;
 
@@ -540,7 +566,7 @@ pub trait DynamicFolder: MediaProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &crate::models::Playlist,
-        _target: Option<&[u8]>,
+        _target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
         Ok(Vec::new())
     }
@@ -549,16 +575,13 @@ pub trait DynamicFolder: MediaProvider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicBrowsePathSegment {
     pub name: String,
-    pub target: Vec<u8>,
+    pub target: crate::models::ProviderTarget,
 }
 
 /// Next play item for dynamic playback and auto-play.
 ///
-/// Contains server-side provider data needed to resolve playback for a dynamic
-/// playlist item. `source_config` may contain provider credentials and must not
-/// be serialized into client-facing API responses. If a future API needs to
-/// expose it, the owner is the dynamic playlist creator and the caller must be
-/// that creator.
+/// Contains server-side source config needed to resolve playback for a dynamic
+/// playlist item.
 #[derive(Debug, Clone)]
 pub struct NextPlayItem {
     /// Item name
@@ -567,16 +590,8 @@ pub struct NextPlayItem {
     /// Item type
     pub item_type: ItemType,
 
-    /// Provider `source_config` (to be stored in `Media.source_config`)
-    pub source_config: serde_json::Value,
-
-    /// Metadata (duration, thumbnail, etc.)
-    pub metadata: serde_json::Value,
-
-    /// Provider-specific data for `next()` calls
-    /// e.g., Emby playlist index, Alist folder current path
-    pub provider_data: serde_json::Value,
+    pub source_config: crate::models::MediaSourceConfig,
 
     /// Provider-facing target payload for this playable item
-    pub target: Vec<u8>,
+    pub target: crate::models::ProviderTarget,
 }

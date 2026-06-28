@@ -146,26 +146,15 @@ pub fn room_event_to_realtime_event(
             version,
             user_id,
             username,
-        } => match serde_json::to_vec(settings) {
-            Ok(settings_json) => Some(RealtimeEvent::RoomSettingsChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: *room_id,
-                user_id: bridge_user_id(user_id.as_ref()),
-                username: username.clone(),
-                settings_json,
-                version: *version,
-                timestamp,
-            }),
-            Err(error) => {
-                tracing::error!(
-                    room_id = %room_id,
-                    version = *version,
-                    error = %error,
-                    "Failed to serialize room settings realtime event"
-                );
-                None
-            }
-        },
+        } => Some(RealtimeEvent::RoomSettingsChanged {
+            event_id: synctv_common::snanoid!(16),
+            room_id: *room_id,
+            user_id: bridge_user_id(user_id.as_ref()),
+            username: username.clone(),
+            settings: settings.clone(),
+            version: *version,
+            timestamp,
+        }),
         synctv_core::service::RoomEvent::RoomDeleted => Some(RealtimeEvent::RoomDeleted {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,

@@ -1,7 +1,7 @@
 use crate::{
     models::{
-        AuditAction, AuditTargetType, RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId,
-        RoomMember, RoomMemberPermissionBits, RoomRole, UserId,
+        AuditAction, AuditDetails, AuditTargetType, RoomAdminPermissionBits,
+        RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomRole, UserId,
     },
     service::{member::AdminMemberUpdate, optimistic_retry, permission::PermissionWriteFence},
     Error, Result,
@@ -280,11 +280,12 @@ impl MemberService {
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "added_permissions": added_permissions,
-                "removed_permissions": removed_permissions,
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                added_permissions: Some(added_permissions),
+                removed_permissions: Some(removed_permissions),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -425,11 +426,12 @@ impl MemberService {
                 AuditAction::MemberRoleUpdated,
                 AuditTargetType::Member,
                 Some(target_user_id.to_string()),
-                serde_json::json!({
-                    "room_id": room_id,
-                    "role": new_role.to_string(),
-                    "mode": "admin_override",
-                }),
+                AuditDetails {
+                    room_id: Some(room_id.to_string()),
+                    role: Some(new_role.to_string()),
+                    mode: Some("admin_override".to_string()),
+                    ..Default::default()
+                },
             )
             .await;
 
@@ -524,12 +526,21 @@ impl MemberService {
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "added_permissions": if effective_is_admin { admin_added_permissions } else { added_permissions },
-                "removed_permissions": if effective_is_admin { admin_removed_permissions } else { removed_permissions },
-                "mode": "admin_override",
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                added_permissions: Some(if effective_is_admin {
+                    admin_added_permissions
+                } else {
+                    added_permissions
+                }),
+                removed_permissions: Some(if effective_is_admin {
+                    admin_removed_permissions
+                } else {
+                    removed_permissions
+                }),
+                mode: Some("admin_override".to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -632,10 +643,11 @@ impl MemberService {
             AuditAction::PermissionGranted,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "permission": permission,
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                permission: Some(permission.to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -735,10 +747,11 @@ impl MemberService {
             AuditAction::PermissionRevoked,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "permission": permission,
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                permission: Some(permission.to_string()),
+                ..Default::default()
+            },
         )
         .await;
 

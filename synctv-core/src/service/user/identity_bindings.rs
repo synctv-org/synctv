@@ -69,27 +69,34 @@ impl UserService {
         Ok(updated_user)
     }
 
-    pub(crate) fn active_oauth2_provider_keys(&self) -> Result<HashSet<(String, String)>> {
+    pub(crate) fn active_oauth2_provider_keys(
+        &self,
+    ) -> Result<HashSet<(String, crate::models::OAuth2Provider)>> {
         let Some(registry) = self.settings_registry.as_ref() else {
             return Ok(HashSet::new());
         };
         let configs = registry.oauth2_providers.get()?;
-        Ok(configs
+        configs
             .0
             .iter()
             .map(|(instance_name, config)| {
-                (
-                    instance_name.clone(),
-                    config.provider_type.trim().to_string(),
-                )
+                let provider =
+                    crate::models::OAuth2Provider::from_str_name(config.provider_type_name())
+                        .ok_or_else(|| {
+                            crate::Error::InvalidInput(format!(
+                                "Unsupported OAuth2 provider in settings: {}",
+                                config.provider_type_name()
+                            ))
+                        })?;
+                Ok((instance_name.clone(), provider))
             })
-            .collect())
+            .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn count_active_oauth2_identities(
         mappings: &[crate::models::oauth2_client::UserOAuthProviderMapping],
-        active_provider_keys: &HashSet<(String, String)>,
+        active_provider_keys: &HashSet<(String, crate::models::OAuth2Provider)>,
     ) -> usize {
         mappings
             .iter()

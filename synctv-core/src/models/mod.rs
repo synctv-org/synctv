@@ -121,7 +121,9 @@ pub mod permission;
 pub mod playback;
 pub mod playlist;
 pub mod provider_instance;
+pub mod provider_target;
 pub mod query;
+pub mod realtime_event;
 pub mod review;
 pub mod room;
 pub mod room_member;
@@ -132,40 +134,42 @@ pub mod source_config_convert;
 pub mod user;
 pub mod user_preferences;
 
-pub use audit::{AuditAction, AuditTargetType};
+pub use audit::{AuditAction, AuditDetails, AuditTargetType, AuditUpdatedFields};
 pub use chat::{
     ChatAttachment, ChatAttachmentKind, ChatAttachmentUploadSession, ChatEventKind,
     ChatHistoryCursor, ChatHistoryPage, ChatMention, ChatMentionInput, ChatMessage,
     ChatMessageContext, ChatMessageEvent, ChatMessageEventLog, ChatMessageOperationKind,
     ChatMessagePin, ChatMessageReadReceiptMember, ChatMessageReadReceiptUser,
     ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
-    ChatPinEvent, ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
-    ChatReaction, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
-    ChatReactionUsersPage, ChatReadState, ChatReadStateWithUnread, ChatSearchMessagesPage,
-    ChatSearchMessagesQuery, CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage,
-    EventCursor, MarkChatRead, PinChatMessage, SendChatMessage, SendChatRequest, SetChatReaction,
+    ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage,
+    ChatPlaybackMessagesQuery, ChatPlaybackMetadata, ChatPresentationMetadata, ChatReaction,
+    ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
+    ChatReadState, ChatReadStateWithUnread, ChatSearchMessagesPage, ChatSearchMessagesQuery,
+    CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, EventCursor,
+    MarkChatRead, PinChatMessage, SendChatMessage, SendChatRequest, SetChatReaction,
     UnpinChatMessage, CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
     CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS,
     CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS,
 };
 pub use content_report::{
-    ContentReport, ContentReportAdminRow, ContentReportStatus, ContentReportTarget,
-    ContentReportTargetType, CreateContentReport,
+    ContentReport, ContentReportAdminRow, ContentReportMetadata, ContentReportStatus,
+    ContentReportTarget, ContentReportTargetType, CreateContentReport,
 };
 pub use email_token::EmailTokenType;
 pub use file_storage::{
     CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-    CreateFileUploadSession, FileBlob, FileBlobCompression, FileBlobPart, FileByteRange,
-    FileCleanupJob, FileObject, FileObjectData, FileObjectDownload, FileObjectGroup,
-    FileObjectMetadata, FileObjectVariant, FileOwnershipProofRange, FileRangeRequest,
-    FileReferenceTarget, FileUploadManifestPart, FileUploadPartUrl, FileUploadPlan,
+    CreateFileUploadSession, FileAudioMetadata, FileBlob, FileBlobCompression, FileBlobPart,
+    FileByteRange, FileCleanupJob, FileCleanupMetadata, FileMetadata, FileObject, FileObjectData,
+    FileObjectDownload, FileObjectGroup, FileObjectMetadata, FileObjectVariant,
+    FileOwnershipProofRange, FileRangeRequest, FileReferenceMetadata, FileReferenceTarget,
+    FileUploadManifestPart, FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadPlan,
     FileUploadPlanPart, FileUploadPolicy, FileUploadRange, FileUploadSession,
-    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionPart,
-    FileUploadSessionRecord, GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
-    StoredFileReference, SubmittedFileReference, SubmittedFileReferenceKind,
-    FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_GENERATED_VARIANTS_METADATA_KEY, FILE_ID_MAX_CHARS,
-    FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
-    FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionMetadata,
+    FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata, GetFileObject,
+    NewStoredFile, StoreFileUpload, StoreFileUploadResult, StoredFileReference,
+    SubmittedFileReference, SubmittedFileReferenceKind, FILE_CLEANUP_ORIGIN_MAX_CHARS,
+    FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS,
+    FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
 };
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
@@ -173,23 +177,26 @@ pub use id::{
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
-    DirectMultimodeParams, FromProviderParams, Media, MediaListQuery, MediaListSortBy,
-    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
+    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, BilibiliDashManifestSlot,
+    BilibiliDashManifests, BilibiliPlaybackMetadata, DirectMultimodeParams, EmbyPlaybackMetadata,
+    FromProviderParams, Media, MediaListQuery, MediaListSortBy, PlaybackAlistMedia,
+    PlaybackAlistSubtitle, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
     PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,
     PlaybackDirectUrlSubtitle, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackExternalDanmaku,
     PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackInfo, PlaybackLiveProxyMedia,
-    PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackResult, PlaybackRtmpMedia,
+    PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackMetadata,
+    PlaybackProxyResource, PlaybackProxyResourceMetadata, PlaybackResult, PlaybackRtmpMedia,
     PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, ProviderTypeName, ProviderTypeNames,
     SourceProvider,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
-    NotificationListQuery, NotificationListSortBy, NotificationType,
+    NotificationData, NotificationListQuery, NotificationListSortBy, NotificationType,
 };
 pub use oauth2_client::{
     oauth2_provider_type_code_from_name, oauth2_provider_type_name_from_code,
     OAuth2AuthUrlResponse, OAuth2CallbackRequest, OAuth2CallbackResponse, OAuth2Provider,
-    OAuth2ProviderTypeName, OAuth2UserInfo, UserOAuthProviderMapping,
+    OAuth2UserInfo, UserOAuthProviderMapping,
 };
 pub use opaque_password::{
     OpaquePasswordRecord, OPAQUE_CIPHERSUITE_RISTRETTO255_SHA512_ARGON2ID,
@@ -201,9 +208,9 @@ pub use permission::{
     RoomPermission, RoomPermissionSet,
 };
 pub use playback::{
-    hash_playback_target, ClaimedPlaybackDurationProbe, PlaybackDurationSource,
-    PlaybackDurationStatus, PlaybackSourceIdentity, PlaybackSourceMetadata, RoomPlaybackProgress,
-    RoomPlaybackState,
+    hash_empty_playback_target, try_hash_playback_target, ClaimedPlaybackDurationProbe,
+    PlaybackDurationSource, PlaybackDurationStatus, PlaybackSourceIdentity, PlaybackSourceMetadata,
+    RoomPlaybackProgress, RoomPlaybackState,
 };
 pub use playlist::{
     CreatePlaylistRequest, Playlist, PlaylistListQuery, PlaylistListSortBy, PlaylistWithCount,
@@ -216,19 +223,26 @@ pub use provider_instance::{
     ProviderCredential, ProviderInstance, ProviderInstanceBindingMismatch,
     ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
 };
+pub use provider_target::{
+    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, EmbyTarget,
+    ProviderTarget,
+};
 pub use query::SortDirection;
+pub use realtime_event::{
+    CacheTarget, NotificationLevel, RealtimeDeliveryRoute, RealtimeEvent, WebRTCSignalKind,
+};
 pub use review::ReviewStatus;
 pub use room::{
     AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomCategory, RoomLabel, RoomListQuery,
-    RoomListSortBy, RoomSettingsJson, RoomStatus, RoomWithCount, UpdateRoomRequest,
-    UpsertRoomCategory, UpsertRoomLabel,
+    RoomListSortBy, RoomStatus, RoomWithCount, UpdateRoomRequest, UpsertRoomCategory,
+    UpsertRoomLabel,
 };
 pub use room_member::{
     AddMemberOptions, MemberStatus, MyRoomListQuery, MyRoomListSortBy, MyRoomRelation, RoomMember,
     RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser,
 };
 pub use room_settings::RoomSettings;
-pub use settings::{get_default_settings, SettingsGroup};
+pub use settings::SettingsGroup;
 pub use source_config::{
     detect_direct_url_format, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
     BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
@@ -365,5 +379,8 @@ mod tests {
             assert_eq!(provider.to_string(), *name);
             assert_eq!(name.parse::<SourceProvider>(), Ok(*provider));
         }
+
+        assert!("directurl".parse::<SourceProvider>().is_err());
+        assert!("liveproxy".parse::<SourceProvider>().is_err());
     }
 }

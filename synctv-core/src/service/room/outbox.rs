@@ -2,7 +2,8 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, RoomId, RoomMember, RoomPermissionSet, RoomRole, UserId,
+        AuditAction, AuditDetails, AuditTargetType, RoomId, RoomMember, RoomPermissionSet,
+        RoomRole, UserId,
     },
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::{
@@ -47,7 +48,7 @@ impl RoomService {
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
-        details: serde_json::Value,
+        details: AuditDetails,
     ) {
         if let Some(ref audit) = self.audit_service {
             if let Err(error) = audit
@@ -75,7 +76,7 @@ impl RoomService {
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
-        details: serde_json::Value,
+        details: AuditDetails,
     ) -> Result<()> {
         let Some(ref audit) = self.audit_service else {
             return Ok(());

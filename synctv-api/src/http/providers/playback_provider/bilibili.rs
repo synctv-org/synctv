@@ -18,13 +18,14 @@ use crate::http::{
     middleware::RequestMetadata,
     providers::playback_provider::transport::{
         query, range_header, signed_query_fields, stream_http_response, target_url,
-        PlaybackProviderHttpResponse,
+        unsigned_query_field, PlaybackProviderHttpResponse,
     },
     AppResult, AppState,
 };
 use crate::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliIndexedPath {
     pub version: String,
     pub mode_name: String,
@@ -32,12 +33,14 @@ pub struct BilibiliIndexedPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliDashManifestPath {
     pub version: String,
     pub mode_name: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliSubtitlePath {
     pub version: String,
     pub mode_name: String,
@@ -45,12 +48,14 @@ pub struct BilibiliSubtitlePath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliDanmakuFilePath {
     pub version: String,
     pub danmaku_index: u32,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BilibiliLiveDanmakuPath {
     pub media_id: String,
 }
@@ -101,9 +106,9 @@ impl PlaybackProviderHttpResponse for BilibiliDanmakuFileResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/media-streams/{mode_name}/{url_index}",
+        path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("url_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili media stream"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -128,9 +133,9 @@ pub fn get_bilibili_media_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/media-streams/{mode_name}/{url_index}",
+        path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("url_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili media stream metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -196,9 +201,9 @@ async fn bilibili_media_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/hls-manifests/{mode_name}/{url_index}",
+        path = "/api/playback-providers/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("url_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS manifest"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -246,7 +251,7 @@ pub async fn get_bilibili_hls_manifest(
         get,
         path = "/api/playback-providers/bilibili/{version}/hls-segments",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("target_url" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS segment"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -273,7 +278,7 @@ pub fn get_bilibili_hls_segment(
         head,
         path = "/api/playback-providers/bilibili/{version}/hls-segments",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("target_url" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili HLS segment metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -338,9 +343,9 @@ async fn bilibili_hls_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-manifests/{mode_name}",
+        path = "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("mode" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("mode" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili DASH manifest"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -356,7 +361,7 @@ pub async fn get_bilibili_dash_manifest(
     let req = GetBilibiliDashManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
-        mode: dash_manifest_mode(&query_string),
+        mode: dash_manifest_mode(&query_string).map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
         rid,
@@ -386,9 +391,9 @@ pub async fn get_bilibili_dash_manifest(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-segments/{mode_name}/{url_index}",
+        path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("url_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili DASH segment"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -413,9 +418,9 @@ pub fn get_bilibili_dash_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/bilibili/{version}/dash-segments/{mode_name}/{url_index}",
+        path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("url_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili DASH segment metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -481,9 +486,9 @@ async fn bilibili_dash_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/subtitles/{mode_name}/{subtitle_index}",
+        path = "/api/playback-providers/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("mode_name" = String, Path), ("subtitle_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili subtitle"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -529,9 +534,9 @@ pub async fn get_bilibili_subtitle(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/danmaku-files/{danmaku_index}",
+        path = "/api/playback-providers/bilibili/{version}/danmaku-files/{danmakuIndex}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("danmaku_index" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("danmakuIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili danmaku file"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -576,9 +581,9 @@ pub async fn get_bilibili_danmaku_file(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/live-danmaku/{media_id}",
+        path = "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
         tag = "Bilibili Playback Provider",
-        params(("media_id" = String, Path)),
+        params(("mediaId" = String, Path)),
         responses((status = 200, description = "Bilibili live danmaku SSE"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -623,16 +628,17 @@ pub async fn watch_bilibili_live_danmaku(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn dash_manifest_mode(query: &str) -> i32 {
-    url::form_urlencoded::parse(query.as_bytes())
-        .find_map(|(key, value)| (key == "mode").then(|| value.into_owned()))
-        .map_or(
-            BilibiliDashManifestMode::Direct as i32,
-            |value| match value.as_str() {
-                "proxy" => BilibiliDashManifestMode::Proxy as i32,
-                _ => BilibiliDashManifestMode::Direct as i32,
-            },
-        )
+fn dash_manifest_mode(query: &str) -> Result<i32, crate::impls::ApiError> {
+    unsigned_query_field(query, "mode")?.map_or(
+        Ok(BilibiliDashManifestMode::Direct as i32),
+        |value| match value.as_str() {
+            "" | "direct" => Ok(BilibiliDashManifestMode::Direct as i32),
+            "proxy" => Ok(BilibiliDashManifestMode::Proxy as i32),
+            _ => Err(crate::impls::ApiError::InvalidInput(
+                "mode must be direct or proxy".to_string(),
+            )),
+        },
+    )
 }
 
 fn bilibili_deps<'a>(

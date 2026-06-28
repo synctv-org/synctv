@@ -285,7 +285,7 @@ Room settings:
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"join_requires_review":true}'
+synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
 synctv room settings reset <ROOM_ID>
 ```
 
@@ -366,7 +366,7 @@ Media:
 ```bash
 synctv media list <ROOM_ID>
 synctv media add-url --room-id <ROOM_ID> --username alice "https://example.com/video.mp4" --name "Video"
-synctv media add --room-id <ROOM_ID> --username alice --source-provider direct_url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "Video"
+synctv media add --room-id <ROOM_ID> --username alice --source-provider direct-url --source-config-json '{"medias":[{"url":"https://example.com/video.mp4"}]}' --name "Video"
 synctv media update --room-id <ROOM_ID> <MEDIA_ID> --name "New Name"
 synctv media move --room-id <ROOM_ID> <MEDIA_ID> --after-media-id <OTHER_MEDIA_ID>
 synctv media delete <ROOM_ID> <MEDIA_ID>
@@ -451,8 +451,8 @@ Runtime settings are changed through the management endpoint. They are not the s
 ```bash
 synctv settings list
 synctv settings get email
-synctv settings update email --set whitelist_enabled=true --set whitelist=example.com
-synctv settings update permissions --set guest_default='["view_member_list","use_webrtc"]'
+synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
+synctv settings update permissions --set guestDefaultPermissions=view_member_list,use_webrtc
 synctv settings test-email admin@example.com
 ```
 

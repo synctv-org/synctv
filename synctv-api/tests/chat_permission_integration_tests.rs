@@ -266,7 +266,7 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
                             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                                 .to_string(),
                     }],
-                    metadata: br#"{"source":"test"}"#.to_vec(),
+                    metadata: None,
                 },
             )
             .await,
@@ -295,7 +295,7 @@ async fn test_chat_write_endpoints_require_signed_in_user_and_chat_permission() 
                 EditChatMessageRequest {
                     message_id,
                     content: "blocked edit".to_string(),
-                    metadata: br"{}".to_vec(),
+                    metadata: None,
                     ..Default::default()
                 },
             )
@@ -669,28 +669,25 @@ async fn test_chat_admin_delete_endpoint_writes_audit_log() {
     );
     let details = row.details.as_ref().expect("audit details should exist");
     assert_eq!(
-        details["room_id"].as_str(),
+        details.room_id.as_deref(),
         Some(room.id.to_string().as_str())
     );
+    assert_eq!(details.message_id.as_deref(), Some(message_id.as_str()));
     assert_eq!(
-        details["message_id"].as_i64(),
-        Some(message_id.parse::<i64>().unwrap())
-    );
-    assert_eq!(
-        details["original_author_id"].as_str(),
+        details.original_author_id.as_deref(),
         Some(owner.id.to_string().as_str())
     );
     assert_eq!(
-        details["deleted_by"].as_str(),
+        details.deleted_by.as_deref(),
         Some(admin.id.to_string().as_str())
     );
-    assert_eq!(details["reason"].as_str(), Some("policy violation"));
+    assert_eq!(details.reason.as_deref(), Some("policy violation"));
     assert_eq!(
-        details["client_operation_id"].as_str(),
+        details.client_operation_id.as_deref(),
         Some("audit-delete-op")
     );
     assert_eq!(
-        details["event_id"].as_str(),
+        details.event_id.as_deref(),
         Some(deleted_event.event_id.as_str())
     );
 }

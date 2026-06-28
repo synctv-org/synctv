@@ -53,7 +53,7 @@ BASE_URL=http://localhost:8080
 
 curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"root","credential_request":[/* OPAQUE 客户端生成的字节 */]}'
+  -d '{"username":"root","credentialRequest":[/* OPAQUE 客户端生成的字节 */]}'
 ```
 
 继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。如果 finish 响应里 `mfa.required=true`，继续完成 MFA。无密码邮箱 token 登录使用 `/api/auth/email/confirm`。
@@ -64,7 +64,7 @@ curl -sS "$BASE_URL/api/auth/opaque/login/start" \
 ```bash
 curl -sS "$BASE_URL/api/auth/refresh" \
   -H 'Content-Type: application/json' \
-  -d '{"refresh_token":"paste-refresh-token"}'
+  -d '{"refreshToken":"paste-refresh-token"}'
 ```
 
 刷新成功后替换本地保存的 access token 和 refresh token，避免多个并发请求继续使用旧 refresh token。
@@ -92,7 +92,7 @@ ROOM_ID=room_1
 curl -sS "$BASE_URL/api/tickets" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"room_id\":\"$ROOM_ID\"}"
+  -d "{\"roomId\":\"$ROOM_ID\"}"
 ```
 
 ticket 是短期、一次性、房间绑定凭据。浏览器 WebSocket 使用 ticket，原生客户端可以使用 `Authorization` header。
@@ -125,7 +125,7 @@ send({
   observeResource: {
     observeId: 'playback-state',
     version: cachedVersion ?? '',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playbackState: {},
   },
 });
@@ -145,7 +145,7 @@ grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  -d '{"username":"root","credentialRequest":"<base64-opaque-request>"}' \
   localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
 
@@ -178,10 +178,10 @@ Alist 列表请求示例：
 curl -sS "$BASE_URL/api/providers/alist/list" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"server_id":"<server_id-from-login-or-binds>","path":"/","provider_instance_name":"alist-main"}'
+  -d '{"serverId":"<serverId-from-login-or-binds>","path":"/","instanceName":"alist-main"}'
 ```
 
-添加媒体时，`source_provider`、`provider_instance_name` 和 `source_config` 的组合由 Provider 定义。Provider 凭据不应该直接塞进 `source_config`；凭据由用户、实例或服务端 Provider 管理层解析。
+添加媒体时，`sourceProvider`、`providerInstanceName` 和 `sourceConfig` 的组合由 Provider 定义。Provider 凭据由用户、实例或服务端 Provider 管理层解析。
 
 ## 错误处理模板
 
@@ -192,7 +192,7 @@ HTTP 错误响应：
   "error": "Invalid username or password",
   "status": 401,
   "code": 1002,
-  "request_id": "01HX..."
+  "requestId": "01HX..."
 }
 ```
 
@@ -200,7 +200,7 @@ HTTP 错误响应：
 
 - 按 HTTP `status` 决定大类。
 - 按 `code` 做程序化分支。
-- 记录 `request_id`，便于服务端日志排查。
+- 记录 `requestId`，便于服务端日志排查。
 - `429` 时读取 `Retry-After`。
 - `5xx` 文案会被服务端脱敏，不要依赖原始错误文本。
 

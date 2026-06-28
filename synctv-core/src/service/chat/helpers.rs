@@ -1,5 +1,5 @@
 use chrono::{Duration, Utc};
-use serde_json::json;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -17,13 +17,50 @@ use crate::{
 
 use super::MAX_CHAT_ATTACHMENTS_PER_MESSAGE;
 use crate::service::file_storage::{
-    validate_file_mime_type, CreateFileReuseGrant, FileStorageService, FILE_OWNERSHIP_PROOF_KEY,
-    FILE_UPLOAD_TOKEN_KEY,
+    validate_file_metadata, validate_file_mime_type, CreateFileReuseGrant, FileStorageService,
 };
 use crate::service::file_upload_policies::chat_attachment_upload_policy;
 
 pub(super) const CHAT_ATTACHMENT_REUSE_SOURCE_KIND: &str = "chat_message_attachment";
 const CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS: i64 = 3600;
+
+#[derive(Serialize)]
+struct ChatSendRequestHashPayload<'a> {
+    content: &'a str,
+    message_type: crate::models::ChatMessageType,
+    reply_to_message_id: Option<i64>,
+    metadata: &'a crate::models::ChatMetadata,
+    mentions: &'a [crate::models::ChatMentionInput],
+    attachments: &'a [SubmittedFileReference],
+}
+
+#[derive(Serialize)]
+struct ChatEditRequestHashPayload<'a> {
+    message_id: i64,
+    content: &'a str,
+    metadata: &'a crate::models::ChatMetadata,
+    expected_version: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ChatDeleteRequestHashPayload<'a> {
+    message_id: i64,
+    reason: Option<&'a str>,
+    expected_version: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ChatPinRequestHashPayload<'a> {
+    room_id: i64,
+    message_id: i64,
+    note: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ChatUnpinRequestHashPayload {
+    room_id: i64,
+    message_id: i64,
+}
 
 pub(super) fn max_messages_to_keep_count(max_messages: u64) -> Result<i64> {
     i64::try_from(max_messages)
@@ -236,12 +273,7 @@ pub(super) fn chat_file_storage_scope(room_id: RoomId, user_id: UserId) -> Strin
     format!("rooms/{}/users/{}", room_id.as_i64(), user_id.as_i64())
 }
 
-pub(super) fn validate_chat_metadata(metadata: &serde_json::Value) -> Result<()> {
-    if !metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "chat metadata must be a JSON object".to_string(),
-        ));
-    }
+pub(super) fn validate_chat_metadata(_metadata: &crate::models::ChatMetadata) -> Result<()> {
     Ok(())
 }
 
@@ -320,7 +352,7 @@ pub(super) fn validate_chat_attachments(attachments: &[NewStoredFile]) -> Result
         if let Some(mime_type) = &attachment.mime_type {
             validate_chat_attachment_mime_type(mime_type)?;
         }
-        validate_chat_metadata(&attachment.metadata)?;
+        validate_file_metadata(&attachment.metadata)?;
     }
     Ok(())
 }
@@ -364,10 +396,7 @@ pub(super) fn validate_submitted_chat_attachments(
 
 pub(super) fn strip_internal_chat_attachment_metadata(attachments: &mut [NewStoredFile]) {
     for attachment in attachments {
-        if let Some(metadata) = attachment.metadata.as_object_mut() {
-            metadata.remove(FILE_UPLOAD_TOKEN_KEY);
-            metadata.remove(FILE_OWNERSHIP_PROOF_KEY);
-        }
+        attachment.metadata = attachment.metadata.public();
     }
 }
 
@@ -437,54 +466,49 @@ pub(super) fn attach_chat_attachment_reuse_grants(
 }
 
 pub(super) fn chat_send_request_hash(request: &SendChatMessage) -> Result<String> {
-    let payload = json!({
-        "content": request.content,
-        "message_type": request.message_type,
-        "reply_to_message_id": request.reply_to_message_id,
-        "metadata": request.metadata,
-        "mentions": request.mentions,
-        "attachments": request.attachments,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    hash_chat_request_payload(&ChatSendRequestHashPayload {
+        content: &request.content,
+        message_type: request.message_type,
+        reply_to_message_id: request.reply_to_message_id,
+        metadata: &request.metadata,
+        mentions: &request.mentions,
+        attachments: &request.attachments,
+    })
 }
 
 pub(super) fn chat_edit_request_hash(request: &EditChatMessage) -> Result<String> {
-    let payload = json!({
-        "message_id": request.message_id,
-        "content": request.content,
-        "metadata": request.metadata,
-        "expected_version": request.expected_version,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    hash_chat_request_payload(&ChatEditRequestHashPayload {
+        message_id: request.message_id,
+        content: &request.content,
+        metadata: &request.metadata,
+        expected_version: request.expected_version,
+    })
 }
 
 pub(super) fn chat_delete_request_hash(request: &DeleteChatMessage) -> Result<String> {
-    let payload = json!({
-        "message_id": request.message_id,
-        "reason": request.reason,
-        "expected_version": request.expected_version,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    hash_chat_request_payload(&ChatDeleteRequestHashPayload {
+        message_id: request.message_id,
+        reason: request.reason.as_deref(),
+        expected_version: request.expected_version,
+    })
 }
 
 pub(super) fn chat_pin_request_hash(request: &PinChatMessage) -> Result<String> {
-    let payload = json!({
-        "room_id": request.room_id.as_i64(),
-        "message_id": request.message_id,
-        "note": request.note,
-    });
-    let bytes = serde_json::to_vec(&payload)?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    hash_chat_request_payload(&ChatPinRequestHashPayload {
+        room_id: request.room_id.as_i64(),
+        message_id: request.message_id,
+        note: request.note.as_deref(),
+    })
 }
 
 pub(super) fn chat_unpin_request_hash(request: &UnpinChatMessage) -> Result<String> {
-    let payload = json!({
-        "room_id": request.room_id.as_i64(),
-        "message_id": request.message_id,
-    });
+    hash_chat_request_payload(&ChatUnpinRequestHashPayload {
+        room_id: request.room_id.as_i64(),
+        message_id: request.message_id,
+    })
+}
+
+fn hash_chat_request_payload<T: Serialize + ?Sized>(payload: &T) -> Result<String> {
     let bytes = serde_json::to_vec(&payload)?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }

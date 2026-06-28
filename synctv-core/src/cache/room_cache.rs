@@ -38,6 +38,7 @@ pub struct RoomCache {
 /// lookups and access-control checks. Fields like `description` and `version`
 /// are intentionally omitted because they are not used in hot-path lookups.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CachedRoom {
     id: String,
     name: String,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest};
+use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest, NotificationData};
 use crate::models::pagination::PageParams;
 use crate::test_helpers::{TestOptionExt, TestResultExt};
 use synctv_core_testing::create_test_pool;
@@ -13,35 +13,34 @@ fn test_create_notification_request_minimal() {
         notification_type: NotificationType::SystemAnnouncement,
         title: "Test Title".to_string(),
         content: "Test Content".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     };
 
     assert_eq!(req.user_id, user_id);
     assert_eq!(req.notification_type, NotificationType::SystemAnnouncement);
     assert_eq!(req.title, "Test Title");
     assert_eq!(req.content, "Test Content");
-    assert_eq!(req.data, serde_json::json!({}));
+    assert_eq!(req.data, NotificationData::default());
 }
 
 /// Test CreateNotificationRequest with custom data
 #[test]
 fn test_create_notification_request_with_data() {
     let user_id = UserId::expect_positive(91_002);
-    let data = serde_json::json!({
-        "room_id": "room_abc",
-        "inviter": "user_789"
-    });
-
     let req = CreateNotificationRequest {
         user_id,
         notification_type: NotificationType::RoomInvitation,
         title: "Room Invitation".to_string(),
         content: "You have been invited".to_string(),
-        data,
+        data: NotificationData {
+            room_id: Some("room_abc".to_string()),
+            username: Some("user_789".to_string()),
+            ..Default::default()
+        },
     };
 
-    assert_eq!(req.data["room_id"], "room_abc");
-    assert_eq!(req.data["inviter"], "user_789");
+    assert_eq!(req.data.room_id.as_deref(), Some("room_abc"));
+    assert_eq!(req.data.username.as_deref(), Some("user_789"));
 }
 
 /// Test NotificationListQuery with filters
@@ -210,7 +209,10 @@ async fn test_create_notification() {
         notification_type: NotificationType::SystemAnnouncement,
         title: "Test Notification".to_string(),
         content: "This is a test notification".to_string(),
-        data: serde_json::json!({"key": "value"}),
+        data: NotificationData {
+            action_url: Some("value".to_string()),
+            ..Default::default()
+        },
     };
 
     let notification = repo.create(&req).await.checked("operation should succeed");
@@ -246,7 +248,7 @@ async fn test_get_by_id() {
         notification_type: NotificationType::RoomEvent,
         title: "Room Event".to_string(),
         content: "User joined room".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     };
     let created = repo.create(&req).await.checked("operation should succeed");
 
@@ -298,7 +300,7 @@ async fn test_list_by_user_with_count() {
             notification_type: NotificationType::SystemAnnouncement,
             title: format!("Notification {i}"),
             content: format!("Content {i}"),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         repo.create(&req).await.checked("operation should succeed");
     }
@@ -343,7 +345,7 @@ async fn test_list_by_user_with_count_filter_by_read() {
         notification_type: NotificationType::SystemAnnouncement,
         title: "Test".to_string(),
         content: "Content".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     };
     let notification = repo.create(&req).await.checked("operation should succeed");
 
@@ -408,7 +410,7 @@ async fn test_list_by_user_with_count_filter_by_type() {
             notification_type: nt,
             title: "Test".to_string(),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         repo.create(&req).await.checked("operation should succeed");
     }
@@ -456,7 +458,7 @@ async fn test_mark_as_read() {
             notification_type: NotificationType::SystemAnnouncement,
             title: format!("Test {i}"),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         let notification = repo.create(&req).await.checked("operation should succeed");
         notification_ids.push(notification.id);
@@ -514,7 +516,7 @@ async fn test_mark_all_as_read() {
             notification_type: NotificationType::SystemAnnouncement,
             title: format!("Test {i}"),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         repo.create(&req).await.checked("operation should succeed");
     }
@@ -555,7 +557,7 @@ async fn test_mark_all_as_read_with_before() {
         notification_type: NotificationType::SystemAnnouncement,
         title: "Test".to_string(),
         content: "Content".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     };
     repo.create(&req).await.checked("operation should succeed");
 
@@ -589,7 +591,7 @@ async fn test_delete_notification() {
         notification_type: NotificationType::SystemAnnouncement,
         title: "To Delete".to_string(),
         content: "Content".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     };
     let notification = repo.create(&req).await.checked("operation should succeed");
 
@@ -645,7 +647,7 @@ async fn test_count_unread() {
             notification_type: NotificationType::SystemAnnouncement,
             title: format!("Test {i}"),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         repo.create(&req).await.checked("operation should succeed");
     }
@@ -708,7 +710,7 @@ async fn test_count_by_user_with_filters() {
             notification_type: nt,
             title: "Test".to_string(),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         repo.create(&req).await.checked("operation should succeed");
     }
@@ -755,7 +757,7 @@ async fn test_delete_all_read() {
             notification_type: NotificationType::SystemAnnouncement,
             title: format!("Test {i}"),
             content: "Content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
         };
         let notification = repo.create(&req).await.checked("operation should succeed");
         ids.push(notification.id);

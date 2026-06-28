@@ -4,6 +4,7 @@ package synctv.client;
 
 import "proto/buf/validate/validate.proto";
 import "proto/common.proto";
+import "proto/passkey.proto";
 import "proto/source_config.proto";
 
 // ==================== Auth Service ====================
@@ -260,12 +261,119 @@ message UserPublicView {
   UserAvatar avatar = 6;
 }
 
+enum PlayMode {
+  PLAY_MODE_UNSPECIFIED = 0;
+  PLAY_MODE_SEQUENTIAL = 1;
+  PLAY_MODE_REPEAT_ONE = 2;
+  PLAY_MODE_REPEAT_ALL = 3;
+  PLAY_MODE_SHUFFLE = 4;
+}
+
+message AutoPlaySettings {
+  bool enabled = 1;
+  PlayMode mode = 2;
+  uint32 delay = 3;
+}
+
+message AutoPlaySettingsPatch {
+  optional bool enabled = 1;
+  optional PlayMode mode = 2 [(buf.validate.field).enum.defined_only = true];
+  optional uint32 delay = 3;
+}
+
+message RoomSettings {
+  bool allow_guest_join = 1;
+  uint64 max_members = 2;
+  bool require_approval = 3;
+  bool allow_auto_join = 4;
+  bool chat_enabled = 5;
+  AutoPlaySettings auto_play = 6;
+  uint64 admin_added_permissions = 7;
+  uint64 admin_removed_permissions = 8;
+  uint64 member_added_permissions = 9;
+  uint64 member_removed_permissions = 10;
+  uint64 guest_added_permissions = 11;
+  uint64 guest_removed_permissions = 12;
+}
+
+message RoomSettingsPatch {
+  optional bool allow_guest_join = 1;
+  optional uint64 max_members = 2;
+  optional bool require_approval = 3;
+  optional bool allow_auto_join = 4;
+  optional bool chat_enabled = 5;
+  AutoPlaySettingsPatch auto_play = 6;
+  optional uint64 admin_added_permissions = 7;
+  optional uint64 admin_removed_permissions = 8;
+  optional uint64 member_added_permissions = 9;
+  optional uint64 member_removed_permissions = 10;
+  optional uint64 guest_added_permissions = 11;
+  optional uint64 guest_removed_permissions = 12;
+}
+
+message AlistTarget {
+  string relative_path = 1;
+}
+
+message EmbyTarget {
+  string item_id = 1;
+}
+
+message ProviderTarget {
+  oneof target {
+    AlistTarget alist = 1;
+    EmbyTarget emby = 2;
+  }
+}
+
+message FileMetadata {
+  optional int32 width = 1;
+  optional int32 height = 2;
+  optional int32 duration_seconds = 3;
+  optional int32 bitrate_bps = 4;
+  optional string blurhash = 5;
+}
+
+message ResourceMetadata {
+  optional string source = 1;
+}
+
+message ChatPresentationMetadata {
+  optional string display_position = 1;
+  optional string display_color = 2;
+}
+
+message ChatPlaybackMetadata {
+  string media_id = 1;
+  string playlist_id = 2;
+  ProviderTarget target = 3;
+  optional double position_seconds = 4;
+}
+
+message ChatMetadata {
+  ChatPresentationMetadata presentation = 1;
+  ChatPlaybackMetadata playback = 2;
+}
+
+message ContentReportMetadata {
+  optional string client_reason = 1;
+}
+
+message NotificationData {
+  optional string room_id = 1;
+  optional string room_name = 2;
+  optional string user_id = 3;
+  optional string username = 4;
+  optional string message_id = 5;
+  optional string action_url = 6;
+}
+
 message Room {
   string id = 1;
   string name = 2;
   string created_by = 3;
   synctv.common.RoomStatus status = 4; // Room lifecycle status
-  bytes settings = 5; // JSON settings
+  RoomSettings settings = 5;
   int64 created_at = 6;
   int32 member_count = 7;
   string description = 8; // Room description
@@ -308,7 +416,7 @@ message Media {
   string room_id = 2;
   synctv.source_config.SourceProvider source_provider = 4; // Source provider type, e.g. direct_url, bilibili, alist
   string name = 5; // Media display name
-  bytes metadata = 6; // JSON metadata
+  ResourceMetadata metadata = 6;
   double position = 7; // Order position in playlist
   int64 added_at = 8;
   string creator_id = 9; // Public ID of the user who added the media
@@ -341,7 +449,7 @@ message Playlist {
 
 message ResourceCover {
   string url = 1;
-  bytes metadata = 2; // JSON object.
+  FileMetadata metadata = 2;
   repeated FileObjectVariant variants = 3;
 }
 
@@ -366,7 +474,7 @@ message PlaybackState {
   int64 updated_at = 6;
   int64 version = 7; // For optimistic locking
   string playing_playlist_id = 8; // Currently playing playlist
-  bytes target = 9; // Provider-facing playback target payload (empty for static media or cleared state)
+  ProviderTarget target = 9; // Provider-facing playback target payload; omitted for static media or cleared state.
   string target_hash = 10; // SHA-256 hex of target, used by clients when reporting progress or seeking
 }
 
@@ -575,10 +683,7 @@ message StartSensitiveOperationPasskeyResponse {
     min_len: 1
     max_len: 128
   }];
-  bytes options = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
 }
 
 message RequestSensitiveOperationEmailCodeRequest {
@@ -602,7 +707,7 @@ message FinishSensitiveOperationVerificationRequest {
   string password = 3 [(buf.validate.field).string = {max_len: 1024}];
   string email_token = 4 [(buf.validate.field).string = {max_len: 255}];
   string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
-  bytes passkey_credential = 6 [(buf.validate.field).bytes = {max_len: 16384}];
+  PasskeyAuthenticationCredential passkey_credential = 6;
 }
 
 message FinishSensitiveOperationVerificationResponse {
@@ -659,29 +764,17 @@ message StartPasskeyLoginResponse {
     min_len: 1
     max_len: 128
   }];
-  // WebAuthn PublicKeyCredentialRequestOptions JSON.
-  bytes options = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
 }
 
-// Finish a passkey login. `credential` is the browser WebAuthn
-// PublicKeyCredential JSON returned by navigator.credentials.get().
 message FinishPasskeyLoginRequest {
   string session_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
   }];
-  bytes credential = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyAuthenticationCredential credential = 2 [(buf.validate.field).required = true];
 }
 
-// Start a WebAuthn/passkey account registration. The response `options` is the
-// PublicKeyCredentialCreationOptions JSON that must be passed to the browser's
-// navigator.credentials.create().
 message StartPasskeyRegistrationRequest {
   string username = 1 [(buf.validate.field).string = {
     min_len: 3
@@ -698,17 +791,12 @@ message StartPasskeyRegistrationRequest {
   string name = 3 [(buf.validate.field).string = {max_len: 100}];
 }
 
-// Finish a WebAuthn/passkey account registration. `credential` is the browser
-// PublicKeyCredential JSON returned by navigator.credentials.create().
 message FinishPasskeyRegistrationRequest {
   string session_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
   }];
-  bytes credential = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyRegistrationCredential credential = 2 [(buf.validate.field).required = true];
 }
 
 message StartPasskeyBindRequest {
@@ -720,11 +808,7 @@ message StartPasskeyRegistrationResponse {
     min_len: 1
     max_len: 128
   }];
-  // WebAuthn PublicKeyCredentialCreationOptions JSON.
-  bytes options = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyCreationChallenge options = 2 [(buf.validate.field).required = true];
 }
 
 message StartPasskeyBindResponse {
@@ -732,24 +816,15 @@ message StartPasskeyBindResponse {
     min_len: 1
     max_len: 128
   }];
-  // WebAuthn PublicKeyCredentialCreationOptions JSON.
-  bytes options = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyCreationChallenge options = 2 [(buf.validate.field).required = true];
 }
 
-// Finish a passkey bind. `credential` is the browser WebAuthn
-// PublicKeyCredential JSON returned by navigator.credentials.create().
 message FinishPasskeyBindRequest {
   string session_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
   }];
-  bytes credential = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyRegistrationCredential credential = 2 [(buf.validate.field).required = true];
   string verification_id = 3 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
@@ -801,7 +876,7 @@ message UserPreferences {
   bool two_factor_enabled = 1;
   UserNotificationPreferences notifications = 3;
   // Low-priority extension payload; core preferences use typed fields.
-  bytes settings = 15;
+  RoomSettings settings = 15;
 }
 
 message UserNotificationPreferences {
@@ -873,11 +948,7 @@ message StartMfaPasskeyResponse {
     min_len: 1
     max_len: 128
   }];
-  // WebAuthn PublicKeyCredentialRequestOptions JSON.
-  bytes options = 2 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyRequestChallenge options = 2 [(buf.validate.field).required = true];
 }
 
 message FinishMfaPasskeyRequest {
@@ -889,10 +960,7 @@ message FinishMfaPasskeyRequest {
     min_len: 1
     max_len: 128
   }];
-  bytes credential = 3 [(buf.validate.field).bytes = {
-    min_len: 1
-    max_len: 65536
-  }];
+  PasskeyAuthenticationCredential credential = 3 [(buf.validate.field).required = true];
 }
 
 message RefreshTokenRequest {
@@ -947,7 +1015,7 @@ message StartOpaquePasswordUpdateResponse {
   bytes credential_response = 2;
   bytes registration_response = 3;
   string passkey_session_id = 4;
-  bytes passkey_options = 5;
+  PasskeyRequestChallenge passkey_options = 5;
 }
 
 message FinishOpaquePasswordUpdateRequest {
@@ -961,7 +1029,7 @@ message FinishOpaquePasswordUpdateRequest {
     max_len: 4096
   }];
   string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
-  bytes passkey_credential = 6 [(buf.validate.field).bytes = {max_len: 16384}];
+  PasskeyAuthenticationCredential passkey_credential = 6;
 }
 
 message FinishOpaquePasswordUpdateResponse {
@@ -1022,7 +1090,7 @@ message CreateRoomRequest {
       expression: "!this.contains('<') && !this.contains('>')"
     }
   ];
-  bytes settings = 2; // JSON settings
+  RoomSettings settings = 2;
   string description = 3 [
     (buf.validate.field).string = {max_len: 500},
     (buf.validate.field).cel = {
@@ -1150,7 +1218,7 @@ message DeleteRoomResponse {
 }
 
 message UpdateRoomSettingsRequest {
-  bytes settings = 1; // JSON settings (partial or complete update)
+  RoomSettingsPatch settings = 1 [(buf.validate.field).required = true];
 }
 
 message UpdateRoomSettingsResponse {
@@ -1161,7 +1229,7 @@ message UpdateRoomSettingsResponse {
 message GetRoomSettingsRequest {}
 
 message GetRoomSettingsResponse {
-  bytes settings = 1; // JSON settings
+  RoomSettings settings = 1;
   int64 version = 2;
 }
 
@@ -1229,7 +1297,7 @@ enum MyRoomRelation {
 message ResetRoomSettingsRequest {}
 
 message ResetRoomSettingsResponse {
-  bytes settings = 1; // Reset settings (default values)
+  RoomSettings settings = 1;
 }
 
 message TransferRoomOwnershipRequest {
@@ -1684,22 +1752,22 @@ message StartPlaybackRequest {
   };
   option (buf.validate.message).cel = {
     id: "start_playback.clear_target"
-    message: "target must be empty when clearing playback"
-    expression: "(this.media_id != '' || this.playlist_id != '') || size(this.target) == 0"
+    message: "target must be omitted when clearing playback"
+    expression: "(this.media_id != '' || this.playlist_id != '') || !has(this.target)"
   };
   option (buf.validate.message).cel = {
     id: "start_playback.static_target"
-    message: "target must be empty when switching to a static media item"
-    expression: "this.media_id == '' || size(this.target) == 0"
+    message: "target must be omitted when switching to a static media item"
+    expression: "this.media_id == '' || !has(this.target)"
   };
   option (buf.validate.message).cel = {
-    id: "start_playback.dynamic_target"
+    id: "start_playback.playlist_target"
     message: "target is required when switching to a dynamic playlist item"
-    expression: "this.playlist_id == '' || size(this.target) > 0"
+    expression: "this.playlist_id == '' || has(this.target)"
   };
   string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
   string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
-  bytes target = 3; // Provider-facing playback target payload. Empty for static media playback.
+  ProviderTarget target = 3; // Provider-facing playback target payload. Omit for static media playback.
 }
 
 message StartPlaybackResponse {
@@ -1724,22 +1792,22 @@ message UpdatePlaybackRequest {
   };
   option (buf.validate.message).cel = {
     id: "update_playback.clear_target"
-    message: "target must be empty when clearing playback"
-    expression: "(this.media_id != '' || this.playlist_id != '') || size(this.target) == 0"
+    message: "target must be omitted when clearing playback"
+    expression: "(this.media_id != '' || this.playlist_id != '') || !has(this.target)"
   };
   option (buf.validate.message).cel = {
     id: "update_playback.static_target"
-    message: "target must be empty when switching to a static media item"
-    expression: "this.media_id == '' || size(this.target) == 0"
+    message: "target must be omitted when switching to a static media item"
+    expression: "this.media_id == '' || !has(this.target)"
   };
   option (buf.validate.message).cel = {
-    id: "update_playback.dynamic_target"
+    id: "update_playback.playlist_target"
     message: "target is required when switching to a dynamic playlist item"
-    expression: "this.playlist_id == '' || size(this.target) > 0"
+    expression: "this.playlist_id == '' || has(this.target)"
   };
   string media_id = 1; // Static media ID. Mutually exclusive with playlist_id.
   string playlist_id = 2; // Dynamic playlist ID. Requires target. Mutually exclusive with media_id.
-  bytes target = 3; // Provider-facing playback target payload. Empty for static media playback.
+  ProviderTarget target = 3; // Provider-facing playback target payload. Omit for static media playback.
 }
 
 // Media Management Messages
@@ -1840,7 +1908,7 @@ message DeleteEntriesResponse {
 
 message ListPlaylistItemsRequest {
   string playlist_id = 1; // Empty means room root; otherwise the playlist being browsed
-  bytes target = 2; // Provider-facing browse target payload (empty for room root or dynamic root)
+  ProviderTarget target = 2; // Provider-facing browse target payload (omitted for room root or dynamic root)
   option (buf.validate.message).cel = {
     id: "list_playlist_items.page"
     message: "page must be 0 (use default) or at least 1"
@@ -1891,7 +1959,7 @@ enum ItemType {
 message PlaylistItem {
   string name = 1; // Item name
   ItemType item_type = 2; // Item type (PLAYLIST or MEDIA)
-  bytes target = 3; // Provider-facing target payload for this item
+  ProviderTarget target = 3; // Provider-facing target payload for this item
   optional int64 size = 4; // File size in bytes (for files)
   optional string thumbnail = 5; // Thumbnail URL
   optional int64 modified_at = 6; // Modified time (Unix timestamp)
@@ -1901,7 +1969,7 @@ message PlaylistItem {
 message PlaylistBrowsePathNode {
   string playlist_id = 1; // Present for persisted playlist nodes; empty for provider-only dynamic segments
   string name = 2; // Display name for the current path segment
-  bytes target = 3; // Provider-facing target payload for this segment; empty for static playlist nodes
+  ProviderTarget target = 3; // Provider-facing target payload for this segment; omitted for static playlist nodes
 }
 
 message MoveMediaRequest {
@@ -1974,6 +2042,7 @@ message EditMediaRequest {
   string name = 2 [(buf.validate.field).string.max_len = 500];
   string description = 3 [(buf.validate.field).string.max_len = 5000];
 }
+
 message EditMediaResponse {
   Media media = 1;
 }
@@ -2107,7 +2176,7 @@ message Playback {
   string room_id = 3; // Room ID
   string name = 4; // Media name
   double playlist_position = 5; // Order position in playlist
-  string provider = 12; // Provider that generated this playback
+  synctv.source_config.SourceProvider provider = 12; // Provider that generated this playback
   string provider_instance_name = 13; // Provider instance selected for this playback
 
   // Multiple playback modes (e.g., "direct", "proxied", "cdn1", "cdn2")
@@ -2117,14 +2186,76 @@ message Playback {
   // Default mode name (must be a key in playback_infos)
   string default_mode = 7;
 
-  // Media-level metadata (duration, thumbnail, title, author, etc.)
-  map<string, string> metadata = 8;
+  // Media-level metadata.
+  optional PlaybackMetadata metadata = 8;
   // Earliest media expiration across playback media resources, if any.
   optional int64 expires_at = 10;
   // Backend-owned source duration in seconds, when available.
   optional double duration_seconds = 11;
   // Whether the current playback source is a live stream.
   bool is_live = 14;
+  // Provider-facing playback target for dynamic playlist playback.
+  ProviderTarget target = 15;
+}
+
+message PlaybackMetadata {
+  optional string name = 1;
+  optional uint64 size = 2;
+  optional string provider = 3;
+  optional string source_host = 4;
+  optional string thumbnail = 5;
+  optional int32 external_subtitle_count = 6;
+  optional string video_preview_error = 7;
+  repeated AlistTranscodingTaskMetadata transcoding_tasks = 8;
+  optional AlistVideoPreviewMetadata video_preview = 9;
+  optional double duration = 10;
+  optional uint64 width = 11;
+  optional uint64 height = 12;
+  optional string format = 13;
+  optional string filename = 14;
+  optional bool is_live = 15;
+  optional string media_id = 16;
+  optional string room_id = 17;
+  optional string content_type = 18;
+  optional BilibiliPlaybackMetadata bilibili = 19;
+  optional EmbyPlaybackMetadata emby = 20;
+}
+
+message AlistTranscodingTaskMetadata {
+  string mode_name = 1;
+  string template_id = 2;
+  string template_name = 3;
+  uint64 template_width = 4;
+  uint64 template_height = 5;
+  string stage = 6;
+  string status = 7;
+}
+
+message AlistVideoPreviewMetadata {
+  optional string drive_id = 1;
+  optional string file_id = 2;
+  optional string provider = 3;
+  optional string category = 4;
+  uint64 transcoding_count = 5;
+  uint64 subtitle_count = 6;
+}
+
+message BilibiliPlaybackMetadata {
+  optional string bvid = 1;
+  optional uint64 aid = 2;
+  optional uint64 epid = 3;
+  optional uint64 cid = 4;
+  optional double min_buffer_time = 5;
+  optional string fallback_format = 6;
+  optional uint64 quality = 7;
+  optional uint64 room_id = 8;
+}
+
+message EmbyPlaybackMetadata {
+  optional string item_type = 1;
+  optional string series_name = 2;
+  optional string season_name = 3;
+  optional string play_session_id = 4;
 }
 
 // Playback information for a single mode
@@ -2183,8 +2314,6 @@ message PlaybackMediaMetadata {
   // Frame rate
   optional int32 fps = 4;
 
-  // Additional metadata
-  map<string, string> extra = 5;
 }
 
 // Subtitle information
@@ -2490,7 +2619,7 @@ message ChatMessageSend {
   string client_message_id = 4; // Client-generated idempotency key for normal chat messages.
   repeated ChatAttachmentReference attachments = 5;
   string reply_to_message_id = 6;
-  bytes metadata = 7; // JSON object.
+  ChatMetadata metadata = 7;
   repeated ChatMentionInput mentions = 8;
 }
 
@@ -2531,12 +2660,12 @@ message ChatMessageReceive {
   string delete_reason = 17;
   string playback_media_id = 18;
   string playback_playlist_id = 19;
-  bytes playback_target = 20;
+  ProviderTarget playback_target = 20;
   string playback_target_hash = 21;
   optional double playback_position_seconds = 22;
   repeated ChatReactionSummary reactions = 23;
   int32 reaction_count = 24;
-  bytes metadata = 25; // JSON object.
+  ChatMetadata metadata = 25;
   repeated ChatMention mentions = 26;
   optional ChatMessagePin pin = 27;
 }
@@ -2611,7 +2740,7 @@ message ChatAttachment {
   int64 size_bytes = 4;
   int32 width = 5;
   int32 height = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   string filename = 8;
   ChatAttachmentKind kind = 9;
   string reuse_token = 10;
@@ -2630,7 +2759,7 @@ message FileObjectVariant {
   bool is_original = 8;
   bool lossy = 9;
   optional int32 quality = 10;
-  bytes metadata = 11; // JSON object.
+  FileMetadata metadata = 11;
 }
 
 message ChatAttachmentReference {
@@ -2645,7 +2774,7 @@ message CreateChatAttachmentUploadSessionRequest {
   int32 width = 4;
   int32 height = 5;
   repeated FileUploadManifestPart parts = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   string filename = 8;
   int32 duration_seconds = 9;
   int32 bitrate_bps = 10;
@@ -2799,7 +2928,7 @@ message UserAvatar {
   int64 size_bytes = 4;
   int32 width = 5;
   int32 height = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
 }
 
@@ -2810,7 +2939,7 @@ message CreateUserAvatarUploadSessionRequest {
   int32 width = 4;
   int32 height = 5;
   repeated FileUploadManifestPart parts = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   int32 duration_seconds = 8;
   int32 bitrate_bps = 9;
 }
@@ -2906,7 +3035,7 @@ message FileCover {
   int64 size_bytes = 4;
   int32 width = 5;
   int32 height = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
 }
 
@@ -2917,7 +3046,7 @@ message MediaCover {
   int64 size_bytes = 4;
   int32 width = 5;
   int32 height = 6;
-  bytes metadata = 7; // JSON object.
+  FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
 }
 
@@ -2930,7 +3059,7 @@ message CreateMediaCoverUploadSessionRequest {
   int32 width = 6;
   int32 height = 7;
   repeated FileUploadManifestPart parts = 8;
-  bytes metadata = 9; // JSON object.
+  FileMetadata metadata = 9;
   int32 duration_seconds = 10;
   int32 bitrate_bps = 11;
 }
@@ -3032,7 +3161,7 @@ message CreateRoomCoverUploadSessionRequest {
   int32 width = 5;
   int32 height = 6;
   repeated FileUploadManifestPart parts = 7;
-  bytes metadata = 8; // JSON object.
+  FileMetadata metadata = 8;
   int32 duration_seconds = 9;
   int32 bitrate_bps = 10;
 }
@@ -3128,7 +3257,7 @@ message CreatePlaylistCoverUploadSessionRequest {
   int32 width = 6;
   int32 height = 7;
   repeated FileUploadManifestPart parts = 8;
-  bytes metadata = 9; // JSON object.
+  FileMetadata metadata = 9;
   int32 duration_seconds = 10;
   int32 bitrate_bps = 11;
 }
@@ -3292,24 +3421,22 @@ message ErrorMessage {
 // User Notification
 // Push notification delivered to user's WebSocket connection.
 //
-// This message type replaces the historical abuse of ErrorMessage with code 5000
-// (NOTIFICATION_PUSH). Clients should handle this variant separately from errors.
+// Clients handle this ServerMessage variant separately from errors.
 //
 // The notification is pushed in real-time when a database-backed notification is
 // created via UserNotificationService. The notification_id allows clients to
 // deduplicate notifications if they receive them multiple times (e.g., during
 // reconnection).
 //
-// Example notification types:
-// - "room_invitation": User invited to join a room
-// - "system": System-wide announcement
-// - "room_event": Room-specific event (e.g., room closed, settings changed)
 message UserNotification {
   string notification_id = 1; // Unique notification ID (UUID string) for client-side deduplication
-  string notification_type = 2; // Notification type (e.g., "room_invitation", "system", "room_event")
+  NotificationType notification_type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
   string title = 3; // Notification title for display
   string content = 4; // Notification content for display
-  string data = 5; // JSON-encoded additional data (e.g., room_id, inviter_name for invitations)
+  NotificationData data = 5;
   int64 timestamp = 6; // Unix timestamp (seconds) when notification was created
 }
 
@@ -3320,7 +3447,7 @@ message SendChatMessageRequest {
   string client_message_id = 2;
   repeated ChatAttachmentReference attachments = 3;
   string reply_to_message_id = 4;
-  bytes metadata = 5; // JSON object.
+  ChatMetadata metadata = 5;
   string display_position = 6;
   string display_color = 7;
   repeated ChatMentionInput mentions = 8;
@@ -3330,7 +3457,7 @@ message EditChatMessageRequest {
   string message_id = 1;
   string content = 2;
   int64 expected_version = 3;
-  bytes metadata = 4; // JSON object.
+  ChatMetadata metadata = 4;
   string client_operation_id = 5; // Client-generated idempotency key for edit operations.
 }
 
@@ -3416,7 +3543,7 @@ message ReportContentRequest {
     max_len: 64
   }];
   string reason = 6 [(buf.validate.field).string.max_len = 2000];
-  bytes metadata = 7; // JSON object.
+  ContentReportMetadata metadata = 7;
 }
 
 message ReportContentResponse {
@@ -3518,7 +3645,7 @@ message ContentReport {
   string target_chat_message_preview = 17;
   string reason_code = 18;
   string reason = 19;
-  bytes metadata = 20;
+  ContentReportMetadata metadata = 20;
   ContentReportStatus status = 21;
   string reviewed_by = 22;
   string reviewed_by_username = 23;
@@ -3631,7 +3758,7 @@ message GetChatMessageContextResponse {
 message GetChatPlaybackMessagesRequest {
   string playback_media_id = 1;
   string playback_playlist_id = 2;
-  bytes playback_target = 3;
+  ProviderTarget playback_target = 3;
   double position_seconds = 4;
   double before_seconds = 5;
   double after_seconds = 6;
@@ -4115,7 +4242,7 @@ message NotificationProto {
   NotificationType notification_type = 3;
   string title = 4;
   string content = 5;
-  bytes data = 6; // JSON additional data
+  NotificationData data = 6;
   bool is_read = 7;
   int64 created_at = 8;
   int64 updated_at = 9;

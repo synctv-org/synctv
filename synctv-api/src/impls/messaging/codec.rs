@@ -1,8 +1,8 @@
 use prost::Message;
-use sha2::{Digest, Sha256};
 use synctv_core::models::{
     ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageStatus, ChatMessageWithAttachments,
-    ChatPinEvent, ChatPinEventKind, RoomPlaybackState,
+    ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPlaybackMetadata as CoreChatPlaybackMetadata,
+    ChatPresentationMetadata, ProviderTarget, RoomPlaybackState,
 };
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
@@ -344,174 +344,127 @@ pub(crate) fn chat_status_to_proto(
 }
 
 pub(crate) fn chat_display_position_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &ChatMetadata,
 ) -> Result<String, String> {
-    chat_presentation_text_from_metadata(metadata, "display_position", "display position", 64)
+    chat_presentation_text_from_metadata(
+        metadata
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.display_position.as_deref()),
+        "display position",
+        64,
+    )
 }
 
-pub(crate) fn chat_display_color_from_metadata(
-    metadata: &serde_json::Value,
-) -> Result<String, String> {
-    chat_presentation_text_from_metadata(metadata, "display_color", "display color", 64)
+pub(crate) fn chat_display_color_from_metadata(metadata: &ChatMetadata) -> Result<String, String> {
+    chat_presentation_text_from_metadata(
+        metadata
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.display_color.as_deref()),
+        "display color",
+        64,
+    )
 }
 
 fn chat_presentation_text_from_metadata(
-    metadata: &serde_json::Value,
-    key: &'static str,
+    value: Option<&str>,
     field_name: &'static str,
     max_len: usize,
 ) -> Result<String, String> {
-    let Some(presentation) = optional_chat_metadata_object(metadata, "presentation")? else {
-        return Ok(String::new());
-    };
-    let Some(value) = presentation.get(key) else {
-        return Ok(String::new());
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| format!("Chat {field_name} must be a string"))?;
-    Ok(validate_chat_metadata_text(raw, field_name, max_len)?.unwrap_or_default())
+    value
+        .map(|raw| validate_chat_metadata_text(raw, field_name, max_len))
+        .transpose()
+        .map(|value| value.flatten().unwrap_or_default())
 }
 
 pub(crate) fn chat_playback_media_id_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &ChatMetadata,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, String> {
-    let Some(id) = chat_playback_positive_id_from_metadata(metadata, "media_id")? else {
+    let Some(id) = metadata
+        .playback
+        .as_ref()
+        .and_then(|playback| playback.media_id)
+    else {
         return Ok(String::new());
     };
-    let id = synctv_core::models::MediaId::try_from(id)
-        .map_err(|_| "Invalid chat playback media_id".to_string())?;
     public_id_codec
         .encode_media_id(id)
         .map_err(|error| format!("Failed to encode chat playback media id: {error}"))
 }
 
 pub(crate) fn chat_playback_playlist_id_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &ChatMetadata,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<String, String> {
-    let Some(id) = chat_playback_positive_id_from_metadata(metadata, "playlist_id")? else {
+    let Some(id) = metadata
+        .playback
+        .as_ref()
+        .and_then(|playback| playback.playlist_id)
+    else {
         return Ok(String::new());
     };
-    let id = synctv_core::models::PlaylistId::try_from(id)
-        .map_err(|_| "Invalid chat playback playlist_id".to_string())?;
     public_id_codec
         .encode_playlist_id(id)
         .map_err(|error| format!("Failed to encode chat playback playlist id: {error}"))
 }
 
-fn chat_playback_positive_id_from_metadata(
-    metadata: &serde_json::Value,
-    field: &str,
-) -> Result<Option<i64>, String> {
-    let Some(playback) = optional_chat_metadata_object(metadata, "playback")? else {
-        return Ok(None);
-    };
-    let Some(value) = playback.get(field) else {
-        return Ok(None);
-    };
-    let raw = value
-        .as_str()
-        .ok_or_else(|| format!("Chat playback {field} must be a string"))?
-        .trim();
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let id = raw
-        .parse::<i64>()
-        .map_err(|_| format!("Chat playback {field} must be a positive integer"))?;
-    if id <= 0 {
-        return Err(format!("Chat playback {field} must be positive"));
-    }
-    Ok(Some(id))
-}
-
 pub(crate) struct ChatPlaybackMetadata {
     pub media_id: String,
     pub playlist_id: String,
-    pub target: Vec<u8>,
+    pub target: Option<synctv_proto::client::ProviderTarget>,
     pub target_hash: String,
     pub position_seconds: Option<f64>,
 }
 
 pub(crate) fn chat_playback_metadata_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &ChatMetadata,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<ChatPlaybackMetadata, String> {
     let target = chat_playback_target_from_metadata(metadata)?;
-    let target_hash = if target.is_empty() {
-        String::new()
-    } else {
-        chat_playback_target_hash(&target)
-    };
+    let target_hash = target
+        .as_ref()
+        .map(chat_playback_target_hash)
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(ChatPlaybackMetadata {
         media_id: chat_playback_media_id_from_metadata(metadata, public_id_codec)?,
         playlist_id: chat_playback_playlist_id_from_metadata(metadata, public_id_codec)?,
-        target,
+        target: target
+            .as_ref()
+            .map(crate::impls::client::convert::provider_target_to_proto),
         target_hash,
         position_seconds: chat_playback_position_seconds_from_metadata(metadata)?,
     })
 }
 
 pub(crate) fn chat_playback_target_from_metadata(
-    metadata: &serde_json::Value,
-) -> Result<Vec<u8>, String> {
-    let Some(playback) = optional_chat_metadata_object(metadata, "playback")? else {
-        return Ok(Vec::new());
-    };
-    let Some(value) = playback.get("target_hex") else {
-        return Ok(Vec::new());
-    };
-    let raw_target = value
-        .as_str()
-        .ok_or_else(|| "Chat playback target_hex must be a string".to_string())?
-        .trim();
-    if raw_target.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    hex::decode(raw_target).map_err(|error| format!("Invalid chat playback target_hex: {error}"))
+    metadata: &ChatMetadata,
+) -> Result<Option<ProviderTarget>, String> {
+    Ok(metadata
+        .playback
+        .as_ref()
+        .and_then(|playback| playback.target.clone()))
 }
 
 pub(crate) fn chat_playback_position_seconds_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &ChatMetadata,
 ) -> Result<Option<f64>, String> {
-    let Some(playback) = optional_chat_metadata_object(metadata, "playback")? else {
+    let Some(seconds) = metadata
+        .playback
+        .as_ref()
+        .and_then(|playback| playback.position_seconds)
+    else {
         return Ok(None);
     };
-    let Some(value) = playback.get("position_seconds") else {
-        return Ok(None);
-    };
-    let seconds = value
-        .as_f64()
-        .ok_or_else(|| "Chat playback position_seconds must be a number".to_string())?;
     if !seconds.is_finite() || seconds < 0.0 {
         return Err(
             "Chat playback position_seconds must be a finite non-negative number".to_string(),
         );
     }
     Ok(Some(seconds))
-}
-
-fn optional_chat_metadata_object<'a>(
-    metadata: &'a serde_json::Value,
-    key: &'static str,
-) -> Result<Option<&'a serde_json::Map<String, serde_json::Value>>, String> {
-    metadata
-        .get(key)
-        .map(|value| chat_metadata_object(value, key))
-        .transpose()
-}
-
-fn chat_metadata_object<'a>(
-    value: &'a serde_json::Value,
-    key: &'static str,
-) -> Result<&'a serde_json::Map<String, serde_json::Value>, String> {
-    value
-        .as_object()
-        .ok_or_else(|| format!("Chat metadata {key} must be an object"))
 }
 
 fn validate_chat_metadata_text(
@@ -531,81 +484,44 @@ fn validate_chat_metadata_text(
     Ok(Some(trimmed.to_string()))
 }
 
-pub(crate) fn chat_playback_target_hash(target: &[u8]) -> String {
-    hex::encode(Sha256::digest(target))
+pub(crate) fn chat_playback_target_hash(target: &ProviderTarget) -> Result<String, String> {
+    synctv_core::models::try_hash_playback_target(Some(target)).map_err(|error| error.to_string())
 }
 
 pub(crate) fn chat_metadata_for_send(
-    base: serde_json::Value,
+    mut metadata: ChatMetadata,
     display_position: &str,
     display_color: &str,
     playback_state: Option<&RoomPlaybackState>,
-) -> Result<serde_json::Value, String> {
-    let serde_json::Value::Object(mut metadata) = base else {
-        return Err("metadata must be a JSON object".to_string());
-    };
-    metadata.remove("position");
-    metadata.remove("color");
-
+) -> Result<ChatMetadata, String> {
     let display_position = validate_chat_metadata_text(display_position, "display position", 64)?;
     let display_color = validate_chat_metadata_text(display_color, "display color", 64)?;
-    let mut presentation = serde_json::Map::new();
-    if let Some(display_position) = display_position {
-        presentation.insert(
-            "display_position".to_string(),
-            serde_json::Value::String(display_position),
-        );
-    }
-    if let Some(display_color) = display_color {
-        presentation.insert(
-            "display_color".to_string(),
-            serde_json::Value::String(display_color),
-        );
-    }
-    if presentation.is_empty() {
-        metadata.remove("presentation");
-    } else {
-        metadata.insert(
-            "presentation".to_string(),
-            serde_json::Value::Object(presentation),
-        );
-    }
+    let presentation = ChatPresentationMetadata {
+        display_position,
+        display_color,
+    };
+    metadata.presentation = (!presentation.is_empty()).then_some(presentation);
 
     if let Some(state) = playback_state
         .filter(|state| state.playing_media_id.is_some() || state.playing_playlist_id.is_some())
     {
-        let mut playback = serde_json::Map::new();
-        if let Some(media_id) = state.playing_media_id {
-            playback.insert(
-                "media_id".to_string(),
-                serde_json::Value::String(media_id.as_i64().to_string()),
-            );
-        }
-        if let Some(playlist_id) = state.playing_playlist_id {
-            playback.insert(
-                "playlist_id".to_string(),
-                serde_json::Value::String(playlist_id.as_i64().to_string()),
-            );
-        }
-        if !state.target.is_empty() {
-            playback.insert(
-                "target_hex".to_string(),
-                serde_json::Value::String(hex::encode(&state.target)),
-            );
-        }
         let position_seconds = state.computed_position().max(0.0);
-        if position_seconds.is_finite() {
-            playback.insert(
-                "position_seconds".to_string(),
-                serde_json::json!(position_seconds),
-            );
-        }
-        metadata.insert("playback".to_string(), serde_json::Value::Object(playback));
+        metadata.playback = Some(CoreChatPlaybackMetadata {
+            media_id: state.playing_media_id,
+            playlist_id: state.playing_playlist_id,
+            target: state.target.clone(),
+            target_hash: state
+                .target
+                .as_ref()
+                .map(chat_playback_target_hash)
+                .transpose()?,
+            position_seconds: position_seconds.is_finite().then_some(position_seconds),
+        });
     } else {
-        metadata.remove("playback");
+        metadata.playback = None;
     }
 
-    Ok(serde_json::Value::Object(metadata))
+    Ok(metadata)
 }
 
 pub(crate) fn chat_message_event_to_proto(
@@ -757,11 +673,8 @@ pub(crate) fn chat_message_receive_to_proto(
         playback_position_seconds: playback.position_seconds,
         reactions,
         reaction_count,
-        metadata: crate::impls::client::convert::json_to_vec(
-            &message.metadata,
-            "chat message metadata",
-        )
-        .map_err(|error| error.to_string())?,
+        metadata: crate::impls::client::convert::chat_metadata_to_proto(&message.metadata)
+            .map_err(|error| error.to_string())?,
         mentions,
         pin: value
             .pin
@@ -781,11 +694,8 @@ pub(crate) fn core_chat_attachment_to_proto(
         size_bytes: required_chat_attachment_size_bytes(attachment)?,
         width: attachment.width.unwrap_or_default(),
         height: attachment.height.unwrap_or_default(),
-        metadata: crate::impls::client::convert::json_to_vec(
-            &attachment.metadata,
-            "chat attachment metadata",
-        )
-        .map_err(|error| error.to_string())?,
+        metadata: crate::impls::client::convert::file_metadata_to_proto(&attachment.metadata)
+            .map_err(|error| error.to_string())?,
         filename: attachment.filename.clone().unwrap_or_default(),
         kind: chat_attachment_kind_to_proto(attachment.kind) as i32,
         reuse_token: attachment.reuse_token.clone().unwrap_or_default(),

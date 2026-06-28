@@ -111,7 +111,6 @@ const BUFFER_WARN_THRESHOLD: usize =
 use super::backpressure::BufferPressureState;
 use super::backpressure::PublishBackpressure;
 use super::dedup::{DedupKey, MessageDeduplicator};
-use super::events::RealtimeEvent;
 use super::room_hub::RoomLifecycleEvent;
 use super::runtime::RoomMessageRuntime;
 use super::stream_id::stream_id_gt;
@@ -119,6 +118,7 @@ use super::transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,
     RealtimeMessageTransportFactory, RealtimeMessageTransportRuntime,
 };
+use super::RealtimeEvent;
 use synctv_core::models::id::RoomId;
 
 enum SelectResult {

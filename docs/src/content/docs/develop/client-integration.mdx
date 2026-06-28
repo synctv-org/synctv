@@ -16,12 +16,12 @@ OpenAPI 和 protobuf 定义请求、响应和消息结构；客户端还需要�
 | 目标 | 实现顺序 | 关键页面 |
 | --- | --- | --- |
 | 登录并保持会话 | 登录、处理 MFA、保存 access/refresh token、刷新会话、处理 401 | 本页“Token 使用”和“本地登录和 MFA” |
-| 进入房间实时状态 | 获取房间、创建 WebSocket ticket、连接 `/ws/rooms/{room_id}`、解码 protobuf | [Realtime API](../realtime-api/) |
-| 展示同步播放 | 读取当前播放状态、获取播放信息、订阅 `playback_state` 和 `playback` | [播放模型](../../concepts/playback-model/) |
+| 进入房间实时状态 | 获取房间、创建 WebSocket ticket、连接 `/ws/rooms/{roomId}`、解码 protobuf | [Realtime API](../realtime-api/) |
+| 展示同步播放 | 读取当前播放状态、获取播放信息、订阅 `playbackState` 和 `playback` | [播放模型](../../concepts/playback-model/) |
 | 添加媒体 | 选择 Provider、浏览或搜索媒体、提交播放列表项、处理 Provider 错误 | [媒体源](../../concepts/media-providers/) |
 | 处理 URL 过期 | 读取 `expires_at`、到期前刷新播放信息、切换媒体后丢弃旧 URL | [播放与代理模型](../../use/playback-and-proxy/) |
 | 实现重连 | WebSocket 断开后重新申请 ticket、重连、用本地版本重新观察资源 | [Realtime API](../realtime-api/) |
-| 统一错误体验 | 按 HTTP status、业务 code、`request_id`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
+| 统一错误体验 | 按 HTTP status、业务 code、`requestId`、`Retry-After` 分类处理 | [错误参考](../../reference/errors/) |
 
 先实现登录、房间列表、ticket、Realtime 和播放信息，再扩展 Provider、聊天、通知和 WebRTC。这样可以尽早验证客户端已经理解 SyncTV 的核心状态模型。
 
@@ -44,17 +44,17 @@ HTTP 入口：
 
 | 目标 | HTTP |
 | --- | --- |
-| 发送消息 | `POST /api/rooms/{room_id}/chat/messages` |
-| 创建附件上传会话 | `POST /api/rooms/{room_id}/chat/attachments/upload-session` |
-| 编辑消息 | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
-| 删除消息 | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
-| 历史分页 | `GET /api/rooms/{room_id}/chat/history` |
-| 按播放位置获取聊天 | `GET /api/rooms/{room_id}/chat/playback-messages` |
-| 获取单条消息 | `GET /api/rooms/{room_id}/chat/messages/{message_id}` |
-| 获取消息上下文 | `GET /api/rooms/{room_id}/chat/messages/{message_id}/context` |
-| 标记已读 | `POST /api/rooms/{room_id}/chat/read-state` |
-| 查询已读状态 | `GET /api/rooms/{room_id}/chat/read-state` |
-| SSE 消息事件 | `GET /api/rooms/{room_id}/watch/chat-events` |
+| 发送消息 | `POST /api/rooms/{roomId}/chat/messages` |
+| 创建附件上传会话 | `POST /api/rooms/{roomId}/chat/attachments/upload-session` |
+| 编辑消息 | `PATCH /api/rooms/{roomId}/chat/messages/{messageId}` |
+| 删除消息 | `DELETE /api/rooms/{roomId}/chat/messages/{messageId}` |
+| 历史分页 | `GET /api/rooms/{roomId}/chat/history` |
+| 按播放位置获取聊天 | `GET /api/rooms/{roomId}/chat/playback-messages` |
+| 获取单条消息 | `GET /api/rooms/{roomId}/chat/messages/{messageId}` |
+| 获取消息上下文 | `GET /api/rooms/{roomId}/chat/messages/{messageId}/context` |
+| 标记已读 | `POST /api/rooms/{roomId}/chat/read-state` |
+| 查询已读状态 | `GET /api/rooms/{roomId}/chat/read-state` |
+| SSE 消息事件 | `GET /api/rooms/{roomId}/watch/chat-events` |
 
 gRPC 对应 `synctv.client.RoomService`：
 
@@ -92,10 +92,10 @@ gRPC 对应 `synctv.client.RoomService`：
 
 事件订阅：
 
-- 双向 `MessageStream` 里发送 `observe_resource.chat_events` 后，连接会收到订阅后的 `resource_changed.chat_event`。
+- 双向 `MessageStream` 里发送 `observeResource.chatEvents` 后，连接会收到订阅后的 `resourceChanged.chatEvent`。
 - `WatchChatEvents` 是 gRPC 服务端流版本。
-- HTTP SSE 使用 `/watch/chat-events`，首次恢复可传 `after_event_id`，浏览器重连时服务端读取 `Last-Event-ID`。
-- 事件游标使用 `ChatMessageEvent.event_id`，和普通 resource version 分开。
+- HTTP SSE 使用 `/watch/chat-events`，首次恢复可传 `afterEventSequence`，浏览器重连时服务端读取 `Last-Event-ID`。
+- 事件游标使用 `ChatMessageEvent.eventId`，和普通 resource version 分开。
 
 ## 最小 HTTP 流程
 
@@ -109,11 +109,11 @@ curl -sS http://localhost:8080/api/auth/opaque/login/start \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "root",
-    "credential_request": [/* OPAQUE 客户端生成的字节 */]
+    "credentialRequest": [/* OPAQUE 客户端生成的字节 */]
   }'
 ```
 
-继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。典型 finish 响应会包含 `access_token`、`refresh_token`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA。无密码邮箱 token 登录使用 `/api/auth/email/confirm`。
+继续调用 `/api/auth/opaque/login/finish` 完成 OPAQUE 交换。典型 finish 响应会包含 `accessToken`、`refreshToken`、`user` 和 `mfa`。如果 `mfa.required=true`，先完成 MFA。无密码邮箱 token 登录使用 `/api/auth/email/confirm`。
 
   </TabItem>
   <TabItem label="创建 WebSocket ticket" icon="document">
@@ -125,7 +125,7 @@ ROOM_ID='room_1' # 使用创建或列表接口返回的 room.id
 curl -sS http://localhost:8080/api/tickets \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d "{\"room_id\":\"${ROOM_ID}\"}"
+  -d "{\"roomId\":\"${ROOM_ID}\"}"
 ```
 
 响应中的 `ticket` 是短期、一次性、房间绑定的 WebSocket 凭据。
@@ -154,7 +154,7 @@ ws.onmessage = async (event) => {
 原生客户端或服务端 SDK 可以使用：
 
 ```http
-Authorization: Bearer <access_token>
+Authorization: Bearer <accessToken>
 ```
 
   </TabItem>
@@ -188,7 +188,7 @@ Authorization: Bearer <access_token_or_guest_token>
 <Steps>
 1. 发起第一因素登录，例如密码、OPAQUE、passkey 或邮箱验证码登录。
 2. 读取 `LoginResponse.mfa.required`。
-3. 如果 `required=false`，保存 `access_token` 和 `refresh_token`，登录结束。
+3. 如果 `required=false`，保存 `accessToken` 和 `refreshToken`，登录结束。
 4. 如果 `required=true`，保存短期 `mfa.session_id`，展示 `available_methods`。
 5. 如果可用方式包含 `MFA_METHOD_EMAIL`，客户端可以直接调用 `RequestMfaEmailCode` 发送第二步验证码。
 6. 如果可用方式包含 `MFA_METHOD_WEBAUTHN`，先调用 `StartMfaPasskey` 获取 WebAuthn options，再调用 `FinishMfaPasskey`。
@@ -226,12 +226,12 @@ curl -sS http://localhost:8080/api/auth/email/request \
 OAuth2/OIDC 是前端驱动流程：
 
 <Steps>
-1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signup_enabled` 和 `signup_need_review`。
-2. 调用 `GET /api/oauth2/{provider}/authorize?redirect_url=<callback>` 获取第三方授权 URL 和 state。
+1. 调用 `GET /api/oauth2/providers` 获取可用 provider 实例、`signupEnabled` 和 `signupNeedReview`。
+2. 调用 `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` 获取第三方授权 URL 和 state。
 3. 把用户跳转到第三方授权页面。
 4. 第三方回调到客户端 URL，带回 `code` 和 `state`。
 5. 客户端调用 `POST /api/oauth2/{provider}/exchange`。
-6. 如果响应包含 `registration_review_required=true`，展示待审核状态并保存 `registration_review_id`，不要把它当作已登录。
+6. 如果响应包含 `registrationReviewRequired=true`，展示待审核状态并保存 `registrationReviewId`，不要把它当作已登录。
 7. 如果响应包含 token，保存 SyncTV access/refresh token。
 </Steps>
 
@@ -246,7 +246,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirect_url=<callback>`。绑定发起请求和后续 `POST /api/oauth2/{provider}/exchange` 都必须携带当前用户 access token；exchange 时 token 用户必须与 OAuth2 state 中记录的用户一致。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
+绑定已有账号时使用 `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>`。绑定发起请求和后续 `POST /api/oauth2/{provider}/exchange` 都必须携带当前用户 access token；exchange 时 token 用户必须与 OAuth2 state 中记录的用户一致。OAuth2 登录不作为本地 2FA 第一因素或第二因素，但开启 2FA 的用户仍可使用 OAuth2 登录。
 
 ## gRPC 示例
 
@@ -260,7 +260,7 @@ grpcurl -plaintext localhost:8080 list synctv.client.AuthService
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  -d '{"username":"root","credentialRequest":"<base64-opaque-request>"}' \
   localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
 
@@ -283,7 +283,7 @@ grpcurl -plaintext \
 WebSocket 地址格式：
 
 ```text
-wss://<host>/ws/rooms/<room_id>
+wss://<host>/ws/rooms/<roomId>
 ```
 
 认证有两种方式：
@@ -296,9 +296,9 @@ wss://<host>/ws/rooms/<room_id>
 浏览器流程：
 
 <Steps>
-1. 使用普通 Bearer token 调用 `POST /api/tickets`，传入目标 `room_id`。
+1. 使用普通 Bearer token 调用 `POST /api/tickets`，传入目标 `roomId`。
 2. 得到 `ticket` 和过期时间。
-3. 连接 `wss://<host>/ws/rooms/<room_id>?ticket=<ticket>`。
+3. 连接 `wss://<host>/ws/rooms/<roomId>?ticket=<ticket>`。
 4. 连接成功后不要复用 ticket；失败也应重新申请。
 </Steps>
 
@@ -306,7 +306,7 @@ WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.Clien
 
 ## 实时资源观察
 
-实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放信息、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observe_resource`，服务端返回 `resource_observed`、`resource_changed` 或 `resource_observe_error`。
+实时资源观察用于在房间 WebSocket 上订阅可缓存资源，例如播放状态、播放信息、房间设置、播放列表项和房间成员。客户端发送 `ClientMessage.observeResource`，服务端返回 `resourceObserved`、`resourceChanged` 或 `resourceObserveError`。
 
 完整协议、delivery mode、版本同步、每类资源示例、重连和错误处理见 [Realtime API](../realtime-api/)。
 
@@ -315,7 +315,7 @@ WebSocket 只处理二进制 protobuf 帧。客户端发送 `synctv.client.Clien
 WebRTC 客户端先获取 ICE servers，再连接 Realtime 发送信令。登录成员和已授权游客都使用标准 Bearer token，不需要专用 header：
 
 ```http
-GET /api/rooms/<room_id>/webrtc/ice-servers
+GET /api/rooms/<roomId>/webrtc/ice-servers
 Authorization: Bearer <access_token_or_guest_token>
 ```
 
@@ -347,7 +347,7 @@ HTTP API 的错误体形状：
   "error": "Invalid username or password",
   "status": 401,
   "code": null,
-  "request_id": "..."
+  "requestId": "..."
 }
 ```
 
@@ -361,7 +361,7 @@ HTTP API 的错误体形状：
 | `404` | 资源不存在 | 刷新本地列表或引导用户返回 |
 | `409` | 状态冲突 | 重新拉取资源后再提交 |
 | `429` | 限流 | 按 `Retry-After` 或服务端提示退避 |
-| `5xx` | 服务端或依赖异常 | 展示重试入口并收集 `request_id`、时间、路径 |
+| `5xx` | 服务端或依赖异常 | 展示重试入口并收集 `requestId`、时间、路径 |
 
 ## 开发入口
 

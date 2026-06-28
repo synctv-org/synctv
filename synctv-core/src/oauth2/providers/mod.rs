@@ -157,6 +157,19 @@ pub(super) fn validate_oauth2_redirect_url(url: &str, context: &str) -> Result<(
     Ok(())
 }
 
+pub(super) fn validate_required_oauth2_field(
+    provider: &str,
+    field: &str,
+    value: &str,
+) -> Result<(), Error> {
+    if value.trim().is_empty() {
+        return Err(Error::InvalidInput(format!(
+            "{provider} OAuth2 config requires {field}"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn build_provider_http_client(
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Arc<Client>, Error> {
@@ -211,27 +224,27 @@ pub fn provider_registry(
     let github_guard = ssrf_guard.clone();
     registry.register(
         "github",
-        Arc::new(move |config| github::github_factory_with_ssrf_guard(config, &github_guard)),
+        Arc::new(move |config| github::github_factory_from_private_config(config, &github_guard)),
     );
     let google_guard = ssrf_guard.clone();
     registry.register(
         "google",
-        Arc::new(move |config| google::google_factory_with_ssrf_guard(config, &google_guard)),
+        Arc::new(move |config| google::google_factory_from_private_config(config, &google_guard)),
     );
     let logto_guard = ssrf_guard.clone();
     registry.register(
         "logto",
-        Arc::new(move |config| logto::logto_factory_with_ssrf_guard(config, &logto_guard)),
+        Arc::new(move |config| logto::logto_factory_from_private_config(config, &logto_guard)),
     );
     let casdoor_guard = ssrf_guard.clone();
     registry.register(
         "casdoor",
-        Arc::new(move |config| oidc::oidc_factory_with_ssrf_guard(config, &casdoor_guard)),
+        Arc::new(move |config| oidc::casdoor_factory_from_private_config(config, &casdoor_guard)),
     );
     let oidc_guard = ssrf_guard;
     registry.register(
         "oidc",
-        Arc::new(move |config| oidc::oidc_factory_with_ssrf_guard(config, &oidc_guard)),
+        Arc::new(move |config| oidc::oidc_factory_from_private_config(config, &oidc_guard)),
     );
     registry
 }

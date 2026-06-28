@@ -9,10 +9,11 @@ use synctv_core::service::playlist::{
 };
 
 use super::convert::{
-    optional_proto_source_provider_to_core, proto_playlist_source_config_to_core_json,
+    file_metadata_from_proto, optional_proto_source_provider_to_core,
+    proto_playlist_source_config_to_core,
 };
 use super::media::{
-    complete_upload_response_fields, complete_upload_session_request, parse_json_metadata,
+    complete_upload_response_fields, complete_upload_session_request,
     playlist_cover_object_to_proto, playlist_cover_upload_create_result_to_proto,
     proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
     required_file_upload_reference, uploaded_parts_response_fields,
@@ -109,8 +110,8 @@ pub(crate) fn build_create_playlist_request(
     let source_provider = optional_proto_source_provider_to_core(source_provider)?;
     let source_config = match source_config {
         Some(source_config) => {
-            let (config_provider, config_json) =
-                proto_playlist_source_config_to_core_json(Some(source_config))?;
+            let (config_provider, config) =
+                proto_playlist_source_config_to_core(Some(source_config))?;
             if source_provider != Some(config_provider) {
                 return Err(ApiError::InvalidInput(format!(
                     "source_provider '{}' does not match source_config provider '{}'",
@@ -118,7 +119,7 @@ pub(crate) fn build_create_playlist_request(
                     config_provider.as_str()
                 )));
             }
-            Some(config_json)
+            Some(config)
         }
         None => None,
     };
@@ -390,7 +391,7 @@ impl ClientApiImpl {
                     duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
                     bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                     parts: proto_upload_manifest_parts(req.parts),
-                    metadata: parse_json_metadata(&req.metadata)?,
+                    metadata: file_metadata_from_proto(req.metadata.as_ref())?,
                 },
             )
             .await

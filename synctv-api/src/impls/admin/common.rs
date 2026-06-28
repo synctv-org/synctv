@@ -73,9 +73,9 @@ pub(in crate::impls::admin) fn user_preferences_to_proto(
         notifications: Some(user_notification_preferences_to_proto(
             &preferences.notifications,
         )),
-        settings: serde_json::to_vec(&preferences.settings).map_err(|error| {
-            ApiError::Internal(format!("Failed to serialize settings: {error}"))
-        })?,
+        settings: Some(crate::impls::client::convert::room_settings_to_proto(
+            &preferences.settings,
+        )),
     })
 }
 

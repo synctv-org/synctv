@@ -12,7 +12,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 management_proto::CreateRoomRequest {
                     actor: Some(args.actor.to_management_proto()?),
                     name: args.name,
-                    settings_json: raw_optional_bytes(args.settings_json.as_deref()),
+                    settings: parse_optional_room_settings_json(args.settings_json.as_deref())?,
                     description: args.description.unwrap_or_default(),
                     password: args.password.unwrap_or_default(),
                     category_id: args.category_id.unwrap_or_default(),
@@ -82,7 +82,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room settings",
                     get_room_settings,
                     management_proto::GetRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id()?.to_string(),
+                        room_id: args.room.resolved_room_id().to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -94,8 +94,8 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "update room settings",
                     update_room_settings,
                     management_proto::UpdateRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id()?.to_string(),
-                        settings_json: args.settings_json.into_bytes(),
+                        room_id: args.room.resolved_room_id().to_string(),
+                        settings: parse_required_room_settings_json(&args.settings_json)?,
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -107,7 +107,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "reset room settings",
                     reset_room_settings,
                     management_proto::ResetRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id()?.to_string(),
+                        room_id: args.room.resolved_room_id().to_string(),
                     }
                 )?;
                 args.remote.print_output(&response)
@@ -245,7 +245,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                     "get room members",
                     get_room_members,
                     management_proto::GetRoomMembersRequest {
-                        room_id: args.resolved_room_id()?.to_string(),
+                        room_id: args.resolved_room_id().to_string(),
                         page: args.page,
                         page_size: args.page_size,
                         search: args.search.unwrap_or_default(),
@@ -335,7 +335,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 let room_id = args.room.room_id;
                 let media_id = args.media_id;
                 let playlist_id = args.playlist_id;
-                let target_json = args.target_json;
+                let target = parse_optional_provider_target_json(args.target_json.as_deref())?;
                 management_unary_call!(
                     session,
                     "start room playback",
@@ -344,7 +344,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         room_id: room_id.clone(),
                         media_id: media_id.clone().unwrap_or_default(),
                         playlist_id: playlist_id.clone().unwrap_or_default(),
-                        target_json: raw_optional_bytes(target_json.as_deref()),
+                        target,
                     }
                 )?;
                 args.room.remote.print_output(&PlaybackStartCliOutput {

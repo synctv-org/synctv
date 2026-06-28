@@ -243,16 +243,17 @@ async fn test_validate_publish_key_rejects_expired_token() {
     );
     let now = ok(unix_timestamp_now(), "current timestamp should load");
 
+    let expired_claims = PublishClaims {
+        room_id: RoomId::new().to_string(),
+        media_id: MediaId::new().to_string(),
+        user_id: UserId::new().to_string(),
+        perm_live_control: true,
+        iat: now - 7200,
+        exp: now - 3600,
+        jti: "expired_publish_key_test".to_string(),
+    };
     let token = ok(
-        jwt_service.sign_custom(&serde_json::json!({
-            "room_id": RoomId::new().to_string(),
-            "media_id": MediaId::new().to_string(),
-            "user_id": UserId::new().to_string(),
-            "perm_live_control": true,
-            "iat": now - 7200,
-            "exp": now - 3600,
-            "jti": "expired_publish_key_test",
-        })),
+        jwt_service.sign_custom(&expired_claims),
         "expired token should sign",
     );
 

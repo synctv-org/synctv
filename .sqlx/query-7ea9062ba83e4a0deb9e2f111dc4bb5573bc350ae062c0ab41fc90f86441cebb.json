@@ -1,0 +1,149 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT r.storage_backend,\n                   COALESCE(s.upload_session_key, r.object_key) AS \"upload_session_key!\",\n                   r.object_key AS \"object_key!\",\n                   COALESCE(s.session_kind, 1::SMALLINT) AS \"session_kind!: FileUploadSessionKind\",\n                   s.upload_id,\n                   COALESCE(s.user_id, ((r.metadata->'data'->>'user_id')::BIGINT)) AS \"user_id!\",\n                   COALESCE(s.storage_scope, r.metadata->'data'->>'storage_scope') AS \"storage_scope!\",\n                   COALESCE(s.mime_type, o.mime_type) AS \"mime_type!\",\n                   COALESCE(s.size_bytes, o.size_bytes) AS \"size_bytes!\",\n                   COALESCE(s.content_manifest_sha256, o.content_manifest_sha256) AS \"content_manifest_sha256!\",\n                   COALESCE(s.part_size_bytes, o.size_bytes) AS \"part_size_bytes!\",\n                   COALESCE(s.metadata, r.metadata->'data') AS \"metadata!: FileUploadSessionMetadata\",\n                   COALESCE(s.expires_at, r.expires_at) AS \"expires_at!\",\n                   s.completed_at,\n                   COALESCE(s.created_at, r.created_at) AS \"created_at!\",\n                   COALESCE(s.updated_at, r.updated_at) AS \"updated_at!\"\n            FROM file_references r\n            JOIN file_objects o\n              ON o.storage_backend = r.storage_backend\n             AND o.object_key = r.object_key\n            LEFT JOIN file_upload_sessions s\n              ON s.storage_backend = r.storage_backend\n             AND s.object_key = r.object_key\n             AND (s.metadata->>'public_file_id') = r.reference_id\n            WHERE r.reference_kind = $1\n              AND r.reference_id = $2\n              AND r.released_at IS NULL\n              AND o.deleting_at IS NULL\n            ORDER BY r.updated_at DESC, r.id DESC\n            LIMIT 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "storage_backend",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "upload_session_key!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "object_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_references",
+            "name": "object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "session_kind!: FileUploadSessionKind",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "upload_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "file_upload_sessions",
+            "name": "upload_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "user_id!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "storage_scope!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "mime_type!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "size_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "content_manifest_sha256!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "part_size_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "metadata!: FileUploadSessionMetadata",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "expires_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "completed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "file_upload_sessions",
+            "name": "completed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      true,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "7ea9062ba83e4a0deb9e2f111dc4bb5573bc350ae062c0ab41fc90f86441cebb"
+}

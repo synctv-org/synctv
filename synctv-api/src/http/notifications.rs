@@ -85,10 +85,10 @@ pub async fn list_notifications(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/notifications/{notification_id}",
+        path = "/api/notifications/{notificationId}",
         tag = "Notification",
         params(
-            ("notification_id" = i64, Path, description = "Notification numeric ID")
+            ("notificationId" = i64, Path, description = "Notification numeric ID")
         ),
         responses(
             (status = 200, description = "Notification details", body = GetNotificationResponse),
@@ -226,10 +226,10 @@ pub async fn mark_all_as_read(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/notifications/{notification_id}",
+        path = "/api/notifications/{notificationId}",
         tag = "Notification",
         params(
-            ("notification_id" = i64, Path, description = "Notification numeric ID")
+            ("notificationId" = i64, Path, description = "Notification numeric ID")
         ),
         responses(
             (status = 204, description = "Notification deleted"),
@@ -319,7 +319,7 @@ pub(crate) fn create_notification_read_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route("/api/notifications", axum::routing::get(list_notifications))
         .route(
-            "/api/notifications/{notification_id}",
+            "/api/notifications/{notificationId}",
             axum::routing::get(get_notification),
         )
 }
@@ -328,7 +328,7 @@ pub(crate) fn create_notification_read_router() -> axum::Router<AppState> {
 pub(crate) fn create_notification_write_router() -> axum::Router<AppState> {
     axum::Router::new()
         .route(
-            "/api/notifications/{notification_id}",
+            "/api/notifications/{notificationId}",
             axum::routing::delete(delete_notification),
         )
         .route(
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_list_notifications_request_deserializes_search_and_sort() -> TestResult {
         let query: synctv_proto::client::ListNotificationsRequest =
-            serde_json::from_str(r#"{"search":"alert","sort_by":3,"sort_direction":1}"#)?;
+            serde_json::from_str(r#"{"search":"alert","sortBy":3,"sortDirection":1}"#)?;
         assert_eq!(query.search, "alert");
         assert_eq!(
             query.sort_by,
@@ -368,11 +368,11 @@ mod tests {
     #[test]
     fn test_notification_path_requests_deserialize_proto_field_names() -> TestResult {
         let get_request: synctv_proto::client::GetNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":42}"#)?;
+            serde_json::from_str(r#"{"notificationId":42}"#)?;
         assert_eq!(get_request.notification_id, 42);
 
         let delete_request: synctv_proto::client::DeleteNotificationRequest =
-            serde_json::from_str(r#"{"notification_id":42}"#)?;
+            serde_json::from_str(r#"{"notificationId":42}"#)?;
         assert_eq!(delete_request.notification_id, 42);
         Ok(())
     }

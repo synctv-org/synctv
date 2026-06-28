@@ -10,20 +10,20 @@ use super::{
     },
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    PlaybackStreamPreference, PlaybackSubtitlePreference, ProviderContext,
+    PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use crate::models::media::{
-    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia,
-    PlaybackMediaProvider, PlaybackSubtitle, PlaybackSubtitleProvider,
+    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, PlaybackAlistMedia,
+    PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackProxyResource, PlaybackProxyResourceMetadata, PlaybackSubtitle,
+    PlaybackSubtitleProvider,
 };
-use crate::models::{AlistMediaSourceConfig, AlistPlaylistSourceConfig};
+use crate::models::{AlistMediaSourceConfig, AlistPlaylistSourceConfig, MediaSourceConfig};
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -252,24 +252,17 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
     // Alist returns upstream playback modes and SyncTV proxy siblings in the
     // same result. The proxy default keeps clients independent from upstream
     // auth headers and HLS segment rewriting details.
-    if let Some(thumbnail) = result
+    if result
         .metadata
-        .get("thumbnail")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
-        .filter(|thumbnail| !thumbnail.trim().is_empty())
+        .thumbnail
+        .as_deref()
+        .is_some_and(|thumbnail| !thumbnail.trim().is_empty())
     {
-        result.metadata.insert(
-            "proxy_thumbnail_resource".to_string(),
-            serde_json::json!({
-                "version": version,
-                "expires_at": expires_at,
-                "resource": "thumbnail",
-            }),
-        );
-        result
-            .metadata
-            .insert("thumbnail".to_string(), serde_json::json!(thumbnail));
+        result.metadata.proxy_thumbnail = Some(PlaybackProxyResourceMetadata {
+            version: version.to_string(),
+            expires_at,
+            resource: PlaybackProxyResource::Thumbnail,
+        });
     }
 
     let original_default_mode = result.default_mode.clone();
@@ -371,11 +364,6 @@ fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
 pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct AlistBrowseTarget {
-    relative_path: String,
 }
 
 impl AlistProvider {
@@ -556,31 +544,35 @@ impl AlistProvider {
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
-    fn encode_target(relative_path: &str) -> Result<Vec<u8>, ProviderError> {
-        serde_json::to_vec(&AlistBrowseTarget {
-            relative_path: relative_path.to_string(),
-        })
-        .map_err(|e| ProviderError::InvalidConfig(format!("Failed to encode Alist target: {e}")))
+    fn encode_target(relative_path: &str) -> Result<crate::models::ProviderTarget, ProviderError> {
+        if relative_path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist target relative_path cannot be empty".to_string(),
+            ));
+        }
+        Ok(crate::models::ProviderTarget::alist(
+            relative_path.to_string(),
+        ))
     }
 
-    fn decode_target(target: Option<&[u8]>) -> Result<Option<String>, ProviderError> {
+    fn decode_target(
+        target: Option<&crate::models::ProviderTarget>,
+    ) -> Result<Option<String>, ProviderError> {
         let Some(target) = target else {
             return Ok(None);
         };
-        if target.is_empty() {
-            return Ok(None);
-        }
-
-        let payload: AlistBrowseTarget = serde_json::from_slice(target)
-            .map_err(|e| ProviderError::InvalidConfig(format!("Invalid Alist target: {e}")))?;
-
+        let crate::models::ProviderTarget::Alist(payload) = target else {
+            return Err(ProviderError::InvalidConfig(
+                "Alist target must use alist payload".to_string(),
+            ));
+        };
         if payload.relative_path.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Alist target relative_path cannot be empty".to_string(),
             ));
         }
 
-        Ok(Some(payload.relative_path))
+        Ok(Some(payload.relative_path.clone()))
     }
 }
 
@@ -628,24 +620,31 @@ impl From<AlistPlaylistSourceConfig> for AlistSourceConfig {
 }
 
 impl AlistSourceConfig {
-    fn media_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::parse_source_config::<AlistMediaSourceConfig>(value, "Alist media").map(Into::into)
-    }
-
-    fn playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::parse_source_config::<AlistPlaylistSourceConfig>(value, "Alist playlist")
-            .map(Into::into)
-    }
-
-    fn media_or_playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::reject_source_config_provider_instance_name(value, "Alist")?;
-        super::reject_source_config_credential_ref(value, "Alist")?;
-
-        if let Ok(config) = Self::media_from_value(value) {
-            return Ok(config);
+    fn media_from_config(value: &crate::models::MediaSourceConfig) -> Result<Self, ProviderError> {
+        match value {
+            crate::models::MediaSourceConfig::Alist(config) => Ok(config.clone().into()),
+            _ => Err(ProviderError::InvalidConfig(
+                "Alist media requires Alist source_config".to_string(),
+            )),
         }
+    }
 
-        Self::playlist_from_value(value)
+    fn playlist_from_config(
+        value: &crate::models::PlaylistSourceConfig,
+    ) -> Result<Self, ProviderError> {
+        match value {
+            crate::models::PlaylistSourceConfig::Alist(config) => Ok(config.clone().into()),
+            _ => Err(ProviderError::InvalidConfig(
+                "Alist playlist requires Alist source_config".to_string(),
+            )),
+        }
+    }
+
+    fn from_source_config(value: SourceConfig<'_>) -> Result<Self, ProviderError> {
+        match value {
+            SourceConfig::Media(config) => Self::media_from_config(config),
+            SourceConfig::DynamicPlaylist(config) => Self::playlist_from_config(config),
+        }
     }
 }
 
@@ -681,9 +680,9 @@ impl AlistProvider {
     async fn resolve_binding(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<ResolvedAlistBinding, ProviderError> {
-        let config = AlistSourceConfig::media_from_value(source_config)?;
+        let config = AlistSourceConfig::media_from_config(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -715,9 +714,8 @@ impl AlistProvider {
     async fn resolve_config(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        config: AlistSourceConfig,
     ) -> Result<ResolvedAlistConfig, ProviderError> {
-        let config = AlistSourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -854,26 +852,21 @@ impl AlistProvider {
         provider_instance_name: Option<String>,
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
-        let mut metadata = HashMap::new();
+        let mut metadata = PlaybackMetadata {
+            name: Some(file_info.name.clone()),
+            size: Some(file_info.size),
+            provider: Some(file_info.provider.clone()),
+            thumbnail: (!file_info.thumb.is_empty()).then(|| file_info.thumb.clone()),
+            ..Default::default()
+        };
         let mut duration_seconds = None;
-
-        // Add basic metadata
-        metadata.insert("name".to_string(), json!(&file_info.name));
-        metadata.insert("size".to_string(), json!(file_info.size));
-        metadata.insert("provider".to_string(), json!(&file_info.provider));
-        if !file_info.thumb.is_empty() {
-            metadata.insert("thumbnail".to_string(), json!(&file_info.thumb));
-        }
         let related_subtitles = subtitles_from_related_files(&file_info.related);
         if !related_subtitles.is_empty() {
-            metadata.insert(
-                "external_subtitle_count".to_string(),
-                json!(related_subtitles.len()),
-            );
+            metadata.external_subtitle_count = Some(related_subtitles.len());
         }
 
         if let Some(error) = video_preview_error {
-            metadata.insert("video_preview_error".to_string(), json!(error));
+            metadata.video_preview_error = Some(error.to_string());
         }
 
         let combined_subtitles = if matches!(
@@ -904,15 +897,6 @@ impl AlistProvider {
                     // AliyunDrive live transcoding URLs are requested from AList/OpenList
                     // with url_expire_sec=14400.
                     let task_expires_at = Some(Utc::now().timestamp() + 4 * 60 * 60);
-                    let task_metadata = json!({
-                        "template_id": task.template_id,
-                        "template_name": task.template_name,
-                        "template_width": task.template_width,
-                        "template_height": task.template_height,
-                        "stage": task.stage,
-                        "status": task.status,
-                    });
-
                     playback_infos.insert(
                         mode_name.clone(),
                         PlaybackInfo {
@@ -932,43 +916,31 @@ impl AlistProvider {
                             default_danmaku_index: None,
                         },
                     );
-                    metadata.insert(mode_name, task_metadata);
+                    metadata
+                        .transcoding_tasks
+                        .push(AlistTranscodingTaskMetadata {
+                            mode_name,
+                            template_id: task.template_id.clone(),
+                            template_name: task.template_name.clone(),
+                            template_width: task.template_width,
+                            template_height: task.template_height,
+                            stage: task.stage.clone(),
+                            status: task.status.clone(),
+                        });
                 }
             }
 
-            // Add video metadata
-            if !preview.drive_id.is_empty() {
-                metadata.insert(
-                    "video_preview_drive_id".to_string(),
-                    json!(&preview.drive_id),
-                );
-            }
-            if !preview.file_id.is_empty() {
-                metadata.insert("video_preview_file_id".to_string(), json!(&preview.file_id));
-            }
-            if !preview.provider.is_empty() {
-                metadata.insert(
-                    "video_preview_provider".to_string(),
-                    json!(&preview.provider),
-                );
-            }
-            if !preview.category.is_empty() {
-                metadata.insert(
-                    "video_preview_category".to_string(),
-                    json!(&preview.category),
-                );
-            }
-            metadata.insert(
-                "transcoding_count".to_string(),
-                json!(preview.transcoding_tasks.len()),
-            );
-            metadata.insert(
-                "video_preview_subtitle_count".to_string(),
-                json!(preview.subtitle_tasks.len()),
-            );
-            metadata.insert("duration".to_string(), json!(preview.duration));
-            metadata.insert("width".to_string(), json!(preview.width));
-            metadata.insert("height".to_string(), json!(preview.height));
+            metadata.video_preview = Some(AlistVideoPreviewMetadata {
+                drive_id: (!preview.drive_id.is_empty()).then(|| preview.drive_id.clone()),
+                file_id: (!preview.file_id.is_empty()).then(|| preview.file_id.clone()),
+                provider: (!preview.provider.is_empty()).then(|| preview.provider.clone()),
+                category: (!preview.category.is_empty()).then(|| preview.category.clone()),
+                transcoding_count: preview.transcoding_tasks.len(),
+                subtitle_count: preview.subtitle_tasks.len(),
+            });
+            metadata.duration = Some(preview.duration);
+            metadata.width = Some(preview.width);
+            metadata.height = Some(preview.height);
             if preview.duration.is_finite() && preview.duration > 0.0 {
                 duration_seconds = Some(preview.duration);
             }
@@ -1094,16 +1066,7 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config.value(), "Alist")?;
-        super::reject_source_config_credential_ref(source_config.value(), "Alist")?;
-        let config = match source_config.kind() {
-            super::SourceConfigKind::Media => {
-                AlistSourceConfig::media_from_value(source_config.value())?
-            }
-            super::SourceConfigKind::DynamicPlaylist => {
-                AlistSourceConfig::playlist_from_value(source_config.value())?
-            }
-        };
+        let config = AlistSourceConfig::from_source_config(source_config)?;
 
         // Validate path is not empty and doesn't contain path traversal
         if config.path.is_empty() {
@@ -1149,9 +1112,9 @@ impl MediaProvider for AlistProvider {
     fn credential_dependencies(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = AlistSourceConfig::media_or_playlist_from_value(source_config)?;
+        let config = AlistSourceConfig::from_source_config(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -1168,19 +1131,16 @@ impl MediaProvider for AlistProvider {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
-    ) -> Result<Value, ProviderError> {
-        super::reject_source_config_provider_instance_name(&source_config, "Alist")?;
-        super::reject_source_config_credential_ref(&source_config, "Alist")?;
-        let _config = AlistSourceConfig::media_or_playlist_from_value(&source_config)?;
-
-        Ok(source_config)
+        source_config: SourceConfig<'_>,
+    ) -> Result<PreparedSourceConfig, ProviderError> {
+        let _config = AlistSourceConfig::from_source_config(source_config)?;
+        Ok(source_config.into())
     }
 
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
         // Resolve the credential binding first so playback cache hits do not
         // force an AList login/token refresh.
@@ -1192,7 +1152,7 @@ impl MediaProvider for AlistProvider {
         })?;
 
         // Build cache key from server_id and path
-        let config = AlistSourceConfig::media_from_value(source_config)?;
+        let config = AlistSourceConfig::media_from_config(source_config)?;
         let playback_client_profile = _ctx.playback_client_profile();
         let playback_profile_cache_key = playback_client_profile.map_or_else(
             || "default".to_string(),
@@ -1215,7 +1175,7 @@ impl MediaProvider for AlistProvider {
             _ctx,
             mark_alist_playback_resources,
             || async {
-                let resolved = self.resolve_config(_ctx, source_config).await?;
+                let resolved = self.resolve_config(_ctx, config.clone()).await?;
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
                     .await
             },
@@ -1355,8 +1315,8 @@ impl AlistProvider {
         let url = versioned
             .result
             .metadata
-            .get("thumbnail")
-            .and_then(serde_json::Value::as_str)
+            .thumbnail
+            .as_deref()
             .filter(|url| !url.trim().is_empty())
             .ok_or(ProviderError::NotFound)?
             .to_string();
@@ -1385,7 +1345,7 @@ impl DynamicFolder for AlistProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         // Parse playlist's source_config to get base path
@@ -1393,8 +1353,9 @@ impl DynamicFolder for AlistProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = AlistSourceConfig::playlist_from_config(config)?;
 
-        let resolved = self.resolve_config(ctx, config).await?;
+        let resolved = self.resolve_config(ctx, base_config.clone()).await?;
 
         let relative_path = Self::decode_target(target)?;
 
@@ -1527,7 +1488,7 @@ impl DynamicFolder for AlistProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         let relative_path = Self::decode_target(Some(target))?
             .ok_or_else(|| ProviderError::InvalidConfig("Alist target is required".to_string()))?;
@@ -1538,13 +1499,13 @@ impl DynamicFolder for AlistProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = AlistSourceConfig::playlist_from_value(config)?;
+        let base_config = AlistSourceConfig::playlist_from_config(config)?;
 
-        let build_next_source_config = |full_path: &str| -> Value {
-            json!({
-                "path": full_path,
-                "password": base_config.password,
-                "server_id": base_config.server_id,
+        let build_next_source_config = |full_path: &str| -> MediaSourceConfig {
+            MediaSourceConfig::Alist(AlistMediaSourceConfig {
+                path: full_path.to_string(),
+                password: base_config.password.clone(),
+                server_id: base_config.server_id.clone(),
             })
         };
 
@@ -1564,7 +1525,7 @@ impl DynamicFolder for AlistProvider {
                 .list_playlist(
                     ctx,
                     playlist,
-                    parent_target.as_deref(),
+                    parent_target.as_ref(),
                     DynamicListQuery {
                         page,
                         page_size: LIST_PAGE_SIZE,
@@ -1578,18 +1539,12 @@ impl DynamicFolder for AlistProvider {
 
             if let Some(item) = page_items
                 .iter()
-                .find(|item| item.item_type == ItemType::Media && item.target == target)
+                .find(|item| item.item_type == ItemType::Media && &item.target == target)
             {
                 return Ok(Some(NextPlayItem {
                     name: item.name.clone(),
                     item_type: item.item_type,
                     source_config: build_next_source_config(&build_full_path(&relative_path)),
-                    metadata: json!({
-                        "size": item.size,
-                        "thumbnail": item.thumbnail,
-                        "modified_at": item.modified_at
-                    }),
-                    provider_data: json!({}),
                     target: item.target.clone(),
                 }));
             }
@@ -1605,8 +1560,7 @@ impl DynamicFolder for AlistProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        _playing_media: &crate::models::Media,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
@@ -1622,13 +1576,13 @@ impl DynamicFolder for AlistProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = AlistSourceConfig::playlist_from_value(config)?;
+        let base_config = AlistSourceConfig::playlist_from_config(config)?;
 
-        let build_next_source_config = |full_path: &str| -> Value {
-            json!({
-                "path": full_path,
-                "password": base_config.password,
-                "server_id": base_config.server_id,
+        let build_next_source_config = |full_path: &str| -> MediaSourceConfig {
+            MediaSourceConfig::Alist(AlistMediaSourceConfig {
+                path: full_path.to_string(),
+                password: base_config.password.clone(),
+                server_id: base_config.server_id.clone(),
             })
         };
 
@@ -1653,7 +1607,7 @@ impl DynamicFolder for AlistProvider {
                         .list_playlist(
                             ctx,
                             playlist,
-                            parent_target.as_deref(),
+                            parent_target.as_ref(),
                             DynamicListQuery {
                                 page: current_page,
                                 page_size: LIST_PAGE_SIZE,
@@ -1681,13 +1635,11 @@ impl DynamicFolder for AlistProvider {
                                         )
                                     })?,
                                 )),
-                                metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
-                                provider_data: json!({}),
                                 target: next.target.clone(),
                             }));
                         }
                     } else if let Some(idx) =
-                        page_items.iter().position(|item| item.target == target)
+                        page_items.iter().position(|item| &item.target == target)
                     {
                         found_current = true;
                         if let Some(next) = page_items
@@ -1705,8 +1657,6 @@ impl DynamicFolder for AlistProvider {
                                         )
                                     })?,
                                 )),
-                                metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
-                                provider_data: json!({}),
                                 target: next.target.clone(),
                             }));
                         }
@@ -1728,7 +1678,7 @@ impl DynamicFolder for AlistProvider {
                         .list_playlist(
                             ctx,
                             playlist,
-                            parent_target.as_deref(),
+                            parent_target.as_ref(),
                             DynamicListQuery {
                                 page: 1,
                                 page_size: LIST_PAGE_SIZE,
@@ -1750,8 +1700,6 @@ impl DynamicFolder for AlistProvider {
                                     )
                                 })?,
                             )),
-                            metadata: json!({"size": first.size, "thumbnail": first.thumbnail, "modified_at": first.modified_at}),
-                            provider_data: json!({}),
                             target: first.target.clone(),
                         }));
                     }
@@ -1773,7 +1721,7 @@ impl DynamicFolder for AlistProvider {
                         .list_playlist(
                             ctx,
                             playlist,
-                            parent_target.as_deref(),
+                            parent_target.as_ref(),
                             DynamicListQuery {
                                 page,
                                 page_size: LIST_PAGE_SIZE,
@@ -1809,8 +1757,6 @@ impl DynamicFolder for AlistProvider {
                             ProviderError::InvalidConfig("Missing Alist item target".to_string())
                         })?,
                     )),
-                    metadata: json!({"size": random_item.size, "thumbnail": random_item.thumbnail, "modified_at": random_item.modified_at}),
-                    provider_data: json!({}),
                     target: random_item.target.clone(),
                 }))
             }
@@ -1821,7 +1767,7 @@ impl DynamicFolder for AlistProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &crate::models::Playlist,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
         let Some(relative_path) = Self::decode_target(target)? else {
             return Ok(Vec::new());

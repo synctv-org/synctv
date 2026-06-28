@@ -99,7 +99,7 @@ pub async fn set_current_test_media(
     );
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     state = ok(
         playback_repo.update(&state).await,

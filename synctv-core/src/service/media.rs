@@ -10,8 +10,8 @@
 use crate::repository::realtime_outbox::RealtimeOutboxRepository;
 use crate::{
     models::{
-        normalize_provider_instance_name, FromProviderParams, Media, MediaId, PlaylistId, RoomId,
-        SourceProvider, UserId,
+        normalize_provider_instance_name, FromProviderParams, Media, MediaId, MediaSourceConfig,
+        PlaylistId, RoomId, SourceProvider, UserId,
     },
     provider::{
         provider_requires_credential_repo, store::ProviderStoreResolver, PlaybackResult,
@@ -28,7 +28,6 @@ use crate::{
     },
     Error, Result,
 };
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -73,7 +72,7 @@ pub struct AddMediaRequest {
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// `None` means use the default local instance for `source_provider`.
     pub provider_instance_name: Option<String>,
-    pub source_config: JsonValue,
+    pub source_config: MediaSourceConfig,
 }
 
 /// Request to edit a media item
@@ -97,14 +96,14 @@ pub struct MoveMediaRequest {
 struct PreparedMediaSource {
     provider_name: String,
     provider_instance_name: Option<String>,
-    source_config: JsonValue,
+    source_config: MediaSourceConfig,
 }
 
 pub struct BackendPlaybackRequest<'a> {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target: &'a [u8],
+    pub target: Option<&'a crate::models::ProviderTarget>,
 }
 
 /// Media management service
@@ -253,15 +252,19 @@ impl MediaService {
         room_id: &RoomId,
         source_provider: SourceProvider,
         provider_instance_name: Option<&str>,
-        source_config: JsonValue,
+        source_config: MediaSourceConfig,
         item_name: Option<&str>,
     ) -> Result<PreparedMediaSource> {
         let explicit_provider_instance =
             normalize_provider_instance_name(provider_instance_name).map(str::to_string);
+        let config_provider = source_config.provider();
+        let source_config = source_config
+            .ensure_provider(source_provider)
+            .map_err(Error::InvalidInput)?;
         validate_source_config_size(&source_config)?;
 
         let provider = self
-            .resolve_media_provider(source_provider, explicit_provider_instance.as_deref())
+            .resolve_media_provider(config_provider, explicit_provider_instance.as_deref())
             .await?;
         self.ensure_provider_credential_repo(provider.name())?;
 
@@ -283,14 +286,14 @@ impl MediaService {
             provider.as_ref(),
             self.credential_repo.as_ref(),
             &dependency_ctx,
-            &source_config,
+            SourceConfig::media(&source_config),
             explicit_provider_instance.as_deref(),
         )
         .await?;
         let provider = if bound_provider_instance == explicit_provider_instance {
             provider
         } else {
-            self.resolve_media_provider(source_provider, bound_provider_instance.as_deref())
+            self.resolve_media_provider(config_provider, bound_provider_instance.as_deref())
                 .await?
         };
         let ctx = self.build_provider_context(
@@ -308,9 +311,11 @@ impl MediaService {
             .map_err(|error| media_source_config_error(item_name, error))?;
 
         let prepared_source_config = provider
-            .prepare_source_config(&ctx, source_config)
+            .prepare_source_config(&ctx, SourceConfig::media(&source_config))
             .await
-            .map_err(|error| media_source_prepare_error(item_name, error))?;
+            .map_err(|error| media_source_prepare_error(item_name, error))?
+            .into_media()
+            .map_err(|error| media_source_config_error(item_name, error))?;
 
         Ok(PreparedMediaSource {
             provider_name: provider.name().to_string(),
@@ -977,9 +982,14 @@ impl MediaService {
                     .prepare_dynamic_playlist(&request.room_id, &playlist_id)
                     .await?;
                 let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
+                let Some(target) = request.target else {
+                    return Err(Error::InvalidInput(
+                        "target is required for dynamic playlist playback".to_string(),
+                    ));
+                };
                 let Some(item) = prepared
                     .dynamic_folder()?
-                    .resolve_item(&ctx, &prepared.playlist, request.target)
+                    .resolve_item(&ctx, &prepared.playlist, target)
                     .await?
                 else {
                     return Ok(None);

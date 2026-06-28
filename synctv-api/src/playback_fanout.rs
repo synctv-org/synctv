@@ -249,16 +249,16 @@ mod tests {
             true
         }
 
-        fn outbox_event(&self, _event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
+        fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
             Ok(NewRealtimeOutboxEvent {
-                id: "test-playback-outbox".to_string(),
+                id: event.event_id().to_string(),
                 enqueue_outbox: false,
                 aggregate_type: "room_playback_state".to_string(),
                 aggregate_id: "160001".to_string(),
                 event_type: "playback_state_changed".to_string(),
                 event_version: 1,
                 aggregate_version: Some(7),
-                payload: serde_json::json!({}),
+                payload: event.clone(),
             })
         }
 
@@ -283,7 +283,7 @@ mod tests {
             room_id: RoomId::expect_positive(160_001),
             playing_media_id: Some(MediaId::expect_positive(160_002)),
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 12.5,
             speed: 1.0,

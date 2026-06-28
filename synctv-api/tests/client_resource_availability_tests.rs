@@ -214,7 +214,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlist_items_root_includes_unavailable_resources_and_marks_availability() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         user_repo,
@@ -261,7 +261,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 20,
                 search: String::new(),
@@ -328,7 +328,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlist_items_root_availability_filter_updates_counts_and_pagination() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         user_repo,
@@ -373,7 +373,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 1,
                 search: String::new(),
@@ -401,7 +401,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 2,
                 page_size: 1,
                 search: String::new(),
@@ -429,7 +429,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlist_items_root_returns_stable_version_until_contents_change() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         media_repo,
@@ -445,7 +445,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
 
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 20,
         search: String::new(),
@@ -488,7 +488,7 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn list_playlists_availability_filter_updates_total_and_response_items() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         user_repo,
@@ -551,7 +551,7 @@ async fn list_playlists_availability_filter_updates_total_and_response_items() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         user_repo,
@@ -645,7 +645,7 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn hot_rooms_considers_online_rooms_outside_newest_page() {
-    let fixture = create_client_api_fixture().await;
+    let fixture = Box::pin(create_client_api_fixture()).await;
     let ClientApiFixture {
         client_api,
         room,

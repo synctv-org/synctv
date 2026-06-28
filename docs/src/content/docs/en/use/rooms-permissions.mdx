@@ -74,8 +74,8 @@ Rules:
 
 - `creator` always has all room permissions.
 - Add is applied before remove. If the same bit is both added and removed, remove wins.
-- `member_added_permissions` cannot exceed the admin-level ceiling.
-- `guest_added_permissions` uses a dedicated guest ceiling. It cannot grant media-resource, chat-write, or administration permissions.
+- `memberAddedPermissions` cannot exceed the admin-level ceiling.
+- `guestAddedPermissions` uses a dedicated guest ceiling. It cannot grant media-resource, chat-write, or administration permissions.
 - `DELETE_ROOM` is not a room-delegable permission. Room deletion belongs to the creator or the platform management plane.
 
 ## Major Permission Names
@@ -113,22 +113,22 @@ Room settings control join policy, room features, and default permissions.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `require_password` | `false` | Require room password |
-| `allow_guest_join` | `false` | Allow guests to join |
-| `max_members` | `100` | Maximum members; upper bound `10000` |
-| `require_approval` | `false` | Require join approval |
-| `allow_auto_join` | `true` | Allow eligible users to auto-join |
-| `chat_enabled` | `true` | Enable chat |
-| `auto_play` | `{}` | Auto-play policy JSON |
-| `admin_added_permissions` / `admin_removed_permissions` | Empty permission set | Admin default permission changes |
-| `member_added_permissions` / `member_removed_permissions` | Empty permission set | Member default permission changes |
-| `guest_added_permissions` / `guest_removed_permissions` | Empty permission set | Guest default permission changes |
+| `password` | Empty | Initial password on room creation; password APIs update it later |
+| `allowGuestJoin` | `false` | Allow guests to join |
+| `maxMembers` | `100` | Maximum members; upper bound `10000` |
+| `requireApproval` | `false` | Require join approval |
+| `allowAutoJoin` | `true` | Allow eligible users to auto-join |
+| `chatEnabled` | `true` | Enable chat |
+| `autoPlay` | `{}` | Auto-play policy, for example `{"enabled":true,"mode":1,"delay":5}` |
+| `adminAddedPermissions` / `adminRemovedPermissions` | Empty permission set | Admin default permission changes |
+| `memberAddedPermissions` / `memberRemovedPermissions` | Empty permission set | Member default permission changes |
+| `guestAddedPermissions` / `guestRemovedPermissions` | Empty permission set | Guest default permission changes |
 
 Example:
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
+synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
 ```
 
 ## Member Overrides
@@ -140,7 +140,7 @@ Semantics:
 - Base permissions come from the room role.
 - `added_permissions` adds normal member permissions.
 - `removed_permissions` removes normal member permissions.
-- Administrators can also have `admin_added_permissions` and `admin_removed_permissions`.
+- Administrators can also have `adminAddedPermissions` and `adminRemovedPermissions`.
 - Weakening `creator` permissions has no effect.
 
 Management rules:

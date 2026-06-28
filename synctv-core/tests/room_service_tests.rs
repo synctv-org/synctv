@@ -101,11 +101,7 @@ async fn register_direct_url_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider(
-            "direct_url",
-            "direct_url",
-            &synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
-        )
+        .create_provider_with_default_config("direct_url", "direct_url")
         .await
     {
         std::panic::panic_any(format!("direct_url provider should register: {error:?}"));
@@ -996,9 +992,9 @@ async fn test_leave_room_cleans_member_created_media_resources() {
                 description: String::new(),
                 source_provider: SourceProvider::DirectUrl,
                 provider_instance_name: None,
-                source_config: serde_json::json!({
-                    "medias": [{"url": "https://example.com/video.mp4"}]
-                }),
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/video.mp4",
+                ),
             },
         )
         .await
@@ -1006,7 +1002,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
     let warm_state = room_service
@@ -1042,7 +1038,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .checked("test operation should succeed");
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
-    assert!(refreshed_state.target.is_empty());
+    assert!(refreshed_state.target.is_none());
     assert!(!refreshed_state.is_playing);
     assert_f64_eq(refreshed_state.position, 0.0);
     assert_f64_eq(refreshed_state.speed, 1.0);
@@ -1112,9 +1108,9 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
                 description: String::new(),
                 source_provider: SourceProvider::DirectUrl,
                 provider_instance_name: None,
-                source_config: serde_json::json!({
-                    "medias": [{"url": "https://example.com/kick.mp4"}]
-                }),
+                source_config: synctv_core_testing::direct_url_media_source_config(
+                    "https://example.com/kick.mp4",
+                ),
             },
         )
         .await
@@ -1122,7 +1118,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
     let warm_state = room_service
@@ -1162,7 +1158,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .checked("test operation should succeed");
     assert_eq!(refreshed_state.playing_media_id, None);
     assert_eq!(refreshed_state.playing_playlist_id, None);
-    assert!(refreshed_state.target.is_empty());
+    assert!(refreshed_state.target.is_none());
     assert!(!refreshed_state.is_playing);
     assert_f64_eq(refreshed_state.position, 0.0);
     assert_f64_eq(refreshed_state.speed, 1.0);
@@ -1312,8 +1308,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
             sqlx::query!(
-                "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
-                ,
+                "UPDATE room_settings SET version = version + 1 WHERE room_id = $1",
                 room.id.as_i64()
             )
             .execute(&pool_clone)
@@ -2200,8 +2195,7 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
             sqlx::query!(
-                "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
-                ,
+                "UPDATE room_settings SET version = version + 1 WHERE room_id = $1",
                 room.id.as_i64()
             )
             .execute(&pool_clone)
@@ -2765,8 +2759,8 @@ async fn test_set_room_settings_emits_settings_updated_notification() {
     assert_eq!(event_room_id, room.id);
     match event {
         RoomEvent::SettingsUpdated { settings, .. } => {
-            assert_eq!(settings["chat_enabled"], false);
-            assert_eq!(settings["allow_guest_join"], true);
+            assert!(!settings.chat_enabled.0);
+            assert!(settings.allow_guest_join.0);
         }
         other => std::panic::panic_any(format!("expected SettingsUpdated event, got: {other:?}")),
     }
@@ -3666,7 +3660,7 @@ async fn test_clear_playlist_resets_and_invalidates_cached_playback_state_for_ro
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -4021,7 +4015,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -4084,13 +4078,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
 
     room_service
         .playback_service()
-        .switch(
-            playlist_room.id,
-            owner.id,
-            Some(child_media.id),
-            None,
-            Vec::new(),
-        )
+        .switch(playlist_room.id, owner.id, Some(child_media.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -4148,7 +4136,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
 
     room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -4223,7 +4211,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
 
     room_service
         .playback_service()
-        .switch(playlist_room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(playlist_room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 

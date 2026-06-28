@@ -49,11 +49,11 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_content_trgm
 CREATE INDEX IF NOT EXISTS idx_chat_messages_playback_media
     ON chat_messages(
         room_id,
-        ((metadata #>> '{playback,media_id}')),
+        ((metadata #>> '{playback,mediaId}')),
         (
             CASE
-                WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
-                THEN (metadata #>> '{playback,position_seconds}')::double precision
+                WHEN jsonb_typeof(metadata #> '{playback,positionSeconds}') = 'number'
+                THEN (metadata #>> '{playback,positionSeconds}')::double precision
                 ELSE NULL
             END
         ),
@@ -64,12 +64,12 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_playback_media
 CREATE INDEX IF NOT EXISTS idx_chat_messages_playback_playlist_target
     ON chat_messages(
         room_id,
-        ((metadata #>> '{playback,playlist_id}')),
-        ((metadata #>> '{playback,target_hex}')),
+        ((metadata #>> '{playback,playlistId}')),
+        ((metadata #>> '{playback,targetHash}')),
         (
             CASE
-                WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
-                THEN (metadata #>> '{playback,position_seconds}')::double precision
+                WHEN jsonb_typeof(metadata #> '{playback,positionSeconds}') = 'number'
+                THEN (metadata #>> '{playback,positionSeconds}')::double precision
                 ELSE NULL
             END
         ),

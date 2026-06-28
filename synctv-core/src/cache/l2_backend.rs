@@ -25,8 +25,8 @@ static SET_IF_NEWER_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
         local existing = redis.call('GET', KEYS[1])
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
-            if ok and obj and obj.updated_at_ms then
-                local existing_ts = tonumber(obj.updated_at_ms)
+            if ok and obj and obj.updatedAtMs then
+                local existing_ts = tonumber(obj.updatedAtMs)
                 local new_ts = tonumber(ARGV[3])
                 if not existing_ts or not new_ts then
                     return 0
@@ -50,8 +50,8 @@ static SET_IF_NEWER_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|| {
         local existing = redis.call('GET', KEYS[1])
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
-            if ok and obj and obj.updated_at_ms then
-                local existing_ts = tonumber(obj.updated_at_ms)
+            if ok and obj and obj.updatedAtMs then
+                local existing_ts = tonumber(obj.updatedAtMs)
                 local new_ts = tonumber(ARGV[3])
                 if not existing_ts or not new_ts then
                     return 0
@@ -78,7 +78,7 @@ static SET_IF_VERSION_AT_LEAST_SCRIPT: LazyLock<redis::Script> = LazyLock::new(|
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
             if ok and obj then
-                local existing_version = tonumber(obj.cache_version or obj.version)
+                local existing_version = tonumber(obj.cacheVersion)
                 local new_version = tonumber(ARGV[3])
                 if not new_version then
                     return 0
@@ -101,7 +101,7 @@ static SET_IF_VERSION_AT_LEAST_SCOPED_SCRIPT: LazyLock<redis::Script> = LazyLock
         if existing then
             local ok, obj = pcall(cjson.decode, existing)
             if ok and obj then
-                local existing_version = tonumber(obj.cache_version or obj.version)
+                local existing_version = tonumber(obj.cacheVersion)
                 local new_version = tonumber(ARGV[3])
                 if not new_version then
                     return 0
@@ -152,7 +152,7 @@ static READ_VERSIONED_WITH_L1_BY_FENCE_SCRIPT: LazyLock<redis::Script> = LazyLoc
             return {'DB'}
         end
 
-        local cached_version = tonumber(obj.cache_version or obj.version)
+        local cached_version = tonumber(obj.cacheVersion)
         if cached_version and cached_version >= committed then
             return {'L2', cached}
         end
@@ -190,7 +190,7 @@ static READ_VERSIONED_L2_BY_FENCE_SCRIPT: LazyLock<redis::Script> = LazyLock::ne
             return {'DB'}
         end
 
-        local cached_version = tonumber(obj.cache_version or obj.version)
+        local cached_version = tonumber(obj.cacheVersion)
         if cached_version and cached_version >= committed then
             return {'L2', cached}
         end
@@ -205,84 +205,6 @@ pub enum VersionedFenceRead {
     UseL1,
     UseL2(String),
     DbFallback,
-}
-
-fn json_with_updated_at_ms(json: &str, updated_at_ms: i64) -> Result<String> {
-    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-        Error::Internal(format!(
-            "Failed to parse L2 set-if-newer JSON payload: {error}"
-        ))
-    })?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "updated_at_ms".to_string(),
-            serde_json::Value::Number(updated_at_ms.into()),
-        );
-    }
-    serde_json::to_string(&value).map_err(|error| {
-        Error::Internal(format!(
-            "Failed to serialize L2 set-if-newer JSON payload: {error}"
-        ))
-    })
-}
-
-fn json_with_cache_version(json: &str, version: i64) -> Result<String> {
-    let mut value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
-        Error::Internal(format!(
-            "Failed to parse L2 set-if-version JSON payload: {error}"
-        ))
-    })?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "cache_version".to_string(),
-            serde_json::Value::Number(version.into()),
-        );
-    }
-    serde_json::to_string(&value).map_err(|error| {
-        Error::Internal(format!(
-            "Failed to serialize L2 set-if-version JSON payload: {error}"
-        ))
-    })
-}
-
-fn json_with_inferred_updated_at_ms(json: &str) -> Result<String> {
-    let mut value = serde_json::from_str::<serde_json::Value>(json).map_err(|error| {
-        Error::Internal(format!("Failed to parse L2 cache JSON payload: {error}"))
-    })?;
-
-    let Some(object) = value.as_object_mut() else {
-        return Ok(json.to_string());
-    };
-
-    if object.contains_key("updated_at_ms") {
-        return serde_json::to_string(&value).map_err(|error| {
-            Error::Internal(format!(
-                "Failed to serialize L2 cache JSON payload: {error}"
-            ))
-        });
-    }
-
-    let Some(updated_at) = object.get("updated_at").and_then(serde_json::Value::as_str) else {
-        return Ok(json.to_string());
-    };
-
-    let updated_at_ms = chrono::DateTime::parse_from_rfc3339(updated_at)
-        .map_err(|error| {
-            Error::Internal(format!(
-                "Failed to parse L2 cache updated_at timestamp '{updated_at}': {error}"
-            ))
-        })?
-        .timestamp_millis();
-    object.insert(
-        "updated_at_ms".to_string(),
-        serde_json::Value::Number(updated_at_ms.into()),
-    );
-
-    serde_json::to_string(&value).map_err(|error| {
-        Error::Internal(format!(
-            "Failed to serialize L2 cache JSON payload: {error}"
-        ))
-    })
 }
 
 async fn run_l2_redis_attempt<T, F>(
@@ -584,7 +506,6 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.conn("get L2 cache connection for set").await?;
-        let json = json_with_inferred_updated_at_ms(json)?;
 
         run_l2_redis_op(
             self.operation_timeout(),
@@ -600,13 +521,12 @@ impl CacheL2Backend for RedisCacheL2 {
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs)?;
         let now = Self::now_unix_seconds()?;
-        let json = json_with_inferred_updated_at_ms(json)?;
 
         let mut pipe = redis::pipe();
         pipe.atomic()
             .cmd("SET")
             .arg(key)
-            .arg(&json)
+            .arg(json)
             .arg("EX")
             .arg(ttl_secs)
             .ignore()
@@ -829,7 +749,6 @@ impl CacheL2Backend for RedisCacheL2 {
         let mut conn = self
             .conn("get L2 cache connection for set_if_newer")
             .await?;
-        let json = json_with_updated_at_ms(json, new_ts_millis)?;
         let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
@@ -837,7 +756,7 @@ impl CacheL2Backend for RedisCacheL2 {
             "run set_if_newer Lua script",
             SET_IF_NEWER_SCRIPT
                 .key(key)
-                .arg(&json)
+                .arg(json)
                 .arg(ttl_secs)
                 .arg(new_ts_millis)
                 .invoke_async(&mut conn),
@@ -861,7 +780,6 @@ impl CacheL2Backend for RedisCacheL2 {
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs)?;
         let now = Self::now_unix_seconds()?;
-        let json = json_with_updated_at_ms(json, new_ts_millis)?;
         let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
@@ -870,7 +788,7 @@ impl CacheL2Backend for RedisCacheL2 {
             SET_IF_NEWER_SCOPED_SCRIPT
                 .key(key)
                 .key(&index_key)
-                .arg(&json)
+                .arg(json)
                 .arg(ttl_secs)
                 .arg(new_ts_millis)
                 .arg(expires_at)
@@ -892,7 +810,6 @@ impl CacheL2Backend for RedisCacheL2 {
         let mut conn = self
             .conn("get L2 cache connection for set_if_version_at_least")
             .await?;
-        let json = json_with_cache_version(json, version)?;
         let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
@@ -900,7 +817,7 @@ impl CacheL2Backend for RedisCacheL2 {
             "run set_if_version_at_least Lua script",
             SET_IF_VERSION_AT_LEAST_SCRIPT
                 .key(key)
-                .arg(&json)
+                .arg(json)
                 .arg(ttl_secs)
                 .arg(version)
                 .invoke_async(&mut conn),
@@ -924,7 +841,6 @@ impl CacheL2Backend for RedisCacheL2 {
         let index_key = Self::namespace_index_key(prefix);
         let expires_at = Self::expiry_timestamp(ttl_secs)?;
         let now = Self::now_unix_seconds()?;
-        let json = json_with_cache_version(json, version)?;
         let ttl_secs = Self::ttl_secs_to_i64(ttl_secs)?;
 
         let result: i64 = run_l2_redis_op(
@@ -933,7 +849,7 @@ impl CacheL2Backend for RedisCacheL2 {
             SET_IF_VERSION_AT_LEAST_SCOPED_SCRIPT
                 .key(key)
                 .key(&index_key)
-                .arg(&json)
+                .arg(json)
                 .arg(ttl_secs)
                 .arg(version)
                 .arg(expires_at)
@@ -1241,41 +1157,6 @@ mod tests {
             .await
             .failed("retryable redis operation should time out");
         assert!(matches!(err, L2RedisAttemptError::Timeout));
-    }
-
-    #[test]
-    fn json_with_inferred_updated_at_ms_adds_epoch_millis() {
-        let json = r#"{"updated_at":"2024-01-01T00:00:00Z","name":"alice"}"#;
-        let value: serde_json::Value = serde_json::from_str(
-            &json_with_inferred_updated_at_ms(json).checked("operation should succeed"),
-        )
-        .checked("operation should succeed");
-
-        assert_eq!(value["updated_at_ms"], 1_704_067_200_000_i64);
-        assert_eq!(value["name"], "alice");
-    }
-
-    #[test]
-    fn json_with_inferred_updated_at_ms_preserves_existing_epoch_millis() {
-        let json = r#"{"updated_at":"2024-01-01T00:00:00Z","updated_at_ms":123}"#;
-        let value: serde_json::Value = serde_json::from_str(
-            &json_with_inferred_updated_at_ms(json).checked("operation should succeed"),
-        )
-        .checked("operation should succeed");
-
-        assert_eq!(value["updated_at_ms"], 123);
-    }
-
-    #[test]
-    fn json_with_inferred_updated_at_ms_rejects_corrupt_json() {
-        let err = json_with_inferred_updated_at_ms("{bad json")
-            .failed("corrupt cache JSON should be rejected");
-
-        assert!(
-            err.to_string()
-                .contains("Failed to parse L2 cache JSON payload"),
-            "unexpected error: {err}"
-        );
     }
 
     /// Test that get() times out when operation takes too long

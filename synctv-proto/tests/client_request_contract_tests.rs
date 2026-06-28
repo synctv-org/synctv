@@ -9,15 +9,26 @@ use synctv_proto::client::{
     ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomJoinReviewsRequest,
     ListRoomLabelsRequest, ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest,
     MovePlaylistRequest, OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest,
-    RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMediaTargetPathRequest,
-    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
-    RoomStreamListSortBy, SortDirection, StartPlaybackRequest, TransferRoomOwnershipRequest,
+    PasskeyAuthenticatorAssertionResponse, RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest,
+    RoomMediaTargetPathRequest, RoomMemberTargetPathRequest, RoomPathRequest,
+    RoomPlaylistTargetPathRequest, RoomSettingsPatch, RoomStreamListSortBy, SortDirection,
+    StartOpaqueLoginRequest, StartPlaybackRequest, TransferRoomOwnershipRequest,
     UnlinkProviderRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
     UploadUserAvatarObjectRequest, WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
 use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
 use synctv_proto::source_config::SourceProvider;
+
+fn emby_target(item_id: &str) -> Option<synctv_proto::client::ProviderTarget> {
+    Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Emby(
+            synctv_proto::client::EmbyTarget {
+                item_id: item_id.to_string(),
+            },
+        )),
+    })
+}
 
 fn direct_url_media_source_config(
     url: &str,
@@ -88,11 +99,123 @@ fn test_upload_object_content_type_is_optional() {
     assert!(content_type.supports_presence());
 
     let request: UploadUserAvatarObjectRequest = serde_json::from_str(
-        r#"{"encoded_object_key":"object","token":"token","data":[112,97,121,108,111,97,100]}"#,
+        r#"{"encodedObjectKey":"object","token":"token","data":"cGF5bG9hZA=="}"#,
     )
     .expect("missing content_type should deserialize");
 
     assert_eq!(request.content_type, None);
+}
+
+#[test]
+fn test_protojson_deserialization_uses_lower_camel_case_fields() {
+    let request: StartOpaqueLoginRequest =
+        serde_json::from_str(r#"{"username":"alice","credentialRequest":"AQID"}"#)
+            .expect("lowerCamelCase ProtoJSON request should deserialize");
+
+    assert_eq!(request.credential_request, b"\x01\x02\x03");
+
+    let error = serde_json::from_str::<StartOpaqueLoginRequest>(
+        r#"{"username":"alice","credential_request":"AQID"}"#,
+    )
+    .expect_err("snake_case field names should be rejected");
+    assert!(error.to_string().contains("credential_request"));
+}
+
+#[test]
+fn test_protojson_custom_json_name_rejects_proto_field_name() {
+    let response: PasskeyAuthenticatorAssertionResponse = serde_json::from_str(
+        r#"{"authenticatorData":"AQID","clientDataJSON":"BAUG","signature":"BwgJ"}"#,
+    )
+    .expect("custom json_name field should deserialize");
+
+    assert_eq!(response.authenticator_data, b"\x01\x02\x03");
+    assert_eq!(response.client_data_json, b"\x04\x05\x06");
+    assert_eq!(response.signature, b"\x07\x08\x09");
+
+    let error = serde_json::from_str::<PasskeyAuthenticatorAssertionResponse>(
+        r#"{"authenticatorData":"AQID","client_data_json":"BAUG","signature":"BwgJ"}"#,
+    )
+    .expect_err("proto snake_case field name should be rejected");
+    let message = error.to_string();
+    assert!(message.contains("client_data_json"), "{message}");
+    assert!(
+        !message.contains("expected one of: [\"authenticator_data\""),
+        "{message}"
+    );
+    assert!(!message.contains("\"client_data_json\""), "{message}");
+}
+
+#[test]
+fn test_room_settings_patch_uses_lower_camel_case_fields() {
+    let patch: RoomSettingsPatch =
+        serde_json::from_str(r#"{"chatEnabled":false,"allowGuestJoin":true}"#)
+            .expect("lowerCamelCase room settings patch should deserialize");
+
+    assert_eq!(patch.chat_enabled, Some(false));
+    assert_eq!(patch.allow_guest_join, Some(true));
+
+    let error = serde_json::from_str::<RoomSettingsPatch>(
+        r#"{"chat_enabled":false,"allow_guest_join":true}"#,
+    )
+    .expect_err("snake_case room settings patch fields should be rejected");
+    assert!(error.to_string().contains("chat_enabled"));
+}
+
+#[test]
+fn test_room_settings_patch_rejects_duplicate_canonical_field() {
+    let error =
+        serde_json::from_str::<RoomSettingsPatch>(r#"{"chatEnabled":true,"chatEnabled":false}"#)
+            .expect_err("duplicate room settings field should be rejected");
+
+    assert!(error.to_string().contains("duplicate field"));
+}
+
+#[test]
+fn test_update_room_settings_rejects_duplicate_nested_canonical_field() {
+    let error = serde_json::from_str::<synctv_proto::client::UpdateRoomSettingsRequest>(
+        r#"{"settings":{"chatEnabled":true,"chatEnabled":false}}"#,
+    )
+    .expect_err("duplicate nested room settings field should be rejected");
+
+    assert!(error.to_string().contains("duplicate field"));
+}
+
+#[test]
+fn test_protojson_deserialization_uses_integer_enums() {
+    let request: ListPlaylistsRequest = serde_json::from_str(
+        r#"{"page":1,"pageSize":20,"sourceProvider":3,"sortBy":1,"sortDirection":1}"#,
+    )
+    .expect("integer enum values should deserialize");
+
+    assert_eq!(request.source_provider, SourceProvider::Alist as i32);
+    assert_eq!(request.sort_direction, SortDirection::Asc as i32);
+
+    let error = serde_json::from_str::<ListPlaylistsRequest>(
+        r#"{"page":1,"pageSize":20,"sourceProvider":"SOURCE_PROVIDER_ALIST"}"#,
+    )
+    .expect_err("enum string values should be rejected");
+    assert!(error.is_data());
+}
+
+#[test]
+fn test_protojson_query_deserialization_uses_lower_camel_case_and_integer_enums() {
+    let request: ListPlaylistsRequest =
+        serde_urlencoded::from_str("page=1&pageSize=20&sourceProvider=3&sortBy=1&sortDirection=1")
+            .expect("lowerCamelCase integer enum query should deserialize");
+
+    assert_eq!(request.page_size, 20);
+    assert_eq!(request.source_provider, SourceProvider::Alist as i32);
+
+    let field_error =
+        serde_urlencoded::from_str::<ListPlaylistsRequest>("page=1&page_size=20&sourceProvider=3")
+            .expect_err("snake_case query fields should be rejected");
+    assert!(field_error.to_string().contains("page_size"));
+
+    let enum_error = serde_urlencoded::from_str::<ListPlaylistsRequest>(
+        "page=1&pageSize=20&sourceProvider=SOURCE_PROVIDER_ALIST",
+    )
+    .expect_err("enum string query values should be rejected");
+    assert!(!enum_error.to_string().is_empty());
 }
 
 #[test]
@@ -151,7 +274,7 @@ fn test_add_media_request_rejects_invalid_playlist_id() {
 fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: String::new(),
@@ -164,13 +287,14 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
     };
 
     let json = serde_json::to_value(&request).expect("serialize list request");
-    assert_eq!(json["playlist_id"], "");
+    assert!(json.get("playlistId").is_none());
     assert!(json["target"].is_null());
     let decoded: ListPlaylistItemsRequest =
         serde_json::from_value(json.clone()).expect("deserialize list request");
-    assert!(decoded.target.is_empty());
+    assert!(decoded.target.is_none());
+    assert!(json.get("availability").is_none());
     assert_eq!(
-        json["availability"],
+        decoded.availability,
         synctv_proto::client::ResourceAvailabilityFilter::All as i32
     );
 }
@@ -312,7 +436,7 @@ fn test_delete_media_request_serializes_force_flag() {
     };
 
     let json = serde_json::to_value(&request).expect("serialize delete media request");
-    assert_eq!(json["media_id"], "media-1");
+    assert_eq!(json["mediaId"], "media-1");
     assert_eq!(json["force"], true);
 }
 
@@ -336,7 +460,7 @@ fn test_delete_playlist_request_serializes_force_flag() {
     };
 
     let json = serde_json::to_value(&request).expect("serialize delete playlist request");
-    assert_eq!(json["playlist_id"], "playlist-1");
+    assert_eq!(json["playlistId"], "playlist-1");
     assert_eq!(json["force"], true);
 }
 
@@ -372,8 +496,8 @@ fn test_delete_entries_request_serializes_force_flag() {
     };
 
     let json = serde_json::to_value(&request).expect("serialize delete entries request");
-    assert_eq!(json["playlist_ids"][0], "playlist-1");
-    assert_eq!(json["media_ids"][0], "media-1");
+    assert_eq!(json["playlistIds"][0], "playlist-1");
+    assert_eq!(json["mediaIds"][0], "media-1");
     assert_eq!(json["force"], true);
 }
 
@@ -410,7 +534,7 @@ fn test_clear_playlist_request_serializes_playlist_scope() {
     };
 
     let json = serde_json::to_value(&request).expect("serialize clear playlist request");
-    assert_eq!(json["playlist_id"], "pl_1");
+    assert_eq!(json["playlistId"], "pl_1");
     synctv_proto::validate(&request).expect("request should be valid");
 }
 
@@ -430,15 +554,15 @@ fn test_start_playback_request_serializes_dynamic_playlist_target() {
     let request = StartPlaybackRequest {
         media_id: String::new(),
         playlist_id: "playlist-1".to_string(),
-        target: br#"{"item_id":"provider-item-1"}"#.to_vec(),
+        target: emby_target("provider-item-1"),
     };
 
     let json = serde_json::to_value(&request).expect("serialize start playback request");
-    assert_eq!(json["media_id"], "");
-    assert_eq!(json["playlist_id"], "playlist-1");
+    assert!(json.get("mediaId").is_none());
+    assert_eq!(json["playlistId"], "playlist-1");
     assert_eq!(
         json["target"],
-        serde_json::json!({"item_id":"provider-item-1"})
+        serde_json::to_value(emby_target("provider-item-1")).expect("target should serialize")
     );
 }
 
@@ -455,17 +579,12 @@ fn test_create_playlist_request_serializes_dynamic_fields_without_is_folder() {
 
     let json = serde_json::to_value(&request).expect("serialize create playlist request");
     assert!(json.get("is_folder").is_none());
-    assert_eq!(json["source_provider"], "alist");
-    assert_eq!(json["provider_instance_name"], "alist-main");
+    assert_eq!(json["sourceProvider"], SourceProvider::Alist as i32);
+    assert_eq!(json["providerInstanceName"], "alist-main");
     assert_eq!(
-        json["source_config"],
-        serde_json::json!({
-            "alist": {
-                "server_id": "alist-main",
-                "path": "/tv",
-                "password": null
-            }
-        })
+        json["sourceConfig"],
+        serde_json::to_value(alist_playlist_source_config("/tv"))
+            .expect("source config should serialize")
     );
 }
 
@@ -490,9 +609,9 @@ fn test_playlist_source_config_oneof_only_contains_dynamic_playlist_providers() 
 #[test]
 fn test_media_source_config_json_accepts_omitted_proto_default_fields() {
     let config: synctv_proto::source_config::MediaSourceConfig = serde_json::from_str(
-        r#"{"direct_url":{"medias":[{"url":"https://example.com/video.mp4"}]}}"#,
+        r#"{"directUrl":{"medias":[{"url":"https://example.com/video.mp4"}]}}"#,
     )
-    .expect("direct_url source_config should allow omitted default fields");
+    .expect("directUrl source_config should allow omitted default fields");
 
     let provider = config
         .provider
@@ -520,13 +639,10 @@ fn test_media_source_config_json_rejects_unknown_provider_key() {
 #[test]
 fn test_media_source_config_json_rejects_multiple_provider_keys() {
     let error = serde_json::from_str::<synctv_proto::source_config::MediaSourceConfig>(
-        r#"{"direct_url":{"medias":[{"url":"https://example.com/video.mp4"}]},"rtmp":{}}"#,
+        r#"{"directUrl":{"medias":[{"url":"https://example.com/video.mp4"}]},"rtmp":{}}"#,
     )
     .expect_err("media source_config should accept exactly one provider");
-    assert!(
-        error.to_string().contains("exactly one provider"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("duplicate field"), "{error}");
 }
 
 #[test]
@@ -642,7 +758,7 @@ fn test_exchange_authorization_code_request_rejects_invalid_state() {
 #[test]
 fn test_unlink_provider_request_rejects_invalid_provider_type() {
     let request = UnlinkProviderRequest {
-        provider: "custom".to_string(),
+        provider: synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeUnspecified as i32,
         provider_user_id: String::new(),
         provider_instance_name: String::new(),
         verification_id: "verification-id".to_string(),
@@ -656,7 +772,7 @@ fn test_unlink_provider_request_rejects_invalid_provider_type() {
 #[test]
 fn test_unlink_provider_request_requires_instance_for_specific_identity() {
     let request = UnlinkProviderRequest {
-        provider: "github".to_string(),
+        provider: synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32,
         provider_user_id: "remote-user-1".to_string(),
         provider_instance_name: String::new(),
         verification_id: "verification-id".to_string(),
@@ -700,11 +816,8 @@ fn test_list_rooms_request_rejects_too_long_search() {
 
 #[test]
 fn test_create_room_request_defaults_optional_taxonomy_fields_from_json() {
-    let request: CreateRoomRequest = serde_json::from_value(serde_json::json!({
-        "name": "room",
-        "settings": {},
-    }))
-    .expect("request should deserialize");
+    let request: CreateRoomRequest = serde_json::from_str(r#"{"name":"room","settings":{}}"#)
+        .expect("request should deserialize");
 
     assert!(request.category_id.is_empty());
     assert!(request.label_ids.is_empty());
@@ -713,7 +826,7 @@ fn test_create_room_request_defaults_optional_taxonomy_fields_from_json() {
 #[test]
 fn test_list_rooms_request_defaults_taxonomy_filters_from_json() {
     let request: synctv_proto::client::ListRoomsRequest =
-        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+        serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(request.category_id.is_empty());
     assert!(request.label_ids.is_empty());
@@ -722,7 +835,7 @@ fn test_list_rooms_request_defaults_taxonomy_filters_from_json() {
 #[test]
 fn test_list_room_labels_request_defaults_category_filter_from_json() {
     let request: ListRoomLabelsRequest =
-        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+        serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(!request.include_disabled);
     assert!(request.category_id.is_empty());
@@ -767,11 +880,11 @@ fn test_list_playlists_request_rejects_too_long_search() {
 #[test]
 fn test_create_playlist_request_rejects_unknown_source_provider_json() {
     let error = serde_json::from_str::<synctv_proto::client::CreatePlaylistRequest>(
-        r#"{"name":"Dyn","source_provider":"Bad Provider","source_config":{"alist":{"server_id":"alist-main","path":"/tv"}},"provider_instance_name":"alist-main"}"#,
+        r#"{"name":"Dyn","sourceProvider":999,"sourceConfig":{"alist":{"serverId":"alist-main","path":"/tv"}},"providerInstanceName":"alist-main"}"#,
     )
     .expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("source_provider"), "{message}");
+    assert!(message.contains("999"), "{message}");
 }
 
 #[test]
@@ -801,7 +914,7 @@ fn test_list_playlists_request_rejects_invalid_provider_filters() {
 fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 20,
         search: String::new(),
@@ -844,7 +957,7 @@ fn test_add_media_request_rejects_invalid_provider_identifiers() {
 fn test_list_playlist_items_request_rejects_too_long_search() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 20,
         search: "a".repeat(101),

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::models::{LiveProxyMediaSourceConfig, MediaId, RoomId, SourceProvider, UserId};
+use crate::models::{MediaId, RoomId, SourceProvider, UserId};
 use crate::provider::playback_transport::PlaybackTransportServices;
 use crate::provider::store::{ProviderStore, ProviderStoreResolver};
 use crate::provider::{
@@ -626,10 +626,9 @@ impl LiveProxyPlaybackProviderService {
             .ok()
             .flatten()
             .filter(|media| media.source_provider == SourceProvider::LiveProxy)
-            .and_then(|media| {
-                serde_json::from_value::<LiveProxyMediaSourceConfig>(media.source_config)
-                    .ok()
-                    .map(|config| config.url)
+            .and_then(|media| match media.source_config {
+                crate::models::MediaSourceConfig::LiveProxy(config) => Some(config.url),
+                _ => None,
             })
     }
 }

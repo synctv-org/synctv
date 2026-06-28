@@ -92,10 +92,7 @@ pub async fn resolve_credential_record_for_owner(
         )));
     }
 
-    // Parse the credential data (already decrypted by repository)
-    let credential = credential_record.get_credential().map_err(|e| {
-        ProviderError::Internal(format!("Failed to parse {provider} credential data: {e}"))
-    })?;
+    let credential = credential_record.credential_data;
 
     Ok(ResolvedProviderCredential {
         credential,

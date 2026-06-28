@@ -4,7 +4,6 @@ use crate::provider::{
     ProviderCredentialDependency, ProviderError,
 };
 use async_trait::async_trait;
-use serde_json::Value;
 use std::sync::Arc;
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -32,6 +31,27 @@ fn test_provider_instance_manager() -> Arc<crate::service::RemoteProviderManager
     crate::service::remote_provider_manager::empty_provider_instance_manager()
 }
 
+fn alist_playlist_source_config(
+    server_id: impl Into<String>,
+    path: impl Into<String>,
+) -> crate::models::PlaylistSourceConfig {
+    crate::models::PlaylistSourceConfig::Alist(crate::models::AlistPlaylistSourceConfig {
+        server_id: server_id.into(),
+        path: path.into(),
+        password: None,
+    })
+}
+
+fn emby_playlist_source_config(
+    server_id: impl Into<String>,
+    item_id: impl Into<String>,
+) -> crate::models::PlaylistSourceConfig {
+    crate::models::PlaylistSourceConfig::Emby(crate::models::EmbyPlaylistSourceConfig {
+        server_id: server_id.into(),
+        item_id: item_id.into(),
+    })
+}
+
 struct CredentialOwnerCheckProvider;
 
 #[async_trait]
@@ -43,7 +63,7 @@ impl MediaProvider for CredentialOwnerCheckProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        _source_config: &Value,
+        _source_config: &crate::models::MediaSourceConfig,
     ) -> std::result::Result<PlaybackResult, ProviderError> {
         Err(ProviderError::UnsupportedFormat(
             "test provider does not generate playback".to_string(),
@@ -87,7 +107,7 @@ impl DynamicFolder for CredentialOwnerCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _target: Option<&[u8]>,
+        _target: Option<&crate::models::ProviderTarget>,
         _query: DynamicListQuery,
     ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
         Ok(Vec::new())
@@ -97,7 +117,7 @@ impl DynamicFolder for CredentialOwnerCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _target: &[u8],
+        _target: &crate::models::ProviderTarget,
     ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
         Ok(None)
     }
@@ -106,8 +126,7 @@ impl DynamicFolder for CredentialOwnerCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _playing_media: &crate::models::Media,
-        _target: &[u8],
+        _target: &crate::models::ProviderTarget,
         _play_mode: crate::models::PlayMode,
     ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
         Ok(None)
@@ -125,7 +144,7 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        _source_config: &Value,
+        _source_config: &crate::models::MediaSourceConfig,
     ) -> std::result::Result<PlaybackResult, ProviderError> {
         Err(ProviderError::UnsupportedFormat(
             "test provider does not generate playback".to_string(),
@@ -139,23 +158,20 @@ impl MediaProvider for AlistCredentialDependencyCheckProvider {
     fn credential_dependencies(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> std::result::Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let Some(server_id) = source_config
-            .get("credential_server_id")
-            .and_then(serde_json::Value::as_str)
+        let SourceConfig::DynamicPlaylist(crate::models::PlaylistSourceConfig::Alist(config)) =
+            source_config
         else {
             return Ok(Vec::new());
         };
+        let server_id = config.server_id.as_str();
         let user_id = ctx
             .user_id
             .as_ref()
             .ok_or_else(|| ProviderError::Internal("missing user_id".to_string()))?;
 
-        let optional = source_config
-            .get("credential_optional")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let optional = config.path == "optional";
         let dependency = if optional {
             ProviderCredentialDependency::optional(self.name(), user_id.to_string(), server_id)
         } else {
@@ -172,7 +188,7 @@ impl DynamicFolder for AlistCredentialDependencyCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _target: Option<&[u8]>,
+        _target: Option<&crate::models::ProviderTarget>,
         _query: DynamicListQuery,
     ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
         Ok(Vec::new())
@@ -182,7 +198,7 @@ impl DynamicFolder for AlistCredentialDependencyCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _target: &[u8],
+        _target: &crate::models::ProviderTarget,
     ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
         Ok(None)
     }
@@ -191,8 +207,7 @@ impl DynamicFolder for AlistCredentialDependencyCheckProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _playing_media: &crate::models::Media,
-        _target: &[u8],
+        _target: &crate::models::ProviderTarget,
         _play_mode: crate::models::PlayMode,
     ) -> std::result::Result<Option<NextPlayItem>, ProviderError> {
         Ok(None)
@@ -244,10 +259,9 @@ async fn test_alist_dependency_check_providers_manager() -> Arc<crate::service::
     let providers_manager = Arc::new(providers_manager);
     ok(
         providers_manager
-            .create_provider(
+            .create_provider_with_default_config(
                 crate::provider::AlistProvider::NAME,
                 crate::provider::AlistProvider::NAME,
-                &serde_json::json!({}),
             )
             .await,
         "alist dependency check provider should initialize",
@@ -296,14 +310,17 @@ fn dynamic_folder_allows_default_provider_instance() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
             Some(SourceProvider::Alist),
-            Some(serde_json::json!({"path": "/movies"})),
+            Some(alist_playlist_source_config("srv", "/movies")),
             None,
         ),
         "dynamic folder should allow default provider instance",
     );
 
     assert_eq!(source_provider, Some(SourceProvider::Alist));
-    assert_eq!(source_config, Some(serde_json::json!({"path": "/movies"})));
+    assert_eq!(
+        source_config,
+        Some(alist_playlist_source_config("srv", "/movies"))
+    );
     assert!(provider_instance_name.is_none());
 }
 
@@ -312,7 +329,7 @@ fn static_folder_rejects_dynamic_fields_without_provider() {
     let err = err(
         normalize_dynamic_playlist_fields(
             None,
-            Some(serde_json::json!({"path": "/movies"})),
+            Some(alist_playlist_source_config("srv", "/movies")),
             Some("alist-main".to_string()),
         ),
         "static folder should reject dynamic fields",
@@ -329,7 +346,7 @@ fn dynamic_folder_fields_normalize_provider_instance_name() {
     let (source_provider, source_config, provider_instance_name) = ok(
         normalize_dynamic_playlist_fields(
             Some(SourceProvider::Emby),
-            Some(serde_json::json!({"library_id": "abc123"})),
+            Some(emby_playlist_source_config("emby", "abc123")),
             Some("  emby-main  ".to_string()),
         ),
         "dynamic folder fields should normalize",
@@ -354,7 +371,7 @@ async fn validate_dynamic_playlist_source_requires_credential_repo_wiring() {
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
+            alist_playlist_source_config("srv", "/movies"),
             Some("alist".to_string()),
         )
         .await,
@@ -383,7 +400,7 @@ async fn validate_dynamic_playlist_source_requires_provider_registry_for_unknown
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
+            alist_playlist_source_config("srv", "/movies"),
             Some("alist-main".to_string()),
         )
         .await,
@@ -411,7 +428,7 @@ async fn validate_dynamic_playlist_source_rejects_provider_type_mismatch() {
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
+            emby_playlist_source_config("emby", "library"),
             Some("direct_url".to_string()),
         )
         .await,
@@ -419,13 +436,15 @@ async fn validate_dynamic_playlist_source_rejects_provider_type_mismatch() {
     );
 
     match err {
-        Error::InvalidInput(message) => assert!(message.contains("is type 'direct_url'")),
+        Error::InvalidInput(message) => {
+            assert!(message.contains("does not match source_provider"));
+        }
         other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
     }
 }
 
 #[tokio::test]
-async fn validate_dynamic_playlist_source_rejects_non_dynamic_provider() {
+async fn validate_dynamic_playlist_source_rejects_mismatched_non_dynamic_provider() {
     let providers_manager = test_builtin_providers_manager().await;
     let err = err(
         validate_dynamic_playlist_source_with_dependencies(
@@ -437,16 +456,16 @@ async fn validate_dynamic_playlist_source_rejects_non_dynamic_provider() {
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::DirectUrl,
-            synctv_core_testing::direct_url_media_source_config("https://example.com/video.mp4"),
+            emby_playlist_source_config("emby", "library"),
             Some("direct_url".to_string()),
         )
         .await,
-        "non-dynamic provider should fail validation",
+        "non-dynamic source_provider mismatch should fail validation",
     );
 
     match err {
         Error::InvalidInput(message) => {
-            assert!(message.contains("does not support dynamic folders"));
+            assert!(message.contains("does not match source_provider"));
         }
         other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
     }
@@ -464,9 +483,9 @@ async fn validate_dynamic_playlist_source_rejects_oversized_config_before_provid
             },
             &RoomId::new(),
             &UserId::new(),
-            SourceProvider::DirectUrl,
-            serde_json::json!({"data": "x".repeat(2 * 1024 * 1024)}),
-            Some("direct_url".to_string()),
+            SourceProvider::Alist,
+            alist_playlist_source_config("srv", "x".repeat(2 * 1024 * 1024)),
+            None,
         )
         .await,
         "oversized dynamic playlist config should fail validation",
@@ -503,7 +522,7 @@ async fn validate_dynamic_playlist_source_runs_provider_validation() {
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            synctv_core_testing::alist_directory_playlist_source_config("srv", ""),
+            alist_playlist_source_config("srv", ""),
             Some("alist".to_string()),
         )
         .await,
@@ -538,7 +557,11 @@ async fn validate_dynamic_playlist_source_rejects_missing_credential_dependency(
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            serde_json::json!({"credential_server_id": "missing-server"}),
+            crate::models::PlaylistSourceConfig::Alist(crate::models::AlistPlaylistSourceConfig {
+                server_id: "missing-server".to_string(),
+                path: "/movies".to_string(),
+                password: None,
+            }),
             None,
         )
         .await,
@@ -574,9 +597,10 @@ async fn validate_dynamic_playlist_source_allows_missing_optional_credential_dep
             &RoomId::new(),
             &UserId::new(),
             SourceProvider::Alist,
-            serde_json::json!({
-                "credential_server_id": "viewer-optional-server",
-                "credential_optional": true
+            crate::models::PlaylistSourceConfig::Alist(crate::models::AlistPlaylistSourceConfig {
+                server_id: "viewer-optional-server".to_string(),
+                path: "optional".to_string(),
+                password: None,
             }),
             None,
         )
@@ -606,7 +630,7 @@ async fn validate_dynamic_playlist_source_passes_creator_as_credential_owner() {
             &RoomId::new(),
             &user_id,
             SourceProvider::Alist,
-            synctv_core_testing::alist_directory_playlist_source_config("srv", "/movies"),
+            alist_playlist_source_config("srv", "/movies"),
             None,
         )
         .await,

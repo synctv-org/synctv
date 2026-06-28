@@ -28,7 +28,7 @@ use synctv_proto::providers::emby::GetBindsResponse;
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
-    provider_instance_name, provider_instance_name_from_body, provider_request_metadata,
+    provider_instance_name, provider_instance_name_from_request_field, provider_request_metadata,
 };
 
 const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
@@ -37,6 +37,7 @@ const THUMBNAIL_ROUTE_PREFIX: &str = "/api/providers/emby/thumbnail/";
 const THUMBNAIL_SIGNATURE_PROVIDER: &str = "emby-thumbnail";
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThumbnailQuery {
     server_id: String,
     #[serde(default)]
@@ -45,6 +46,14 @@ pub(crate) struct ThumbnailQuery {
     max_height: Option<u32>,
     #[serde(default)]
     max_width: Option<u32>,
+    #[serde(default, rename = "sig")]
+    _sig: Option<String>,
+    #[serde(default, rename = "uid")]
+    _uid: Option<String>,
+    #[serde(default, rename = "rid")]
+    _rid: Option<String>,
+    #[serde(default, rename = "exp")]
+    _exp: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -65,7 +74,7 @@ fn resolve_thumbnail_query(
 ) -> Result<(&str, Option<&str>, u32, u32), AppError> {
     let server_id = query.server_id.trim();
     if server_id.is_empty() {
-        return Err(AppError::bad_request("server_id must not be empty"));
+        return Err(AppError::bad_request("serverId must not be empty"));
     }
     let credential_owner_id = query.credential_owner_id.as_deref().map(str::trim);
 
@@ -161,7 +170,16 @@ fn build_signed_thumbnail_query(
 }
 
 fn thumbnail_signature_present(raw_query: &str) -> bool {
-    raw_query.split('&').any(|pair| pair.starts_with("sig="))
+    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key.as_ref() == "sig")
+}
+
+fn thumbnail_signature_query(raw_query: &str) -> String {
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(
+            url::form_urlencoded::parse(raw_query.as_bytes())
+                .filter(|(key, _)| matches!(key.as_ref(), "sig" | "uid" | "rid" | "exp" | "pv")),
+        )
+        .finish()
 }
 
 fn verify_signed_thumbnail_access(
@@ -170,9 +188,10 @@ fn verify_signed_thumbnail_access(
     raw_query: &str,
     scope: ThumbnailSignatureScope<'_>,
 ) -> Result<String, AppError> {
+    let signature_query = thumbnail_signature_query(raw_query);
     let claims = signing_key
         .parse_and_verify_query(
-            raw_query,
+            &signature_query,
             THUMBNAIL_SIGNATURE_PROVIDER,
             &thumbnail_signature_version(scope),
             "thumbnail",
@@ -245,27 +264,31 @@ pub(crate) fn sign_emby_thumbnail_url(
     let mut max_width = None;
     for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
         match key.as_ref() {
-            "server_id" => server_id = Some(value.into_owned()),
-            "credential_owner_id" => credential_owner_id = Some(value.into_owned()),
-            "max_height" => {
+            "serverId" => server_id = Some(value.into_owned()),
+            "credentialOwnerId" => credential_owner_id = Some(value.into_owned()),
+            "maxHeight" => {
                 max_height = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail max_height: {error}")
+                    format!("Failed to parse Emby thumbnail maxHeight: {error}")
                 })?);
             }
-            "max_width" => {
+            "maxWidth" => {
                 max_width = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail max_width: {error}")
+                    format!("Failed to parse Emby thumbnail maxWidth: {error}")
                 })?);
             }
             _ => {}
         }
     }
-    let server_id = server_id.ok_or_else(|| "Emby thumbnail URL missing server_id".to_string())?;
+    let server_id = server_id.ok_or_else(|| "Emby thumbnail URL missing serverId".to_string())?;
     let query = ThumbnailQuery {
         server_id,
         credential_owner_id,
         max_height,
         max_width,
+        _sig: None,
+        _uid: None,
+        _rid: None,
+        _exp: None,
     };
     let (server_id, credential_owner_id, max_height, max_width) =
         resolve_thumbnail_query(&query).map_err(|error| error.message)?;
@@ -302,7 +325,7 @@ pub(crate) fn emby_read_routes() -> Router<AppState> {
         .route("/list", post(list))
         .route("/me", post(me))
         .route("/binds", get(binds))
-        .route("/thumbnail/{item_id}", get(thumbnail))
+        .route("/thumbnail/{itemId}", get(thumbnail))
 }
 
 // Existing provider API handlers
@@ -314,7 +337,7 @@ pub(crate) fn emby_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/emby/login",
         tag = "Provider",
-        request_body = synctv_proto::http_serde::EmbyLoginRequestDef,
+        request_body = synctv_proto::providers::emby::LoginRequest,
         responses(
             (status = 200, description = "Emby login succeeded", body = synctv_proto::providers::emby::LoginResponse),
             (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
@@ -334,13 +357,11 @@ pub(crate) fn emby_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<synctv_proto::http_serde::EmbyLoginRequestDef>,
+    Json(req): Json<synctv_proto::providers::emby::LoginRequest>,
 ) -> AppResult<Json<synctv_proto::providers::emby::LoginResponse>> {
     tracing::info!("Emby login request");
 
-    let req = synctv_proto::providers::emby::LoginRequest::try_from(req)
-        .map_err(crate::impls::ApiError::InvalidInput)?;
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -397,7 +418,7 @@ pub(crate) async fn list(
 ) -> AppResult<Json<synctv_proto::providers::emby::ListResponse>> {
     tracing::info!("Emby list request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -454,7 +475,7 @@ pub(crate) async fn me(
 ) -> AppResult<Json<synctv_proto::providers::emby::GetMeResponse>> {
     tracing::info!("Emby me request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -511,7 +532,7 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<synctv_proto::providers::emby::LogoutResponse>> {
     tracing::info!("Emby logout request");
 
-    provider_instance_name_from_body(&req.instance_name)?;
+    provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.emby_api.clone();
     execute_provider_user_endpoint(
         &state,
@@ -574,14 +595,14 @@ pub(crate) async fn binds(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/providers/emby/thumbnail/{item_id}",
+        path = "/api/providers/emby/thumbnail/{itemId}",
         tag = "Provider",
         params(
-            ("item_id" = String, Path, description = "Emby item ID"),
-            ("server_id" = String, Query, description = "Saved Emby credential server ID"),
-            ("credential_owner_id" = Option<String>, Query, description = "Original credential owner for shared Emby media"),
-            ("max_height" = Option<u32>, Query, description = "Maximum thumbnail height"),
-            ("max_width" = Option<u32>, Query, description = "Maximum thumbnail width")
+            ("itemId" = String, Path, description = "Emby item ID"),
+            ("serverId" = String, Query, description = "Saved Emby credential server ID"),
+            ("credentialOwnerId" = Option<String>, Query, description = "Original credential owner for shared Emby media"),
+            ("maxHeight" = Option<u32>, Query, description = "Maximum thumbnail height"),
+            ("maxWidth" = Option<u32>, Query, description = "Maximum thumbnail width")
         ),
         responses(
             (status = 200, description = "Proxied Emby thumbnail"),
@@ -676,11 +697,7 @@ pub(crate) async fn thumbnail(
                         crate::impls::ApiError::NotFound("Emby credential not found".to_string())
                     })?;
 
-                let parsed = credential.get_credential().map_err(|error| {
-                    crate::impls::ApiError::Internal(format!(
-                        "Failed to parse stored Emby credential: {error}"
-                    ))
-                })?;
+                let parsed = credential.credential_data.clone();
                 let action = build_thumbnail_proxy_action_from_credential(
                     &item_id, &parsed, max_height, max_width,
                 )?;
@@ -732,9 +749,13 @@ mod tests {
             credential_owner_id: None,
             max_height: None,
             max_width: None,
+            _sig: None,
+            _uid: None,
+            _rid: None,
+            _exp: None,
         }))?;
 
-        assert_eq!(err.message, "server_id must not be empty");
+        assert_eq!(err.message, "serverId must not be empty");
         Ok(())
     }
 
@@ -745,6 +766,10 @@ mod tests {
             credential_owner_id: Some(" owner-123 ".to_string()),
             max_height: Some(480),
             max_width: Some(640),
+            _sig: None,
+            _uid: None,
+            _rid: None,
+            _exp: None,
         };
         let (server_id, credential_owner_id, max_height, max_width) =
             route_ok(resolve_thumbnail_query(&query))?;
@@ -757,13 +782,30 @@ mod tests {
     }
 
     #[test]
+    fn test_thumbnail_query_uses_lower_camel_case() -> TestResult {
+        let query: ThumbnailQuery = serde_urlencoded::from_str(
+            "serverId=emby-main&credentialOwnerId=owner-1&maxHeight=300&maxWidth=640&sig=s&uid=u&rid=r&exp=1",
+        )?;
+
+        assert_eq!(query.server_id, "emby-main");
+        assert_eq!(query.credential_owner_id.as_deref(), Some("owner-1"));
+        assert_eq!(query.max_height, Some(300));
+        assert_eq!(query.max_width, Some(640));
+
+        let error = serde_urlencoded::from_str::<ThumbnailQuery>("serverId=emby-main&extra=value")
+            .expect_err("unknown thumbnail query fields should be rejected");
+        assert!(error.to_string().contains("extra"));
+        Ok(())
+    }
+
+    #[test]
     fn test_authorize_thumbnail_request_requires_signature_for_shared_credentials() -> TestResult {
         let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
         let err = route_err(authorize_thumbnail_request(
             &signing_key,
             "viewer-1",
             "viewer-1",
-            "server_id=emby-main&credential_owner_id=owner-1&max_height=300",
+            "serverId=emby-main&credentialOwnerId=owner-1&maxHeight=300",
             Some("owner-1"),
             ThumbnailSignatureScope {
                 item_id: "item-123",
@@ -820,19 +862,20 @@ mod tests {
     fn test_sign_emby_thumbnail_url_appends_room_scoped_signature() -> TestResult {
         let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
         let signed = string_ok(sign_emby_thumbnail_url(
-            "/api/providers/emby/thumbnail/item-123?server_id=emby-main&credential_owner_id=owner-1&max_height=300",
+            "/api/providers/emby/thumbnail/item-123?serverId=emby-main&credentialOwnerId=owner-1&maxHeight=300",
             "room-7",
             "viewer-1",
             &signing_key,
         ))?;
 
-        let query = signed
+        let raw_query = signed
             .split('?')
             .nth(1)
             .ok_or_else(|| test_error("signed thumbnail query should exist"))?;
+        let query = thumbnail_signature_query(raw_query);
         let claims = signing_key
             .parse_and_verify_query(
-                query,
+                &query,
                 THUMBNAIL_SIGNATURE_PROVIDER,
                 &thumbnail_signature_version(ThumbnailSignatureScope {
                     item_id: "item-123",
@@ -847,7 +890,7 @@ mod tests {
 
         assert_eq!(claims.room_id, "room-7");
         assert_eq!(claims.user_id, "viewer-1");
-        assert!(signed.contains("credential_owner_id=owner-1"));
+        assert!(signed.contains("credentialOwnerId=owner-1"));
         Ok(())
     }
 
@@ -855,7 +898,7 @@ mod tests {
     fn test_signed_emby_thumbnail_url_authorizes_roundtrip() -> TestResult {
         let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
         let signed = string_ok(sign_emby_thumbnail_url(
-            "/api/providers/emby/thumbnail/item1?server_id=emby-main&credential_owner_id=usr_2&max_height=300",
+            "/api/providers/emby/thumbnail/item1?serverId=emby-main&credentialOwnerId=usr_2&maxHeight=300",
             "room_1",
             "usr_2",
             &signing_key,
@@ -888,14 +931,14 @@ mod tests {
     fn test_sign_emby_thumbnail_url_requires_server_id() -> TestResult {
         let signing_key = ProxySigningKey::try_derive_from(b"test-signing-key-minimum-32-bytes!!")?;
         let err = sign_emby_thumbnail_url(
-            "/api/providers/emby/thumbnail/item-123?max_height=300",
+            "/api/providers/emby/thumbnail/item-123?maxHeight=300",
             "room-7",
             "viewer-1",
             &signing_key,
         )
-        .expect_err("missing server_id should fail signing");
+        .expect_err("missing serverId should fail signing");
 
-        assert_eq!(err, "Emby thumbnail URL missing server_id");
+        assert_eq!(err, "Emby thumbnail URL missing serverId");
         Ok(())
     }
 

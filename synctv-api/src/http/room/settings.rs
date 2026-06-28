@@ -11,17 +11,18 @@ use synctv_proto::client::{
     FinishRoomPasswordRegistrationRequest, JoinRoomResponse, ResetRoomSettingsResponse,
     SetRoomPasswordResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
-    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdateRoomSettingsResponse,
+    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdateRoomSettingsRequest,
+    UpdateRoomSettingsResponse,
 };
 
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/password/opaque/login/start",
+        path = "/api/rooms/{roomId}/password/opaque/login/start",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = StartRoomPasswordLoginRequest,
         responses(
@@ -71,10 +72,10 @@ pub async fn start_room_password_login(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/password/opaque/login/finish",
+        path = "/api/rooms/{roomId}/password/opaque/login/finish",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = FinishRoomPasswordLoginRequest,
         responses(
@@ -124,10 +125,10 @@ pub async fn finish_room_password_login(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/password/opaque/registration/start",
+        path = "/api/rooms/{roomId}/password/opaque/registration/start",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = StartRoomPasswordRegistrationRequest,
         responses(
@@ -167,10 +168,10 @@ pub async fn start_room_password_registration(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/password/opaque/registration/finish",
+        path = "/api/rooms/{roomId}/password/opaque/registration/finish",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = FinishRoomPasswordRegistrationRequest,
         responses(
@@ -210,10 +211,10 @@ pub async fn finish_room_password_registration(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/password",
+        path = "/api/rooms/{roomId}/password",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room password cleared", body = SetRoomPasswordResponse),
@@ -255,10 +256,10 @@ pub async fn clear_room_password(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/settings",
+        path = "/api/rooms/{roomId}/settings",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room settings", body = synctv_proto::client::GetRoomSettingsResponse),
@@ -293,12 +294,12 @@ pub async fn get_room_settings(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/settings",
+        path = "/api/rooms/{roomId}/settings",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
-        request_body = synctv_proto::http_serde::ClientUpdateRoomSettingsRequestDef,
+        request_body = UpdateRoomSettingsRequest,
         responses(
             (status = 200, description = "Room settings updated", body = UpdateRoomSettingsResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -313,10 +314,9 @@ pub async fn update_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    Json(req): Json<synctv_proto::http_serde::ClientUpdateRoomSettingsRequestDef>,
+    Json(req): Json<UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<UpdateRoomSettingsResponse>> {
     let room_id = path.room_id;
-    let req = synctv_proto::client::UpdateRoomSettingsRequest::from(req);
     let response = execute_user_endpoint(
         &state,
         request_meta,
@@ -337,10 +337,10 @@ pub async fn update_room_settings(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/owner",
+        path = "/api/rooms/{roomId}/owner",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = TransferRoomOwnershipRequest,
         responses(
@@ -381,10 +381,10 @@ pub async fn transfer_room_ownership(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/settings/reset",
+        path = "/api/rooms/{roomId}/settings/reset",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room settings reset", body = ResetRoomSettingsResponse),

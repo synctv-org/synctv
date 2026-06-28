@@ -31,10 +31,9 @@ impl ClientApiImpl {
             return None;
         }
 
-        media
-            .source_config
-            .get("url")
-            .and_then(|value| value.as_str())
-            .map(ToString::to_string)
+        match media.source_config {
+            synctv_core::models::MediaSourceConfig::LiveProxy(config) => Some(config.url),
+            _ => None,
+        }
     }
 }

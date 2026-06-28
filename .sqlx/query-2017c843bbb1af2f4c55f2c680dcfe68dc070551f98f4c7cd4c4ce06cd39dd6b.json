@@ -1,0 +1,211 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT a.id AS \"id!\",\n                   a.kind AS \"kind!: ChatAttachmentKind\",\n                   a.room_id AS \"room_id!: RoomId\",\n                   a.message_id AS \"message_id!\",\n                   a.message_created_at AS \"message_created_at!\",\n                   a.filename,\n                   a.storage_backend AS \"storage_backend!\",\n                   a.object_key AS \"object_key!\",\n                   a.url,\n                   a.mime_type,\n                   a.size_bytes,\n                   a.width,\n                   a.height,\n                   a.metadata AS \"metadata!: crate::models::FileMetadata\",\n                   a.created_at AS \"created_at!\",\n                   NULL::TEXT AS \"reuse_token?\",\n                   NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n            FROM chat_message_attachments a\n            JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)\n              ON a.message_id = m.id AND a.message_created_at = m.created_at\n            ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind!: ChatAttachmentKind",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "room_id!: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "message_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "message_created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "message_created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "filename",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "storage_backend!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "storage_backend"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "object_key!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "object_key"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "mime_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "mime_type"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "metadata!: crate::models::FileMetadata",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "metadata"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "chat_message_attachments",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "reuse_token?",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "reuse_expires_at?",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "2017c843bbb1af2f4c55f2c680dcfe68dc070551f98f4c7cd4c4ce06cd39dd6b"
+}

@@ -33,6 +33,7 @@ pub struct UserCache {
 
 /// Cached user data
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CachedUser {
     id: UserId,
     username: String,

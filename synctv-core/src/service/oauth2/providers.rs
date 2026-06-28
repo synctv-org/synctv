@@ -51,17 +51,16 @@ impl OAuth2Service {
 
         let mut rebuilt = HashMap::new();
         for (instance_name, provider_config) in configs.0 {
-            let provider_type_name = provider_config.provider_type.trim().to_ascii_lowercase();
+            let provider_type_name = provider_config.provider_type_name();
             let provider_type =
-                OAuth2Provider::from_str_name(&provider_type_name).ok_or_else(|| {
+                OAuth2Provider::from_str_name(provider_type_name).ok_or_else(|| {
                     Error::InvalidInput(format!(
                         "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type_name}'"
                     ))
                 })?;
-            let provider_private_config = provider_config.provider_config_value();
             let provider = self
                 .provider_registry
-                .create_provider(&provider_type_name, &provider_private_config)?;
+                .create_provider(provider_type_name, &provider_config.config)?;
 
             rebuilt.insert(
                 instance_name,

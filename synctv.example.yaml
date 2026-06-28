@@ -178,8 +178,6 @@ database:
   #   SYNCTV_DATABASE_URL_FILE
   # Split configuration is also supported:
   #   SYNCTV_DATABASE_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / NAME
-  # `user` is accepted as a config-file alias for `username`;
-  # SYNCTV_DATABASE_USER is accepted as an env alias for SYNCTV_DATABASE_USERNAME.
   url: "postgresql://synctv:synctv@localhost:5432/synctv"
   # Optional read-only replica URL for explicitly allowlisted eventually-consistent reads.
   # Strong reads, writes, transactions, cache rebuilds, and migrations always use `url`.
@@ -244,8 +242,6 @@ redis:
   #   SYNCTV_REDIS_URL_FILE
   # Split configuration also supports:
   #   SYNCTV_REDIS_HOST / PORT / USERNAME / PASSWORD / PASSWORD_FILE / DATABASE
-  # `user` is accepted as a config-file alias for `username`;
-  # SYNCTV_REDIS_USER is accepted as an env alias for SYNCTV_REDIS_USERNAME.
   url: "redis://localhost:6379"
   # url_file: "/run/secrets/redis_url"
   # host: "localhost"
@@ -622,7 +618,7 @@ media_providers:
 
 # OAuth2/OIDC providers are runtime settings, not static startup config.
 # Configure them with the management API or CLI:
-#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enable_signup":false,"signup_need_review":false,"config":{"client_id":"...","client_secret":"...","redirect_url":"https://app.example.com/oauth2/callback"}}}'
+#   synctv settings update oauth2 --set providers='{"github":{"type":"github","enableSignup":false,"signupNeedReview":false,"clientId":"...","clientSecret":"...","redirectUrl":"https://app.example.com/oauth2/callback"}}'
 
 webauthn:
   # Enables passkey/security-key registration and login endpoints:

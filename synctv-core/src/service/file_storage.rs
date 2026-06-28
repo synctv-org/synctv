@@ -4,19 +4,19 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, TryStreamExt};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncSeek};
 
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileBlobCompression, FileByteRange, FileObjectDownload, FileObjectMetadata,
-        FileOwnershipProofRange, FileRangeRequest, FileReferenceTarget, FileUploadManifestPart,
+        FileAudioMetadata, FileBlob, FileBlobCompression, FileByteRange, FileCleanupMetadata,
+        FileMetadata, FileObjectDownload, FileObjectMetadata, FileOwnershipProofRange,
+        FileRangeRequest, FileReferenceMetadata, FileReferenceTarget, FileUploadManifestPart,
         FileUploadPlan, FileUploadPlanPart, FileUploadRange, FileUploadSessionCreateResult,
-        FileUploadSessionKind, FileUploadSessionRecord, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
-        UserId, FILE_GENERATED_VARIANTS_METADATA_KEY,
+        FileUploadSessionKind, FileUploadSessionMetadata, FileUploadSessionRecord, GetFileObject,
+        NewStoredFile, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference,
+        SubmittedFileReferenceKind, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -37,25 +37,12 @@ pub use routing::{FileStorageBackendRegistry, RoutedFileStorageService};
 use s3::presigned_upload_headers;
 pub use s3::{S3CompatibleFileStorageService, S3FileStorageConfig};
 pub(crate) use validation::validate_create_file_upload_session;
-pub(super) use validation::validate_file_mime_type;
 use validation::{
     strip_internal_file_metadata, validate_s3_file_storage_config, validate_stored_files,
 };
+pub(super) use validation::{validate_file_metadata, validate_file_mime_type};
 
 pub(super) const FILE_UPLOAD_EXPIRES_SECONDS: i64 = 900;
-pub(crate) const FILE_UPLOAD_TOKEN_KEY: &str = "_synctv_upload_token";
-pub(crate) const FILE_OWNERSHIP_PROOF_KEY: &str = "_synctv_ownership_proof";
-const FILE_SESSION_METADATA_PUBLIC_ID_KEY: &str = "public_file_id";
-const FILE_SESSION_METADATA_CLIENT_ID_KEY: &str = "client_file_id";
-const FILE_SESSION_METADATA_USER_ID_KEY: &str = "user_id";
-const FILE_SESSION_METADATA_STORAGE_SCOPE_KEY: &str = "storage_scope";
-const FILE_SESSION_METADATA_FILENAME_KEY: &str = "filename";
-const FILE_SESSION_METADATA_WIDTH_KEY: &str = "width";
-const FILE_SESSION_METADATA_HEIGHT_KEY: &str = "height";
-const FILE_SESSION_METADATA_USER_METADATA_KEY: &str = "metadata";
-const FILE_SESSION_METADATA_UPLOAD_POLICY_KEY: &str = "upload_policy";
-const FILE_SESSION_METADATA_MANIFEST_PARTS_KEY: &str = "manifest_parts";
-const FILE_SESSION_METADATA_OWNERSHIP_PROOF_VERIFIED_KEY: &str = "ownership_proof_verified";
 const FILE_OWNERSHIP_PROOF_ALGORITHM: &str = "synctv-file-ownership-proof-v1";
 const FILE_OWNERSHIP_PROOF_RANGE_COUNT: usize = 3;
 const FILE_OWNERSHIP_PROOF_RANGE_BYTES: i32 = 1024;
@@ -68,6 +55,49 @@ const DATABASE_FILE_READ_TOKEN_VERSION: &str = "v1";
 pub(super) const MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES: i64 = 8 * 1024 * 1024;
 pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct FileUploadTokenPayload {
+    pub(super) user_id: i64,
+    pub(super) storage_scope: String,
+    pub(super) file_id: String,
+    pub(super) filename: Option<String>,
+    pub(super) storage_backend: String,
+    pub(super) object_key: String,
+    pub(super) mime_type: Option<String>,
+    pub(super) size_bytes: Option<i64>,
+    pub(super) width: Option<i32>,
+    pub(super) height: Option<i32>,
+    pub(super) metadata: FileMetadata,
+    pub(super) expires_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) content_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) ownership_proof: Option<FileUploadTokenOwnershipProof>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct FileUploadTokenOwnershipProof {
+    pub(super) algorithm: String,
+    pub(super) nonce: String,
+    pub(super) ranges: Vec<FileOwnershipProofRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct FileReuseTokenPayload {
+    pub(super) kind: String,
+    pub(super) user_id: i64,
+    pub(super) storage_scope: String,
+    pub(super) source_kind: String,
+    pub(super) source_id: String,
+    pub(super) expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct DatabaseFileReadTokenPayload {
+    pub(super) storage_backend: String,
+    pub(super) object_key: String,
+}
 
 // File storage contract:
 // - file_objects is the registry; validated_at marks the final usable object.
@@ -123,17 +153,11 @@ pub(crate) fn file_blob_to_reader(blob: FileBlob) -> FileObjectReader {
 }
 
 pub(crate) fn merge_file_variants_metadata(
-    metadata: &serde_json::Value,
+    metadata: &FileMetadata,
     variants: &[crate::models::FileObjectVariant],
-) -> Result<serde_json::Value> {
+) -> Result<FileMetadata> {
     let mut metadata = metadata.clone();
-    let object = metadata
-        .as_object_mut()
-        .ok_or_else(|| Error::InvalidInput("file metadata must be a JSON object".to_string()))?;
-    object.insert(
-        FILE_GENERATED_VARIANTS_METADATA_KEY.to_string(),
-        serde_json::to_value(variants)?,
-    );
+    metadata.variants = variants.to_vec();
     Ok(metadata)
 }
 
@@ -160,29 +184,12 @@ pub(crate) async fn complete_uploaded_file_object(
         )
         .await?
         .ok_or_else(|| Error::InvalidInput("audio metadata was not found".to_string()))?;
-        let metadata = object.metadata.as_object_mut().ok_or_else(|| {
-            Error::InvalidInput("file metadata must be a JSON object".to_string())
-        })?;
-        metadata.insert(
-            "duration_seconds".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(audio.duration_seconds)),
-        );
-        metadata.insert(
-            "bitrate_bps".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(audio.bitrate_bps)),
-        );
-        if let Some(sample_rate_hz) = audio.sample_rate_hz {
-            metadata.insert(
-                "sample_rate_hz".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(sample_rate_hz)),
-            );
-        }
-        if let Some(channels) = audio.channels {
-            metadata.insert(
-                "channels".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(channels)),
-            );
-        }
+        object.metadata.audio = Some(FileAudioMetadata {
+            duration_seconds: audio.duration_seconds,
+            bitrate_bps: audio.bitrate_bps,
+            sample_rate_hz: audio.sample_rate_hz,
+            channels: audio.channels,
+        });
         repository
             .update_object_metadata(
                 &object.storage_backend,
@@ -300,25 +307,15 @@ pub(super) fn validated_upload_manifest(
     Ok((plan, digest))
 }
 
-pub(super) fn upload_manifest_metadata(
-    parts: &[FileUploadManifestPart],
-) -> Result<serde_json::Value> {
-    Ok(json!({
-        FILE_SESSION_METADATA_MANIFEST_PARTS_KEY: serde_json::to_value(parts)?,
-    }))
-}
-
 pub(super) fn upload_manifest_parts_from_metadata(
-    metadata: &serde_json::Value,
+    metadata: &FileUploadSessionMetadata,
 ) -> Result<Vec<FileUploadManifestPart>> {
-    let parts = metadata
-        .get(FILE_SESSION_METADATA_MANIFEST_PARTS_KEY)
-        .ok_or_else(|| {
-            Error::InvalidInput("file upload session manifest is missing".to_string())
-        })?;
-    serde_json::from_value(parts.clone()).map_err(|error| {
-        Error::InvalidInput(format!("invalid file upload session manifest: {error}"))
-    })
+    if metadata.manifest_parts.is_empty() {
+        return Err(Error::InvalidInput(
+            "file upload session manifest is missing".to_string(),
+        ));
+    }
+    Ok(metadata.manifest_parts.clone())
 }
 
 pub(super) fn upload_manifest_is_single_object(
@@ -451,7 +448,7 @@ pub(super) const fn upload_session_is_multipart(kind: FileUploadSessionKind) -> 
 pub(super) fn session_record_blob(
     session: &FileUploadSessionRecord,
     data: Vec<u8>,
-    metadata: serde_json::Value,
+    metadata: FileMetadata,
 ) -> FileBlob {
     FileBlob {
         storage_backend: session.storage_backend.clone(),
@@ -605,44 +602,14 @@ pub trait FileStorageService: Send + Sync {
                         ));
                     }
                     let (reference_kind, reference_id) = upload_session_reference_target(id);
-                    let session = repository
-                        .get_upload_session_by_reference(reference_kind, &reference_id)
-                        .await?
-                        .ok_or_else(|| {
-                            Error::InvalidInput("file reference was not found".to_string())
-                        })?;
-                    if session
-                        .metadata
-                        .get(FILE_SESSION_METADATA_USER_ID_KEY)
-                        .and_then(serde_json::Value::as_i64)
-                        != Some(context.user_id.as_i64())
-                        || session
-                            .metadata
-                            .get(FILE_SESSION_METADATA_STORAGE_SCOPE_KEY)
-                            .and_then(serde_json::Value::as_str)
-                            != Some(context.storage_scope)
-                    {
-                        return Err(Error::InvalidInput(
-                            "file reference does not belong to this request".to_string(),
-                        ));
-                    }
-                    let ownership_proof_required = optional_payload_bool(
-                        &session.metadata,
-                        "ownership_proof_required",
-                        "file upload session metadata",
-                    )?;
-                    if ownership_proof_required {
-                        if !upload_session_ownership_proof_verified(&session.metadata)? {
-                            return Err(Error::InvalidInput(
-                                "file ownership proof has not been verified".to_string(),
-                            ));
-                        }
-                    } else if session.completed_at.is_none() {
-                        return Err(Error::InvalidInput(
-                            "file upload session has not been completed".to_string(),
-                        ));
-                    }
-                    upload_session_record_to_new_file(&session, id)?
+                    prepare_upload_reference_file(
+                        &repository,
+                        context,
+                        reference_kind,
+                        &reference_id,
+                        id,
+                    )
+                    .await?
                 }
                 SubmittedFileReferenceKind::Reuse => {
                     return Err(Error::InvalidInput(
@@ -691,7 +658,9 @@ pub trait FileStorageService: Send + Sync {
             .release_references_and_enqueue_cleanup_jobs(
                 origin.as_str(),
                 files,
-                &serde_json::Value::Object(Default::default()),
+                &FileCleanupMetadata {
+                    reason: Some("scheduled for asynchronous deletion".to_string()),
+                },
                 "scheduled for asynchronous deletion",
             )
             .await
@@ -777,7 +746,7 @@ pub trait FileStorageService: Send + Sync {
         _object_key: &str,
         _mime_type: &str,
         _data: Vec<u8>,
-        _metadata: serde_json::Value,
+        _metadata: FileMetadata,
     ) -> Result<FileBlob> {
         Err(Error::InvalidInput(
             "direct file object writes are not supported by this storage backend".to_string(),
@@ -890,15 +859,7 @@ pub(super) fn attach_file_upload_token(
         content_manifest_sha256,
         ownership_proof,
     )?;
-    let Some(metadata) = file.metadata.as_object_mut() else {
-        return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
-        ));
-    };
-    metadata.insert(
-        FILE_UPLOAD_TOKEN_KEY.to_string(),
-        serde_json::Value::String(token),
-    );
+    file.metadata.upload_token = Some(token);
     Ok(())
 }
 
@@ -977,42 +938,31 @@ fn file_upload_token_payload(
     expires_at: DateTime<Utc>,
     content_manifest_sha256: Option<&str>,
     ownership_proof: Option<(&str, &[FileOwnershipProofRange])>,
-) -> serde_json::Value {
-    let mut payload = json!({
-        "user_id": user_id.as_i64(),
-        "storage_scope": storage_scope,
-        "file_id": file.id,
-        "filename": file.filename,
-        "storage_backend": file.storage_backend,
-        "object_key": file.object_key,
-        "mime_type": file.mime_type,
-        "size_bytes": file.size_bytes,
-        "width": file.width,
-        "height": file.height,
-        "metadata": public_file_metadata(file),
-        "expires_at": expires_at.timestamp(),
-    });
-    if let Some(content_manifest_sha256) = content_manifest_sha256 {
-        payload["content_manifest_sha256"] =
-            serde_json::Value::String(content_manifest_sha256.to_ascii_lowercase());
+) -> FileUploadTokenPayload {
+    FileUploadTokenPayload {
+        user_id: user_id.as_i64(),
+        storage_scope: storage_scope.to_string(),
+        file_id: file.id.clone(),
+        filename: file.filename.clone(),
+        storage_backend: file.storage_backend.clone(),
+        object_key: file.object_key.clone(),
+        mime_type: file.mime_type.clone(),
+        size_bytes: file.size_bytes,
+        width: file.width,
+        height: file.height,
+        metadata: public_file_metadata(file),
+        expires_at: expires_at.timestamp(),
+        content_manifest_sha256: content_manifest_sha256.map(str::to_ascii_lowercase),
+        ownership_proof: ownership_proof.map(|(nonce, ranges)| FileUploadTokenOwnershipProof {
+            algorithm: FILE_OWNERSHIP_PROOF_ALGORITHM.to_string(),
+            nonce: nonce.to_string(),
+            ranges: ranges.to_vec(),
+        }),
     }
-    if let Some((nonce, ranges)) = ownership_proof {
-        payload["ownership_proof_required"] = serde_json::Value::Bool(true);
-        payload["ownership_proof_algorithm"] =
-            serde_json::Value::String(FILE_OWNERSHIP_PROOF_ALGORITHM.to_string());
-        payload["ownership_proof_nonce"] = serde_json::Value::String(nonce.to_string());
-        payload["ownership_proof_ranges"] = ownership_proof_ranges_to_json(ranges);
-    }
-    payload
 }
 
-fn public_file_metadata(file: &NewStoredFile) -> serde_json::Value {
-    let mut metadata = file.metadata.clone();
-    if let Some(object) = metadata.as_object_mut() {
-        object.remove(FILE_UPLOAD_TOKEN_KEY);
-        object.remove(FILE_OWNERSHIP_PROOF_KEY);
-    }
-    metadata
+fn public_file_metadata(file: &NewStoredFile) -> FileMetadata {
+    file.metadata.public()
 }
 
 pub(super) struct UploadSessionMetadataInput<'a> {
@@ -1023,161 +973,96 @@ pub(super) struct UploadSessionMetadataInput<'a> {
     pub filename: Option<&'a str>,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub metadata: serde_json::Value,
+    pub metadata: FileMetadata,
     pub upload_policy: &'a crate::models::FileUploadPolicy,
 }
 
-pub(super) fn upload_session_metadata(input: UploadSessionMetadataInput<'_>) -> serde_json::Value {
-    let mut object = serde_json::Map::new();
-    object.insert(
-        FILE_SESSION_METADATA_PUBLIC_ID_KEY.to_string(),
-        serde_json::Value::String(input.public_file_id.to_string()),
-    );
-    object.insert(
-        FILE_SESSION_METADATA_USER_ID_KEY.to_string(),
-        serde_json::json!(input.user_id.as_i64()),
-    );
-    object.insert(
-        FILE_SESSION_METADATA_STORAGE_SCOPE_KEY.to_string(),
-        serde_json::Value::String(input.storage_scope.to_string()),
-    );
-    if let Some(client_file_id) = input
-        .client_file_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        object.insert(
-            FILE_SESSION_METADATA_CLIENT_ID_KEY.to_string(),
-            serde_json::Value::String(client_file_id.to_string()),
-        );
+pub(super) fn upload_session_metadata(
+    input: UploadSessionMetadataInput<'_>,
+) -> FileUploadSessionMetadata {
+    FileUploadSessionMetadata {
+        public_file_id: input.public_file_id.to_string(),
+        user_id: input.user_id,
+        storage_scope: input.storage_scope.to_string(),
+        client_file_id: input
+            .client_file_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+        filename: input
+            .filename
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+        width: input.width,
+        height: input.height,
+        metadata: input.metadata,
+        upload_policy: input.upload_policy.clone(),
+        manifest_parts: Vec::new(),
+        ownership_proof: None,
+        ownership_proof_verified: false,
     }
-    if let Some(filename) = input
-        .filename
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        object.insert(
-            FILE_SESSION_METADATA_FILENAME_KEY.to_string(),
-            serde_json::Value::String(filename.to_string()),
-        );
-    }
-    if let Some(width) = input.width {
-        object.insert(
-            FILE_SESSION_METADATA_WIDTH_KEY.to_string(),
-            serde_json::json!(width),
-        );
-    }
-    if let Some(height) = input.height {
-        object.insert(
-            FILE_SESSION_METADATA_HEIGHT_KEY.to_string(),
-            serde_json::json!(height),
-        );
-    }
-    object.insert(
-        FILE_SESSION_METADATA_USER_METADATA_KEY.to_string(),
-        input.metadata,
-    );
-    object.insert(
-        FILE_SESSION_METADATA_UPLOAD_POLICY_KEY.to_string(),
-        serde_json::to_value(input.upload_policy)
-            .expect("FileUploadPolicy serialization should be infallible"),
-    );
-    serde_json::Value::Object(object)
 }
 
 pub(super) fn upload_session_metadata_with_manifest(
-    metadata: &serde_json::Value,
+    metadata: &FileUploadSessionMetadata,
     parts: &[FileUploadManifestPart],
-) -> Result<serde_json::Value> {
+) -> FileUploadSessionMetadata {
     let mut metadata = metadata.clone();
-    let Some(target) = metadata.as_object_mut() else {
-        return Err(Error::InvalidInput(
-            "file upload session metadata is invalid".to_string(),
-        ));
-    };
-    let manifest = upload_manifest_metadata(parts)?;
-    let Some(manifest) = manifest.as_object() else {
-        return Err(Error::Internal(
-            "file upload manifest metadata is invalid".to_string(),
-        ));
-    };
-    target.extend(manifest.clone());
-    Ok(metadata)
+    metadata.manifest_parts = parts.to_vec();
+    metadata
 }
 
-pub(super) fn upload_session_public_file_id(metadata: &serde_json::Value) -> Result<String> {
-    required_payload_string(
-        metadata,
-        FILE_SESSION_METADATA_PUBLIC_ID_KEY,
-        "file upload session metadata",
-    )
+pub(super) fn upload_session_public_file_id(
+    metadata: &FileUploadSessionMetadata,
+) -> Result<String> {
+    metadata
+        .public_file_id
+        .trim()
+        .is_empty()
+        .then(|| Error::InvalidInput("file upload session metadata is invalid".to_string()))
+        .map_or_else(|| Ok(metadata.public_file_id.clone()), Err)
 }
 
 pub(super) fn upload_session_policy(
-    metadata: &serde_json::Value,
-) -> Result<crate::models::FileUploadPolicy> {
-    let policy = metadata
-        .get(FILE_SESSION_METADATA_UPLOAD_POLICY_KEY)
-        .cloned()
-        .ok_or_else(|| Error::InvalidInput("file upload session policy is missing".to_string()))?;
-    serde_json::from_value(policy).map_err(|error| {
-        Error::InvalidInput(format!("file upload session policy is invalid: {error}"))
-    })
+    metadata: &FileUploadSessionMetadata,
+) -> crate::models::FileUploadPolicy {
+    metadata.upload_policy.clone()
 }
 
 struct UploadSessionPublicFields {
     filename: Option<String>,
     width: Option<i32>,
     height: Option<i32>,
-    metadata: serde_json::Value,
+    metadata: FileMetadata,
 }
 
 fn upload_session_metadata_public_fields(
-    metadata: &serde_json::Value,
-) -> Result<UploadSessionPublicFields> {
-    let filename = optional_payload_string(
-        metadata,
-        FILE_SESSION_METADATA_FILENAME_KEY,
-        "file upload session metadata",
-    )?;
-    let width = optional_payload_i32(
-        metadata,
-        FILE_SESSION_METADATA_WIDTH_KEY,
-        "file upload session metadata",
-    )?;
-    let height = optional_payload_i32(
-        metadata,
-        FILE_SESSION_METADATA_HEIGHT_KEY,
-        "file upload session metadata",
-    )?;
-    let user_metadata = metadata
-        .get(FILE_SESSION_METADATA_USER_METADATA_KEY)
-        .cloned()
-        .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-    if !user_metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "file upload session metadata is invalid".to_string(),
-        ));
+    metadata: &FileUploadSessionMetadata,
+) -> UploadSessionPublicFields {
+    UploadSessionPublicFields {
+        filename: metadata.filename.clone(),
+        width: metadata.width,
+        height: metadata.height,
+        metadata: metadata.metadata.clone(),
     }
-    Ok(UploadSessionPublicFields {
-        filename,
-        width,
-        height,
-        metadata: user_metadata,
-    })
 }
 
-pub(super) fn upload_session_object_metadata(
-    metadata: &serde_json::Value,
-) -> Result<serde_json::Value> {
-    upload_session_metadata_public_fields(metadata).map(|fields| fields.metadata)
+pub(super) fn upload_session_object_metadata(metadata: &FileUploadSessionMetadata) -> FileMetadata {
+    metadata.metadata.clone()
+}
+
+pub(super) fn validate_session_file_for_storage(file: &NewStoredFile) -> Result<()> {
+    let mut file = file.clone();
+    file.metadata = file.metadata.public();
+    validate_stored_files(std::slice::from_ref(&file))
 }
 
 pub(super) fn upload_session_record_to_new_file(
     session: &crate::models::FileUploadSessionRecord,
     file_id: &str,
 ) -> Result<NewStoredFile> {
-    let fields = upload_session_metadata_public_fields(&session.metadata)?;
+    let fields = upload_session_metadata_public_fields(&session.metadata);
     Ok(NewStoredFile {
         id: file_id.to_string(),
         filename: fields.filename,
@@ -1186,6 +1071,73 @@ pub(super) fn upload_session_record_to_new_file(
         url: None,
         mime_type: Some(session.mime_type.clone()),
         size_bytes: Some(session.size_bytes),
+        width: fields.width,
+        height: fields.height,
+        metadata: fields.metadata,
+    })
+}
+
+pub(super) async fn prepare_upload_reference_file(
+    repository: &FileStorageRepository,
+    context: FileStorageContext<'_>,
+    reference_kind: &str,
+    reference_id: &str,
+    file_id: &str,
+) -> Result<NewStoredFile> {
+    if let Some(session) = repository
+        .get_upload_session_by_reference(reference_kind, reference_id)
+        .await?
+    {
+        if session.metadata.user_id != context.user_id
+            || session.metadata.storage_scope != context.storage_scope
+        {
+            return Err(Error::InvalidInput(
+                "file reference does not belong to this request".to_string(),
+            ));
+        }
+        let ownership_proof_required = session.metadata.ownership_proof.is_some();
+        if ownership_proof_required {
+            if !upload_session_ownership_proof_verified(&session.metadata) {
+                return Err(Error::InvalidInput(
+                    "file ownership proof has not been verified".to_string(),
+                ));
+            }
+        } else if session.completed_at.is_none() {
+            return Err(Error::InvalidInput(
+                "file upload session has not been completed".to_string(),
+            ));
+        }
+        return upload_session_record_to_new_file(&session, file_id);
+    }
+
+    let reference = repository
+        .get_active_reference_metadata_by_target(reference_kind, reference_id)
+        .await?
+        .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
+    let crate::models::FileReferenceMetadata::UploadSession(metadata) = reference.metadata else {
+        return Err(Error::InvalidInput(
+            "file reference was not found".to_string(),
+        ));
+    };
+    if metadata.user_id != context.user_id || metadata.storage_scope != context.storage_scope {
+        return Err(Error::InvalidInput(
+            "file reference does not belong to this request".to_string(),
+        ));
+    }
+    if metadata.ownership_proof.is_some() && !upload_session_ownership_proof_verified(&metadata) {
+        return Err(Error::InvalidInput(
+            "file ownership proof has not been verified".to_string(),
+        ));
+    }
+    let fields = upload_session_metadata_public_fields(&metadata);
+    Ok(NewStoredFile {
+        id: file_id.to_string(),
+        filename: fields.filename,
+        storage_backend: reference.storage_backend,
+        object_key: reference.object_key,
+        url: None,
+        mime_type: Some(reference.mime_type),
+        size_bytes: Some(reference.size_bytes),
         width: fields.width,
         height: fields.height,
         metadata: fields.metadata,
@@ -1205,7 +1157,7 @@ pub(super) async fn register_upload_session_reference(
     object_key: &str,
     file_id: &str,
     expires_at: DateTime<Utc>,
-    metadata: &serde_json::Value,
+    metadata: &FileUploadSessionMetadata,
 ) -> Result<()> {
     let (reference_kind, reference_id) = upload_session_reference_target(file_id);
     repository
@@ -1215,7 +1167,7 @@ pub(super) async fn register_upload_session_reference(
             reference_kind,
             &reference_id,
             Some(expires_at),
-            metadata,
+            &FileReferenceMetadata::UploadSession(metadata.clone()),
         )
         .await?
         .ok_or_else(|| Error::InvalidInput("file upload object is not registered".to_string()))?;
@@ -1223,78 +1175,17 @@ pub(super) async fn register_upload_session_reference(
 }
 
 pub(super) fn upload_session_ownership_proof_verified(
-    metadata: &serde_json::Value,
-) -> Result<bool> {
-    optional_payload_bool(
-        metadata,
-        FILE_SESSION_METADATA_OWNERSHIP_PROOF_VERIFIED_KEY,
-        "file upload session metadata",
-    )
+    metadata: &FileUploadSessionMetadata,
+) -> bool {
+    metadata.ownership_proof_verified
 }
 
 pub(super) fn mark_upload_session_ownership_proof_verified(
-    metadata: &serde_json::Value,
-) -> Result<serde_json::Value> {
+    metadata: &FileUploadSessionMetadata,
+) -> FileUploadSessionMetadata {
     let mut metadata = metadata.clone();
-    let Some(object) = metadata.as_object_mut() else {
-        return Err(Error::InvalidInput(
-            "file upload session metadata is invalid".to_string(),
-        ));
-    };
-    object.insert(
-        FILE_SESSION_METADATA_OWNERSHIP_PROOF_VERIFIED_KEY.to_string(),
-        serde_json::Value::Bool(true),
-    );
-    Ok(metadata)
-}
-
-fn optional_payload_string(
-    payload: &serde_json::Value,
-    key: &'static str,
-    token_name: &'static str,
-) -> Result<Option<String>> {
-    match payload.get(key) {
-        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
-            Ok(Some(value.clone()))
-        }
-        Some(serde_json::Value::String(_) | serde_json::Value::Null) | None => Ok(None),
-        Some(_) => Err(Error::InvalidInput(format!("invalid {token_name}"))),
-    }
-}
-
-fn required_payload_string(
-    payload: &serde_json::Value,
-    key: &'static str,
-    token_name: &'static str,
-) -> Result<String> {
-    optional_payload_string(payload, key, token_name)?
-        .ok_or_else(|| Error::InvalidInput(format!("invalid {token_name}")))
-}
-
-fn optional_payload_i64(
-    payload: &serde_json::Value,
-    key: &'static str,
-    token_name: &'static str,
-) -> Result<Option<i64>> {
-    match payload.get(key) {
-        Some(value) => value
-            .as_i64()
-            .map(Some)
-            .ok_or_else(|| Error::InvalidInput(format!("invalid {token_name}"))),
-        None => Ok(None),
-    }
-}
-
-fn optional_payload_i32(
-    payload: &serde_json::Value,
-    key: &'static str,
-    token_name: &'static str,
-) -> Result<Option<i32>> {
-    optional_payload_i64(payload, key, token_name)?
-        .map(|value| {
-            i32::try_from(value).map_err(|_| Error::InvalidInput(format!("invalid {token_name}")))
-        })
-        .transpose()
+    metadata.ownership_proof_verified = true;
+    metadata
 }
 
 pub fn submitted_file_reference_from_session_file(
@@ -1317,26 +1208,12 @@ pub fn submitted_file_reference_from_reuse_token(
 
 pub fn upload_token_from_session_file(file: &NewStoredFile) -> Result<String> {
     file.metadata
-        .get(FILE_UPLOAD_TOKEN_KEY)
-        .and_then(serde_json::Value::as_str)
+        .upload_token
+        .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| Error::Internal("file upload session token is missing".to_string()))
-}
-
-pub(super) fn optional_payload_bool(
-    payload: &serde_json::Value,
-    key: &'static str,
-    token_name: &'static str,
-) -> Result<bool> {
-    match payload.get(key) {
-        Some(serde_json::Value::Bool(value)) => Ok(*value),
-        Some(_) => Err(Error::InvalidInput(format!(
-            "invalid {token_name}: {key} must be a boolean"
-        ))),
-        None => Ok(false),
-    }
 }
 
 fn file_upload_token_key(user_id: UserId, storage_scope: &str, secret: &str) -> String {
@@ -1353,14 +1230,14 @@ pub(super) fn file_reuse_grant(
     secret: &str,
 ) -> Result<FileReuseGrant> {
     validate_reuse_grant_request(request)?;
-    let payload = json!({
-        "kind": FILE_REUSE_TOKEN_KIND,
-        "user_id": request.user_id.as_i64(),
-        "storage_scope": request.storage_scope,
-        "source_kind": request.source_kind,
-        "source_id": request.source_id,
-        "expires_at": request.expires_at.timestamp(),
-    });
+    let payload = FileReuseTokenPayload {
+        kind: FILE_REUSE_TOKEN_KIND.to_string(),
+        user_id: request.user_id.as_i64(),
+        storage_scope: request.storage_scope.to_string(),
+        source_kind: request.source_kind.to_string(),
+        source_id: request.source_id.to_string(),
+        expires_at: request.expires_at.timestamp(),
+    };
     let payload_bytes = serde_json::to_vec(&payload)?;
     let signature = hex::encode(hmac_sha256(
         file_reuse_token_key(request.user_id, request.storage_scope, secret).as_bytes(),
@@ -1382,47 +1259,36 @@ pub(super) fn validate_file_reuse_grant(
     now: DateTime<Utc>,
     secret: &str,
 ) -> Result<ValidatedFileReuseGrant> {
-    let payload = decode_versioned_hmac_token_payload(token, FILE_REUSE_TOKEN_VERSION)?;
-    let user_id = payload
-        .get("user_id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| Error::InvalidInput("invalid file reuse token".to_string()))?;
-    let storage_scope = payload
-        .get("storage_scope")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::InvalidInput("invalid file reuse token".to_string()))?;
-    let user_id = UserId::try_from(user_id)
+    let payload: FileReuseTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_REUSE_TOKEN_VERSION)?;
+    let user_id = UserId::try_from(payload.user_id)
         .map_err(|_| Error::InvalidInput("invalid file reuse token".to_string()))?;
-    let payload = validate_versioned_hmac_token(
+    let payload: FileReuseTokenPayload = validate_versioned_hmac_token(
         token,
         FILE_REUSE_TOKEN_VERSION,
-        file_reuse_token_key(user_id, storage_scope, secret).as_bytes(),
+        file_reuse_token_key(user_id, &payload.storage_scope, secret).as_bytes(),
         "invalid file reuse token",
     )?;
-    if payload.get("kind").and_then(serde_json::Value::as_str) != Some(FILE_REUSE_TOKEN_KIND) {
+    if payload.kind != FILE_REUSE_TOKEN_KIND {
         return Err(Error::InvalidInput("invalid file reuse token".to_string()));
     }
-    if user_id != context.user_id || storage_scope != context.storage_scope {
+    if user_id != context.user_id || payload.storage_scope != context.storage_scope {
         return Err(Error::InvalidInput(
             "file reuse token does not belong to this request".to_string(),
         ));
     }
-    let expires_at = payload
-        .get("expires_at")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| Error::InvalidInput("invalid file reuse token".to_string()))?;
-    if expires_at <= now.timestamp() {
+    if payload.expires_at <= now.timestamp() {
         return Err(Error::InvalidInput(
             "file reuse token has expired".to_string(),
         ));
     }
-    let expires_at = DateTime::<Utc>::from_timestamp(expires_at, 0)
+    let expires_at = DateTime::<Utc>::from_timestamp(payload.expires_at, 0)
         .ok_or_else(|| Error::InvalidInput("invalid file reuse token".to_string()))?;
     Ok(ValidatedFileReuseGrant {
         user_id,
-        storage_scope: storage_scope.to_string(),
-        source_kind: required_payload_string(&payload, "source_kind", "file reuse token")?,
-        source_id: required_payload_string(&payload, "source_id", "file reuse token")?,
+        storage_scope: payload.storage_scope,
+        source_kind: payload.source_kind,
+        source_id: payload.source_id,
         expires_at,
     })
 }
@@ -1497,45 +1363,6 @@ fn file_ownership_proof_ranges(
     ranges.sort_by_key(|range| range.offset);
     ranges.dedup_by_key(|range| range.offset);
     Ok(ranges)
-}
-
-fn ownership_proof_ranges_to_json(ranges: &[FileOwnershipProofRange]) -> serde_json::Value {
-    serde_json::Value::Array(
-        ranges
-            .iter()
-            .map(|range| {
-                json!({
-                    "offset": range.offset,
-                    "length": range.length,
-                })
-            })
-            .collect(),
-    )
-}
-
-pub(super) fn ownership_proof_ranges_from_payload(
-    payload: &serde_json::Value,
-) -> Result<Vec<FileOwnershipProofRange>> {
-    let ranges = payload
-        .get("ownership_proof_ranges")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-    ranges
-        .iter()
-        .map(|range| {
-            let offset = range
-                .get("offset")
-                .and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-            let length = range
-                .get("length")
-                .and_then(serde_json::Value::as_i64)
-                .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-            let length = i32::try_from(length)
-                .map_err(|_| Error::InvalidInput("invalid file upload token".to_string()))?;
-            Ok(FileOwnershipProofRange { offset, length })
-        })
-        .collect()
 }
 
 pub(crate) fn file_ownership_proof_digest<'a, I>(
@@ -1780,7 +1607,10 @@ pub(super) fn database_file_read_token(
     object_key: &str,
     secret: &str,
 ) -> Result<String> {
-    let payload = json!({ "storage_backend": storage_backend, "object_key": object_key });
+    let payload = DatabaseFileReadTokenPayload {
+        storage_backend: storage_backend.to_string(),
+        object_key: object_key.to_string(),
+    };
     let payload_bytes = serde_json::to_vec(&payload)?;
     let signature = hex::encode(hmac_sha256(
         format!("synctv:file-read:{secret}").as_bytes(),
@@ -1796,12 +1626,12 @@ pub(super) fn database_file_read_token(
 }
 
 pub(super) fn database_file_read_token_storage_backend(token: &str) -> Result<String> {
-    decode_versioned_hmac_token_payload(token, DATABASE_FILE_READ_TOKEN_VERSION)?
-        .get("storage_backend")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| Error::InvalidInput("invalid file read token".to_string()))
+    let payload: DatabaseFileReadTokenPayload =
+        decode_versioned_hmac_token_payload(token, DATABASE_FILE_READ_TOKEN_VERSION)?;
+    if payload.storage_backend.trim().is_empty() {
+        return Err(Error::InvalidInput("invalid file read token".to_string()));
+    }
+    Ok(payload.storage_backend)
 }
 
 pub(super) fn validate_database_file_read_token(
@@ -1810,36 +1640,55 @@ pub(super) fn validate_database_file_read_token(
     token: &str,
     secret: &str,
 ) -> Result<()> {
-    let payload = validate_versioned_hmac_token(
+    let payload: DatabaseFileReadTokenPayload = validate_versioned_hmac_token(
         token,
         DATABASE_FILE_READ_TOKEN_VERSION,
         format!("synctv:file-read:{secret}").as_bytes(),
         "invalid file read token",
     )?;
-    if payload
-        .get("storage_backend")
-        .and_then(serde_json::Value::as_str)
-        != Some(storage_backend)
-    {
+    if payload.storage_backend != storage_backend {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
-    if payload
-        .get("object_key")
-        .and_then(serde_json::Value::as_str)
-        != Some(object_key)
-    {
+    if payload.object_key != object_key {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
     Ok(())
 }
 
 pub(super) fn file_upload_token_storage_backend(token: &str) -> Result<String> {
-    decode_versioned_hmac_token_payload(token, FILE_UPLOAD_TOKEN_VERSION)?
-        .get("storage_backend")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))
+    let payload: FileUploadTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_UPLOAD_TOKEN_VERSION)?;
+    if payload.storage_backend.trim().is_empty() {
+        return Err(Error::InvalidInput("invalid file upload token".to_string()));
+    }
+    Ok(payload.storage_backend)
+}
+
+pub(super) fn validate_file_upload_token_context(
+    token: &str,
+    now: DateTime<Utc>,
+    secret: &str,
+) -> Result<FileUploadTokenPayload> {
+    let payload: FileUploadTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_UPLOAD_TOKEN_VERSION)?;
+    let key = file_upload_token_key(
+        UserId::try_from(payload.user_id)
+            .map_err(|_| Error::InvalidInput("invalid file upload token".to_string()))?,
+        &payload.storage_scope,
+        secret,
+    );
+    let payload: FileUploadTokenPayload = validate_versioned_hmac_token(
+        token,
+        FILE_UPLOAD_TOKEN_VERSION,
+        key.as_bytes(),
+        "invalid file upload token",
+    )?;
+    if payload.expires_at <= now.timestamp() {
+        return Err(Error::InvalidInput(
+            "file upload session has expired".to_string(),
+        ));
+    }
+    Ok(payload)
 }
 
 pub(super) fn validate_database_file_upload_token(
@@ -1848,44 +1697,25 @@ pub(super) fn validate_database_file_upload_token(
     object_key: &str,
     now: DateTime<Utc>,
     secret: &str,
-) -> Result<serde_json::Value> {
-    let payload = decode_versioned_hmac_token_payload(token, FILE_UPLOAD_TOKEN_VERSION)?;
-    let user_id = payload
-        .get("user_id")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-    let storage_scope = payload
-        .get("storage_scope")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
+) -> Result<FileUploadTokenPayload> {
+    let payload: FileUploadTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_UPLOAD_TOKEN_VERSION)?;
     let key = file_upload_token_key(
-        UserId::try_from(user_id)
+        UserId::try_from(payload.user_id)
             .map_err(|_| Error::InvalidInput("invalid file upload token".to_string()))?,
-        storage_scope,
+        &payload.storage_scope,
         secret,
     );
-    let payload = validate_versioned_hmac_token(
+    let payload: FileUploadTokenPayload = validate_versioned_hmac_token(
         token,
         FILE_UPLOAD_TOKEN_VERSION,
         key.as_bytes(),
         "invalid file upload token",
     )?;
-    if payload
-        .get("storage_backend")
-        .and_then(serde_json::Value::as_str)
-        != Some(storage_backend)
-        || payload
-            .get("object_key")
-            .and_then(serde_json::Value::as_str)
-            != Some(object_key)
-    {
+    if payload.storage_backend != storage_backend || payload.object_key != object_key {
         return Err(Error::InvalidInput("invalid file upload token".to_string()));
     }
-    let expires_at = payload
-        .get("expires_at")
-        .and_then(serde_json::Value::as_i64)
-        .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
-    if expires_at <= now.timestamp() {
+    if payload.expires_at <= now.timestamp() {
         return Err(Error::InvalidInput(
             "file upload session has expired".to_string(),
         ));
@@ -1893,10 +1723,10 @@ pub(super) fn validate_database_file_upload_token(
     Ok(payload)
 }
 
-fn decode_versioned_hmac_token_payload(
-    token: &str,
-    expected_version: &str,
-) -> Result<serde_json::Value> {
+fn decode_versioned_hmac_token_payload<T>(token: &str, expected_version: &str) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let (_version, encoded_payload, _signature) =
         split_versioned_hmac_token(token, expected_version, "invalid token")?;
     let payload_bytes = base64::Engine::decode(
@@ -1908,12 +1738,15 @@ fn decode_versioned_hmac_token_payload(
         .map_err(|_| Error::InvalidInput("invalid token".to_string()))
 }
 
-fn validate_versioned_hmac_token(
+fn validate_versioned_hmac_token<T>(
     token: &str,
     expected_version: &str,
     key: &[u8],
     error_message: &str,
-) -> Result<serde_json::Value> {
+) -> Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
     let (_version, encoded_payload, signature) =
         split_versioned_hmac_token(token, expected_version, error_message)?;
     let payload_bytes = base64::Engine::decode(

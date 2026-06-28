@@ -27,17 +27,6 @@ where
     Ok(())
 }
 
-pub(super) fn print_structured_output<T>(format: RemoteOutputFormat, value: &T) -> Result<()>
-where
-    T: ?Sized + Serialize + ToHuman,
-{
-    match format {
-        RemoteOutputFormat::Human => print_human(value),
-        RemoteOutputFormat::Json => print_json(value),
-        RemoteOutputFormat::Yaml => print_yaml(value),
-    }
-}
-
 pub(super) fn print_humanized_structured_output<T>(
     format: RemoteOutputFormat,
     value: &T,
@@ -51,13 +40,6 @@ where
         RemoteOutputFormat::Human | RemoteOutputFormat::Yaml => print_yaml(&human),
         RemoteOutputFormat::Json => print_json(&human),
     }
-}
-
-fn print_human<T>(value: &T) -> Result<()>
-where
-    T: ?Sized + ToHuman,
-{
-    print_yaml(&value.to_human())
 }
 
 pub(super) fn print_yaml<T>(value: &T) -> Result<()>
@@ -75,13 +57,19 @@ pub(super) fn print_toml(value: &Value) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn config_json_for_display(config: &synctv_core::Config) -> Result<Value> {
+    let mut value = redact_config_for_display(config)?;
+    lower_camel_config_json_keys(&mut value, &[]);
+    Ok(value)
+}
+
 pub(super) fn redact_config_for_display(config: &synctv_core::Config) -> Result<Value> {
     let mut value = serde_json::to_value(config)?;
     redact_config_value(&mut value);
     Ok(value)
 }
 
-fn redact_config_value(value: &mut Value) {
+pub(in crate::cli) fn redact_config_value(value: &mut Value) {
     match value {
         Value::Object(map) => {
             redact_known_secret_fields(map);
@@ -114,6 +102,62 @@ fn prune_null_config_values(value: &mut Value) {
         }
         _ => {}
     }
+}
+
+fn lower_camel_config_json_keys(value: &mut Value, path: &[String]) {
+    match value {
+        Value::Object(map) if is_config_dynamic_map_path(path) => {
+            for (key, child) in map {
+                lower_camel_config_json_keys(child, &dynamic_map_value_path(path, key));
+            }
+        }
+        Value::Object(map) => {
+            let entries = std::mem::take(map);
+            for (key, mut child) in entries {
+                let mut child_path = path.to_vec();
+                child_path.push(key.clone());
+                lower_camel_config_json_keys(&mut child, &child_path);
+                map.insert(snake_to_lower_camel(&key), child);
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                lower_camel_config_json_keys(child, path);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_config_dynamic_map_path(path: &[String]) -> bool {
+    matches!(
+        path,
+        [section, field]
+            if (section == "file_storage" && field == "backends")
+                || (section == "request_rate_limits" && field == "scopes")
+    )
+}
+
+fn dynamic_map_value_path(path: &[String], key: &str) -> Vec<String> {
+    let mut child_path = path.to_vec();
+    child_path.push(format!("{{{key}}}"));
+    child_path
+}
+
+fn snake_to_lower_camel(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut uppercase_next = false;
+    for character in value.chars() {
+        if character == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            output.extend(character.to_uppercase());
+            uppercase_next = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn redact_known_secret_fields(map: &mut Map<String, Value>) {

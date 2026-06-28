@@ -379,7 +379,7 @@ impl ChunkUnpacketizer {
                             self.msg_header_read_state = MessageHeaderReadState::ReadTimeStamp;
                             break;
                         }
-                        _ => {
+                        MessageHeaderReadState::ReadMsgStreamID => {
                             tracing::error!("unexpected message header read state");
                             break;
                         }

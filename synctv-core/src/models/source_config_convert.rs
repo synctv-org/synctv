@@ -74,7 +74,7 @@ impl From<DirectUrlMediaSourceConfig> for proto::DirectUrlMediaSourceConfig {
     fn from(config: DirectUrlMediaSourceConfig) -> Self {
         Self {
             is_live: config.is_live,
-            duration_seconds: config.duration_seconds.and_then(|value| value.as_f64()),
+            duration_seconds: config.duration_seconds,
             prefer_proxy: config.prefer_proxy,
             medias: config.medias.into_iter().map(Into::into).collect(),
             default_media_index: index_to_proto(config.default_media_index),

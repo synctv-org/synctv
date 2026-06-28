@@ -1,13 +1,16 @@
-use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use url::Url;
 
 use super::media::SourceProvider;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "provider",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum MediaSourceConfig {
     DirectUrl(DirectUrlMediaSourceConfig),
     Bilibili(BilibiliMediaSourceConfig),
@@ -18,19 +21,24 @@ pub enum MediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "provider",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum PlaylistSourceConfig {
     Alist(AlistPlaylistSourceConfig),
     Emby(EmbyPlaylistSourceConfig),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUrlMediaSourceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_live: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration_seconds: Option<serde_json::Number>,
+    pub duration_seconds: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer_proxy: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -74,8 +82,7 @@ impl DirectUrlMediaSourceConfig {
     pub fn inferred_live_status(&self) -> Option<bool> {
         self.is_live.or_else(|| {
             self.has_positive_duration().then_some(false).or_else(|| {
-                self.medias
-                    .first()
+                self.default_media()
                     .and_then(DirectUrlMediaResourceConfig::is_file_video)
             })
         })
@@ -84,18 +91,22 @@ impl DirectUrlMediaSourceConfig {
     #[must_use]
     pub fn positive_duration_seconds(&self) -> Option<f64> {
         self.duration_seconds
-            .as_ref()
-            .and_then(serde_json::Number::as_f64)
             .filter(|duration| duration.is_finite() && *duration > 0.0)
     }
 
     fn has_positive_duration(&self) -> bool {
         self.positive_duration_seconds().is_some()
     }
+
+    fn default_media(&self) -> Option<&DirectUrlMediaResourceConfig> {
+        self.default_media_index
+            .and_then(|index| self.medias.get(index))
+            .or_else(|| self.medias.first())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUrlMediaResourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -142,7 +153,7 @@ pub fn detect_direct_url_format(url: &str) -> &'static str {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUrlSubtitleSourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -156,7 +167,7 @@ pub struct DirectUrlSubtitleSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DirectUrlDanmakuSourceConfig {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -168,7 +179,12 @@ pub struct DirectUrlDanmakuSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum BilibiliMediaSourceConfig {
     Video(BilibiliVideoSourceConfig),
     Pgc(BilibiliPgcSourceConfig),
@@ -176,7 +192,7 @@ pub enum BilibiliMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BilibiliVideoSourceConfig {
     pub bvid: Option<String>,
     pub aid: Option<u64>,
@@ -186,7 +202,7 @@ pub struct BilibiliVideoSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BilibiliPgcSourceConfig {
     pub epid: u64,
     pub cid: u64,
@@ -195,7 +211,7 @@ pub struct BilibiliPgcSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BilibiliLiveSourceConfig {
     pub room_id: u64,
     #[serde(default)]
@@ -203,7 +219,7 @@ pub struct BilibiliLiveSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AlistMediaSourceConfig {
     pub path: String,
     #[serde(default)]
@@ -212,7 +228,7 @@ pub struct AlistMediaSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AlistPlaylistSourceConfig {
     pub path: String,
     #[serde(default)]
@@ -221,25 +237,25 @@ pub struct AlistPlaylistSourceConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmbyMediaSourceConfig {
     pub item_id: String,
     pub server_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmbyPlaylistSourceConfig {
     pub item_id: String,
     pub server_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RtmpMediaSourceConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveProxyMediaSourceConfig {
     pub url: String,
 }
@@ -257,28 +273,15 @@ impl MediaSourceConfig {
         }
     }
 
-    pub fn into_provider_json(self) -> Result<JsonValue, serde_json::Error> {
-        match self {
-            Self::DirectUrl(config) => serde_json::to_value(config),
-            Self::Bilibili(config) => serde_json::to_value(config),
-            Self::Alist(config) => serde_json::to_value(config),
-            Self::Emby(config) => serde_json::to_value(config),
-            Self::Rtmp(config) => serde_json::to_value(config),
-            Self::LiveProxy(config) => serde_json::to_value(config),
-        }
-    }
-
-    pub fn from_provider_json(
-        provider: SourceProvider,
-        value: &JsonValue,
-    ) -> Result<Self, serde_json::Error> {
-        match provider {
-            SourceProvider::DirectUrl => Deserialize::deserialize(value).map(Self::DirectUrl),
-            SourceProvider::Bilibili => Deserialize::deserialize(value).map(Self::Bilibili),
-            SourceProvider::Alist => Deserialize::deserialize(value).map(Self::Alist),
-            SourceProvider::Emby => Deserialize::deserialize(value).map(Self::Emby),
-            SourceProvider::Rtmp => Deserialize::deserialize(value).map(Self::Rtmp),
-            SourceProvider::LiveProxy => Deserialize::deserialize(value).map(Self::LiveProxy),
+    pub fn ensure_provider(self, provider: SourceProvider) -> Result<Self, String> {
+        if self.provider() == provider {
+            Ok(self)
+        } else {
+            Err(format!(
+                "media source_config provider '{}' does not match source_provider '{}'",
+                self.provider(),
+                provider
+            ))
         }
     }
 }
@@ -292,58 +295,73 @@ impl PlaylistSourceConfig {
         }
     }
 
-    pub fn into_provider_json(self) -> Result<JsonValue, serde_json::Error> {
-        match self {
-            Self::Alist(config) => serde_json::to_value(config),
-            Self::Emby(config) => serde_json::to_value(config),
-        }
-    }
-
-    pub fn from_provider_json(
-        provider: SourceProvider,
-        value: &JsonValue,
-    ) -> Result<Self, serde_json::Error> {
-        match provider {
-            SourceProvider::Alist => Deserialize::deserialize(value).map(Self::Alist),
-            SourceProvider::Emby => Deserialize::deserialize(value).map(Self::Emby),
-            other => Err(serde_json::Error::custom(format!(
-                "{other} does not support playlist source_config"
-            ))),
+    pub fn ensure_provider(self, provider: SourceProvider) -> Result<Self, String> {
+        if self.provider() == provider {
+            Ok(self)
+        } else {
+            Err(format!(
+                "playlist source_config provider '{}' does not match source_provider '{}'",
+                self.provider(),
+                provider
+            ))
         }
     }
 }
+
+macro_rules! impl_source_config_sqlx_jsonb {
+    ($ty:ty) => {
+        impl sqlx::Type<sqlx::Postgres> for $ty {
+            fn type_info() -> sqlx::postgres::PgTypeInfo {
+                <sqlx::types::Json<$ty> as sqlx::Type<sqlx::Postgres>>::type_info()
+            }
+
+            fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+                <sqlx::types::Json<$ty> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+            }
+        }
+
+        impl sqlx::Encode<'_, sqlx::Postgres> for $ty {
+            fn encode_by_ref(
+                &self,
+                buf: &mut sqlx::postgres::PgArgumentBuffer,
+            ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+                sqlx::types::Json(self).encode_by_ref(buf)
+            }
+        }
+
+        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $ty {
+            fn decode(
+                value: sqlx::postgres::PgValueRef<'r>,
+            ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+                let sqlx::types::Json(config) =
+                    <sqlx::types::Json<Self> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+                Ok(config)
+            }
+        }
+    };
+}
+
+impl_source_config_sqlx_jsonb!(MediaSourceConfig);
+impl_source_config_sqlx_jsonb!(PlaylistSourceConfig);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    fn media_round_trip(
-        provider: SourceProvider,
-        config: &MediaSourceConfig,
-        expected: &JsonValue,
-    ) {
-        let storage = config
-            .clone()
-            .into_provider_json()
-            .expect("media source config should serialize");
+    fn media_round_trip(config: &MediaSourceConfig, expected: &serde_json::Value) {
+        let storage = serde_json::to_value(config).expect("media source config should serialize");
         assert_eq!(&storage, expected);
-        let decoded = MediaSourceConfig::from_provider_json(provider, &storage)
+        let decoded = serde_json::from_value::<MediaSourceConfig>(storage)
             .expect("media source config should deserialize");
         assert_eq!(&decoded, config);
     }
 
-    fn playlist_round_trip(
-        provider: SourceProvider,
-        config: &PlaylistSourceConfig,
-        expected: &JsonValue,
-    ) {
-        let storage = config
-            .clone()
-            .into_provider_json()
-            .expect("playlist source config should serialize");
+    fn playlist_round_trip(config: &PlaylistSourceConfig, expected: &serde_json::Value) {
+        let storage =
+            serde_json::to_value(config).expect("playlist source config should serialize");
         assert_eq!(&storage, expected);
-        let decoded = PlaylistSourceConfig::from_provider_json(provider, &storage)
+        let decoded = serde_json::from_value::<PlaylistSourceConfig>(storage)
             .expect("playlist source config should deserialize");
         assert_eq!(&decoded, config);
     }
@@ -369,6 +387,36 @@ mod tests {
     }
 
     #[test]
+    fn direct_url_inferred_live_status_uses_default_media() {
+        let config = DirectUrlMediaSourceConfig {
+            is_live: None,
+            duration_seconds: None,
+            prefer_proxy: None,
+            medias: vec![
+                DirectUrlMediaResourceConfig {
+                    name: "manifest".to_string(),
+                    url: "https://example.com/live.m3u8".to_string(),
+                    headers: HashMap::new(),
+                    format: String::new(),
+                },
+                DirectUrlMediaResourceConfig {
+                    name: "file".to_string(),
+                    url: "https://example.com/video.mp4".to_string(),
+                    headers: HashMap::new(),
+                    format: String::new(),
+                },
+            ],
+            default_media_index: Some(1),
+            subtitles: Vec::new(),
+            default_subtitle_index: None,
+            danmakus: Vec::new(),
+            default_danmaku_index: None,
+        };
+
+        assert_eq!(config.inferred_live_status(), Some(false));
+    }
+
+    #[test]
     fn direct_url_inferred_live_status_honors_explicit_live_flag() {
         let mut config = DirectUrlMediaSourceConfig::single(
             "https://example.com/video.mp4".to_string(),
@@ -382,10 +430,9 @@ mod tests {
     #[test]
     fn media_source_configs_round_trip_provider_storage() {
         media_round_trip(
-            SourceProvider::DirectUrl,
             &MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
                 is_live: Some(false),
-                duration_seconds: serde_json::Number::from_f64(120.5),
+                duration_seconds: Some(120.5),
                 prefer_proxy: Some(true),
                 medias: vec![DirectUrlMediaResourceConfig {
                     name: "1080p".to_string(),
@@ -411,33 +458,33 @@ mod tests {
                 default_danmaku_index: Some(0),
             }),
             &json!({
-                "is_live": false,
-                "duration_seconds": 120.5,
-                "prefer_proxy": true,
+                "provider": "directUrl",
+                "isLive": false,
+                "durationSeconds": 120.5,
+                "preferProxy": true,
                 "medias": [{
                     "name": "1080p",
                     "url": "https://example.com/video.mp4",
                     "headers": {"User-Agent": "SyncTV"},
                     "format": "mp4"
                 }],
-                "default_media_index": 0,
+                "defaultMediaIndex": 0,
                 "subtitles": [{
                     "name": "English",
                     "language": "en",
                     "url": "https://example.com/subtitle.vtt",
                     "format": "vtt"
                 }],
-                "default_subtitle_index": 0,
+                "defaultSubtitleIndex": 0,
                 "danmakus": [{
                     "name": "Danmaku",
                     "url": "https://example.com/danmaku.xml",
                     "format": "xml"
                 }],
-                "default_danmaku_index": 0
+                "defaultDanmakuIndex": 0
             }),
         );
         media_round_trip(
-            SourceProvider::Bilibili,
             &MediaSourceConfig::Bilibili(BilibiliMediaSourceConfig::Video(
                 BilibiliVideoSourceConfig {
                     bvid: Some("BV1234567890".to_string()),
@@ -447,6 +494,7 @@ mod tests {
                 },
             )),
             &json!({
+                "provider": "bilibili",
                 "kind": "video",
                 "bvid": "BV1234567890",
                 "aid": null,
@@ -455,40 +503,41 @@ mod tests {
             }),
         );
         media_round_trip(
-            SourceProvider::Alist,
             &MediaSourceConfig::Alist(AlistMediaSourceConfig {
                 server_id: "alist-main".to_string(),
                 path: "/movies/demo.mkv".to_string(),
                 password: None,
             }),
             &json!({
-                "server_id": "alist-main",
+                "provider": "alist",
+                "serverId": "alist-main",
                 "path": "/movies/demo.mkv",
                 "password": null
             }),
         );
         media_round_trip(
-            SourceProvider::Emby,
             &MediaSourceConfig::Emby(EmbyMediaSourceConfig {
                 server_id: "emby-main".to_string(),
                 item_id: "item-1".to_string(),
             }),
             &json!({
-                "server_id": "emby-main",
-                "item_id": "item-1"
+                "provider": "emby",
+                "serverId": "emby-main",
+                "itemId": "item-1"
             }),
         );
         media_round_trip(
-            SourceProvider::Rtmp,
             &MediaSourceConfig::Rtmp(RtmpMediaSourceConfig {}),
-            &json!({}),
+            &json!({
+                "provider": "rtmp"
+            }),
         );
         media_round_trip(
-            SourceProvider::LiveProxy,
             &MediaSourceConfig::LiveProxy(LiveProxyMediaSourceConfig {
                 url: "rtmp://example.com/live/room".to_string(),
             }),
             &json!({
+                "provider": "liveProxy",
                 "url": "rtmp://example.com/live/room"
             }),
         );
@@ -496,13 +545,23 @@ mod tests {
 
     #[test]
     fn media_source_config_storage_rejects_obsolete_shapes() {
-        let direct_url_error = MediaSourceConfig::from_provider_json(
-            SourceProvider::DirectUrl,
-            &json!({
-                "url": "https://example.com/video.mp4",
-                "headers": {"User-Agent": "SyncTV"}
-            }),
-        )
+        let snake_case_provider_error = serde_json::from_value::<MediaSourceConfig>(json!({
+            "provider": "direct_url",
+            "medias": [{"url": "https://example.com/video.mp4"}]
+        }))
+        .expect_err("storage uses ProtoJSON lowerCamelCase provider names");
+        assert!(
+            snake_case_provider_error
+                .to_string()
+                .contains("unknown variant `direct_url`"),
+            "{snake_case_provider_error}"
+        );
+
+        let direct_url_error = serde_json::from_value::<MediaSourceConfig>(json!({
+            "provider": "directUrl",
+            "url": "https://example.com/video.mp4",
+            "headers": {"User-Agent": "SyncTV"}
+        }))
         .expect_err("direct_url storage requires medias[]");
         let direct_url_error = direct_url_error.to_string();
         assert!(
@@ -511,46 +570,57 @@ mod tests {
             "{direct_url_error}"
         );
 
-        let bilibili_error = MediaSourceConfig::from_provider_json(
-            SourceProvider::Bilibili,
-            &json!({
-                "type": "video",
-                "bvid": "BV1234567890",
-                "cid": 42
-            }),
-        )
+        let bilibili_error = serde_json::from_value::<MediaSourceConfig>(json!({
+            "provider": "bilibili",
+            "type": "video",
+            "bvid": "BV1234567890",
+            "cid": 42
+        }))
         .expect_err("bilibili storage requires kind");
         assert!(
             bilibili_error.to_string().contains("unknown field `type`")
                 || bilibili_error.to_string().contains("missing field `kind`"),
             "{bilibili_error}"
         );
+
+        let alist_error = serde_json::from_value::<MediaSourceConfig>(json!({
+            "provider": "alist",
+            "server_id": "alist-main",
+            "path": "/movies/demo.mkv"
+        }))
+        .expect_err("storage uses ProtoJSON lowerCamelCase field names");
+        assert!(
+            alist_error
+                .to_string()
+                .contains("unknown field `server_id`"),
+            "{alist_error}"
+        );
     }
 
     #[test]
     fn playlist_source_configs_round_trip_provider_storage() {
         playlist_round_trip(
-            SourceProvider::Alist,
             &PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
                 server_id: "alist-main".to_string(),
                 path: "/shows".to_string(),
                 password: Some("pw".to_string()),
             }),
             &json!({
-                "server_id": "alist-main",
+                "provider": "alist",
+                "serverId": "alist-main",
                 "path": "/shows",
                 "password": "pw"
             }),
         );
         playlist_round_trip(
-            SourceProvider::Emby,
             &PlaylistSourceConfig::Emby(EmbyPlaylistSourceConfig {
                 server_id: "emby-main".to_string(),
                 item_id: "folder-1".to_string(),
             }),
             &json!({
-                "server_id": "emby-main",
-                "item_id": "folder-1"
+                "provider": "emby",
+                "serverId": "emby-main",
+                "itemId": "folder-1"
             }),
         );
     }

@@ -8,8 +8,8 @@ use super::*;
 use crate::{
     models::{
         CompleteFileUploadPart, CompleteFileUploadSession, FileByteRange, FileObjectVariant,
-        FileRangeRequest, FileUploadPolicy, FileUploadRange, FileUploadSession, GetFileObject,
-        StoreFileUpload, StoreFileUploadResult, FILE_GENERATED_VARIANTS_METADATA_KEY,
+        FileRangeRequest, FileReferenceMetadata, FileUploadPolicy, FileUploadRange,
+        FileUploadSession, GetFileObject, StoreFileUpload, StoreFileUploadResult,
     },
     repository::{FileStorageRepository, UpsertFileObject},
     service::file_upload_policies::{chat_attachment_upload_policy, user_avatar_upload_policy},
@@ -38,6 +38,10 @@ fn some<T>(value: Option<T>, context: &str) -> T {
 
 fn payload_size(payload: &[u8]) -> i64 {
     ok(i64::try_from(payload.len()), "payload length should fit")
+}
+
+fn empty_reference_metadata() -> FileReferenceMetadata {
+    FileReferenceMetadata::File(FileMetadata::default())
 }
 
 fn single_manifest_part(
@@ -108,7 +112,7 @@ struct UploadRequestInput<'a> {
     payload: &'a [u8],
     width: Option<i32>,
     height: Option<i32>,
-    metadata: serde_json::Value,
+    metadata: crate::models::FileMetadata,
     policy: FileUploadPolicy,
 }
 
@@ -165,7 +169,7 @@ fn simple_upload_request(
         payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     })
 }
@@ -233,7 +237,7 @@ async fn upsert_uncompressed_blob(
         payload_size(payload),
         &single_manifest_part(payload_size(payload), part_checksum_sha256.clone()),
     );
-    let metadata = serde_json::Value::Object(Default::default());
+    let metadata = crate::models::FileMetadata::default();
     ok(
         repository
             .upsert_object(UpsertFileObject {
@@ -506,7 +510,7 @@ fn valid_new_stored_file() -> NewStoredFile {
         size_bytes: Some(7),
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
     }
 }
 
@@ -608,7 +612,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -682,7 +686,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -821,7 +825,7 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -885,7 +889,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -973,7 +977,10 @@ async fn database_storage_generates_useful_image_variants() {
         payload: &payload,
         width: Some(1800),
         height: Some(1200),
-        metadata: serde_json::json!({"variants": "client-value"}),
+        metadata: crate::models::FileMetadata {
+            blurhash: Some("client-value".to_string()),
+            ..Default::default()
+        },
         policy: chat_attachment_upload_policy(),
     });
     let session = expect_upload_session(
@@ -987,8 +994,8 @@ async fn database_storage_generates_useful_image_variants() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1007,23 +1014,10 @@ async fn database_storage_generates_useful_image_variants() {
     let StoreFileUploadResult::Complete(blob) = result else {
         panic!("single-part image upload should complete");
     };
-    let variants: Vec<FileObjectVariant> = ok(
-        serde_json::from_value(
-            blob.metadata
-                .get(FILE_GENERATED_VARIANTS_METADATA_KEY)
-                .cloned()
-                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
-        ),
-        "image variants metadata should parse",
-    );
+    let variants: Vec<FileObjectVariant> = blob.metadata.variants.clone();
 
     assert!(variants.iter().any(|variant| variant.is_original));
-    assert_eq!(
-        blob.metadata
-            .get("variants")
-            .and_then(serde_json::Value::as_str),
-        Some("client-value")
-    );
+    assert_eq!(blob.metadata.blurhash.as_deref(), Some("client-value"));
     assert!(variants.iter().any(|variant| {
         !variant.is_original
             && variant.lossy
@@ -1077,7 +1071,11 @@ async fn image_processing_rejects_actual_dimensions_over_policy() {
         payload: &payload,
         width: Some(256),
         height: Some(256),
-        metadata: serde_json::json!({"width": 256, "height": 256}),
+        metadata: crate::models::FileMetadata {
+            width: Some(256),
+            height: Some(256),
+            ..Default::default()
+        },
         policy,
     });
     let session = expect_upload_session(
@@ -1091,8 +1089,8 @@ async fn image_processing_rejects_actual_dimensions_over_policy() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1155,7 +1153,7 @@ async fn large_image_finalization_probes_dimensions_before_variant_size_guard() 
         payload: &payload,
         width: Some(256),
         height: Some(256),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = expect_upload_session(
@@ -1169,8 +1167,8 @@ async fn large_image_finalization_probes_dimensions_before_variant_size_guard() 
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1226,7 +1224,7 @@ async fn audio_processing_records_actual_duration_and_bitrate() {
         payload: &payload,
         width: None,
         height: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy: chat_attachment_upload_policy(),
     });
     let session = expect_upload_session(
@@ -1240,8 +1238,8 @@ async fn audio_processing_records_actual_duration_and_bitrate() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1262,14 +1260,16 @@ async fn audio_processing_records_actual_duration_and_bitrate() {
     };
     assert_eq!(
         blob.metadata
-            .get("duration_seconds")
-            .and_then(serde_json::Value::as_i64),
+            .audio
+            .as_ref()
+            .map(|audio| audio.duration_seconds),
         Some(2)
     );
     assert!(
         blob.metadata
-            .get("bitrate_bps")
-            .and_then(serde_json::Value::as_i64)
+            .audio
+            .as_ref()
+            .map(|audio| audio.bitrate_bps)
             .is_some_and(|bitrate| bitrate > 0),
         "audio bitrate should be recorded"
     );
@@ -1293,7 +1293,7 @@ async fn audio_processing_rejects_actual_duration_over_policy() {
         payload: &payload,
         width: None,
         height: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = expect_upload_session(
@@ -1307,8 +1307,8 @@ async fn audio_processing_rejects_actual_duration_over_policy() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1368,7 +1368,11 @@ async fn derived_image_variants_follow_original_cleanup_lifecycle() {
         payload: &payload,
         width: Some(1800),
         height: Some(1200),
-        metadata: serde_json::json!({"width": 1800, "height": 1200}),
+        metadata: crate::models::FileMetadata {
+            width: Some(1800),
+            height: Some(1200),
+            ..Default::default()
+        },
         policy: chat_attachment_upload_policy(),
     });
     let session = expect_upload_session(
@@ -1382,8 +1386,8 @@ async fn derived_image_variants_follow_original_cleanup_lifecycle() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -1402,15 +1406,7 @@ async fn derived_image_variants_follow_original_cleanup_lifecycle() {
     let StoreFileUploadResult::Complete(blob) = result else {
         panic!("single-part image upload should complete");
     };
-    let variants: Vec<FileObjectVariant> = ok(
-        serde_json::from_value(
-            blob.metadata
-                .get(FILE_GENERATED_VARIANTS_METADATA_KEY)
-                .cloned()
-                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
-        ),
-        "image variants metadata should parse",
-    );
+    let variants: Vec<FileObjectVariant> = blob.metadata.variants.clone();
     let derived_variant = variants
         .iter()
         .find(|variant| !variant.is_original)
@@ -1540,14 +1536,17 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::json!({"blurhash": "abc"}),
+                metadata: crate::models::FileMetadata {
+                    blurhash: Some("abc".to_string()),
+                    ..Default::default()
+                },
                 policy,
             })
             .await,
         "upload session should be created",
     );
     let session = expect_upload_session(session, "upload session should be created");
-    assert!(session.file.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_some());
+    assert!(session.file.metadata.upload_token.is_some());
 
     let upload_url = some(
         session.upload_url.as_deref(),
@@ -1589,12 +1588,9 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
     );
     let metadata = &prepared[0].metadata;
     assert!(prepared[0].url.is_some());
-    assert!(metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
-    assert!(metadata.get(FILE_OWNERSHIP_PROOF_KEY).is_none());
-    assert_eq!(
-        metadata.get("blurhash").and_then(serde_json::Value::as_str),
-        Some("abc")
-    );
+    assert!(metadata.upload_token.is_none());
+    assert!(metadata.ownership_proof.is_none());
+    assert_eq!(metadata.blurhash.as_deref(), Some("abc"));
 }
 
 #[tokio::test]
@@ -1629,7 +1625,10 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::json!({"blurhash": "abc"}),
+                metadata: crate::models::FileMetadata {
+                    blurhash: Some("abc".to_string()),
+                    ..Default::default()
+                },
                 policy,
             })
             .await,
@@ -1638,7 +1637,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
     let mut session = expect_upload_session(session, "upload session should be created");
     assert!(!session.upload_required);
     assert!(session.file.url.is_none());
-    assert!(session.file.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_some());
+    assert!(session.file.metadata.upload_token.is_some());
     let nonce = some(
         session.ownership_proof_nonce.as_deref(),
         "ownership proof nonce should exist",
@@ -1654,14 +1653,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
         payload_size(payload),
         chunks.iter().map(Vec::as_slice),
     );
-    some(
-        session.file.metadata.as_object_mut(),
-        "metadata should be object",
-    )
-    .insert(
-        FILE_OWNERSHIP_PROOF_KEY.to_string(),
-        serde_json::Value::String(proof),
-    );
+    session.file.metadata.ownership_proof = Some(proof);
 
     let prepared = ok(
         storage
@@ -1679,12 +1671,9 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
     );
     let metadata = &prepared[0].metadata;
     assert!(prepared[0].url.is_some());
-    assert!(metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
-    assert!(metadata.get(FILE_OWNERSHIP_PROOF_KEY).is_none());
-    assert_eq!(
-        metadata.get("blurhash").and_then(serde_json::Value::as_str),
-        Some("abc")
-    );
+    assert!(metadata.upload_token.is_none());
+    assert!(metadata.ownership_proof.is_none());
+    assert_eq!(metadata.blurhash.as_deref(), Some("abc"));
 }
 
 #[tokio::test]
@@ -1719,7 +1708,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: parts.clone(),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: policy.clone(),
             })
             .await,
@@ -1739,7 +1728,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -1766,8 +1755,8 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
         first
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "first upload token should exist",
     );
@@ -1839,8 +1828,8 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
         second
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "second upload token should exist",
     );
@@ -1901,7 +1890,7 @@ async fn database_storage_delete_uses_configured_backend_name() {
             "user_avatar",
             "user:1",
             None,
-            &serde_json::Value::Object(Default::default()),
+            &empty_reference_metadata(),
         )
         .await,
         "reference should insert",
@@ -1969,7 +1958,7 @@ async fn database_storage_schedules_reference_delete_before_physical_cleanup() {
             &file.reference_kind,
             &file.reference_id,
             None,
-            &serde_json::Value::Object(Default::default()),
+            &empty_reference_metadata(),
         )
         .await,
         "reference should insert",
@@ -2083,7 +2072,7 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
                 mime_type: "image/webp",
                 size_bytes: 8,
                 content_manifest_sha256: &checksum,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "object should insert",
@@ -2118,7 +2107,7 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
             "chat_message_attachment",
             "message:1",
             None,
-            &serde_json::Value::Object(Default::default()),
+            &empty_reference_metadata(),
         )
         .await,
         "reference insert should skip deleting object"
@@ -2133,7 +2122,7 @@ async fn deleting_file_object_cannot_be_reused_or_referenced() {
                 mime_type: "image/webp",
                 size_bytes: 8,
                 content_manifest_sha256: &checksum,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         Err(Error::Conflict(_))
@@ -2154,7 +2143,7 @@ async fn insert_reference_blocks_delete_claim_until_reference_is_counted() {
                 mime_type: "image/webp",
                 size_bytes: 6,
                 content_manifest_sha256: &checksum,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "object should insert",
@@ -2169,7 +2158,7 @@ async fn insert_reference_blocks_delete_claim_until_reference_is_counted() {
             "chat_message_attachment",
             "message:locked",
             None,
-            &serde_json::Value::Object(Default::default()),
+            &empty_reference_metadata(),
         )
         .await,
         "reference should insert",
@@ -2302,7 +2291,7 @@ async fn pending_file_object_is_not_reused_but_can_be_cleaned_up() {
                 mime_type: "image/webp",
                 size_bytes: 7,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "pending object should be inserted",
@@ -2357,7 +2346,7 @@ async fn pending_file_object_becomes_reusable_after_validation() {
                 mime_type: "image/webp",
                 size_bytes: 9,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "pending object should be inserted",
@@ -2377,7 +2366,7 @@ async fn pending_file_object_becomes_reusable_after_validation() {
                 mime_type: "image/webp",
                 size_bytes: 9,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "object should validate",
@@ -2427,7 +2416,7 @@ async fn database_storage_skips_compression_below_threshold() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -2510,7 +2499,7 @@ async fn database_storage_skips_low_savings_compression() {
                 parts,
                 duration_seconds: None,
                 bitrate_bps: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy,
             })
             .await,
@@ -2586,7 +2575,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy: policy.clone(),
     });
     let session = ok(
@@ -2643,7 +2632,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let resumed = ok(
@@ -2775,7 +2764,7 @@ async fn database_storage_cleans_expired_partial_upload_session() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy: generic_binary_upload_policy(payload_size(&payload)),
     });
     let session = ok(
@@ -2786,8 +2775,8 @@ async fn database_storage_cleans_expired_partial_upload_session() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -2882,7 +2871,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -2977,7 +2966,7 @@ async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope(
             payload: &payload,
             width: Some(16),
             height: Some(16),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: crate::models::FileMetadata::default(),
             policy: policy.clone(),
         })
         .0
@@ -3057,7 +3046,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -3159,7 +3148,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -3268,7 +3257,7 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -3345,7 +3334,7 @@ async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -3471,7 +3460,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
                 mime_type: "application/pdf",
                 size_bytes: payload_size(&payload),
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "S3 object metadata should be inserted",
@@ -3549,7 +3538,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let complete_parts = complete_parts_from_manifest(&request.parts);
@@ -3568,8 +3557,8 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -3678,7 +3667,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -3689,8 +3678,8 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -3798,7 +3787,7 @@ async fn s3_storage_rejects_part_outside_declared_manifest() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy: generic_binary_upload_policy(payload_size(&payload)),
     });
     let session = ok(
@@ -3809,8 +3798,8 @@ async fn s3_storage_rejects_part_outside_declared_manifest() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -3878,7 +3867,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy: policy.clone(),
     });
     let first_session = ok(
@@ -3894,7 +3883,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let second_session = ok(
@@ -3920,8 +3909,8 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         first_session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "first upload token should exist",
     );
@@ -4016,7 +4005,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         payload: &expected_payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let actual_parts = complete_parts_from_manifest(&manifest_parts_from_payload(&actual_payload));
@@ -4035,8 +4024,8 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );
@@ -4109,7 +4098,7 @@ async fn s3_public_constructor_requires_repository_for_upload_session() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let error = err(
@@ -4164,7 +4153,7 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
         payload: &payload,
         width: Some(16),
         height: Some(16),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
         policy,
     });
     let session = ok(
@@ -4182,8 +4171,8 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
         session
             .file
             .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
+            .upload_token
+            .as_deref()
             .map(ToOwned::to_owned),
         "upload token should exist",
     );

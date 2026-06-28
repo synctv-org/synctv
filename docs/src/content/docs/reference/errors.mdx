@@ -14,7 +14,7 @@ HTTP API 使用统一 JSON 错误体：
   "error": "Invalid username or password",
   "status": 401,
   "code": 1002,
-  "request_id": "01HX..."
+  "requestId": "01HX..."
 }
 ```
 
@@ -25,7 +25,7 @@ HTTP API 使用统一 JSON 错误体：
 | `error` | 可展示的错误摘要。5xx 会被服务端脱敏。 |
 | `status` | HTTP 状态码数字。 |
 | `code` | 可选应用错误码，用于程序化处理。 |
-| `request_id` | 请求 ID。排查服务端日志时优先提供它。 |
+| `requestId` | 请求 ID。排查服务端日志时优先提供它。 |
 
 `429` 可能带 `Retry-After` header，客户端应按它退避。
 
@@ -38,7 +38,7 @@ HTTP API 使用统一 JSON 错误体：
 | `403` | 身份有效但无权限、邮箱未验证、被封禁 | 展示权限原因，不要无限重试 |
 | `404` | 资源、房间、媒体、Provider instance 不存在 | 刷新本地列表或引导返回 |
 | `409` | 已存在、并发修改、状态冲突 | 重新拉取资源后再提交 |
-| `408` | 后端请求超时 | 可退避重试，保留 request_id |
+| `408` | 后端请求超时 | 可退避重试，保留 requestId |
 | `429` | 限流或资源耗尽 | 使用 `Retry-After` 或指数退避 |
 | `502` | 上游 Provider 或代理错误 | 检查 Provider、上游状态和 header |
 | `503` | 数据库、Redis、邮件、Provider 或服务依赖不可用 | 稍后重试，运维查看依赖健康 |
@@ -98,7 +98,7 @@ WebSocket 业务错误通过 protobuf 消息返回，不是 HTTP JSON：
 | 消息 | 场景 |
 | --- | --- |
 | `ServerMessage.error` | 普通业务错误，例如权限不足、输入无效 |
-| `ServerMessage.resource_observe_error` | 资源观察失败，例如 observe id 无效、超过订阅上限、资源加载失败 |
+| `ServerMessage.resourceObserveError` | 资源观察失败，例如 observe id 无效、超过订阅上限、资源加载失败 |
 | WebSocket close | 认证失败、ticket 失效、协议错误、连接限制或服务关闭 |
 
 资源观察错误不会自动关闭连接。客户端应修正订阅、减少观察数量或退避重试。
@@ -124,8 +124,8 @@ Provider 错误需要区分 SyncTV 与上游：
   <Card title="使用错误码" icon="setting">
     有 `code` 时按错误码做程序化分支，不解析英文错误文本。
   </Card>
-  <Card title="记录 request_id" icon="magnifier">
-    用户提交问题时收集 `request_id`、时间、路径和状态码。
+  <Card title="记录 requestId" icon="magnifier">
+    用户提交问题时收集 `requestId`、时间、路径和状态码。
   </Card>
   <Card title="保护敏感信息" icon="approve-check-circle">
     不要记录 token、Cookie、OAuth2 code、Provider 凭据或密码。

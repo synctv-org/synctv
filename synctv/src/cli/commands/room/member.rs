@@ -19,21 +19,12 @@ pub enum RoomMemberSubcommand {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("room_member_scope")
-        .args(["room_id", "room_id_flag"])
-        .required(true)
-        .multiple(false)
-))]
 pub struct RoomMembersArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 
     #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
-    pub room_id: Option<String>,
-
-    #[arg(long = "room-id", value_name = "ROOM_ID", allow_hyphen_values = true)]
-    pub room_id_flag: Option<String>,
+    pub room_id: String,
 
     #[arg(long, default_value_t = 1)]
     pub page: i32,
@@ -55,11 +46,8 @@ pub struct RoomMembersArgs {
 }
 
 impl RoomMembersArgs {
-    pub(in crate::cli) fn resolved_room_id(&self) -> Result<&str> {
-        self.room_id
-            .as_deref()
-            .or(self.room_id_flag.as_deref())
-            .ok_or_else(|| anyhow!("room member list requires ROOM_ID or --room-id"))
+    pub(in crate::cli) fn resolved_room_id(&self) -> &str {
+        &self.room_id
     }
 }
 

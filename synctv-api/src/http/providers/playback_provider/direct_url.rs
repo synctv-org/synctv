@@ -19,6 +19,7 @@ use crate::http::{
 };
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlIndexedPath {
     pub version: String,
     pub mode_name: String,
@@ -26,6 +27,7 @@ pub struct DirectUrlIndexedPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectUrlSubtitlePath {
     pub version: String,
     pub mode_name: String,
@@ -60,12 +62,12 @@ impl PlaybackProviderHttpResponse for DirectUrlSubtitleResponse {
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/streams/{mode_name}/{url_index}",
+        path = "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -99,12 +101,12 @@ pub fn get_direct_url_stream(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/direct-url/{version}/streams/{mode_name}/{url_index}",
+        path = "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -179,12 +181,12 @@ async fn direct_url_stream(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/hls-manifests/{mode_name}/{url_index}",
+        path = "/api/playback-providers/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("url_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("urlIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -243,7 +245,7 @@ pub async fn get_direct_url_hls_manifest(
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("target_url" = String, Query),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -251,7 +253,7 @@ pub async fn get_direct_url_hls_manifest(
         ),
         responses(
             (status = 200, description = "DirectUrl HLS segment"),
-            (status = 400, description = "Invalid target_url", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         )
     )
@@ -281,7 +283,7 @@ pub fn get_direct_url_hls_segment(
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("target_url" = String, Query),
+            ("targetUrl" = String, Query),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -289,7 +291,7 @@ pub fn get_direct_url_hls_segment(
         ),
         responses(
             (status = 200, description = "DirectUrl HLS segment metadata"),
-            (status = 400, description = "Invalid target_url", body = synctv_proto::client::ApiErrorResponse),
+            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
             (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
         )
     )
@@ -355,12 +357,12 @@ async fn direct_url_hls_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/direct-url/{version}/subtitles/{mode_name}/{subtitle_index}",
+        path = "/api/playback-providers/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "DirectUrl Playback Provider",
         params(
             ("version" = String, Path),
-            ("mode_name" = String, Path),
-            ("subtitle_index" = u32, Path),
+            ("modeName" = String, Path),
+            ("subtitleIndex" = u32, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),

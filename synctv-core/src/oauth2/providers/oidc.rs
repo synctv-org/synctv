@@ -2,9 +2,10 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_oauth2_redirect_url, validate_provider_url,
+    validate_oauth2_redirect_url, validate_provider_url, validate_required_oauth2_field,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
+use crate::service::{OAuth2OidcProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use jsonwebtoken::{
@@ -809,18 +810,56 @@ impl Provider for OidcProvider {
     }
 }
 
-/// Factory function for OIDC provider
-pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
-    oidc_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
-}
-
-pub fn oidc_factory_with_ssrf_guard(
-    config: &serde_json::Value,
+pub fn oidc_factory_from_private_config(
+    config: &OAuth2ProviderPrivateConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
-    let config: OidcConfig = serde_json::from_value(config.clone())
-        .map_err(|e| Error::InvalidInput(format!("Invalid OIDC config: {e}")))?;
+    let OAuth2ProviderPrivateConfig::Oidc(config) = config else {
+        return Err(Error::InvalidInput(
+            "OIDC provider requires oidc config".to_string(),
+        ));
+    };
+    oidc_factory_from_typed_config(config, ssrf_guard)
+}
 
+pub fn casdoor_factory_from_private_config(
+    config: &OAuth2ProviderPrivateConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    let OAuth2ProviderPrivateConfig::Casdoor(config) = config else {
+        return Err(Error::InvalidInput(
+            "Casdoor provider requires casdoor config".to_string(),
+        ));
+    };
+    oidc_factory_from_typed_config(config, ssrf_guard)
+}
+
+fn oidc_factory_from_typed_config(
+    config: &OAuth2OidcProviderConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_required_oauth2_field("OIDC", "client_id", &config.client_id)?;
+    validate_required_oauth2_field("OIDC", "client_secret", &config.client_secret)?;
+    validate_required_oauth2_field("OIDC", "redirect_url", &config.redirect_url)?;
+    oidc_factory_from_config(
+        OidcConfig {
+            client_id: config.client_id.clone(),
+            client_secret: config.client_secret.clone(),
+            redirect_url: config.redirect_url.clone(),
+            issuer: config.issuer.clone(),
+            auth_url: config.auth_url.clone(),
+            token_url: config.token_url.clone(),
+            userinfo_url: config.userinfo_url.clone(),
+            jwks_url: config.jwks_url.clone(),
+        },
+        ssrf_guard,
+    )
+}
+
+fn oidc_factory_from_config(
+    config: OidcConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
     let has_custom_endpoints = config.auth_url.is_some()
         || config.token_url.is_some()
         || config.userinfo_url.is_some()
@@ -877,6 +916,40 @@ mod tests {
     };
     use jsonwebtoken::{EncodingKey, Header};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn oidc_private_config(
+        client_id: &str,
+        client_secret: &str,
+        redirect_url: &str,
+        issuer: &str,
+        endpoints: OidcEndpointOverrides,
+    ) -> OAuth2ProviderPrivateConfig {
+        OAuth2ProviderPrivateConfig::Oidc(OAuth2OidcProviderConfig {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            redirect_url: redirect_url.to_string(),
+            issuer: issuer.to_string(),
+            auth_url: endpoints.auth_url,
+            token_url: endpoints.token_url,
+            userinfo_url: endpoints.userinfo_url,
+            jwks_url: endpoints.jwks_url,
+        })
+    }
+
+    fn oidc_factory_for_test(
+        config: &OAuth2ProviderPrivateConfig,
+    ) -> Result<Box<dyn Provider>, Error> {
+        oidc_factory_from_private_config(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    fn no_oidc_endpoint_overrides() -> OidcEndpointOverrides {
+        OidcEndpointOverrides {
+            auth_url: None,
+            token_url: None,
+            userinfo_url: None,
+            jwks_url: None,
+        }
+    }
 
     const TEST_RSA_PRIVATE_KEY: &[u8] = br"-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTL
@@ -1573,13 +1646,14 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
     #[test]
     fn test_factory_with_issuer_only() {
-        let config = serde_json::json!({
-            "client_id": "oidc_id",
-            "client_secret": "oidc_secret",
-            "redirect_url": "https://example.com/oauth/oidc/callback",
-            "issuer": "https://issuer.example.com"
-        });
-        let provider = oidc_factory(&config);
+        let config = oidc_private_config(
+            "oidc_id",
+            "oidc_secret",
+            "https://example.com/oauth/oidc/callback",
+            "https://issuer.example.com",
+            no_oidc_endpoint_overrides(),
+        );
+        let provider = oidc_factory_for_test(&config);
         assert!(provider.is_ok());
         assert_eq!(
             provider.checked("operation should succeed").provider_type(),
@@ -1589,30 +1663,37 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
     #[test]
     fn test_factory_with_custom_endpoints() {
-        let config = serde_json::json!({
-            "client_id": "oidc_id",
-            "client_secret": "oidc_secret",
-            "redirect_url": "https://example.com/cb",
-            "issuer": "https://issuer.example.com",
-            "auth_url": "https://issuer.example.com/custom/authorize",
-            "token_url": "https://issuer.example.com/custom/token",
-            "userinfo_url": "https://issuer.example.com/custom/userinfo",
-            "jwks_url": "https://issuer.example.com/custom/jwks"
-        });
-        let provider = oidc_factory(&config);
+        let config = oidc_private_config(
+            "oidc_id",
+            "oidc_secret",
+            "https://example.com/cb",
+            "https://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/custom/authorize".to_string()),
+                token_url: Some("https://issuer.example.com/custom/token".to_string()),
+                userinfo_url: Some("https://issuer.example.com/custom/userinfo".to_string()),
+                jwks_url: Some("https://issuer.example.com/custom/jwks".to_string()),
+            },
+        );
+        let provider = oidc_factory_for_test(&config);
         assert!(provider.is_ok());
     }
 
     #[test]
     fn test_factory_with_partial_endpoints() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb",
-            "issuer": "https://issuer.example.com",
-            "auth_url": "https://issuer.example.com/auth"
-        });
-        let provider = oidc_factory(&config);
+        let config = oidc_private_config(
+            "id",
+            "secret",
+            "https://example.com/cb",
+            "https://issuer.example.com",
+            OidcEndpointOverrides {
+                auth_url: Some("https://issuer.example.com/auth".to_string()),
+                token_url: None,
+                userinfo_url: None,
+                jwks_url: None,
+            },
+        );
+        let provider = oidc_factory_for_test(&config);
         assert!(
             matches!(provider, Err(Error::InvalidInput(message)) if message.contains("auth_url") && message.contains("token_url") && message.contains("jwks_url"))
         );
@@ -1620,64 +1701,63 @@ oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==
 
     #[test]
     fn test_factory_missing_fields() {
-        // Missing client_id
-        let config = serde_json::json!({
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb",
-            "issuer": "https://issuer.example.com"
-        });
-        assert!(oidc_factory(&config).is_err());
+        let config = oidc_private_config(
+            "",
+            "secret",
+            "https://example.com/cb",
+            "https://issuer.example.com",
+            no_oidc_endpoint_overrides(),
+        );
+        assert!(oidc_factory_for_test(&config).is_err());
 
-        // Missing client_secret
-        let config = serde_json::json!({
-            "client_id": "id",
-            "redirect_url": "https://example.com/cb",
-            "issuer": "https://issuer.example.com"
-        });
-        assert!(oidc_factory(&config).is_err());
+        let config = oidc_private_config(
+            "id",
+            "",
+            "https://example.com/cb",
+            "https://issuer.example.com",
+            no_oidc_endpoint_overrides(),
+        );
+        assert!(oidc_factory_for_test(&config).is_err());
 
-        // Missing redirect_url
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "issuer": "https://issuer.example.com"
-        });
-        assert!(oidc_factory(&config).is_err());
-    }
-
-    #[test]
-    fn test_factory_empty_json() {
-        let config = serde_json::json!({});
-        let result = oidc_factory(&config);
-        assert!(result.is_err());
-        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+        let config = oidc_private_config(
+            "id",
+            "secret",
+            "",
+            "https://issuer.example.com",
+            no_oidc_endpoint_overrides(),
+        );
+        assert!(oidc_factory_for_test(&config).is_err());
     }
 
     #[test]
     fn test_factory_default_empty_issuer_rejected() {
-        // issuer defaults to "" via #[serde(default)]
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb"
-        });
-        // Should fail at creation time with a clear error (no issuer, no custom endpoints)
-        let result = oidc_factory(&config);
+        let config = oidc_private_config(
+            "id",
+            "secret",
+            "https://example.com/cb",
+            "",
+            no_oidc_endpoint_overrides(),
+        );
+        let result = oidc_factory_for_test(&config);
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
 
     #[test]
     fn test_factory_empty_issuer_with_custom_endpoints_rejected() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb",
-            "auth_url": "https://provider.example.com/authorize",
-            "token_url": "https://provider.example.com/token",
-            "jwks_url": "https://provider.example.com/jwks"
-        });
-        let result = oidc_factory(&config);
+        let config = oidc_private_config(
+            "id",
+            "secret",
+            "https://example.com/cb",
+            "",
+            OidcEndpointOverrides {
+                auth_url: Some("https://provider.example.com/authorize".to_string()),
+                token_url: Some("https://provider.example.com/token".to_string()),
+                userinfo_url: None,
+                jwks_url: Some("https://provider.example.com/jwks".to_string()),
+            },
+        );
+        let result = oidc_factory_for_test(&config);
         assert!(matches!(result, Err(Error::InvalidInput(message)) if message.contains("issuer")));
     }
 

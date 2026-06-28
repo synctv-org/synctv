@@ -4,9 +4,9 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use webauthn_rs::prelude::{
-    AuthenticationResult, CredentialID, DiscoverableAuthentication, DiscoverableKey, Passkey,
-    PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
-    Url, Webauthn, WebauthnBuilder,
+    AuthenticationResult, CreationChallengeResponse, CredentialID, DiscoverableAuthentication,
+    DiscoverableKey, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
+    RegisterPublicKeyCredential, RequestChallengeResponse, Url, Webauthn, WebauthnBuilder,
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
         session_store::RedisJsonSessionStore, AccountRegistrationOutcome,
         PendingAccountRegistration, RegistrationMode,
     },
-    Error, InternalExt, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 const PASSKEY_SESSION_TTL_SECS: u64 = 300;
@@ -224,7 +224,7 @@ impl PasskeySessionStore for RedisPasskeySessionStore {
 #[derive(Debug, Clone)]
 pub struct StartPasskeyRegistration {
     pub session_id: String,
-    pub options_json: Vec<u8>,
+    pub options: CreationChallengeResponse,
 }
 
 pub struct PreparedPasskeyRegistration {
@@ -237,7 +237,7 @@ pub struct PreparedPasskeyRegistration {
 #[derive(Debug, Clone)]
 pub struct StartPasskeyLogin {
     pub session_id: String,
-    pub options_json: Vec<u8>,
+    pub options: RequestChallengeResponse,
 }
 
 #[derive(Clone)]
@@ -400,8 +400,7 @@ impl PasskeyService {
 
         Ok(StartPasskeyRegistration {
             session_id,
-            options_json: serde_json::to_vec(&challenge)
-                .internal_with_err("Failed to serialize passkey registration challenge")?,
+            options: challenge,
         })
     }
 
@@ -453,19 +452,18 @@ impl PasskeyService {
 
         Ok(StartPasskeyRegistration {
             session_id,
-            options_json: serde_json::to_vec(&challenge)
-                .internal_with_err("Failed to serialize passkey registration challenge")?,
+            options: challenge,
         })
     }
 
     pub async fn finish_registration(
         &self,
         session_id: &str,
-        credential_json: &[u8],
+        credential: RegisterPublicKeyCredential,
         authenticated_user_id: &UserId,
     ) -> Result<WebAuthnCredential> {
         let prepared = self
-            .prepare_registration(session_id, credential_json, authenticated_user_id)
+            .prepare_registration(session_id, credential, authenticated_user_id)
             .await?;
         self.commit_prepared_registration(prepared).await
     }
@@ -473,7 +471,7 @@ impl PasskeyService {
     pub async fn prepare_registration(
         &self,
         session_id: &str,
-        credential_json: &[u8],
+        credential: RegisterPublicKeyCredential,
         authenticated_user_id: &UserId,
     ) -> Result<PreparedPasskeyRegistration> {
         let Some(PasskeySession::Registration {
@@ -489,8 +487,6 @@ impl PasskeyService {
                 "Passkey registration session belongs to a different user".to_string(),
             ));
         }
-        let credential: RegisterPublicKeyCredential = serde_json::from_slice(credential_json)
-            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
         let passkey = self
             .webauthn
             .finish_passkey_registration(&credential, &state)
@@ -541,7 +537,7 @@ impl PasskeyService {
     pub async fn finish_account_registration(
         &self,
         session_id: &str,
-        credential_json: &[u8],
+        credential: RegisterPublicKeyCredential,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<AccountRegistrationOutcome> {
@@ -568,8 +564,6 @@ impl PasskeyService {
             )
             .await?;
 
-        let credential: RegisterPublicKeyCredential = serde_json::from_slice(credential_json)
-            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
         let passkey = self
             .webauthn
             .finish_passkey_registration(&credential, &state)
@@ -698,8 +692,7 @@ impl PasskeyService {
 
         Ok(StartPasskeyLogin {
             session_id,
-            options_json: serde_json::to_vec(&challenge)
-                .internal_with_err("Failed to serialize passkey login challenge")?,
+            options: challenge,
         })
     }
 
@@ -758,8 +751,7 @@ impl PasskeyService {
 
         Ok(StartPasskeyLogin {
             session_id,
-            options_json: serde_json::to_vec(&challenge)
-                .internal_with_err("Failed to serialize passkey login challenge")?,
+            options: challenge,
         })
     }
 
@@ -787,15 +779,14 @@ impl PasskeyService {
 
         Ok(StartPasskeyLogin {
             session_id,
-            options_json: serde_json::to_vec(&challenge)
-                .internal_with_err("Failed to serialize passkey verification challenge")?,
+            options: challenge,
         })
     }
 
     pub async fn finish_login(
         &self,
         session_id: &str,
-        credential_json: &[u8],
+        credential: PublicKeyCredential,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<crate::service::AuthenticatedLogin> {
@@ -813,14 +804,14 @@ impl PasskeyService {
                     user_id,
                     brute_force_key,
                     state,
-                    credential_json,
+                    credential,
                     client_ip,
                     control,
                 )
                 .await
             }
             PasskeySession::DiscoverableLogin { state } => {
-                self.finish_discoverable_login(state, credential_json, client_ip, control)
+                self.finish_discoverable_login(state, credential, client_ip, control)
                     .await
             }
             _ => Err(Error::Authentication("Authentication failed".to_string())),
@@ -832,22 +823,10 @@ impl PasskeyService {
         user_id: UserId,
         brute_force_key: String,
         state: PasskeyAuthentication,
-        credential_json: &[u8],
+        credential: PublicKeyCredential,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<crate::service::AuthenticatedLogin> {
-        let Ok(credential) = serde_json::from_slice::<PublicKeyCredential>(credential_json) else {
-            self.user_service
-                .record_external_login_failure_with_control(
-                    &brute_force_key,
-                    true,
-                    client_ip,
-                    control,
-                )
-                .await?;
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        };
-
         let Ok(auth_result) = self
             .webauthn
             .finish_passkey_authentication(&credential, &state)
@@ -896,16 +875,10 @@ impl PasskeyService {
     async fn finish_discoverable_login(
         &self,
         state: DiscoverableAuthentication,
-        credential_json: &[u8],
+        credential: PublicKeyCredential,
         client_ip: Option<std::net::IpAddr>,
         control: Option<&synctv_common::ExecutionControl>,
     ) -> Result<crate::service::AuthenticatedLogin> {
-        let Ok(credential) = serde_json::from_slice::<PublicKeyCredential>(credential_json) else {
-            self.record_discoverable_login_failure(client_ip, control)
-                .await?;
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        };
-
         let Ok((_user_handle, credential_id)) = self
             .webauthn
             .identify_discoverable_authentication(&credential)
@@ -969,7 +942,7 @@ impl PasskeyService {
     pub async fn finish_user_verification(
         &self,
         session_id: &str,
-        credential_json: &[u8],
+        credential: PublicKeyCredential,
         authenticated_user_id: &UserId,
     ) -> Result<()> {
         let Some(PasskeySession::Verification { user_id, state }) =
@@ -981,8 +954,6 @@ impl PasskeyService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        let credential: PublicKeyCredential = serde_json::from_slice(credential_json)
-            .map_err(|_| Error::Authentication("Authentication failed".to_string()))?;
         let auth_result = self
             .webauthn
             .finish_passkey_authentication(&credential, &state)

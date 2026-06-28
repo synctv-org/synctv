@@ -6,9 +6,8 @@ use synctv_proto::source_config::SourceProvider;
 
 #[test]
 fn test_provider_common_list_provider_instances_defaults_http_query_fields() {
-    let request: ListProviderInstancesRequest =
-        serde_json::from_str(r#"{"provider_type":"alist"}"#)
-            .expect("provider list HTTP query should deserialize with default pagination");
+    let request: ListProviderInstancesRequest = serde_json::from_str(r#"{"providerType":3}"#)
+        .expect("provider list HTTP query should deserialize with default pagination");
 
     assert_eq!(request.page, 0);
     assert_eq!(request.page_size, 0);
@@ -42,11 +41,11 @@ fn test_provider_common_list_provider_instances_rejects_too_long_search() {
 #[test]
 fn test_provider_common_list_provider_instances_rejects_unknown_provider_type_json() {
     let error = serde_json::from_str::<ListProviderInstancesRequest>(
-        r#"{"provider_type":"Bad Provider","page":1,"page_size":20}"#,
+        r#"{"providerType":999,"page":1,"pageSize":20}"#,
     )
     .expect_err("request should be invalid");
     let message = error.to_string();
-    assert!(message.contains("provider_type"), "{message}");
+    assert!(message.contains("999"), "{message}");
 }
 
 #[test]
@@ -80,20 +79,41 @@ fn test_provider_common_add_provider_request_requires_valid_providers() {
 }
 
 #[test]
-fn test_provider_common_update_provider_request_defaults_path_and_repeated_fields() {
+fn test_provider_common_update_provider_request_accepts_full_body() {
     let request: UpdateProviderInstanceRequest =
-        serde_json::from_str(r#"{"endpoint":"https://provider.example.com"}"#)
+        serde_json::from_str(r#"{"name":"alist-main","endpoint":"https://provider.example.com"}"#)
             .expect("provider common update request should deserialize");
 
-    assert!(request.name.is_empty());
     assert_eq!(
         request.endpoint.as_deref(),
         Some("https://provider.example.com")
     );
+    assert_eq!(request.name, "alist-main");
     assert!(request.providers.is_empty());
     assert_eq!(request.jwt_secret, None);
     assert_eq!(request.custom_ca, None);
     assert_eq!(request.clear_comment, None);
     assert_eq!(request.clear_jwt_secret, None);
     assert_eq!(request.clear_custom_ca, None);
+}
+
+#[test]
+fn test_provider_common_update_provider_request_contains_path_name_for_rpc() {
+    let request = UpdateProviderInstanceRequest {
+        name: "alist-main".to_string(),
+        endpoint: Some("https://provider.example.com".to_string()),
+        comment: None,
+        timeout_seconds: None,
+        tls: None,
+        insecure_tls: None,
+        providers: Vec::new(),
+        jwt_secret: None,
+        custom_ca: None,
+        clear_comment: None,
+        clear_jwt_secret: None,
+        clear_custom_ca: None,
+    };
+
+    assert_eq!(request.name, "alist-main");
+    synctv_proto::validate(&request).expect("RPC update request should include path name");
 }

@@ -448,7 +448,7 @@ fn test_gops_rapid_creation() {
     );
 }
 
-/// Test `is_enabled` matches size > 0
+/// Test is_enabled matches size > 0
 #[test]
 fn test_gops_is_enabled() {
     let gops_enabled = Gops::new(5, None);

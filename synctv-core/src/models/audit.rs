@@ -1,6 +1,212 @@
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    Decode, Encode, Postgres, Type,
+};
 use std::fmt;
 use std::str::FromStr;
+
+use super::RoomSettings;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditUpdatedFields {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub two_factor_enabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notifications: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creator_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_author_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_operation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reporter_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_owner_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_owner_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_owner_previous_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_review_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_review_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_keys: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub succeeded: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playlists_deleted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_deleted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members_deleted: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources_deleted: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings_deleted: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_deleted: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_permissions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_permissions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_permissions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_added_permissions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_removed_permissions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub room_settings: Option<Box<RoomSettings>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_updated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password_set: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_fields: Option<AuditUpdatedFields>,
+}
+
+impl AuditDetails {
+    #[must_use]
+    pub fn reason(reason: impl Into<String>) -> Self {
+        Self {
+            reason: Some(reason.into()),
+            ..Default::default()
+        }
+    }
+}
+
+impl Type<Postgres> for AuditDetails {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<AuditDetails> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<AuditDetails> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for AuditDetails {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for AuditDetails {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(data) = <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(data)
+    }
+}
 
 /// Audit actions stored in `audit_logs.action`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

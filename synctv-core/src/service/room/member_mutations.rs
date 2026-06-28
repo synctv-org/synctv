@@ -1,7 +1,7 @@
 use crate::{
     models::{
-        AddMemberOptions, AuditAction, AuditTargetType, MemberStatus, ReviewRequestId, Room,
-        RoomId, RoomMember, RoomRole, UserId,
+        AddMemberOptions, AuditAction, AuditDetails, AuditTargetType, MemberStatus,
+        ReviewRequestId, Room, RoomId, RoomMember, RoomRole, UserId,
     },
     repository::ReviewRepository,
     Error, Result,
@@ -18,8 +18,8 @@ fn normalized_rejection_reason(reason: Option<&str>) -> Option<&str> {
     reason.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn rejection_reason_json(reason: Option<&str>) -> serde_json::Value {
-    normalized_rejection_reason(reason).map_or(serde_json::Value::Null, serde_json::Value::from)
+fn rejection_reason(reason: Option<&str>) -> Option<String> {
+    normalized_rejection_reason(reason).map(ToOwned::to_owned)
 }
 
 fn rejection_notification(reason: Option<&str>) -> String {
@@ -278,12 +278,13 @@ impl RoomService {
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "new_status": "active",
-                "role": role.to_string(),
-                "source": "explicit_add_member",
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                new_status: Some("active".to_string()),
+                role: Some(role.to_string()),
+                source: Some("explicit_add_member".to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -456,14 +457,15 @@ impl RoomService {
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "request_id": request_id,
-                "previous_review_status": "pending",
-                "new_review_status": "rejected",
-                "source": "reject_join_request",
-                "reason": rejection_reason_json(reason),
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("rejected".to_string()),
+                source: Some("reject_join_request".to_string()),
+                reason: rejection_reason(reason),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -551,12 +553,13 @@ impl RoomService {
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "new_status": "active",
-                "role": role.to_string(),
-                "source": "admin_add_member",
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                new_status: Some("active".to_string()),
+                role: Some(role.to_string()),
+                source: Some("admin_add_member".to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -631,13 +634,14 @@ impl RoomService {
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "request_id": request_id,
-                "previous_review_status": "pending",
-                "new_review_status": "approved",
-                "source": "admin_approve_join_request",
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("approved".to_string()),
+                source: Some("admin_approve_join_request".to_string()),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -732,14 +736,15 @@ impl RoomService {
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id,
-                "request_id": request_id,
-                "previous_review_status": "pending",
-                "new_review_status": "rejected",
-                "source": "admin_reject_join_request",
-                "reason": rejection_reason_json(reason),
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("rejected".to_string()),
+                source: Some("admin_reject_join_request".to_string()),
+                reason: rejection_reason(reason),
+                ..Default::default()
+            },
         )
         .await;
 
@@ -904,13 +909,16 @@ impl RoomService {
 
 #[cfg(test)]
 mod tests {
-    use super::{rejection_notification, rejection_reason_json};
+    use super::{rejection_notification, rejection_reason};
 
     #[test]
-    fn rejection_reason_json_preserves_missing_and_trims_present_reason() {
-        assert!(rejection_reason_json(None).is_null());
-        assert!(rejection_reason_json(Some("   ")).is_null());
-        assert_eq!(rejection_reason_json(Some("  duplicate  ")), "duplicate");
+    fn rejection_reason_preserves_missing_and_trims_present_reason() {
+        assert_eq!(rejection_reason(None), None);
+        assert_eq!(rejection_reason(Some("   ")), None);
+        assert_eq!(
+            rejection_reason(Some("  duplicate  ")).as_deref(),
+            Some("duplicate")
+        );
     }
 
     #[test]

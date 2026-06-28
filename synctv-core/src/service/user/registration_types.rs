@@ -3,7 +3,7 @@ use webauthn_rs::prelude::Passkey;
 
 use crate::{
     models::oauth2_client::OAuth2Provider,
-    models::{FileUploadManifestPart, SignupMethod, User, UserId},
+    models::{FileMetadata, FileUploadManifestPart, SignupMethod, User, UserId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct CreateUserAvatarUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: serde_json::Value,
+    pub metadata: FileMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +102,7 @@ pub(super) struct PendingRegistrationRequestRow {
     pub(super) opaque_ciphersuite: Option<String>,
     pub(super) opaque_server_setup_version: Option<i32>,
     pub(super) signup_method: SignupMethod,
-    pub(super) oauth2_provider: Option<crate::models::OAuth2ProviderTypeName>,
+    pub(super) oauth2_provider: Option<OAuth2Provider>,
     pub(super) oauth2_provider_instance_name: Option<String>,
     pub(super) oauth2_provider_issuer: Option<String>,
     pub(super) oauth2_provider_user_id: Option<String>,
@@ -110,6 +110,45 @@ pub(super) struct PendingRegistrationRequestRow {
     pub(super) oauth2_avatar_url: Option<String>,
     pub(super) oauth2_email_trusted: Option<bool>,
     pub(super) webauthn_credential_id: Option<Vec<u8>>,
-    pub(super) webauthn_passkey: Option<serde_json::Value>,
+    pub(super) webauthn_passkey: Option<PendingRegistrationPasskey>,
     pub(super) webauthn_credential_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct PendingRegistrationPasskey(Passkey);
+
+impl PendingRegistrationPasskey {
+    pub(crate) fn into_inner(self) -> Passkey {
+        self.0
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for PendingRegistrationPasskey {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for PendingRegistrationPasskey {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> std::result::Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for PendingRegistrationPasskey {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(value) =
+            <sqlx::types::Json<Self> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(value)
+    }
 }

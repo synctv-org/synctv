@@ -5,7 +5,6 @@
 
 use chrono::{DateTime, Utc};
 use moka::future::Cache as AsyncCache;
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
@@ -13,18 +12,18 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, ChatAttachment, ChatEventKind, ChatHistoryCursor,
-        ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent, ChatMessageEventLog,
-        ChatMessageOperationKind, ChatMessageReadReceiptsPage, ChatMessageStatus, ChatMessageType,
-        ChatMessageWithAttachments, ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery,
-        ChatReactionUsersCursor, ChatReactionUsersPage, ChatReadStateWithUnread,
-        ChatSearchMessagesPage, ChatSearchMessagesQuery, CompleteFileUploadSession,
-        CompleteFileUploadSessionResult, CreateChatAttachmentUploadSession, DeleteChatMessage,
-        EditChatMessage, FileBlob, FileObjectDownload, FileRangeRequest, FileUploadRange,
-        FileUploadSessionCreateResult, GetFileObject, MarkChatRead, PinChatMessage, RoomId,
-        SendChatMessage, SetChatReaction, StoreFileUpload, StoreFileUploadResult,
-        SubmittedFileReference, SubmittedFileReferenceKind, UnpinChatMessage, UserId,
-        CHAT_PIN_NOTE_MAX_CHARS,
+        AuditAction, AuditDetails, AuditTargetType, ChatAttachment, ChatEventKind,
+        ChatHistoryCursor, ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent,
+        ChatMessageEventLog, ChatMessageOperationKind, ChatMessageReadReceiptsPage,
+        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
+        ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
+        ChatReactionUsersPage, ChatReadStateWithUnread, ChatSearchMessagesPage,
+        ChatSearchMessagesQuery, CompleteFileUploadSession, CompleteFileUploadSessionResult,
+        CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileBlob,
+        FileObjectDownload, FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult,
+        GetFileObject, MarkChatRead, PinChatMessage, RoomId, SendChatMessage, SetChatReaction,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        UnpinChatMessage, UserId, CHAT_PIN_NOTE_MAX_CHARS,
     },
     repository::{
         ChatMessageOperationIdempotency, ChatRepository, DeleteChatMessageEventRequest,
@@ -310,7 +309,7 @@ impl ChatService {
                     content,
                     message_type: ChatMessageType::Text,
                     reply_to_message_id: None,
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: crate::models::ChatMetadata::default(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
                 },
@@ -1738,16 +1737,17 @@ impl ChatService {
             }
         };
         let target_id = format!("{}:{}", request.room_id, request.message_id);
-        let details = json!({
-            "room_id": request.room_id.to_string(),
-            "message_id": request.message_id,
-            "message_created_at": original.created_at,
-            "original_author_id": original.user_id.map(|user_id| user_id.to_string()),
-            "deleted_by": request.user_id.to_string(),
-            "reason": request.reason.as_deref(),
-            "event_id": event.event_id,
-            "client_operation_id": request.client_operation_id.as_deref(),
-        });
+        let details = AuditDetails {
+            room_id: Some(request.room_id.to_string()),
+            message_id: Some(request.message_id.to_string()),
+            message_created_at: Some(original.created_at),
+            original_author_id: original.user_id.map(|user_id| user_id.to_string()),
+            deleted_by: Some(request.user_id.to_string()),
+            reason: request.reason.clone(),
+            event_id: Some(event.event_id.clone()),
+            client_operation_id: request.client_operation_id.clone(),
+            ..Default::default()
+        };
 
         if let Err(error) = audit
             .log(AuditEventParams {

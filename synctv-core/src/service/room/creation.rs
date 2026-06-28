@@ -2,9 +2,9 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{
-        AuditAction, AuditTargetType, OpaquePasswordRecord, PageParams, ReviewStatus, Room,
-        RoomCategoryId, RoomId, RoomLabelId, RoomMember, RoomRole, RoomSettings, UserId,
-        UserListQuery, UserRole, UserStatus,
+        AuditAction, AuditDetails, AuditTargetType, NotificationData, OpaquePasswordRecord,
+        PageParams, ReviewStatus, Room, RoomCategoryId, RoomId, RoomLabelId, RoomMember, RoomRole,
+        RoomSettings, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::RoomRepository,
     service::{
@@ -34,7 +34,7 @@ struct PendingRoomCreationRequestRow {
     name: String,
     description: String,
     category_id: Option<RoomCategoryId>,
-    settings_payload: Option<serde_json::Value>,
+    settings_payload: Option<RoomSettings>,
     opaque_password_record: Option<Vec<u8>>,
     opaque_password_credential_identifier: Option<Vec<u8>>,
     opaque_password_ciphersuite: Option<String>,
@@ -43,11 +43,7 @@ struct PendingRoomCreationRequestRow {
 
 impl PendingRoomCreationRequestRow {
     fn into_request(self) -> std::result::Result<PendingRoomCreationRequest, sqlx::Error> {
-        let settings_payload = self
-            .settings_payload
-            .unwrap_or_else(|| serde_json::json!({}));
-        let settings = serde_json::from_value::<RoomSettings>(settings_payload)
-            .map_err(|error| sqlx::Error::Decode(error.into()))?;
+        let settings = self.settings_payload.unwrap_or_default();
         let opaque_password_record = match (
             self.opaque_password_record,
             self.opaque_password_credential_identifier,
@@ -152,9 +148,6 @@ impl RoomService {
             settings,
             password,
         } = draft;
-        let settings_payload = serde_json::to_value(settings)
-            .map_err(|e| Error::Internal(format!("Failed to serialize room settings: {e}")))?;
-
         let request_id = sqlx::query_scalar!(
             r"
             INSERT INTO room_creation_requests (
@@ -167,7 +160,7 @@ impl RoomService {
             name,
             description,
             category_id.map(|id| id.as_i64()),
-            settings_payload,
+            settings as &RoomSettings,
             i16::from(ReviewStatus::Pending)
         )
         .fetch_one(&mut **tx)
@@ -230,7 +223,7 @@ impl RoomService {
                    name,
                    description,
                    category_id AS "category_id: RoomCategoryId",
-                   settings_payload,
+                   settings_payload AS "settings_payload?: RoomSettings",
                    opaque_password_record,
                    opaque_password_credential_identifier,
                    opaque_password_ciphersuite,
@@ -635,11 +628,12 @@ impl RoomService {
                             format!(
                                 "User {created_by} requested room \"{name}\" which requires admin review."
                             ),
-                            Some(serde_json::json!({
-                                "room_request_id": pending_room.id,
-                                "room_name": &name,
-                                "creator_id": created_by,
-                            })),
+                            Some(NotificationData {
+                                room_id: Some(pending_room.id.to_string()),
+                                room_name: Some(name.clone()),
+                                user_id: Some(created_by.to_string()),
+                                ..Default::default()
+                            }),
                         )
                         .await
                     {
@@ -1007,13 +1001,14 @@ impl RoomService {
             AuditAction::RoomOwnershipTransferred,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "operation": "transfer_ownership",
-                "previous_owner_id": current_owner_id,
-                "new_owner_id": new_owner_id,
-                "previous_owner_role": format!("{:?}", current_owner_member.role),
-                "new_owner_previous_role": format!("{:?}", new_owner_member.role),
-            }),
+            AuditDetails {
+                operation: Some("transfer_ownership".to_string()),
+                previous_owner_id: Some(current_owner_id.to_string()),
+                new_owner_id: Some(new_owner_id.to_string()),
+                previous_owner_role: Some(format!("{:?}", current_owner_member.role)),
+                new_owner_previous_role: Some(format!("{:?}", new_owner_member.role)),
+                ..Default::default()
+            },
         )
         .await;
 

@@ -14,7 +14,7 @@ HTTP APIs use a standard JSON error body:
   "error": "Invalid username or password",
   "status": 401,
   "code": 1002,
-  "request_id": "01HX..."
+  "requestId": "01HX..."
 }
 ```
 
@@ -23,7 +23,7 @@ HTTP APIs use a standard JSON error body:
 | `error` | User-facing summary. 5xx details are sanitized. |
 | `status` | Numeric HTTP status. |
 | `code` | Optional application error code for programmatic handling. |
-| `request_id` | Request identifier for log correlation. |
+| `requestId` | Request identifier for log correlation. |
 
 `429` may include a `Retry-After` header.
 
@@ -92,7 +92,7 @@ WebSocket business errors use protobuf messages, not HTTP JSON:
 | Message | Scenario |
 | --- | --- |
 | `ServerMessage.error` | General business error, such as permission or invalid input |
-| `ServerMessage.resource_observe_error` | Invalid observe id, too many observations, or resource load failure |
+| `ServerMessage.resourceObserveError` | Invalid observe id, too many observations, or resource load failure |
 | WebSocket close | Auth failure, expired ticket, protocol error, connection limit, shutdown |
 
 Resource observation errors do not necessarily close the connection.
@@ -117,7 +117,7 @@ Resource observation errors do not necessarily close the connection.
     Branch on `code` when present. Do not parse English text.
   </Card>
   <Card title="Keep request IDs" icon="magnifier">
-    Collect `request_id`, time, path, and status for support.
+    Collect `requestId`, time, path, and status for support.
   </Card>
   <Card title="Protect secrets" icon="approve-check-circle">
     Never log tokens, cookies, OAuth2 codes, Provider credentials, or passwords.

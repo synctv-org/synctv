@@ -75,6 +75,46 @@ use synctv_proto::{
 type ProxySliceCacheClient =
     synctv_proxy::grpc::ProxySliceCacheServiceClient<tonic::transport::Channel>;
 
+fn admin_update_settings(
+    settings: Option<crate::proto::update_settings_request::Settings>,
+) -> Option<admin_proto::update_settings_request::Settings> {
+    settings.map(|settings| match settings {
+        crate::proto::update_settings_request::Settings::Server(settings) => {
+            admin_proto::update_settings_request::Settings::Server(settings)
+        }
+        crate::proto::update_settings_request::Settings::Permissions(settings) => {
+            admin_proto::update_settings_request::Settings::Permissions(settings)
+        }
+        crate::proto::update_settings_request::Settings::Room(settings) => {
+            admin_proto::update_settings_request::Settings::Room(settings)
+        }
+        crate::proto::update_settings_request::Settings::User(settings) => {
+            admin_proto::update_settings_request::Settings::User(settings)
+        }
+        crate::proto::update_settings_request::Settings::Oauth2(settings) => {
+            admin_proto::update_settings_request::Settings::Oauth2(settings)
+        }
+        crate::proto::update_settings_request::Settings::Proxy(settings) => {
+            admin_proto::update_settings_request::Settings::Proxy(settings)
+        }
+        crate::proto::update_settings_request::Settings::Rtmp(settings) => {
+            admin_proto::update_settings_request::Settings::Rtmp(settings)
+        }
+        crate::proto::update_settings_request::Settings::Email(settings) => {
+            admin_proto::update_settings_request::Settings::Email(settings)
+        }
+        crate::proto::update_settings_request::Settings::Webrtc(settings) => {
+            admin_proto::update_settings_request::Settings::Webrtc(settings)
+        }
+        crate::proto::update_settings_request::Settings::Chat(settings) => {
+            admin_proto::update_settings_request::Settings::Chat(settings)
+        }
+        crate::proto::update_settings_request::Settings::Cors(settings) => {
+            admin_proto::update_settings_request::Settings::Cors(settings)
+        }
+    })
+}
+
 const SLICE_CACHE_REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const SLICE_CACHE_REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -298,38 +338,6 @@ impl ManagementServiceImpl {
         let actor_user_id = self.resolve_client_actor_user_id(actor).await?;
         let request = Self::required_nested_request(request, "request")?;
         Ok((actor_user_id, request))
-    }
-
-    fn merge_json_object_patch(
-        base: &mut serde_json::Value,
-        patch: serde_json::Value,
-    ) -> Result<(), Status> {
-        if !patch.is_object() {
-            return Err(Status::invalid_argument(
-                "settings_json must be a JSON object patch",
-            ));
-        }
-
-        Self::merge_json_value(base, patch);
-        Ok(())
-    }
-
-    fn merge_json_value(base: &mut serde_json::Value, patch: serde_json::Value) {
-        match (base, patch) {
-            (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
-                for (key, patch_value) in patch_map {
-                    match base_map.get_mut(&key) {
-                        Some(base_value) => Self::merge_json_value(base_value, patch_value),
-                        None => {
-                            base_map.insert(key, patch_value);
-                        }
-                    }
-                }
-            }
-            (base_slot, patch_value) => {
-                *base_slot = patch_value;
-            }
-        }
     }
 
     async fn resolve_batch_user_refs(&self, users: Vec<UserRef>) -> BatchUserResolution {
@@ -1530,38 +1538,19 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
-        let settings = if req.settings_json.is_empty() {
-            Vec::new()
-        } else {
-            let patch = serde_json::from_slice(&req.settings_json).map_err(|error| {
-                Status::invalid_argument(format!("Invalid settings JSON: {error}"))
-            })?;
-            let mut merged = serde_json::to_value(synctv_core::models::RoomSettings::default())
-                .map_err(|error| {
-                    tracing::error!(error = %error, "failed to encode default room settings");
-                    Status::internal("failed to encode default room settings")
-                })?;
-            Self::merge_json_object_patch(&mut merged, patch)?;
-            serde_json::to_vec(&merged).map_err(|error| {
-                tracing::error!(error = %error, "failed to encode room settings");
-                Status::internal("failed to encode room settings")
-            })?
-        };
-        let response = self
-            .client_api
-            .create_room(
-                &actor_user_id,
-                client_proto::CreateRoomRequest {
-                    name: req.name,
-                    settings,
-                    description: req.description,
-                    password: req.password,
-                    category_id: req.category_id,
-                    label_ids: req.label_ids,
-                },
-            )
-            .await
-            .map_err(map_api_error)?;
+        let response = Box::pin(self.client_api.create_room(
+            &actor_user_id,
+            client_proto::CreateRoomRequest {
+                name: req.name,
+                settings: req.settings,
+                description: req.description,
+                password: req.password,
+                category_id: req.category_id,
+                label_ids: req.label_ids,
+            },
+        ))
+        .await
+        .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -1858,33 +1847,12 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let current = self
-            .admin_api
-            .get_room_settings(admin_proto::GetRoomSettingsRequest {
-                room_id: req.room_id.clone(),
-            })
-            .await
-            .map_err(map_api_error)?;
-        let mut settings = if current.settings.is_empty() {
-            serde_json::Value::Object(serde_json::Map::new())
-        } else {
-            serde_json::from_slice(&current.settings).map_err(|error| {
-                Status::internal(format!("stored room settings are invalid: {error}"))
-            })?
-        };
-        let patch = serde_json::from_slice(&req.settings_json)
-            .map_err(|error| Status::invalid_argument(format!("Invalid settings JSON: {error}")))?;
-        Self::merge_json_object_patch(&mut settings, patch)?;
-        let settings_json = serde_json::to_vec(&settings).map_err(|error| {
-            tracing::error!(error = %error, "failed to encode room settings");
-            Status::internal("failed to encode room settings")
-        })?;
         let response = self
             .admin_api
             .update_room_settings(
                 admin_proto::UpdateRoomSettingsRequest {
                     room_id: req.room_id,
-                    settings: settings_json,
+                    settings: req.settings,
                 },
                 &validated.user_id,
             )
@@ -2091,7 +2059,7 @@ impl ManagementService for ManagementServiceImpl {
                 client_proto::StartPlaybackRequest {
                     media_id: req.media_id,
                     playlist_id: req.playlist_id,
-                    target: req.target_json,
+                    target: req.target,
                 },
                 &validated.user_id,
                 &ctx,
@@ -2451,7 +2419,7 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::ListPlaylistItemsRequest {
                     playlist_id: req.playlist_id,
-                    target: req.target_json,
+                    target: req.target,
                     page: req.page,
                     page_size: req.page_size,
                     search: req.search,
@@ -3314,7 +3282,7 @@ impl ManagementService for ManagementServiceImpl {
             .update_settings(
                 admin_proto::UpdateSettingsRequest {
                     group: req.group,
-                    settings: req.settings,
+                    settings: admin_update_settings(req.settings),
                 },
                 &validated.user_id,
                 &ctx,

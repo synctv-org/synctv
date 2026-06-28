@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, UserId},
+    models::{MediaId, PlaylistId, RoomId, RoomSettings, UserId},
     Result,
 };
 
 /// Guest kick reasons
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum GuestKickReason {
     /// Global guest mode was disabled
     GlobalGuestModeDisabled,
@@ -40,7 +40,12 @@ impl GuestKickReason {
 
 /// Room event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum RoomEvent {
     /// User joined the room
     UserJoined { user_id: UserId, username: String },
@@ -110,7 +115,7 @@ pub enum RoomEvent {
     },
     /// Room settings updated
     SettingsUpdated {
-        settings: serde_json::Value,
+        settings: RoomSettings,
         version: i64,
         user_id: Option<UserId>,
         username: String,
@@ -416,7 +421,7 @@ impl NotificationService {
         room_id: &RoomId,
         user_id: Option<&UserId>,
         username: &str,
-        settings: serde_json::Value,
+        settings: RoomSettings,
         version: i64,
     ) -> usize {
         let event = RoomEvent::SettingsUpdated {
@@ -653,7 +658,7 @@ mod tests {
                 message: "Guest access has been disabled for this room".to_string(),
             },
             RoomEvent::SettingsUpdated {
-                settings: serde_json::json!({"key": "value"}),
+                settings: RoomSettings::default(),
                 version: 1,
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),

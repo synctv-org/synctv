@@ -9,8 +9,8 @@ use super::connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
     ShutdownReport,
 };
-use super::events::RealtimeEvent;
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
+use super::RealtimeEvent;
 use crate::error::{Error, Result};
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::{service::OnlinePresenceService, SharedStateMode, SharedStateProfile};

@@ -16,21 +16,21 @@ use super::common::provider_request_metadata;
 pub(crate) fn rtmp_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/rooms/{room_id}/publish-key/{media_id}",
+            "/rooms/{roomId}/publish-key/{mediaId}",
             post(generate_publish_key),
         )
-        .route("/rooms/{room_id}/info/{media_id}", get(handle_stream_info))
+        .route("/rooms/{roomId}/info/{mediaId}", get(handle_stream_info))
 }
 
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/providers/rtmp/rooms/{room_id}/publish-key/{media_id}",
+        path = "/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}",
         tag = "Provider",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
         responses(
             (status = 200, description = "Publish key generated", body = CreatePublishKeyResponse),
@@ -72,11 +72,11 @@ pub(crate) async fn generate_publish_key(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/providers/rtmp/rooms/{room_id}/info/{media_id}",
+        path = "/api/providers/rtmp/rooms/{roomId}/info/{mediaId}",
         tag = "Provider",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
         responses(
             (status = 200, description = "Live stream information", body = GetStreamInfoResponse),

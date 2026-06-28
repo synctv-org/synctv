@@ -94,9 +94,10 @@ pub use file_upload_policies::{
     MAX_USER_AVATAR_SIZE_BYTES,
 };
 pub use global_settings::{
-    ConfiguredIceServer, IceServerList, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy, RuntimeEmailConfigProvider,
-    SettingsRegistry,
+    ConfiguredIceServer, IceServerList, OAuth2BasicProviderConfig, OAuth2LogtoProviderConfig,
+    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+    OAuth2ProviderPrivateConfig, OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy,
+    RuntimeEmailConfigProvider, SettingsRegistry,
 };
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,

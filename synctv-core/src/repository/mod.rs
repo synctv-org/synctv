@@ -68,7 +68,9 @@ pub use room::RoomRepository;
 pub use room_member::RoomMemberRepository;
 pub use room_password::RoomPasswordRepository;
 pub use room_resource_event::{
-    NewRoomResourceEvent, RoomResourceEventRepository, RoomResourceEventScope,
+    NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
+    RoomResourceEventRepository, RoomResourceEventScope, RoomResourceEventSummary,
+    RoomResourceEventSummaryDetails, RoomResourceKind,
 };
 pub use room_settings::RoomSettingsRepository;
 pub use room_taxonomy::{RoomTaxonomyAssignment, RoomTaxonomyRepository};

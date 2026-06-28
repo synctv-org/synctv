@@ -71,9 +71,10 @@ use std::sync::Arc;
 use crate::{
     cache::{CacheInvalidationRuntime, ConsistencyCoordinator},
     models::{
-        AuditAction, AuditTargetType, MediaId, PlaylistId, Room, RoomAdminPermissionBits,
-        RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermission,
-        RoomPlaybackState, RoomRole, RoomSettings, UserId,
+        AuditAction, AuditDetails, AuditTargetType, MediaId, PlaylistId, ProviderTarget, Room,
+        RoomAdminPermissionBits, RoomGuestPermissionBits, RoomId, RoomMember,
+        RoomMemberPermissionBits, RoomPermission, RoomPlaybackState, RoomRole, RoomSettings,
+        UserId,
     },
     repository::{
         realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -156,33 +157,6 @@ pub use types::{
 pub(crate) use types::{EntryDeletionImpact, RoomCleanupImpact};
 
 pub const MAX_KICK_COOLDOWN_SECONDS: i64 = 30 * 24 * 60 * 60;
-
-fn merge_json_object_patch(target: &mut serde_json::Value, patch: serde_json::Value) -> Result<()> {
-    let serde_json::Value::Object(patch_object) = patch else {
-        return Err(Error::InvalidInput(
-            "Room settings patch must be a JSON object".to_string(),
-        ));
-    };
-
-    let Some(target_object) = target.as_object_mut() else {
-        return Err(Error::Internal(
-            "Serialized room settings must be a JSON object".to_string(),
-        ));
-    };
-
-    for (key, value) in patch_object {
-        match (target_object.get_mut(&key), value) {
-            (Some(existing @ serde_json::Value::Object(_)), serde_json::Value::Object(value)) => {
-                merge_json_object_patch(existing, serde_json::Value::Object(value))?;
-            }
-            (_, value) => {
-                target_object.insert(key, value);
-            }
-        }
-    }
-
-    Ok(())
-}
 
 pub(super) const MAX_DELETE_TARGETS: usize = 100;
 
@@ -699,14 +673,15 @@ impl RoomService {
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "reason": "Room deleted by admin",
-                "playlists_deleted": impact.deleted_playlist_ids.len(),
-                "media_deleted": impact.deleted_media_ids.len(),
-                "members_deleted": impact.members_deleted,
-                "settings_deleted": impact.settings_deleted,
-                "chat_deleted": impact.chat_deleted,
-            }),
+            AuditDetails {
+                reason: Some("Room deleted by admin".to_string()),
+                playlists_deleted: Some(impact.deleted_playlist_ids.len()),
+                media_deleted: Some(impact.deleted_media_ids.len()),
+                members_deleted: Some(impact.members_deleted),
+                settings_deleted: Some(impact.settings_deleted),
+                chat_deleted: Some(impact.chat_deleted),
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -841,15 +816,16 @@ impl RoomService {
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "reason": "Orphaned room deleted by admin (creator deleted/banned)",
-                "creator_id": room.created_by.to_string(),
-                "playlists_deleted": impact.deleted_playlist_ids.len(),
-                "media_deleted": impact.deleted_media_ids.len(),
-                "members_deleted": impact.members_deleted,
-                "settings_deleted": impact.settings_deleted,
-                "chat_deleted": impact.chat_deleted,
-            }),
+            AuditDetails {
+                reason: Some("Orphaned room deleted by admin (creator deleted/banned)".to_string()),
+                creator_id: Some(room.created_by.to_string()),
+                playlists_deleted: Some(impact.deleted_playlist_ids.len()),
+                media_deleted: Some(impact.deleted_media_ids.len()),
+                members_deleted: Some(impact.members_deleted),
+                settings_deleted: Some(impact.settings_deleted),
+                chat_deleted: Some(impact.chat_deleted),
+                ..Default::default()
+            },
         )
         .await?;
 
@@ -867,7 +843,7 @@ impl RoomService {
         admin_user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
     ) -> Result<RoomPlaybackState> {
         let actor = self.load_authorized_admin_actor(&admin_user_id).await?;
         self.admin_start_playback_as(room_id, &actor, media_id, playlist_id, target)
@@ -880,7 +856,7 @@ impl RoomService {
         actor: &AuthorizedAdminActor,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
     ) -> Result<RoomPlaybackState> {
         self.admin_start_playback_as_with_outbox(
             room_id,
@@ -899,7 +875,7 @@ impl RoomService {
         actor: &AuthorizedAdminActor,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
         outbox_event_factory: Option<
             crate::service::playback::RealtimeOutboxPlaybackStateEventFactory,
         >,
@@ -1294,11 +1270,10 @@ async fn has_room_permission_in_tx(
                rm.removed_permissions,
                rm.admin_added_permissions,
                rm.admin_removed_permissions,
-	               rs.value AS "settings_value?: String"
+               rs.settings AS "settings?: RoomSettings"
         FROM room_members rm
         LEFT JOIN room_settings rs
           ON rs.room_id = rm.room_id
-         AND rs.key = '_settings'
         WHERE rm.room_id = $1
           AND rm.user_id = $2
           AND NOT EXISTS (
@@ -1326,14 +1301,7 @@ async fn has_room_permission_in_tx(
         return Ok(true);
     }
 
-    let settings = match row.settings_value {
-        Some(settings_value) => {
-            serde_json::from_str::<RoomSettings>(&settings_value).map_err(|error| {
-                Error::Internal(format!("Failed to deserialize room settings: {error}"))
-            })?
-        }
-        None => RoomSettings::default(),
-    };
+    let settings = row.settings.unwrap_or_default();
 
     let mut member = RoomMember::new(*room_id, *user_id, role);
     member.added_permissions = permission_bits_from_signed(row.added_permissions)?;

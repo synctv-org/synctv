@@ -9,6 +9,7 @@ pub mod assertions;
 pub mod constants;
 pub(crate) mod docker;
 pub mod external_service;
+pub mod l2_envelope;
 pub mod postgres;
 pub mod redis;
 pub mod result;
@@ -30,6 +31,7 @@ pub(crate) fn test_temp_dir() -> PathBuf {
 pub use external_service::{
     start_external_service, ExternalServiceContainer, ExternalServiceRequest,
 };
+pub use l2_envelope::{timestamped_l2_envelope, unversioned_l2_envelope, versioned_l2_envelope};
 pub use postgres::{
     connect_test_pool_url, create_test_database, create_test_database_url_with_label,
     create_test_database_with_db_and_label, create_test_database_with_options_and_label,
@@ -61,5 +63,5 @@ pub use source_config::{
     alist_directory_playlist_source_config, alist_file_media_source_config,
     bilibili_video_media_source_config, direct_url_media_source_config,
     direct_url_media_source_config_with_headers, live_proxy_pull_live_media_source_config,
-    rtmp_managed_live_media_source_config,
+    media_source_config_json, playlist_source_config_json, rtmp_managed_live_media_source_config,
 };

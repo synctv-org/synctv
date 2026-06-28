@@ -5,10 +5,14 @@
 //!
 
 use redis::AsyncCommands;
+use serde::Serialize;
 use synctv_core::cache::l2_backend::VersionedFenceRead;
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use synctv_core_testing::start_redis as start_test_redis;
-use synctv_core_testing::{ok, some, TestOptionExt, TestResultExt};
+use synctv_core_testing::{
+    ok, some, timestamped_l2_envelope, unversioned_l2_envelope, versioned_l2_envelope,
+    TestOptionExt, TestResultExt,
+};
 
 fn ts_millis(ts: &str) -> i64 {
     ok(
@@ -21,12 +25,44 @@ fn ts_millis(ts: &str) -> i64 {
 fn assert_stored_name(stored: Option<String>, expected_name: &str, expected_ts: i64) {
     let stored = some(stored, "cache value should exist");
     let value: serde_json::Value = ok(serde_json::from_str(&stored), "stored value should be JSON");
-    assert_eq!(value["name"], expected_name);
-    assert_eq!(value["updated_at_ms"], expected_ts);
+    assert_eq!(value["payload"]["name"], expected_name);
+    assert_eq!(value["updatedAtMs"], expected_ts);
 }
 
 fn json_value(json: &str) -> serde_json::Value {
     ok(serde_json::from_str(json), "stored value should be JSON")
+}
+
+#[derive(Serialize)]
+struct CacheNamePayload<'a> {
+    name: &'a str,
+}
+
+#[derive(Serialize)]
+struct TimestampedCacheNamePayload<'a> {
+    name: &'a str,
+    updated_at: &'a str,
+}
+
+#[derive(Serialize)]
+struct VersionedCacheNamePayload<'a> {
+    name: &'a str,
+    version: i64,
+}
+
+fn timestamped_payload(name: &str, updated_at: &str) -> (String, i64) {
+    let updated_at_ms = ts_millis(updated_at);
+    (
+        timestamped_l2_envelope(
+            TimestampedCacheNamePayload { name, updated_at },
+            updated_at_ms,
+        ),
+        updated_at_ms,
+    )
+}
+
+fn versioned_payload(name: &str, version: i64) -> String {
+    versioned_l2_envelope(VersionedCacheNamePayload { name, version }, version)
 }
 
 async fn start_redis() -> (
@@ -45,12 +81,11 @@ async fn test_set_if_newer_absent_key() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:absent";
-    let json = r#"{"name":"alice","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let ts = ts_millis("2024-01-01T12:00:00Z");
+    let (json, ts) = timestamped_payload("alice", "2024-01-01T12:00:00Z");
 
     // Setting an absent key should succeed
     let was_set = l2
-        .set_if_newer(key, json, 300, ts)
+        .set_if_newer(key, &json, 300, ts)
         .await
         .checked("test operation should succeed");
     assert!(was_set, "set_if_newer should succeed for absent key");
@@ -67,19 +102,17 @@ async fn test_set_if_newer_newer_wins() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:newer_wins";
-    let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let old_ts = ts_millis("2024-01-01T12:00:00Z");
-    let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
-    let new_ts = ts_millis("2024-06-15T12:00:00Z");
+    let (old_json, old_ts) = timestamped_payload("alice_old", "2024-01-01T12:00:00Z");
+    let (new_json, new_ts) = timestamped_payload("alice_new", "2024-06-15T12:00:00Z");
 
     // Set the old value first
-    l2.set_if_newer(key, old_json, 300, old_ts)
+    l2.set_if_newer(key, &old_json, 300, old_ts)
         .await
         .checked("test operation should succeed");
 
     // Set a newer value - should succeed
     let was_set = l2
-        .set_if_newer(key, new_json, 300, new_ts)
+        .set_if_newer(key, &new_json, 300, new_ts)
         .await
         .checked("test operation should succeed");
     assert!(was_set, "Newer value should overwrite older value");
@@ -95,19 +128,17 @@ async fn test_set_if_newer_older_rejected() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:older_rejected";
-    let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
-    let new_ts = ts_millis("2024-06-15T12:00:00Z");
-    let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let old_ts = ts_millis("2024-01-01T12:00:00Z");
+    let (new_json, new_ts) = timestamped_payload("alice_new", "2024-06-15T12:00:00Z");
+    let (old_json, old_ts) = timestamped_payload("alice_old", "2024-01-01T12:00:00Z");
 
     // Set the newer value first
-    l2.set_if_newer(key, new_json, 300, new_ts)
+    l2.set_if_newer(key, &new_json, 300, new_ts)
         .await
         .checked("test operation should succeed");
 
     // Try to set an older value - should be rejected
     let was_set = l2
-        .set_if_newer(key, old_json, 300, old_ts)
+        .set_if_newer(key, &old_json, 300, old_ts)
         .await
         .checked("test operation should succeed");
     assert!(!was_set, "Older value should be rejected by set_if_newer");
@@ -124,17 +155,15 @@ async fn test_set_if_newer_rejects_older_value_after_normal_set() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn));
 
     let key = "test:sin:normal_set_then_older_rejected";
-    let new_json = r#"{"name":"alice_new","updated_at":"2024-06-15T12:00:00Z"}"#;
-    let new_ts = ts_millis("2024-06-15T12:00:00Z");
-    let old_json = r#"{"name":"alice_old","updated_at":"2024-01-01T12:00:00Z"}"#;
-    let old_ts = ts_millis("2024-01-01T12:00:00Z");
+    let (new_json, new_ts) = timestamped_payload("alice_new", "2024-06-15T12:00:00Z");
+    let (old_json, old_ts) = timestamped_payload("alice_old", "2024-01-01T12:00:00Z");
 
-    l2.set(key, new_json, 300)
+    l2.set(key, &new_json, 300)
         .await
         .checked("test operation should succeed");
 
     let was_set = l2
-        .set_if_newer(key, old_json, 300, old_ts)
+        .set_if_newer(key, &old_json, 300, old_ts)
         .await
         .checked("test operation should succeed");
     assert!(
@@ -169,7 +198,7 @@ async fn test_set_if_newer_rejects_existing_timestamped_value_without_numeric_ep
         .checked("older value should be rejected cleanly");
     assert!(
         !was_set,
-        "Existing timestamped values without updated_at_ms must fail closed"
+        "Existing timestamped values without updatedAtMs must fail closed"
     );
 
     let stored = l2
@@ -197,11 +226,8 @@ async fn test_set_if_newer_concurrent() {
     let mut handles = Vec::new();
     for i in 0..10 {
         let l2_clone = l2.clone();
-        let json = format!(
-            r#"{{"name":"worker_{i}","updated_at":"2024-{:02}-15T12:00:00Z"}}"#,
-            i + 1
-        );
-        let ts = ts_millis(&format!("2024-{:02}-15T12:00:00Z", i + 1));
+        let updated_at = format!("2024-{:02}-15T12:00:00Z", i + 1);
+        let (json, ts) = timestamped_payload(&format!("worker_{i}"), &updated_at);
         let k = key.to_string();
         handles.push(tokio::spawn(async move {
             l2_clone.set_if_newer(&k, &json, 300, ts).await
@@ -236,14 +262,16 @@ async fn test_set_if_version_uses_domain_version_when_cache_version_missing() {
     let l2 = RedisCacheL2::from_runtime(synctv_core::direct_runtime(conn.clone()));
 
     let key = "test:siv:domain_version_fallback";
+    let existing_json = versioned_payload("existing", 5);
     let mut raw_conn = conn;
     raw_conn
-        .set_ex::<_, _, ()>(key, r#"{"name":"existing","version":5}"#, 300)
+        .set_ex::<_, _, ()>(key, existing_json, 300)
         .await
         .checked("existing version should be written");
 
+    let stale_json = versioned_payload("stale", 4);
     let stale = l2
-        .set_if_version_at_least(key, r#"{"name":"stale","version":4}"#, 300, 4)
+        .set_if_version_at_least(key, &stale_json, 300, 4)
         .await
         .checked("stale version write should complete");
     assert!(
@@ -260,8 +288,9 @@ async fn test_set_if_version_uses_domain_version_when_cache_version_missing() {
         "existing version-5 value should remain after stale write; got {stored}"
     );
 
+    let fresh_json = versioned_payload("fresh", 6);
     let fresh = l2
-        .set_if_version_at_least(key, r#"{"name":"fresh","version":6}"#, 300, 6)
+        .set_if_version_at_least(key, &fresh_json, 300, 6)
         .await
         .checked("fresh version write should complete");
     assert!(
@@ -274,8 +303,8 @@ async fn test_set_if_version_uses_domain_version_when_cache_version_missing() {
         .checked("cache value should be read")
         .checked("cache value should exist");
     let value = json_value(&stored);
-    assert_eq!(value["name"], "fresh");
-    assert_eq!(value["cache_version"], 6);
+    assert_eq!(value["payload"]["name"], "fresh");
+    assert_eq!(value["cacheVersion"], 6);
 }
 
 #[tokio::test]
@@ -286,13 +315,17 @@ async fn test_set_if_version_overwrites_unversioned_json() {
 
     let key = "test:siv:unversioned_json";
     let mut raw_conn = conn;
+    let unversioned_json = unversioned_l2_envelope(CacheNamePayload {
+        name: "unversioned",
+    });
     raw_conn
-        .set_ex::<_, _, ()>(key, r#"{"name":"unversioned"}"#, 300)
+        .set_ex::<_, _, ()>(key, unversioned_json, 300)
         .await
         .checked("unversioned value should be written");
 
+    let versioned_json = versioned_payload("versioned", 1);
     let was_set = l2
-        .set_if_version_at_least(key, r#"{"name":"versioned","version":1}"#, 300, 1)
+        .set_if_version_at_least(key, &versioned_json, 300, 1)
         .await
         .checked("versioned write should complete");
     assert!(
@@ -306,8 +339,8 @@ async fn test_set_if_version_overwrites_unversioned_json() {
         .checked("cache value should be read")
         .checked("cache value should exist");
     let value = json_value(&stored);
-    assert_eq!(value["name"], "versioned");
-    assert_eq!(value["cache_version"], 1);
+    assert_eq!(value["payload"]["name"], "versioned");
+    assert_eq!(value["cacheVersion"], 1);
 }
 
 #[tokio::test]
@@ -324,7 +357,7 @@ async fn test_versioned_fence_read_uses_l1_when_version_is_current() {
         .await
         .checked("fence version should be written");
     raw_conn
-        .set_ex::<_, _, ()>(cache_key, r#"{"name":"l2","version":7}"#, 300)
+        .set_ex::<_, _, ()>(cache_key, versioned_payload("l2", 7), 300)
         .await
         .checked("cache payload should be written");
 
@@ -350,11 +383,7 @@ async fn test_versioned_fence_read_returns_l2_when_l1_is_stale() {
         .await
         .checked("fence version should be written");
     raw_conn
-        .set_ex::<_, _, ()>(
-            cache_key,
-            r#"{"name":"fresh-l2","version":8,"cache_version":8}"#,
-            300,
-        )
+        .set_ex::<_, _, ()>(cache_key, versioned_payload("fresh-l2", 8), 300)
         .await
         .checked("cache payload should be written");
 
@@ -366,8 +395,8 @@ async fn test_versioned_fence_read_returns_l2_when_l1_is_stale() {
     match decision {
         VersionedFenceRead::UseL2(json) => {
             let value = json_value(&json);
-            assert_eq!(value["name"], "fresh-l2");
-            assert_eq!(value["cache_version"], 8);
+            assert_eq!(value["payload"]["name"], "fresh-l2");
+            assert_eq!(value["cacheVersion"], 8);
         }
         other => std::panic::panic_any(format!("expected L2 decision, got {other:?}")),
     }
@@ -387,7 +416,7 @@ async fn test_versioned_fence_l2_only_read_returns_payload_when_fresh() {
         .await
         .checked("fence version should be written");
     raw_conn
-        .set_ex::<_, _, ()>(cache_key, r#"{"name":"l2-only","version":9}"#, 300)
+        .set_ex::<_, _, ()>(cache_key, versioned_payload("l2-only", 9), 300)
         .await
         .checked("cache payload should be written");
 
@@ -397,7 +426,7 @@ async fn test_versioned_fence_l2_only_read_returns_payload_when_fresh() {
         .checked("versioned read should complete")
         .checked("fresh L2 payload should be returned");
     let value = json_value(&json);
-    assert_eq!(value["name"], "l2-only");
+    assert_eq!(value["payload"]["name"], "l2-only");
 }
 
 #[tokio::test]
@@ -419,7 +448,7 @@ async fn test_versioned_fence_read_fails_closed_when_write_pending() {
         .await
         .checked("pending version should be written");
     raw_conn
-        .set_ex::<_, _, ()>(cache_key, r#"{"name":"stale","version":11}"#, 300)
+        .set_ex::<_, _, ()>(cache_key, versioned_payload("stale", 11), 300)
         .await
         .checked("cache payload should be written");
 

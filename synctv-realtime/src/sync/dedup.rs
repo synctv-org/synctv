@@ -35,9 +35,7 @@ pub struct DedupKey {
 
 impl DedupKey {
     /// Create a deduplication key from a realtime event.
-    pub fn try_from_event(
-        event: &crate::sync::events::RealtimeEvent,
-    ) -> Result<Self, DedupKeyError> {
+    pub fn try_from_event(event: &crate::sync::RealtimeEvent) -> Result<Self, DedupKeyError> {
         let eid = event.event_id();
         if eid.is_empty() {
             return Err(DedupKeyError::EmptyEventId {
@@ -236,7 +234,7 @@ mod tests {
     async fn test_dedup_from_event() -> std::result::Result<(), DedupKeyError> {
         let dedup = MessageDeduplicator::with_defaults();
 
-        let event = crate::sync::events::RealtimeEvent::ChatMessage {
+        let event = crate::sync::RealtimeEvent::ChatMessage {
             event_id: synctv_common::snanoid!(16),
             room_id: RoomId::expect_positive(10_000_092),
             user_id: UserId::expect_positive(10_000_010),
@@ -256,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_dedup_from_event_rejects_empty_event_id_without_panic() {
-        let event = crate::sync::events::RealtimeEvent::ChatMessage {
+        let event = crate::sync::RealtimeEvent::ChatMessage {
             event_id: String::new(),
             room_id: RoomId::expect_positive(10_000_092),
             user_id: UserId::expect_positive(10_000_010),

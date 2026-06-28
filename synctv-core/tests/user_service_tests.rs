@@ -795,7 +795,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     let foreign_progress_id: i64 = sqlx::query_scalar!(
         r#"INSERT INTO room_playback_progress
              (room_id, media_id, playlist_id, target, target_hash, "position", version)
-         VALUES ($1, $2, NULL, ''::bytea, $3, 12.5, 0)
+         VALUES ($1, $2, NULL, NULL, $3, 12.5, 0)
          RETURNING id AS "id!""#,
         foreign_room.id.as_i64(),
         foreign_media.id.as_i64(),
@@ -808,7 +808,7 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     sqlx::query!(
         "INSERT INTO room_playback_state
              (room_id, playing_media_id, playing_playlist_id, target, current_progress_id, speed, is_playing, updated_at, version)
-         VALUES ($1, $2, NULL, ''::bytea, $3, 1.0, TRUE, NOW(), 0)",
+         VALUES ($1, $2, NULL, NULL, $3, 1.0, TRUE, NOW(), 0)",
         foreign_room.id.as_i64(),
         foreign_media.id.as_i64(),
         foreign_progress_id

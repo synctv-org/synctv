@@ -10,15 +10,19 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
+    credential_encryption::CredentialEncryption,
     models::{
-        Playlist, RoomMemberPermissionBits, SourceProvider, User, UserId, UserRole, UserStatus,
+        AlistPlaylistSourceConfig, BilibiliMediaSourceConfig, BilibiliVideoSourceConfig,
+        MediaSourceConfig, Playlist, PlaylistSourceConfig, RoomMemberPermissionBits,
+        SourceProvider, User, UserId, UserRole, UserStatus,
     },
     provider::DynamicListQuery,
-    repository::{ProviderInstanceRepository, UserRepository},
+    repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
         media::{AddMediaRequest, BackendPlaybackRequest, EditMediaRequest},
         playlist::CreatePlaylistRequest,
+        room::RoomServiceOptions,
         InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
         UserService,
     },
@@ -49,6 +53,27 @@ fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(&pool);
 
     RoomService::new_for_tests(pool, user_service).checked("room service should build")
+}
+
+fn make_room_service_with_provider_credentials(pool: PgPool) -> RoomService {
+    let user_service = make_user_service(&pool);
+    let credential_encryption =
+        CredentialEncryption::new(&[0x42; 32]).checked("test encryption key should be valid");
+    let credential_repo = Arc::new(UserProviderCredentialRepository::new_with_encryption(
+        pool.clone(),
+        credential_encryption.clone(),
+    ));
+
+    RoomService::new_with_options(
+        pool.clone(),
+        user_service,
+        RoomServiceOptions {
+            credential_encryption: Some(credential_encryption),
+            credential_repo: Some(credential_repo),
+            ..RoomServiceOptions::test_defaults_with_settings(pool)
+        },
+    )
+    .checked("room service should build")
 }
 
 fn make_room_service_with_disabled_provider_ssrf(pool: PgPool) -> RoomService {
@@ -120,7 +145,7 @@ async fn register_direct_url_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .create_provider_with_default_config("direct_url", "direct_url")
         .await
     {
         std::panic::panic_any(format!(
@@ -133,7 +158,7 @@ async fn register_bilibili_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("bilibili", "bilibili", &serde_json::json!({}))
+        .create_provider_with_default_config("bilibili", "bilibili")
         .await
     {
         std::panic::panic_any(format!("bilibili provider should be registered: {error:?}"));
@@ -144,7 +169,7 @@ async fn register_alist_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("alist", "alist", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist")
         .await
     {
         std::panic::panic_any(format!("alist provider should be registered: {error:?}"));
@@ -155,7 +180,7 @@ async fn register_live_proxy_provider(room_service: &RoomService) {
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("live_proxy", "live_proxy", &serde_json::json!({}))
+        .create_provider_with_default_config("live_proxy", "live_proxy")
         .await
     {
         std::panic::panic_any(format!(
@@ -282,10 +307,10 @@ async fn test_add_media_with_permission_succeeds() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_add_media_rejects_credential_ref_for_bilibili() {
+async fn test_add_media_rejects_missing_shared_bilibili_credential() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service_with_provider_credentials(pool.clone());
 
     let creator = user_repo
         .create(&make_user("addm_bili_creator"))
@@ -313,24 +338,25 @@ async fn test_add_media_rejects_credential_ref_for_bilibili() {
         description: String::new(),
         source_provider: SourceProvider::Bilibili,
         provider_instance_name: None,
-        source_config: serde_json::json!({
-            "kind": "video",
-            "bvid": "BV1GJ411x7gL",
-            "cid": 12345,
-            "credential_ref": {
-                "credential_owner_id": "forged-user-id",
-                "server_id": "bilibili"
-            }
-        }),
+        source_config: MediaSourceConfig::Bilibili(BilibiliMediaSourceConfig::Video(
+            BilibiliVideoSourceConfig {
+                bvid: Some("BV1GJ411x7gL".to_string()),
+                aid: None,
+                cid: 12345,
+                shared: true,
+            },
+        )),
     };
 
     let err = media_service
         .add_media(room.id, creator.id, request)
         .await
-        .failed("Bilibili media must reject embedded credential references");
+        .failed("shared Bilibili media should require the creator credential");
 
     match err {
-        Error::InvalidInput(message) => assert!(message.contains("credential_ref")),
+        Error::InvalidInput(message) => {
+            assert!(message.contains("missing credential for provider 'bilibili'"));
+        }
         other => std::panic::panic_any(format!("expected InvalidInput, got {other:?}")),
     }
 }
@@ -432,7 +458,7 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
             room_id: room.id,
             media_id: Some(media.id),
             playlist_id: None,
-            target: &[],
+            target: None,
         })
         .await
         .checked("backend playback should be generated")
@@ -440,19 +466,10 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
 
     assert_eq!(playback.default_mode, "hls");
     assert!(playback.playback_infos.contains_key("flv"));
-    assert_eq!(
-        playback.metadata.get("media_id"),
-        Some(&serde_json::json!(media.id))
-    );
-    assert_eq!(
-        playback.metadata.get("room_id"),
-        Some(&serde_json::json!(room.id))
-    );
-    assert_eq!(
-        playback.metadata.get("provider"),
-        Some(&serde_json::json!("live_proxy"))
-    );
-    assert!(!playback.metadata.contains_key("url"));
+    assert_eq!(playback.metadata.media_id, Some(media.id));
+    assert_eq!(playback.metadata.room_id, Some(room.id));
+    assert_eq!(playback.metadata.provider.as_deref(), Some("live_proxy"));
+    assert!(playback.metadata.source_host.is_some());
 }
 
 #[tokio::test]
@@ -485,9 +502,10 @@ async fn test_create_dynamic_playlist_with_credential_backed_provider_without_re
         description: String::new(),
         parent_id: None,
         source_provider: Some(SourceProvider::Alist),
-        source_config: Some(serde_json::json!({
-            "path": "/media/library",
-            "server_id": "alist-server"
+        source_config: Some(PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
+            path: "/media/library".to_string(),
+            server_id: "alist-server".to_string(),
+            password: None,
         })),
         provider_instance_name: None,
     };
@@ -542,9 +560,10 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
         parent_id: None,
         position: 0.0,
         source_provider: Some(SourceProvider::Alist),
-        source_config: Some(serde_json::json!({
-            "path": "/media/library",
-            "server_id": "alist-server"
+        source_config: Some(PlaylistSourceConfig::Alist(AlistPlaylistSourceConfig {
+            path: "/media/library".to_string(),
+            server_id: "alist-server".to_string(),
+            password: None,
         })),
         provider_instance_name: None,
         created_at: Utc::now(),

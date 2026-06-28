@@ -1,6 +1,6 @@
 use super::*;
 use clap::{CommandFactory, Parser};
-use serde_json::json;
+use serde_json::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -154,6 +154,15 @@ fn sample_config() -> synctv_core::Config {
     config.metrics.auth.basic_password = "metrics-basic-password".into();
     config.bootstrap.root_password = "RootPass12345".into();
     config
+}
+
+fn string_values(values: &[&str]) -> Value {
+    Value::Array(
+        values
+            .iter()
+            .map(|value| Value::String((*value).to_string()))
+            .collect(),
+    )
 }
 
 #[test]
@@ -822,10 +831,7 @@ fn cli_parses_remote_room_members() {
                 }),
             ..
         }) => {
-            assert_eq!(
-                args.resolved_room_id().expect("room id should resolve"),
-                "room-123"
-            );
+            assert_eq!(args.resolved_room_id(), "room-123");
             assert_eq!(args.page, 3);
             assert_eq!(args.page_size, 10);
         }
@@ -834,8 +840,8 @@ fn cli_parses_remote_room_members() {
 }
 
 #[test]
-fn cli_parses_remote_room_members_with_room_id_flag() {
-    let cli = Cli::parse_from([
+fn cli_rejects_remote_room_members_room_id_flag() {
+    let err = Cli::try_parse_from([
         "synctv",
         "room",
         "member",
@@ -844,23 +850,10 @@ fn cli_parses_remote_room_members_with_room_id_flag() {
         "room-123",
         "--page",
         "2",
-    ]);
-    match cli.command {
-        Commands::Room(RoomCommand {
-            command:
-                RoomSubcommand::Member(RoomMemberCommand {
-                    command: RoomMemberSubcommand::List(args),
-                }),
-            ..
-        }) => {
-            assert_eq!(
-                args.resolved_room_id().expect("room id should resolve"),
-                "room-123"
-            );
-            assert_eq!(args.page, 2);
-        }
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
+    ])
+    .expect_err("room member list should use positional ROOM_ID");
+
+    assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
 #[test]
@@ -994,37 +987,18 @@ fn cli_parses_room_settings_with_positional_room_id() {
                 }),
             ..
         }) => {
-            assert_eq!(
-                args.room
-                    .resolved_room_id()
-                    .expect("room id should resolve"),
-                "room-123"
-            );
+            assert_eq!(args.room.resolved_room_id(), "room-123");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_room_settings_with_room_id_flag() {
-    let cli = Cli::parse_from(["synctv", "room", "settings", "get", "--room-id", "room-123"]);
-    match cli.command {
-        Commands::Room(RoomCommand {
-            command:
-                RoomSubcommand::Settings(RoomSettingsCommand {
-                    command: RoomSettingsSubcommand::Get(args),
-                }),
-            ..
-        }) => {
-            assert_eq!(
-                args.room
-                    .resolved_room_id()
-                    .expect("room id should resolve"),
-                "room-123"
-            );
-        }
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
+fn cli_rejects_room_settings_room_id_flag() {
+    let err = Cli::try_parse_from(["synctv", "room", "settings", "get", "--room-id", "room-123"])
+        .expect_err("room settings should use positional ROOM_ID");
+
+    assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
 #[test]
@@ -1039,7 +1013,7 @@ fn cli_parses_room_create_minimal() {
         "--description",
         "created from CLI",
         "--settings-json",
-        "{\"chat_enabled\":false}",
+        "{\"chatEnabled\":false}",
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -1052,11 +1026,25 @@ fn cli_parses_room_create_minimal() {
             assert_eq!(args.description.as_deref(), Some("created from CLI"));
             assert_eq!(
                 args.settings_json.as_deref(),
-                Some("{\"chat_enabled\":false}")
+                Some("{\"chatEnabled\":false}")
             );
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
+
+#[test]
+fn room_create_settings_json_is_applied_as_patch_to_defaults() {
+    let patch: synctv_proto::client::RoomSettingsPatch =
+        serde_json::from_str(r#"{"chatEnabled":false}"#)
+            .expect("room settings patch JSON should parse");
+
+    let settings = room_settings_patch_to_full_settings(patch);
+
+    assert!(!settings.chat_enabled);
+    assert_eq!(settings.max_members, 100);
+    assert!(settings.allow_auto_join);
+    assert!(!settings.allow_guest_join);
 }
 
 #[test]
@@ -1519,12 +1507,7 @@ fn cli_parses_room_settings_get() {
                 }),
             ..
         }) => {
-            assert_eq!(
-                args.room
-                    .resolved_room_id()
-                    .expect("room id should resolve"),
-                "room-123"
-            );
+            assert_eq!(args.room.resolved_room_id(), "room-123");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -1539,7 +1522,7 @@ fn cli_parses_room_settings_update_with_json_payload() {
         "update",
         "room-123",
         "--settings-json",
-        "{\"chat_enabled\":false}",
+        "{\"chatEnabled\":false}",
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -1549,13 +1532,8 @@ fn cli_parses_room_settings_update_with_json_payload() {
                 }),
             ..
         }) => {
-            assert_eq!(
-                args.room
-                    .resolved_room_id()
-                    .expect("room id should resolve"),
-                "room-123"
-            );
-            assert_eq!(args.settings_json, "{\"chat_enabled\":false}");
+            assert_eq!(args.room.resolved_room_id(), "room-123");
+            assert_eq!(args.settings_json, "{\"chatEnabled\":false}");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -1648,25 +1626,15 @@ fn cli_parses_user_set_role_with_role_flag() {
             ..
         }) => {
             assert_eq!(args.user.username.as_deref(), Some("alice"));
-            assert!(matches!(args.resolved_role(), Ok(CliUserRole::Admin)));
+            assert!(matches!(args.resolved_role(), CliUserRole::Admin));
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_user_set_role_with_positional_role() {
-    let cli = Cli::parse_from(["synctv", "user", "set-role", "alice", "admin"]);
-    match cli.command {
-        Commands::User(UserCommand {
-            command: UserSubcommand::SetRole(args),
-            ..
-        }) => {
-            assert_eq!(args.user.username.as_deref(), Some("alice"));
-            assert!(matches!(args.resolved_role(), Ok(CliUserRole::Admin)));
-        }
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
+fn cli_rejects_user_set_role_positional_role() {
+    assert!(Cli::try_parse_from(["synctv", "user", "set-role", "alice", "admin"]).is_err());
 }
 
 #[test]
@@ -2323,7 +2291,7 @@ fn cli_rejects_media_add_without_actor_user() {
         "--room-id",
         "room-123",
         "--source-provider",
-        "direct_url",
+        "direct-url",
         "--source-config-json",
         "{\"medias\":[{\"url\":\"https://cdn.example.com/video.mp4\"}]}",
     ]);
@@ -2331,6 +2299,26 @@ fn cli_rejects_media_add_without_actor_user() {
         result.is_err(),
         "media add must require --username or --user-id"
     );
+}
+
+#[test]
+fn cli_rejects_snake_case_source_provider_values() {
+    for provider in ["direct_url", "live_proxy"] {
+        let result = Cli::try_parse_from([
+            "synctv",
+            "media",
+            "add",
+            "--room-id",
+            "room-123",
+            "--username",
+            "alice",
+            "--source-provider",
+            provider,
+            "--source-config-json",
+            "{\"medias\":[{\"url\":\"https://cdn.example.com/video.mp4\"}]}",
+        ]);
+        assert!(result.is_err(), "{provider} should be rejected");
+    }
 }
 
 #[test]
@@ -4195,8 +4183,8 @@ fn cli_parses_room_batch_ban_with_positional_room_ids() {
 }
 
 #[test]
-fn cli_parses_room_batch_delete_with_room_id_flags() {
-    let cli = Cli::parse_from([
+fn cli_rejects_room_batch_delete_room_id_flags() {
+    let err = Cli::try_parse_from([
         "synctv",
         "room",
         "batch",
@@ -4205,19 +4193,10 @@ fn cli_parses_room_batch_delete_with_room_id_flags() {
         "room-1",
         "--room-id",
         "room-2",
-    ]);
-    match cli.command {
-        Commands::Room(RoomCommand {
-            command:
-                RoomSubcommand::Batch(RoomBatchCommand {
-                    command: RoomBatchSubcommand::Delete(args),
-                }),
-            ..
-        }) => {
-            assert_eq!(args.resolved_room_ids(), vec!["room-1", "room-2"]);
-        }
-        other => panic!("unexpected command parsed: {other:?}"),
-    }
+    ])
+    .expect_err("room batch delete should use positional ROOM_ID arguments");
+
+    assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
 #[test]
@@ -4538,9 +4517,9 @@ fn cli_parses_settings_update_with_repeated_set_entries() {
         "update",
         "user",
         "--set",
-        "enable_password_signup=true",
+        "enablePasswordSignup=true",
         "--set",
-        "password_signup_need_review=true",
+        "passwordSignupNeedReview=true",
     ]);
     match cli.command {
         Commands::Settings(SettingsCommand {
@@ -4551,13 +4530,125 @@ fn cli_parses_settings_update_with_repeated_set_entries() {
             assert_eq!(
                 args.entries,
                 vec![
-                    "enable_password_signup=true".to_string(),
-                    "password_signup_need_review=true".to_string()
+                    "enablePasswordSignup=true".to_string(),
+                    "passwordSignupNeedReview=true".to_string()
                 ]
             );
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
+}
+
+#[test]
+fn settings_update_parser_accepts_permission_names_for_proto_json_fields() {
+    let raw_settings =
+        parse_setting_entries(&["guestDefaultPermissions=view_member_list,use_webrtc".to_string()])
+            .expect("permission setting entries should parse");
+    let settings = parse_management_settings_update("permissions", &raw_settings)
+        .expect("permissions update should parse");
+
+    let synctv_management::proto::update_settings_request::Settings::Permissions(settings) =
+        settings
+    else {
+        panic!("expected permissions settings");
+    };
+
+    assert_eq!(
+        settings.guest_default_permissions,
+        RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC
+    );
+}
+
+#[test]
+fn settings_update_parser_rejects_snake_case_field_names() {
+    let raw_settings = parse_setting_entries(&["enable_password_signup=true".to_string()])
+        .expect("setting entries should parse");
+    let error =
+        parse_management_settings_update("user", &raw_settings).expect_err("snake_case rejects");
+    assert!(error.to_string().contains("enable_password_signup"));
+}
+
+#[test]
+fn settings_update_parser_accepts_typed_oauth2_proto_json() {
+    let raw_settings = parse_setting_entries(&[r#"providers=[
+      {
+        "instanceName": "github",
+        "enableSignup": true,
+        "signupNeedReview": false,
+        "github": {
+          "clientId": "github-client-id",
+          "clientSecret": "github-client-secret",
+          "redirectUrl": "https://app.example.com/oauth2/callback"
+        }
+      }
+    ]"#
+    .to_string()])
+    .expect("oauth2 setting entries should parse");
+    let settings = parse_management_settings_update("oauth2", &raw_settings)
+        .expect("oauth2 update should parse");
+
+    let synctv_management::proto::update_settings_request::Settings::Oauth2(settings) = settings
+    else {
+        panic!("expected oauth2 settings");
+    };
+    assert_eq!(settings.providers.len(), 1);
+    let provider = &settings.providers[0];
+    assert_eq!(provider.instance_name, "github");
+    assert!(provider.enable_signup);
+    assert!(matches!(
+        provider.config,
+        Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(_))
+    ));
+}
+
+#[test]
+fn settings_update_parser_rejects_oauth2_runtime_provider_map() {
+    let raw_settings = parse_setting_entries(&[r#"providers={
+      "github": {
+        "type": "github",
+        "enableSignup": true,
+        "signupNeedReview": false,
+        "clientId": "github-client-id",
+        "clientSecret": "github-client-secret",
+        "redirectUrl": "https://app.example.com/oauth2/callback"
+      }
+    }"#
+    .to_string()])
+    .expect("oauth2 setting entries should parse");
+
+    let error = parse_management_settings_update("oauth2", &raw_settings)
+        .expect_err("runtime provider map should reject");
+
+    assert!(error.to_string().contains("invalid providers ProtoJSON"));
+}
+
+#[test]
+fn settings_update_parser_rejects_duplicate_oauth2_instance_names() {
+    let raw_settings = parse_setting_entries(&[r#"providers=[
+      {
+        "instanceName": "github",
+        "github": {
+          "clientId": "github-client-id",
+          "clientSecret": "github-client-secret",
+          "redirectUrl": "https://app.example.com/oauth2/callback"
+        }
+      },
+      {
+        "instanceName": "github",
+        "google": {
+          "clientId": "google-client-id",
+          "clientSecret": "google-client-secret",
+          "redirectUrl": "https://app.example.com/oauth2/callback"
+        }
+      }
+    ]"#
+    .to_string()])
+    .expect("oauth2 setting entries should parse");
+
+    let error = parse_management_settings_update("oauth2", &raw_settings)
+        .expect_err("duplicate instanceName should reject");
+
+    assert!(error.to_string().contains("duplicate oauth2 provider"));
 }
 
 #[test]
@@ -4817,6 +4908,33 @@ fn rendered_config_redacts_secrets_and_masks_connection_urls() {
 }
 
 #[test]
+fn config_json_output_uses_lower_camel_case_keys() {
+    let rendered =
+        config_json_for_display(&sample_config()).expect("sample config should render as JSON");
+    let rendered_text = serde_json::to_string(&rendered).expect("rendered config should serialize");
+
+    assert_eq!(rendered["management"]["authToken"], "<redacted>");
+    assert_eq!(rendered["metrics"]["auth"]["bearerToken"], "<redacted>");
+    assert_eq!(
+        rendered["security"]["opaqueServerSetupSecret"],
+        "<redacted>"
+    );
+    let database_url = rendered["database"]["url"]
+        .as_str()
+        .expect("database url should render as a string");
+    assert!(database_url.contains("***"));
+    assert!(database_url.contains("db.internal:5432/synctv"));
+    assert!(
+        rendered.get("public_ids").is_none(),
+        "config JSON output should expose lowerCamelCase keys: {rendered_text}"
+    );
+    assert!(
+        rendered["publicIds"].is_object(),
+        "config JSON output should include lowerCamelCase publicIds: {rendered_text}"
+    );
+}
+
+#[test]
 fn database_status_summary_masks_credentials() {
     let output = DatabaseCliOutput::status(
         &sample_config(),
@@ -4884,11 +5002,11 @@ fn render_human_output_converts_user_timestamps_role_and_status() {
     assert_eq!(rendered["user"]["role"], "root");
     assert_eq!(rendered["user"]["status"], "banned");
     assert_eq!(
-        rendered["user"]["created_at"],
+        rendered["user"]["createdAt"],
         "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
     );
     assert_eq!(
-        rendered["user"]["updated_at"],
+        rendered["user"]["updatedAt"],
         "2026-04-04 08:24:31 +00:00 (UTC) (1775291071)"
     );
 }
@@ -4903,7 +5021,10 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             name: "room".into(),
             created_by: "owner-1".into(),
             status: synctv_proto::common::RoomStatus::Closed as i32,
-            settings: br#"{"sync":true}"#.to_vec(),
+            settings: Some(synctv_proto::client::RoomSettings {
+                chat_enabled: true,
+                ..Default::default()
+            }),
             created_at: 1_775_144_583_i64,
             member_count: 1,
             description: String::new(),
@@ -4959,30 +5080,30 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
     .expect("human output should render");
 
     assert_eq!(rendered["room"]["status"], "closed");
-    assert_eq!(rendered["room"]["availability"], "creator_inactive");
+    assert_eq!(rendered["room"]["availability"], "creatorInactive");
     assert_eq!(rendered["members"][0]["role"], "creator");
     assert_eq!(
-        rendered["members"][0]["permission_names"],
-        json!(["chat", "view_media_resources"])
+        rendered["members"][0]["permissionNames"],
+        string_values(&["chat", "view_media_resources"])
     );
     assert_eq!(
-        rendered["members"][0]["added_permission_names"],
-        json!(["create_media_resource"])
+        rendered["members"][0]["addedPermissionNames"],
+        string_values(&["create_media_resource"])
     );
     assert_eq!(
-        rendered["members"][0]["removed_permission_names"],
-        json!(["chat"])
+        rendered["members"][0]["removedPermissionNames"],
+        string_values(&["chat"])
     );
     assert_eq!(
-        rendered["members"][0]["admin_added_permission_names"],
-        json!(["kick_member"])
+        rendered["members"][0]["adminAddedPermissionNames"],
+        string_values(&["kick_member"])
     );
     assert_eq!(
-        rendered["members"][0]["admin_removed_permission_names"],
-        json!(["kick_member"])
+        rendered["members"][0]["adminRemovedPermissionNames"],
+        string_values(&["kick_member"])
     );
     assert_eq!(
-        rendered["members"][0]["joined_at"],
+        rendered["members"][0]["joinedAt"],
         "2026-04-04 08:34:17 +00:00 (UTC) (1775291657)"
     );
     assert_eq!(instances["instances"][0]["status"], "disconnected");
@@ -5000,7 +5121,10 @@ fn render_human_output_converts_room_listing_without_context_inference() {
             creator_username: "root".into(),
             creator_status: synctv_proto::common::UserStatus::Banned as i32,
             status: synctv_proto::common::RoomStatus::Active as i32,
-            settings: br#"{"public":true}"#.to_vec(),
+            settings: Some(synctv_proto::client::RoomSettings {
+                allow_guest_join: true,
+                ..Default::default()
+            }),
             member_count: 3,
             created_at: 1_775_144_583_i64,
             updated_at: 1_775_291_071_i64,
@@ -5018,10 +5142,10 @@ fn render_human_output_converts_room_listing_without_context_inference() {
     .expect("human output should render");
 
     assert_eq!(rendered["rooms"][0]["status"], "active");
-    assert_eq!(rendered["rooms"][0]["creator_status"], "banned");
+    assert_eq!(rendered["rooms"][0]["creatorStatus"], "banned");
     assert_eq!(rendered["rooms"][0]["version"], 56);
     assert_eq!(
-        rendered["rooms"][0]["created_at"],
+        rendered["rooms"][0]["createdAt"],
         "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
     );
 }
@@ -5033,7 +5157,9 @@ fn render_human_output_includes_media_and_playlist_availability() {
         room_id: "room-1".into(),
         source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         name: "Example".into(),
-        metadata: br#"{"duration":1}"#.to_vec(),
+        metadata: Some(synctv_proto::client::ResourceMetadata {
+            source: Some("direct_url".to_string()),
+        }),
         position: 1.0,
         added_at: 1_775_291_657_i64,
         creator_id: "user-1".into(),
@@ -5065,19 +5191,14 @@ fn render_human_output_includes_media_and_playlist_availability() {
     })
     .expect("playlist human output should render");
 
-    assert_eq!(rendered_media["availability"], "creator_inactive");
+    assert_eq!(rendered_media["availability"], "creatorInactive");
     assert_eq!(rendered_playlist["availability"], "available");
     assert_eq!(rendered_media["version"], 12);
     assert_eq!(rendered_playlist["version"], 34);
     assert_eq!(
-        rendered_playlist["source_config"],
-        serde_json::json!({
-            "alist": {
-                "server_id": "alist-main",
-                "path": "/shows",
-                "password": null
-            }
-        })
+        rendered_playlist["sourceConfig"],
+        serde_json::to_value(alist_playlist_source_config("/shows"))
+            .expect("source config should serialize")
     );
 }
 
@@ -5107,7 +5228,9 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             room_id: "room-1".into(),
             source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             name: "Example".into(),
-            metadata: br#"{"duration":1}"#.to_vec(),
+            metadata: Some(synctv_proto::client::ResourceMetadata {
+                source: Some("direct_url".to_string()),
+            }),
             position: 1.0,
             added_at: 3,
             creator_id: "user-1".into(),
@@ -5161,6 +5284,138 @@ fn render_human_output_includes_room_members_snapshot_version() {
 }
 
 #[test]
+fn render_human_output_uses_camel_case_for_slice_cache_responses() {
+    let stats = management_proto::SliceCacheStatsResponse {
+        config: Some(management_proto::SliceCacheConfigInfo {
+            engine_enabled: true,
+            backend: "file".into(),
+            file_cache_dir: "/tmp/synctv-slices".into(),
+            slice_size: 1024,
+            max_cache_size: 4096,
+            segment_ttl_secs: 30,
+            stale_max_age_secs: 60,
+            stale_while_revalidate: true,
+            eviction_interval_secs: 10,
+            watermark_ratio: 0.8,
+        }),
+        current_size_bytes: 2048,
+        entry_count: 3,
+        metadata_entries: 4,
+        updating_entries: 5,
+        lock_count: 6,
+        usage_ratio: 0.5,
+        node_id: "node-a".into(),
+    };
+    let rendered_stats = render_human_output(&management_proto::GetSliceCacheStatsResponse {
+        nodes: vec![stats.clone()],
+        failures: vec![management_proto::SliceCacheNodeFailure {
+            node_id: "node-b".into(),
+            error: "offline".into(),
+        }],
+    })
+    .expect("slice cache stats output should render");
+    let rendered_purge = render_human_output(&management_proto::PurgeSliceCacheResponse {
+        success: true,
+        removed_entries: 7,
+        freed_bytes: 8192,
+        stats: Some(stats.clone()),
+        nodes: vec![management_proto::PurgeSliceCacheNodeResult {
+            node_id: "node-a".into(),
+            success: true,
+            removed_entries: 7,
+            freed_bytes: 8192,
+            stats: Some(stats.clone()),
+        }],
+        failures: Vec::new(),
+    })
+    .expect("slice cache purge output should render");
+    let rendered_evict = render_human_output(&management_proto::EvictExpiredSliceCacheResponse {
+        success: true,
+        removed_expired_entries: 2,
+        stats: Some(stats),
+        nodes: vec![management_proto::EvictExpiredSliceCacheNodeResult {
+            node_id: "node-a".into(),
+            success: true,
+            removed_expired_entries: 2,
+            stats: None,
+        }],
+        failures: Vec::new(),
+    })
+    .expect("slice cache evict output should render");
+
+    assert_eq!(rendered_stats["nodes"][0]["nodeId"], "node-a");
+    assert_eq!(rendered_stats["nodes"][0]["currentSizeBytes"], 2048);
+    assert_eq!(rendered_stats["nodes"][0]["config"]["engineEnabled"], true);
+    assert_eq!(
+        rendered_stats["nodes"][0]["config"]["fileCacheDir"],
+        "/tmp/synctv-slices"
+    );
+    assert_eq!(rendered_stats["failures"][0]["nodeId"], "node-b");
+    assert!(rendered_stats["nodes"][0].get("node_id").is_none());
+    assert!(rendered_stats["nodes"][0]["config"]
+        .get("engine_enabled")
+        .is_none());
+    assert_eq!(rendered_purge["removedEntries"], 7);
+    assert_eq!(rendered_purge["freedBytes"], 8192);
+    assert!(rendered_purge.get("removed_entries").is_none());
+    assert_eq!(rendered_evict["removedExpiredEntries"], 2);
+    assert_eq!(rendered_evict["nodes"][0]["removedExpiredEntries"], 2);
+    assert!(rendered_evict.get("removed_expired_entries").is_none());
+}
+
+#[test]
+fn render_human_output_uses_proto_json_for_admin_settings() {
+    let rendered_room = render_human_output(&synctv_proto::admin::SettingsGroup {
+        name: "room".into(),
+        settings: Some(synctv_proto::admin::settings_group::Settings::Room(
+            synctv_proto::admin::RoomPolicySettings {
+                disable_create_room: true,
+                create_room_need_review: false,
+                password_policy: synctv_proto::admin::RoomPasswordPolicy::Required as i32,
+            },
+        )),
+    })
+    .expect("room settings output should render");
+    let rendered_oauth2 = render_human_output(&synctv_proto::admin::SettingsGroup {
+        name: "oauth2".into(),
+        settings: Some(synctv_proto::admin::settings_group::Settings::Oauth2(
+            synctv_proto::admin::OAuth2Settings {
+                providers: vec![synctv_proto::admin::OAuth2ProviderSettings {
+                    instance_name: "github-main".into(),
+                    enable_signup: true,
+                    signup_need_review: true,
+                    config: Some(
+                        synctv_proto::admin::o_auth2_provider_settings::Config::Github(
+                            synctv_proto::admin::OAuth2BasicProviderConfig {
+                                client_id: "client-id".into(),
+                                client_secret: "client-secret".into(),
+                                redirect_url: "https://example.com/callback".into(),
+                            },
+                        ),
+                    ),
+                }],
+            },
+        )),
+    })
+    .expect("oauth2 settings output should render");
+
+    assert_eq!(rendered_room["room"]["disableCreateRoom"], true);
+    assert_eq!(rendered_room["room"]["passwordPolicy"], 2);
+    assert!(rendered_room["room"].get("password_policy").is_none());
+    assert_eq!(
+        rendered_oauth2["oauth2"]["providers"][0]["instanceName"],
+        "github-main"
+    );
+    assert_eq!(
+        rendered_oauth2["oauth2"]["providers"][0]["github"]["clientId"],
+        "client-id"
+    );
+    assert!(rendered_oauth2["oauth2"]["providers"][0]
+        .get("providerType")
+        .is_none());
+}
+
+#[test]
 fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode() {
     let output = build_get_playback_cli_output(
         synctv_proto::client::GetPlaybackResponse {
@@ -5171,7 +5426,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                 room_id: "room-1".into(),
                 name: "Example".into(),
                 playlist_position: 1.0,
-                provider: "direct-url".into(),
+                provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                 provider_instance_name: String::new(),
                 playback_infos: std::collections::HashMap::from([(
                     "direct".to_string(),
@@ -5192,10 +5447,11 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                     },
                 )]),
                 default_mode: "direct".into(),
-                metadata: std::collections::HashMap::new(),
+                metadata: None,
                 expires_at: None,
                 duration_seconds: None,
                 is_live: false,
+                target: None,
             }),
         },
         &GlobalConfigArgs {
@@ -5215,12 +5471,12 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
 
 #[test]
 fn parse_setting_entries_rejects_invalid_and_duplicate_entries() {
-    let invalid = parse_setting_entries(&["enable_password_signup".to_string()]);
+    let invalid = parse_setting_entries(&["enablePasswordSignup".to_string()]);
     assert!(invalid.is_err(), "missing '=' must be rejected");
 
     let duplicate = parse_setting_entries(&[
-        "enable_password_signup=false".to_string(),
-        "enable_password_signup=true".to_string(),
+        "enablePasswordSignup=false".to_string(),
+        "enablePasswordSignup=true".to_string(),
     ]);
     assert!(duplicate.is_err(), "duplicate keys must be rejected");
 }
@@ -5497,7 +5753,7 @@ fn synthesize_stop_completion_appends_terminal_completed_event_after_finalizing(
     let mut last_stage = Some(management_proto::StopServerStage::Finalizing);
     let mut saw_terminal = false;
     let mut events = vec![StopServerEventOutput {
-        stage: stop_server_stage_name(management_proto::StopServerStage::Finalizing),
+        stage: management_proto::StopServerStage::Finalizing as i32,
         message: "final shutdown tasks in progress".to_string(),
         terminal: true,
     }];
@@ -5545,9 +5801,9 @@ fn print_stop_output_json_is_machine_readable() {
     let output = StopServerOutput {
         success: true,
         terminal_received: false,
-        final_stage: Some("stop_server_stage_finalizing".to_string()),
+        final_stage: Some(management_proto::StopServerStage::Finalizing as i32),
         events: vec![StopServerEventOutput {
-            stage: "stop_server_stage_runtime_draining".to_string(),
+            stage: management_proto::StopServerStage::RuntimeDraining as i32,
             message: "runtime draining".to_string(),
             terminal: false,
         }],
@@ -5555,7 +5811,14 @@ fn print_stop_output_json_is_machine_readable() {
 
     let rendered = serde_json::to_value(&output).expect("stop output should serialize");
     assert_eq!(rendered["success"], true);
-    assert_eq!(rendered["terminal_received"], false);
-    assert_eq!(rendered["final_stage"], "stop_server_stage_finalizing");
+    assert_eq!(rendered["terminalReceived"], false);
+    assert_eq!(
+        rendered["finalStage"],
+        management_proto::StopServerStage::Finalizing as i32
+    );
+    assert_eq!(
+        rendered["events"][0]["stage"],
+        management_proto::StopServerStage::RuntimeDraining as i32
+    );
     assert_eq!(rendered["events"][0]["message"], "runtime draining");
 }

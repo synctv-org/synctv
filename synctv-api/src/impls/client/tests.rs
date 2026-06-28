@@ -90,17 +90,16 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
 }
 
 #[tokio::test]
-async fn update_room_settings_rejects_empty_patch_before_repository_access() {
+async fn update_room_settings_rejects_missing_settings_before_repository_access() {
     let err = super::room::validate_update_room_settings_request(
-        &synctv_proto::client::UpdateRoomSettingsRequest {
-            settings: Vec::new(),
-        },
+        &synctv_proto::client::UpdateRoomSettingsRequest { settings: None },
+        synctv_core::models::RoomSettings::default(),
     )
-    .expect_err("empty settings patch must be rejected");
+    .expect_err("missing settings must be rejected");
 
     assert!(
-        matches!(err, ApiError::InvalidInput(ref message) if message.contains("settings patch")),
-        "expected settings patch validation error, got {err:?}"
+        matches!(err, ApiError::InvalidInput(ref message) if message.contains("settings patch is required")),
+        "expected settings validation error, got {err:?}"
     );
 }
 
@@ -757,7 +756,7 @@ fn test_playback_state_to_proto() -> TestResult {
         room_id: RoomId::expect_positive(301),
         playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 120.5,
         speed: 1.5,
@@ -780,7 +779,7 @@ fn test_playback_state_to_proto() -> TestResult {
         codec_ok(public_id_codec.encode_media_id(playing_media_id))?
     );
     assert_eq!(proto.playing_playlist_id, "");
-    assert!(proto.target.is_empty());
+    assert!(proto.target.is_none());
     assert!((proto.position - 120.5).abs() < f64::EPSILON);
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(!proto.is_playing);
@@ -795,7 +794,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestRes
         room_id: RoomId::expect_positive(301),
         playing_media_id: Some(MediaId::expect_positive(302)),
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 120.5,
         speed: 1.5,
@@ -818,7 +817,9 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
         room_id: RoomId::expect_positive(301),
         playing_media_id: None,
         playing_playlist_id: Some(PlaylistId::expect_positive(303)),
-        target: br#"{"item_id":"provider-item-9"}"#.to_vec(),
+        target: Some(synctv_core::models::ProviderTarget::emby(
+            "provider-item-9".to_string(),
+        )),
         current_progress_id: None,
         position: 120.5,
         speed: 1.5,
@@ -837,8 +838,13 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
         proto.playing_playlist_id,
         codec_ok(public_id_codec.encode_playlist_id(playing_playlist_id))?
     );
-    let target: serde_json::Value = serde_json::from_slice(&proto.target)?;
-    assert_eq!(target, serde_json::json!({"item_id":"provider-item-9"}));
+    let Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Emby(target)),
+    }) = proto.target
+    else {
+        return Err(test_error("playback state should include emby target"));
+    };
+    assert_eq!(target.item_id, "provider-item-9");
     Ok(())
 }
 
@@ -865,7 +871,7 @@ fn make_test_media() -> synctv_core::models::Media {
         description: String::new(),
         position: 3.0,
         source_provider: synctv_core::models::SourceProvider::Bilibili,
-        source_config: serde_json::json!({"bvid": "BV1234"}),
+        source_config: synctv_core_testing::bilibili_video_media_source_config("BV1234", 1, false),
         provider_instance_name: Some("bili_main".to_string()),
         cover_file_reference_id: None,
         added_at: now,
@@ -896,6 +902,7 @@ fn test_media_to_proto_basic() -> TestResult {
         synctv_proto::source_config::SourceProvider::Bilibili as i32
     );
     assert_eq!(proto.name, "Test Video");
+    assert!(proto.metadata.is_none());
     assert!(proto.source_config.is_none());
     assert_eq!(proto.position.to_bits(), 3.0f64.to_bits());
     assert_eq!(
@@ -903,6 +910,31 @@ fn test_media_to_proto_basic() -> TestResult {
         codec_ok(public_id_codec.encode_user_id(creator_id))?
     );
     assert_eq!(proto.provider_instance_name, "bili_main");
+    Ok(())
+}
+
+#[test]
+fn test_media_to_proto_for_owner_includes_source_metadata() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let media = make_test_media();
+    let owner_id = media
+        .creator_id
+        .ok_or_else(|| test_error("media should include creator id"))?;
+    let proto = api_ok(try_media_to_proto_for_viewer(
+        &media,
+        true,
+        Some(owner_id),
+        &public_id_codec,
+    ))?;
+
+    assert_eq!(
+        proto
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source.as_deref()),
+        Some("BV1234")
+    );
+    assert!(proto.source_config.is_some());
     Ok(())
 }
 
@@ -1282,7 +1314,7 @@ fn test_playback_state_version_no_truncation() -> TestResult {
         room_id: RoomId::expect_positive(401),
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 0.0,
         speed: 1.0,
@@ -1306,7 +1338,7 @@ fn test_playback_state_version_i32_range_still_works() -> TestResult {
         room_id: RoomId::expect_positive(402),
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 0.0,
         speed: 1.0,

@@ -135,7 +135,7 @@ async fn chat_cleanup_attachments_for_candidates(
                i.size_bytes,
                i.width,
                i.height,
-               i.metadata AS "metadata!: serde_json::Value",
+               i.metadata AS "metadata!: crate::models::FileMetadata",
                i.created_at,
                NULL::TEXT AS "reuse_token?",
                NULL::TIMESTAMPTZ AS "reuse_expires_at?"

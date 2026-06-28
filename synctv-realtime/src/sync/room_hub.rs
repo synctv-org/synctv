@@ -24,8 +24,8 @@ use tracing::{debug, info, warn};
 /// connection is closed.
 const CRITICAL_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
-use super::events::RealtimeEvent;
 use super::runtime::RoomMessageRuntime;
+use super::RealtimeEvent;
 
 /// Notification about room lifecycle changes (first subscriber / last unsubscribe).
 ///

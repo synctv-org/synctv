@@ -619,7 +619,7 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |authenticated| async move {
-                    client_api.create_room(&authenticated.user_id, req).await
+                    Box::pin(client_api.create_room(&authenticated.user_id, req)).await
                 },
             )
             .await

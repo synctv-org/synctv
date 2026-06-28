@@ -202,7 +202,7 @@ fn test_admin_get_room_settings_request_rejects_invalid_room_id() {
 fn test_admin_update_room_settings_request_rejects_invalid_room_id() {
     let request = UpdateRoomSettingsRequest {
         room_id: "bad-room".to_string(),
-        settings: Vec::new(),
+        settings: None,
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -332,8 +332,7 @@ fn test_admin_list_rooms_request_rejects_too_long_search() {
 
 #[test]
 fn test_admin_list_rooms_request_defaults_taxonomy_filters_from_json() {
-    let request: ListRoomsRequest =
-        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+    let request: ListRoomsRequest = serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(request.category_id.is_empty());
     assert!(request.label_ids.is_empty());
@@ -342,7 +341,7 @@ fn test_admin_list_rooms_request_defaults_taxonomy_filters_from_json() {
 #[test]
 fn test_admin_list_room_labels_request_defaults_category_filter_from_json() {
     let request: ListRoomLabelsRequest =
-        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
+        serde_json::from_str("{}").expect("request should deserialize");
 
     assert!(!request.include_disabled);
     assert!(request.category_id.is_empty());
@@ -350,34 +349,32 @@ fn test_admin_list_room_labels_request_defaults_category_filter_from_json() {
 
 #[test]
 fn test_admin_update_room_taxonomy_request_defaults_optional_fields_from_json() {
-    let request: UpdateRoomTaxonomyRequest = serde_json::from_value(serde_json::json!({
-        "room_id": "room_abc",
-    }))
-    .expect("request should deserialize");
+    let mut request: UpdateRoomTaxonomyRequest =
+        serde_json::from_str(r"{}").expect("request should deserialize");
+    request.room_id = "room_abc".to_string();
 
+    assert_eq!(request.room_id, "room_abc");
     assert_eq!(request.category_id, None);
     assert!(request.label_ids.is_empty());
     assert!(!request.clear_category);
 }
 
 #[test]
-fn test_admin_update_room_taxonomy_request_defaults_path_room_id_from_json() {
-    let request: UpdateRoomTaxonomyRequest =
-        serde_json::from_value(serde_json::json!({})).expect("request should deserialize");
-
-    assert!(request.room_id.is_empty());
-    assert_eq!(request.category_id, None);
-    assert!(request.label_ids.is_empty());
-    assert!(!request.clear_category);
+fn test_admin_update_room_taxonomy_request_accepts_full_body() {
+    let request: UpdateRoomTaxonomyRequest = serde_json::from_str(
+        r#"{"roomId":"room_abc","categoryId":"roomcat_abc","clearCategory":true}"#,
+    )
+    .expect("request should deserialize");
+    assert_eq!(request.room_id, "room_abc");
+    assert_eq!(request.category_id.as_deref(), Some("roomcat_abc"));
+    assert!(request.clear_category);
 }
 
 #[test]
 fn test_admin_upsert_room_label_request_defaults_optional_category_from_json() {
-    let request: UpsertRoomLabelRequest = serde_json::from_value(serde_json::json!({
-        "key": "featured",
-        "name": "Featured",
-    }))
-    .expect("request should deserialize");
+    let request: UpsertRoomLabelRequest =
+        serde_json::from_str(r#"{"key":"featured","name":"Featured"}"#)
+            .expect("request should deserialize");
 
     assert!(request.category_id.is_empty());
     assert!(request.description.is_empty());

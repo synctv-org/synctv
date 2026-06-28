@@ -14,8 +14,9 @@ use crate::{
         CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
         CreateFileUploadSession, FileBlob, FileBlobCompression, FileObjectDownload,
         FileObjectMetadata, FileOwnershipProofRange, FileReferenceTarget, FileUploadManifestPart,
-        FileUploadPartUrl, FileUploadSession, FileUploadSessionCreateResult, FileUploadSessionKind,
-        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
+        FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadSession,
+        FileUploadSessionCreateResult, FileUploadSessionKind, GetFileObject, NewStoredFile,
+        StoreFileUpload, StoreFileUploadResult,
     },
     repository::{
         FileStorageRepository, UpsertFileObject, UpsertFileUploadSession,
@@ -27,20 +28,19 @@ use crate::{
         encode_database_file_object_key, file_object_key, file_ownership_proof_digest,
         file_part_manifest_digest, file_reuse_grant, file_storage_object_base_path,
         mark_upload_session_ownership_proof_verified, new_public_file_id,
-        optional_file_storage_public_url, optional_payload_bool, payload_len_i64,
-        register_upload_session_reference, strip_internal_file_metadata,
-        upload_manifest_is_single_object, upload_manifest_metadata,
+        optional_file_storage_public_url, payload_len_i64, register_upload_session_reference,
+        strip_internal_file_metadata, upload_manifest_is_single_object,
         upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
         upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
         upload_session_public_file_id, validate_create_file_upload_session,
         validate_database_file_read_token, validate_database_file_upload_token,
-        validate_file_mime_type, validate_file_reuse_grant, validate_s3_file_storage_config,
-        validate_stored_files, validate_upload_range, validated_upload_manifest,
-        CreateFileReuseGrant, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
-        FileStorageContext, FileStorageService, UploadSessionMetadataInput,
-        ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
+        validate_file_mime_type, validate_file_reuse_grant, validate_file_upload_token_context,
+        validate_s3_file_storage_config, validate_session_file_for_storage, validate_stored_files,
+        validate_upload_range, validated_upload_manifest, CreateFileReuseGrant, FileObjectReader,
+        FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
+        UploadSessionMetadataInput, ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
     },
     Error, Result,
 };
@@ -571,10 +571,9 @@ impl S3CompatibleFileStorageService {
                 .as_ref()
                 .map(|object| object.content_manifest_sha256.clone())
                 .unwrap_or_default();
-            let metadata_json = object.as_ref().map_or_else(
-                || serde_json::Value::Object(Default::default()),
-                |object| object.metadata.clone(),
-            );
+            let metadata = object
+                .as_ref()
+                .map_or_else(Default::default, |object| object.metadata.clone());
             let created_at = object
                 .as_ref()
                 .map_or_else(Utc::now, |object| object.created_at);
@@ -588,7 +587,7 @@ impl S3CompatibleFileStorageService {
                     content_manifest_sha256,
                     compression: FileBlobCompression::None,
                     range: None,
-                    metadata: metadata_json,
+                    metadata,
                     created_at,
                 },
                 stream: futures::stream::once(async move { Ok(data.to_bytes()) }).boxed(),
@@ -618,10 +617,9 @@ impl S3CompatibleFileStorageService {
             .as_ref()
             .map(|object| object.content_manifest_sha256.clone())
             .unwrap_or_default();
-        let metadata_json = object.as_ref().map_or_else(
-            || serde_json::Value::Object(Default::default()),
-            |object| object.metadata.clone(),
-        );
+        let metadata = object
+            .as_ref()
+            .map_or_else(Default::default, |object| object.metadata.clone());
         let created_at = object
             .as_ref()
             .map_or_else(Utc::now, |object| object.created_at);
@@ -651,7 +649,7 @@ impl S3CompatibleFileStorageService {
                 content_manifest_sha256,
                 compression: FileBlobCompression::None,
                 range,
-                metadata: metadata_json,
+                metadata,
                 created_at,
             },
             stream,
@@ -872,8 +870,8 @@ impl S3CompatibleFileStorageService {
             ));
         }
         let repository = self.repository()?;
-        let upload_policy = upload_session_policy(&session.metadata)?;
-        let metadata = upload_session_object_metadata(&session.metadata)?;
+        let upload_policy = upload_session_policy(&session.metadata);
+        let metadata = upload_session_object_metadata(&session.metadata);
         repository
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.config.storage_backend,
@@ -933,8 +931,8 @@ impl S3CompatibleFileStorageService {
         self.validate_completed_s3_object_size(&session.object_key, session.size_bytes)
             .await?;
         let repository = self.repository()?;
-        let upload_policy = upload_session_policy(&session.metadata)?;
-        let metadata = upload_session_object_metadata(&session.metadata)?;
+        let upload_policy = upload_session_policy(&session.metadata);
+        let metadata = upload_session_object_metadata(&session.metadata);
         let mut blob = super::session_record_blob(session, Vec::new(), metadata.clone());
         if let Err(error) =
             super::complete_uploaded_file_object(self, repository, &mut blob, &upload_policy).await
@@ -1050,23 +1048,12 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     &content_manifest_sha256,
                     request.size_bytes,
                 )?;
-                validate_stored_files(std::slice::from_ref(&file))?;
+                validate_session_file_for_storage(&file)?;
                 let mut reference_metadata = session_metadata.clone();
-                let object = reference_metadata.as_object_mut().ok_or_else(|| {
-                    Error::InvalidInput("file upload session metadata is invalid".to_string())
-                })?;
-                object.insert(
-                    "ownership_proof_required".to_string(),
-                    serde_json::Value::Bool(true),
-                );
-                object.insert(
-                    "ownership_proof_nonce".to_string(),
-                    serde_json::Value::String(nonce.clone()),
-                );
-                object.insert(
-                    "ownership_proof_ranges".to_string(),
-                    serde_json::to_value(&ranges)?,
-                );
+                reference_metadata.ownership_proof = Some(FileUploadOwnershipProofMetadata {
+                    nonce: nonce.clone(),
+                    ranges: ranges.clone(),
+                });
                 register_upload_session_reference(
                     repository,
                     &self.config.storage_backend,
@@ -1164,7 +1151,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             upload_policy: &request.policy,
         });
         let session_metadata =
-            upload_session_metadata_with_manifest(&session_metadata, &request.parts)?;
+            upload_session_metadata_with_manifest(&session_metadata, &request.parts);
         repository
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.config.storage_backend,
@@ -1172,7 +1159,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 mime_type: &request.mime_type,
                 size_bytes: request.size_bytes,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &upload_manifest_metadata(&request.parts)?,
+                metadata: &request.metadata,
             })
             .await?;
         repository
@@ -1214,14 +1201,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
             &self.config.upload_token_secret,
             Some(&content_manifest_sha256),
         )?;
-        file.metadata
-            .as_object_mut()
-            .ok_or_else(|| Error::InvalidInput("file metadata must be a JSON object".to_string()))?
-            .insert(
-                super::FILE_UPLOAD_TOKEN_KEY.to_string(),
-                serde_json::Value::String(upload_token),
-            );
-        validate_stored_files(std::slice::from_ref(&file))?;
+        file.metadata.upload_token = Some(upload_token);
+        validate_session_file_for_storage(&file)?;
         register_upload_session_reference(
             repository,
             &self.config.storage_backend,
@@ -1256,11 +1237,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?
                 .to_string(),
         );
-        if let Some(token) = file
-            .metadata
-            .get(super::FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
-        {
+        if let Some(token) = file.metadata.upload_token.as_deref() {
             upload_headers.insert(
                 super::FILE_UPLOAD_TOKEN_HEADER.to_string(),
                 token.to_string(),
@@ -1298,7 +1275,6 @@ impl FileStorageService for S3CompatibleFileStorageService {
         context: FileStorageContext<'_>,
         mut files: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
-        validate_stored_files(&files)?;
         for file in &files {
             if file.storage_backend != self.config.storage_backend {
                 return Err(Error::InvalidInput(format!(
@@ -1310,24 +1286,18 @@ impl FileStorageService for S3CompatibleFileStorageService {
         for file in &files {
             if let Some(token) = file
                 .metadata
-                .get(super::FILE_UPLOAD_TOKEN_KEY)
-                .and_then(serde_json::Value::as_str)
+                .upload_token
+                .as_deref()
                 .map(str::trim)
                 .filter(|token| !token.is_empty())
             {
-                let payload = validate_database_file_upload_token(
-                    &self.config.storage_backend,
+                let payload = validate_file_upload_token_context(
                     token,
-                    &file.object_key,
                     Utc::now(),
                     &self.config.upload_token_secret,
                 )?;
-                if payload.get("user_id").and_then(serde_json::Value::as_i64)
-                    != Some(context.user_id.as_i64())
-                    || payload
-                        .get("storage_scope")
-                        .and_then(serde_json::Value::as_str)
-                        != Some(context.storage_scope)
+                if payload.user_id != context.user_id.as_i64()
+                    || payload.storage_scope != context.storage_scope
                 {
                     return Err(Error::InvalidInput(
                         "file upload token does not belong to this request".to_string(),
@@ -1346,6 +1316,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 ));
             }
         }
+        strip_internal_file_metadata(&mut files);
+        validate_stored_files(&files)?;
         attach_prepared_file_urls(self, &mut files, context.database_object_route_prefix)?;
         if let Some(repository) = self.repository.as_ref() {
             super::media_processing::attach_variants_to_files(
@@ -1356,7 +1328,6 @@ impl FileStorageService for S3CompatibleFileStorageService {
             )
             .await?;
         }
-        strip_internal_file_metadata(&mut files);
         Ok(files)
     }
 
@@ -1492,13 +1463,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
         repository
             .delete_upload_session_parts(&self.config.storage_backend, &session.upload_session_key)
             .await?;
-        let (_, reference_id) = super::upload_session_reference_target(
-            session
-                .metadata
-                .get(super::FILE_SESSION_METADATA_PUBLIC_ID_KEY)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default(),
-        );
+        let (_, reference_id) =
+            super::upload_session_reference_target(session.metadata.public_file_id.as_str());
         if !reference_id.is_empty() {
             repository
                 .release_reference(
@@ -1563,8 +1529,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
             ));
         }
         let mime_type = payload
-            .get("mime_type")
-            .and_then(serde_json::Value::as_str)
+            .mime_type
+            .as_deref()
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
         if mime_type != session.mime_type {
             return Err(Error::InvalidInput(
@@ -1579,8 +1545,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             }
         }
         let expected_size = payload
-            .get("size_bytes")
-            .and_then(serde_json::Value::as_i64)
+            .size_bytes
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
         if expected_size != session.size_bytes {
             return Err(Error::InvalidInput(
@@ -1752,11 +1717,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 "file reference does not match upload session".to_string(),
             ));
         }
-        if optional_payload_bool(
-            &session.metadata,
-            "ownership_proof_required",
-            "file upload session metadata",
-        )? {
+        if let Some(ownership_proof) = session.metadata.ownership_proof.as_ref() {
             if session.expires_at <= Utc::now() {
                 return Err(Error::InvalidInput(
                     "file upload session is not active".to_string(),
@@ -1770,14 +1731,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .ok_or_else(|| {
                     Error::InvalidInput("file ownership proof is required".to_string())
                 })?;
-            let nonce = session
-                .metadata
-                .get("ownership_proof_nonce")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    Error::InvalidInput("invalid file upload session metadata".to_string())
-                })?;
-            let ranges = super::ownership_proof_ranges_from_payload(&session.metadata)?;
+            let nonce = ownership_proof.nonce.as_str();
+            let ranges = ownership_proof.ranges.clone();
             let mut chunks = Vec::with_capacity(ranges.len());
             for range in &ranges {
                 chunks.push(self.read_object_range(&object_key, range).await?);
@@ -1794,14 +1749,14 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     "file ownership proof does not match object".to_string(),
                 ));
             }
-            let metadata = mark_upload_session_ownership_proof_verified(&session.metadata)?;
+            let metadata = mark_upload_session_ownership_proof_verified(&session.metadata);
             repository
                 .update_reference_metadata(
                     reference_kind,
                     &reference_id,
                     &self.config.storage_backend,
                     &object_key,
-                    &metadata,
+                    &crate::models::FileReferenceMetadata::UploadSession(metadata),
                 )
                 .await?;
             return Ok(CompleteFileUploadSessionResult {
@@ -1815,7 +1770,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     compression: FileBlobCompression::None,
                     range: None,
                     data: Vec::new(),
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: Default::default(),
                     created_at: Utc::now(),
                 }),
                 uploaded_size_bytes: session.size_bytes,
@@ -1827,7 +1782,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 object: Some(super::session_record_blob(
                     &session,
                     Vec::new(),
-                    upload_session_object_metadata(&session.metadata)?,
+                    upload_session_object_metadata(&session.metadata),
                 )),
                 uploaded_size_bytes: session.size_bytes,
                 uploaded_parts: vec![1],
@@ -1993,7 +1948,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
         object_key: &str,
         mime_type: &str,
         data: Vec<u8>,
-        metadata: serde_json::Value,
+        metadata: crate::models::FileMetadata,
     ) -> Result<FileBlob> {
         if storage_backend != self.config.storage_backend {
             return Err(Error::InvalidInput(format!(

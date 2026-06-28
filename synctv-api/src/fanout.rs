@@ -34,10 +34,9 @@ impl PreparedRoomSettingsFanout {
     pub fn settings_outbox_factory(&self) -> RealtimeOutboxSettingsEventFactory {
         let prepared = self.clone();
         Arc::new(move |settings: &RoomSettings, version| {
-            let settings_json = serde_json::to_vec(settings)?;
             let event = room_settings_event_with_settings_and_version(
                 prepared.event(),
-                settings_json,
+                settings.clone(),
                 version,
             );
             prepared
@@ -60,9 +59,8 @@ impl PreparedRoomSettingsFanout {
         settings: &RoomSettings,
         version: i64,
     ) -> synctv_core::Result<Self> {
-        let settings_json = serde_json::to_vec(settings)?;
         Self::from_event(
-            room_settings_event_with_settings_and_version(self.event(), settings_json, version),
+            room_settings_event_with_settings_and_version(self.event(), settings.clone(), version),
             self.realtime_fanout.clone(),
         )
     }
@@ -83,7 +81,7 @@ pub trait RoomSettingsFanoutService: Send + Sync {
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
-        settings_json: Vec<u8>,
+        settings: RoomSettings,
         version: i64,
     ) -> synctv_core::Result<PreparedRoomSettingsFanout>;
 
@@ -118,7 +116,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
-        settings_json: Vec<u8>,
+        settings: RoomSettings,
         version: i64,
     ) -> synctv_core::Result<PreparedRoomSettingsFanout> {
         let event = RealtimeEvent::RoomSettingsChanged {
@@ -126,7 +124,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
             room_id: *room_id,
             user_id: *actor_user_id,
             username: actor_username.to_string(),
-            settings_json,
+            settings,
             version,
             timestamp: chrono::Utc::now(),
         };
@@ -144,15 +142,15 @@ fn room_settings_event_with_version(event: &RealtimeEvent, version: i64) -> Real
 
 fn room_settings_event_with_settings_and_version(
     event: &RealtimeEvent,
-    settings_json: Vec<u8>,
+    settings: RoomSettings,
     version: i64,
 ) -> RealtimeEvent {
-    room_settings_event_with_optional_settings(event, Some(settings_json), version)
+    room_settings_event_with_optional_settings(event, Some(settings), version)
 }
 
 fn room_settings_event_with_optional_settings(
     event: &RealtimeEvent,
-    new_settings: Option<Vec<u8>>,
+    new_settings: Option<RoomSettings>,
     version: i64,
 ) -> RealtimeEvent {
     match event {
@@ -161,7 +159,7 @@ fn room_settings_event_with_optional_settings(
             room_id,
             user_id,
             username,
-            settings_json,
+            settings,
             timestamp,
             ..
         } => RealtimeEvent::RoomSettingsChanged {
@@ -169,7 +167,7 @@ fn room_settings_event_with_optional_settings(
             room_id: *room_id,
             user_id: *user_id,
             username: username.clone(),
-            settings_json: new_settings.unwrap_or_else(|| settings_json.clone()),
+            settings: new_settings.unwrap_or_else(|| settings.clone()),
             version,
             timestamp: *timestamp,
         },
@@ -223,7 +221,10 @@ mod tests {
             &room_id(),
             &user_id(),
             "tester",
-            br#"{"chat_enabled":false}"#.to_vec(),
+            synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+                ..Default::default()
+            },
             11,
         ))?;
         service.publish_prepared_after_outbox_commit(prepared);
@@ -244,7 +245,7 @@ mod tests {
             &room_id(),
             &user_id(),
             "tester",
-            Vec::new(),
+            synctv_core::models::RoomSettings::default(),
             0,
         ))?;
         let original_event_id = prepared.event().event_id().to_string();

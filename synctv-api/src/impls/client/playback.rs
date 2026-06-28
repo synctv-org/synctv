@@ -2,7 +2,6 @@
 //!
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity, SourceProvider};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
@@ -13,8 +12,8 @@ use synctv_core::service::playback::{
 
 use super::convert::{
     dynamic_playlist_source_fields, playback_client_profile_from_proto,
-    provider_playback_info_to_model, try_playback_state_to_proto, try_playback_to_proto,
-    PlaybackHttpSigningContext,
+    provider_playback_info_to_model, provider_target_from_proto, try_playback_state_to_proto,
+    try_playback_to_proto, PlaybackHttpSigningContext,
 };
 use super::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
@@ -54,7 +53,7 @@ fn stale_cached_playback_reference<T>(
 pub(crate) struct StartPlaybackTarget {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target: Vec<u8>,
+    pub target: Option<synctv_core::models::ProviderTarget>,
 }
 
 #[derive(Debug)]
@@ -72,7 +71,7 @@ struct DynamicPlaylistPlaybackRequest<'a> {
     room_id: &'a synctv_core::models::RoomId,
     user_id: &'a UserId,
     playlist_id: &'a PlaylistId,
-    target: &'a [u8],
+    target: &'a synctv_core::models::ProviderTarget,
     state: Option<&'a RoomPlaybackState>,
     playback_client_profile: Option<&'a synctv_core::provider::PlaybackClientProfile>,
     request_control: Option<&'a ExecutionControl>,
@@ -118,11 +117,7 @@ fn build_playback_result_from_provider(
         let info = provider_playback_info_to_model(&provider_info);
         builder = builder.add_mode(mode_name, info);
     }
-    for (key, value) in provider_result.metadata {
-        if key != synctv_core::provider::bilibili::DASH_MANIFEST_METADATA_KEY {
-            builder = builder.add_metadata(key, value);
-        }
-    }
+    builder = builder.metadata(provider_result.metadata);
 
     builder
         .build()
@@ -139,6 +134,7 @@ pub(crate) fn build_start_playback_request(
         playlist_id,
         target,
     } = req;
+    let target = provider_target_from_proto(target)?;
 
     Ok(StartPlaybackTarget {
         media_id: crate::impls::proto_validated_optional_media_id(media_id, public_id_codec)?,
@@ -286,7 +282,7 @@ impl ClientApiImpl {
         &self,
         state: &RoomPlaybackState,
     ) -> Result<bool, ApiError> {
-        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
             return Ok(false);
         };
         let metadata = self
@@ -575,7 +571,7 @@ impl ClientApiImpl {
         let source_metadata = resolve_playback_source_metadata(
             &self.room_service,
             self.provider_stores.as_ref(),
-            PlaybackSourceIdentity::dynamic_playlist(*room_id, *playlist_id, target),
+            PlaybackSourceIdentity::dynamic_playlist(*room_id, *playlist_id, target)?,
             provider_result.is_live,
             provider_result.duration_seconds,
         )
@@ -593,11 +589,7 @@ impl ClientApiImpl {
                 is_live: source_metadata.is_live,
             })?;
 
-        // Add dynamic playlist target metadata
-        full_result.metadata.insert(
-            "target".to_string(),
-            serde_json::Value::String(BASE64_STANDARD.encode(target)),
-        );
+        full_result.target = Some(target.clone());
 
         self.sign_and_finalize_playback(&full_result, &ctx)
     }
@@ -631,12 +623,17 @@ impl ClientApiImpl {
         }
 
         if let Some(ref playlist_id) = state.playing_playlist_id {
+            let target = state.target.as_ref().ok_or_else(|| {
+                ApiError::InvalidInput(
+                    "dynamic playlist playback state requires target".to_string(),
+                )
+            })?;
             return self
                 .build_dynamic_playlist_playback_result(DynamicPlaylistPlaybackRequest {
                     room_id,
                     user_id,
                     playlist_id,
-                    target: &state.target,
+                    target,
                     state: Some(state),
                     playback_client_profile,
                     request_control,
@@ -657,12 +654,13 @@ impl ClientApiImpl {
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            provider: String::new(),
+            provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
             expires_at: None,
             duration_seconds: None,
             is_live: false,
+            target: None,
         })
     }
 
@@ -699,7 +697,10 @@ impl ClientApiImpl {
             )?;
 
             return provider
-                .credential_dependencies(&ctx, &media.source_config)
+                .credential_dependencies(
+                    &ctx,
+                    synctv_core::provider::SourceConfig::media(&media.source_config),
+                )
                 .map_err(ApiError::from);
         }
 
@@ -733,7 +734,12 @@ impl ClientApiImpl {
             )?;
 
             return provider
-                .credential_dependencies(&ctx, source_fields.source_config)
+                .credential_dependencies(
+                    &ctx,
+                    synctv_core::provider::SourceConfig::dynamic_playlist(
+                        source_fields.source_config,
+                    ),
+                )
                 .map_err(ApiError::from);
         }
 
@@ -1175,7 +1181,19 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
                         "Observed playback lifecycle failed to refresh playback metadata"
                     );
                 }
-            } else if let Some(identity) = PlaybackSourceIdentity::from_state(state) {
+            } else {
+                let identity = match PlaybackSourceIdentity::from_state(state) {
+                    Ok(Some(identity)) => identity,
+                    Ok(None) => return,
+                    Err(error) => {
+                        tracing::warn!(
+                            room_id = %room_id,
+                            error = %error,
+                            "Observed playback lifecycle failed to hash playback target"
+                        );
+                        return;
+                    }
+                };
                 if self
                     .room_service
                     .playback_service()

@@ -185,7 +185,7 @@ impl RoomService {
             ROOM_COVER_REFERENCE_KIND,
             &room_id.as_i64().to_string(),
             None,
-            &file.metadata,
+            &crate::models::FileReferenceMetadata::File(crate::models::FileMetadata::default()),
         )
         .await?
         .ok_or_else(|| {

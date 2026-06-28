@@ -46,7 +46,7 @@ pub async fn create_room(
         EndpointRateLimitCategory::Write,
         EndpointRateLimitScope::RoomCreate,
         move |client_api, authenticated| async move {
-            client_api.create_room(&authenticated.user_id, req).await
+            Box::pin(client_api.create_room(&authenticated.user_id, req)).await
         },
     )
     .await?;
@@ -66,10 +66,10 @@ pub async fn create_room(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}",
+        path = "/api/rooms/{roomId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room details", body = GetRoomResponse),
@@ -105,12 +105,12 @@ pub async fn get_room(
     feature = "openapi",
     utoipa::path(
         put,
-        path = "/api/rooms/{room_id}/members/@me",
+        path = "/api/rooms/{roomId}/members/@me",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
-        request_body = synctv_proto::client::JoinRoomRequest,
+        request_body = JoinRoomRequest,
         responses(
             (status = 200, description = "Joined room", body = JoinRoomResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -162,10 +162,10 @@ pub async fn join_room(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/members/@me",
+        path = "/api/rooms/{roomId}/members/@me",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Left room", body = LeaveRoomResponse),
@@ -204,10 +204,10 @@ pub async fn leave_room(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}",
+        path = "/api/rooms/{roomId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room deleted", body = DeleteRoomResponse),
@@ -251,10 +251,10 @@ pub async fn delete_room(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/check",
+        path = "/api/rooms/{roomId}/check",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Room availability and status; exists=false when the room is not found", body = CheckRoomResponse),

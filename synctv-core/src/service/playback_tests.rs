@@ -2,7 +2,7 @@ use super::*;
 use crate::cache::{
     CacheInvalidationService, CacheL2Backend, InvalidationMessage, KeyBuilder, UsernameCache,
 };
-use crate::models::{RoomId, SignupMethod, User, UserRole, UserStatus};
+use crate::models::{ProviderTarget, RoomId, SignupMethod, User, UserRole, UserStatus};
 use crate::repository::{
     MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomPlaybackStateRepository,
     RoomRepository,
@@ -201,7 +201,7 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         room_id,
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 10.0,
         speed: 1.0,
@@ -215,7 +215,7 @@ async fn write_playback_cache_refreshes_l1_when_l2_is_configured() {
         room_id,
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 42.0,
         speed: 1.0,
@@ -289,7 +289,7 @@ fn test_position_update_requires_current_playback_source() {
         room_id: RoomId::expect_positive(20_001),
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 0.0,
         speed: 1.0,
@@ -309,7 +309,7 @@ fn test_position_update_requires_current_playback_source() {
 
     state.playing_media_id = None;
     state.playing_playlist_id = Some(PlaylistId::expect_positive(40_001));
-    state.target = b"dynamic-target".to_vec();
+    state.target = Some(ProviderTarget::alist("dynamic-target".to_string()));
     assert!(validate_position_update_source(&state).is_ok());
 }
 
@@ -318,25 +318,27 @@ fn test_switch_target_source_shape_matches_progress_schema() {
     assert!(validate_switch_target(&SwitchPlaybackTarget {
         media_id: Some(MediaId::expect_positive(30_010)),
         playlist_id: None,
-        target: Vec::new(),
+        target: None,
     })
     .is_ok());
     assert!(validate_switch_target(&SwitchPlaybackTarget {
         media_id: None,
         playlist_id: Some(PlaylistId::expect_positive(40_010)),
-        target: b"dynamic-target".to_vec(),
+        target: Some(ProviderTarget::alist("dynamic-target".to_string())),
     })
     .is_ok());
     assert!(validate_switch_target(&SwitchPlaybackTarget {
         media_id: Some(MediaId::expect_positive(30_011)),
         playlist_id: None,
-        target: b"static-media-must-not-have-target".to_vec(),
+        target: Some(ProviderTarget::alist(
+            "static-media-must-have-no-target".to_string(),
+        )),
     })
     .is_err());
     assert!(validate_switch_target(&SwitchPlaybackTarget {
         media_id: None,
         playlist_id: Some(PlaylistId::expect_positive(40_011)),
-        target: Vec::new(),
+        target: None,
     })
     .is_err());
 }
@@ -370,7 +372,7 @@ async fn test_invalidation_listener_stops_after_cache_invalidation_service_stop(
         room_id,
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 42.0,
         speed: 1.0,
@@ -419,7 +421,7 @@ async fn test_start_can_restart_playback_invalidation_listener_after_shutdown() 
         room_id,
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 64.0,
         speed: 1.0,
@@ -491,7 +493,7 @@ async fn test_start_activates_invalidation_listener_after_wiring_service() {
         room_id,
         playing_media_id: None,
         playing_playlist_id: None,
-        target: Vec::new(),
+        target: None,
         current_progress_id: None,
         position: 88.0,
         speed: 1.0,
@@ -769,7 +771,7 @@ mod version_check_tests {
             room_id: RoomId::expect_positive(room_id),
             playing_media_id: None,
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position,
             speed: 1.0,

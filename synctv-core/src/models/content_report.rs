@@ -1,5 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    Decode, Encode, Postgres, Type,
+};
 use std::str::FromStr;
 
 use super::{ContentReportId, RoomId, UserId};
@@ -117,7 +121,47 @@ pub struct CreateContentReport {
     pub target: ContentReportTarget,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: serde_json::Value,
+    pub metadata: ContentReportMetadata,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentReportMetadata {
+    pub client_reason: Option<String>,
+}
+
+impl ContentReportMetadata {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.client_reason.is_none()
+    }
+}
+
+impl Type<Postgres> for ContentReportMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<ContentReportMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<ContentReportMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for ContentReportMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for ContentReportMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -134,7 +178,7 @@ pub struct ContentReport {
     pub target_chat_message_created_at: Option<DateTime<Utc>>,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: serde_json::Value,
+    pub metadata: ContentReportMetadata,
     pub status: ContentReportStatus,
     pub reviewed_by: Option<UserId>,
     pub reviewed_at: Option<DateTime<Utc>>,
@@ -164,7 +208,7 @@ pub struct ContentReportAdminRow {
     pub target_chat_message_preview: String,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: serde_json::Value,
+    pub metadata: ContentReportMetadata,
     pub status: ContentReportStatus,
     pub reviewed_by: Option<UserId>,
     pub reviewed_by_username: String,

@@ -12,7 +12,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 - 邮件登录的静态配置
 - OAuth2 provider 的 runtime 配置
 
-OAuth2 provider 不再放在配置文件、环境变量或 Helm values 中定义，而是放在 runtime settings 的 `oauth2.providers` 里。
+OAuth2 provider 放在 runtime settings 的 `oauth2.providers` 里。
 
 ## 邮件配置
 
@@ -43,31 +43,31 @@ email:
 
 ## OAuth2 runtime 配置
 
-`oauth2.providers` 是一个动态对象。每个 key 是一个 provider 实例名，例如 `github`、`logto1`、`corp_oidc`。实例名只能包含 ASCII 字母、数字、`_` 和 `-`。
+`oauth2.providers` 是 `OAuth2ProviderSettings` 数组。每个元素的 `instanceName` 是 provider 实例名，例如 `github`、`logto1`、`corp_oidc`。实例名只能包含 ASCII 字母、数字、`_` 和 `-`。
 
-每个实例都使用同一个外层结构：
+每个实例使用共享字段加一个 provider oneof 字段：
 
 ```json
 {
-  "type": "github",
-  "enable_signup": true,
-  "signup_need_review": false,
-  "config": {
-    "client_id": "github-client-id",
-    "client_secret": "github-client-secret",
-    "redirect_url": "https://app.example.com/oauth2/callback"
+  "instanceName": "github",
+  "enableSignup": true,
+  "signupNeedReview": false,
+  "github": {
+    "clientId": "github-client-id",
+    "clientSecret": "github-client-secret",
+    "redirectUrl": "https://app.example.com/oauth2/callback"
   }
 }
 ```
 
-外层字段含义：
+字段含义：
 
 | 字段 | 作用 |
 | --- | --- |
-| `type` | provider 类型。当前支持的值以服务端内置 provider registry 为准 |
-| `enable_signup` | 是否允许这个 provider 的首次登录自动创建本地账号 |
-| `signup_need_review` | 首次登录是否进入注册审核 |
-| `config` | provider 私有配置。外层不枚举，由对应 provider 自己解析 |
+| `instanceName` | provider 实例名 |
+| `enableSignup` | 是否允许这个 provider 的首次登录自动创建本地账号 |
+| `signupNeedReview` | 首次登录是否进入注册审核 |
+| provider oneof 字段 | 例如 `github`、`google`、`logto`、`oidc`、`casdoor`。每个对象内写 provider 私有字段 |
 
 ## 常见 provider 示例
 
@@ -75,40 +75,40 @@ email:
 <TabItem label="GitHub" value="github">
 
 ```json
-{
-  "github": {
-    "type": "github",
-    "enable_signup": true,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "github-client-id",
-      "client_secret": "github-client-secret",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}
+]
 ```
 
 </TabItem>
 <TabItem label="OIDC" value="oidc">
 
 ```json
-{
-  "corp_oidc": {
-    "type": "oidc",
-    "enable_signup": false,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "synctv",
-      "client_secret": "oidc-client-secret",
+[
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
       "issuer": "https://idp.example.com",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}
+]
 ```
 
-默认使用 `issuer` 进行 OIDC discovery。只有在 IdP 没有标准 discovery 文档时才手动配置 `auth_url`、`token_url` 和 `jwks_url`；`userinfo_url` 可选，缺失时会使用已验证的 ID Token claims。
+默认使用 `issuer` 进行 OIDC discovery。只有在 IdP 没有标准 discovery 文档时才手动配置 `authUrl`、`tokenUrl` 和 `jwksUrl`；`userinfoUrl` 可选，缺失时会使用已验证的 ID Token claims。
 
 </TabItem>
 </Tabs>
@@ -117,15 +117,15 @@ email:
 
 - 运行时 settings 修改后，OAuth2 服务会按新配置重建 provider map。
 - 缺失某个实例名，就等于这个入口不可用。
-- `enable_signup=false` 只影响首次 OAuth2 建号，不影响已绑定账号登录。
-- `signup_need_review=true` 会把首次 OAuth2 注册送入审核流程。
+- `enableSignup=false` 只影响首次 OAuth2 建号，不影响已绑定账号登录。
+- `signupNeedReview=true` 会把首次 OAuth2 注册送入审核流程。
 
 ## 常见问题
 
-### 为什么不再有 `oauth2.redirect_scheme`
+### Redirect URL
 
-因为 redirect URL 现在直接写在每个 provider 的 `config.redirect_url` 里。这样不会把协议抽成全局状态，也不会限制不同 provider 之间的回调写法。
+每个 provider 实例通过 `redirectUrl` 配置完整回调地址。不同 provider 可以使用各自的回调路径和协议。
 
-### `client_secret` 应该放哪里
+### `clientSecret` 应该放哪里
 
-放在 `config.client_secret`，并通过 runtime settings 管理。不要放进静态配置文件。
+放在 `clientSecret`，并通过 runtime settings 管理。

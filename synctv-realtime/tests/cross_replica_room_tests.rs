@@ -266,11 +266,11 @@ async fn test_cross_replica_room_settings_changed() {
             room_id,
             user_id: UserId::expect_positive(10_000_050),
             username: "room_admin".to_string(),
-            settings_json: serde_json::to_vec(&serde_json::json!({
-                "max_members": 50,
-                "chat_enabled": false
-            }))
-            .expect("serialize settings"),
+            settings: synctv_core::models::RoomSettings {
+                max_members: synctv_core::models::room_settings::MaxMembers(50),
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+                ..Default::default()
+            },
             version: 3,
             timestamp: Utc::now(),
         },
@@ -281,14 +281,11 @@ async fn test_cross_replica_room_settings_changed() {
 
     assert_eq!(received.event_type(), "room_settings_changed");
     if let RealtimeEvent::RoomSettingsChanged {
-        settings_json,
-        version,
-        ..
+        settings, version, ..
     } = &received
     {
-        let parsed: serde_json::Value = serde_json::from_slice(settings_json).expect("valid JSON");
-        assert_eq!(parsed["max_members"], 50);
-        assert_eq!(parsed["chat_enabled"], false);
+        assert_eq!(settings.max_members.0, 50);
+        assert!(!settings.chat_enabled.0);
         assert_eq!(*version, 3);
     } else {
         panic!("Expected RoomSettingsChanged event");

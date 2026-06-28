@@ -290,13 +290,7 @@ fn new_outbox_event(event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, Str
         event_type: event.event_type().to_string(),
         event_version: 1,
         aggregate_version: aggregate_version(event),
-        payload: serde_json::to_value(event).map_err(|error| {
-            format!(
-                "Failed to serialize realtime event {} ({}): {error}",
-                event.event_id(),
-                event.event_type()
-            )
-        })?,
+        payload: event.clone(),
     })
 }
 
@@ -457,7 +451,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_158),
             user_id: UserId::expect_positive(10_000_159),
             username: "tester".to_string(),
-            settings_json: Vec::new(),
+            settings: synctv_core::models::RoomSettings::default(),
             version: 1,
             timestamp: Utc::now(),
         });
@@ -476,7 +470,7 @@ mod tests {
                 room_id: *room_id,
                 user_id: UserId::expect_positive(10_000_160),
                 username: "tester".to_string(),
-                settings_json: Vec::new(),
+                settings: synctv_core::models::RoomSettings::default(),
                 version: 1,
                 timestamp: Utc::now(),
             }
@@ -558,7 +552,7 @@ mod tests {
             room_id,
             playing_media_id: Some(MediaId::expect_positive(10_000_163)),
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             is_playing: true,
             position: 12.5,

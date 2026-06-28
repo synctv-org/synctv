@@ -3,69 +3,26 @@
 use super::error::ProviderError;
 use super::playback_transport::PlaybackTransportAction;
 use super::store::VersionedPlayback;
-use crate::models::{MediaId, RoomId, TypedId};
+use crate::models::{MediaId, RoomId};
 use crate::proxy_signature::ProxyUrlClaims;
 use crate::PublicIdCodec;
-
-/// Extract a typed ID from versioned playback metadata.
-///
-/// Supports both numeric (i64/u64) and string (public ID) formats.
-pub(super) fn metadata_typed_id<T>(
-    versioned: &VersionedPlayback,
-    field: &'static str,
-    parse_public_id: impl FnOnce(&str) -> Result<T, ProviderError>,
-) -> Result<T, ProviderError>
-where
-    T: TypedId,
-{
-    let value = versioned
-        .result
-        .metadata
-        .get(field)
-        .ok_or_else(|| ProviderError::ApiError(format!("Live playback missing {field}")))?;
-
-    if let Some(id) = value.as_i64() {
-        return T::try_from(id).map_err(|error| {
-            ProviderError::InvalidConfig(format!(
-                "Invalid {field} in live playback metadata: {error}"
-            ))
-        });
-    }
-
-    if let Some(id) = value.as_u64() {
-        let id = i64::try_from(id).map_err(|_| {
-            ProviderError::InvalidConfig(format!(
-                "Invalid {field} in live playback metadata: exceeds i64"
-            ))
-        })?;
-        return T::try_from(id).map_err(|error| {
-            ProviderError::InvalidConfig(format!(
-                "Invalid {field} in live playback metadata: {error}"
-            ))
-        });
-    }
-
-    let value = value.as_str().ok_or_else(|| {
-        ProviderError::InvalidConfig(format!(
-            "Invalid {field} in live playback metadata: expected public ID string or numeric ID"
-        ))
-    })?;
-
-    parse_public_id(value)
-}
 
 /// Extract room_id and media_id from versioned playback metadata.
 pub(super) fn live_ids_from_metadata(
     versioned: &VersionedPlayback,
-    public_id_codec: &PublicIdCodec,
-    context_label: &str,
+    _public_id_codec: &PublicIdCodec,
+    _context_label: &str,
 ) -> Result<(RoomId, MediaId), ProviderError> {
-    let room_id = metadata_typed_id(versioned, "room_id", |room_id| {
-        super::playback_transport::parse_playback_room_id(public_id_codec, room_id, context_label)
-    })?;
-    let media_id = metadata_typed_id(versioned, "media_id", |media_id| {
-        super::playback_transport::parse_playback_media_id(public_id_codec, media_id, context_label)
-    })?;
+    let room_id = versioned
+        .result
+        .metadata
+        .room_id
+        .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".to_string()))?;
+    let media_id = versioned
+        .result
+        .metadata
+        .media_id
+        .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".to_string()))?;
     Ok((room_id, media_id))
 }
 

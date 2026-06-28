@@ -19,6 +19,34 @@ use crate::cache::l2_backend::{CacheL2Backend, VersionedFenceRead};
 use crate::cache::singleflight::{CloneableError, SingleFlight};
 use crate::{Error, Result};
 
+#[derive(Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct L2CacheEnvelope<T> {
+    payload: T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_version: Option<i64>,
+}
+
+fn decode_l2_value<V>(cache_type: &str, key: &str, json: &str) -> Option<V>
+where
+    V: DeserializeOwned,
+{
+    match serde_json::from_str::<L2CacheEnvelope<V>>(json) {
+        Ok(entry) => Some(entry.payload),
+        Err(error) => {
+            tracing::debug!(
+                key = %key,
+                cache_type = %cache_type,
+                error = %error,
+                "Discarding non-canonical L2 cache entry"
+            );
+            None
+        }
+    }
+}
+
 /// Trait for cache values that support conditional updates based on freshness.
 ///
 /// Types implementing this trait can be compared by timestamp, allowing
@@ -217,15 +245,19 @@ where
                             .await
                             .map_err(CloneableError::from)?;
 
-                        match json {
-                            Some(json) => {
-                                serde_json::from_str::<V>(&json).map(Some).map_err(|error| {
-                                    CloneableError::internal(format!(
-                                        "Failed to deserialize cached {cache_type}: {error}"
-                                    ))
-                                })
+                        if let Some(json) = json {
+                            if let Some(value) =
+                                decode_l2_value::<V>(&cache_type, &redis_key, &json)
+                            {
+                                Ok(Some(value))
+                            } else {
+                                l2.delete_scoped(&l2_prefix, &redis_key)
+                                    .await
+                                    .map_err(CloneableError::from)?;
+                                Ok(None)
                             }
-                            None => Ok(None),
+                        } else {
+                            Ok(None)
                         }
                     }
                 })
@@ -298,7 +330,10 @@ where
             return Ok(None);
         };
 
-        let value = self.deserialize_l2_value(&json)?;
+        let Some(value) = self.deserialize_l2_value(&redis_key, &json)? else {
+            l2.delete_scoped(&l2_prefix, &redis_key).await?;
+            return Ok(None);
+        };
 
         self.maybe_insert_l1_after_fetch(
             key,
@@ -312,10 +347,24 @@ where
         Ok(Some(value))
     }
 
-    fn deserialize_l2_value(&self, json: &str) -> Result<V> {
-        serde_json::from_str(json).map_err(|e| {
+    fn deserialize_l2_value(&self, key: &str, json: &str) -> Result<Option<V>> {
+        Ok(decode_l2_value::<V>(&self.cache_type, key, json))
+    }
+
+    fn serialize_l2_envelope(
+        &self,
+        value: V,
+        updated_at_ms: Option<i64>,
+        cache_version: Option<i64>,
+    ) -> Result<String> {
+        serde_json::to_string(&L2CacheEnvelope {
+            payload: value,
+            updated_at_ms,
+            cache_version,
+        })
+        .map_err(|e| {
             Error::Internal(format!(
-                "Failed to deserialize cached {}: {e}",
+                "Failed to serialize {} for caching: {e}",
                 self.cache_type
             ))
         })
@@ -359,12 +408,7 @@ where
         // Update L2 cache
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
-            let json = serde_json::to_string(&value).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to serialize {} for caching: {e}",
-                    self.cache_type
-                ))
-            })?;
+            let json = self.serialize_l2_envelope(value.clone(), None, None)?;
 
             // Add TTL jitter to prevent cache avalanche (+-10% random jitter).
             // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor,
@@ -535,11 +579,12 @@ where
                 .collect();
             let l2 = self.l2.clone();
             let l2_prefix = self.key_prefix.clone();
+            let fetched_full_keys = full_keys.clone();
 
             let jsons: Vec<Option<String>> = self
                 .batch_singleflight
                 .do_work(sf_key, async move {
-                    l2.get_batch_scoped(&l2_prefix, &full_keys)
+                    l2.get_batch_scoped(&l2_prefix, &fetched_full_keys)
                         .await
                         .map_err(CloneableError::from)
                 })
@@ -568,7 +613,12 @@ where
             // Update result (always) and L1 cache (only if no invalidation for that key)
             for (i, (key, json_opt)) in missing_keys.iter().zip(jsons).enumerate() {
                 if let Some(json) = json_opt {
-                    let value = self.deserialize_l2_value(&json)?;
+                    let Some(value) = self.deserialize_l2_value(&full_keys[i], &json)? else {
+                        self.l2
+                            .delete_scoped(&self.key_prefix, &full_keys[i])
+                            .await?;
+                        continue;
+                    };
                     result.insert(key.clone(), value.clone());
                     if !global_epoch_changed {
                         // Per-key epoch check: only skip L1 for keys that were
@@ -682,6 +732,36 @@ where
     K: CacheKey,
     V: Clone + Serialize + DeserializeOwned + Timestamped + Send + Sync + 'static,
 {
+    /// Set a timestamped value in cache, including the freshness metadata in L2.
+    pub async fn set_timestamped(&self, key: &K, value: V) -> Result<()> {
+        let start = std::time::Instant::now();
+        let updated_at_ms = value.updated_at().timestamp_millis();
+
+        self.l1_cache.insert(key.clone(), value.clone()).await;
+
+        if self.l2.is_active() {
+            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
+            let json = self.serialize_l2_envelope(value.clone(), Some(updated_at_ms), None)?;
+            let ttl_with_jitter = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
+
+            self.l2
+                .set_scoped(&self.key_prefix, &redis_key, &json, ttl_with_jitter)
+                .await?;
+
+            tracing::debug!(
+                key = %key,
+                ttl_seconds = ttl_with_jitter,
+                cache_type = %self.cache_type,
+                "Cached timestamped value"
+            );
+        }
+
+        crate::metrics::cache::CACHE_OPERATION_DURATION
+            .with_label_values(&["set"])
+            .observe(start.elapsed().as_secs_f64());
+        Ok(())
+    }
+
     /// Set a value in cache only if it's newer than existing data.
     ///
     /// Uses the L2 backend's atomic set-if-newer operation (e.g. Redis Lua script)
@@ -694,21 +774,7 @@ where
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
 
-            let mut l2_value = serde_json::to_value(&value).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to serialize {} for caching: {e}",
-                    self.cache_type
-                ))
-            })?;
-            if let Some(object) = l2_value.as_object_mut() {
-                object.insert("updated_at_ms".to_string(), serde_json::json!(new_ts));
-            }
-            let new_json = serde_json::to_string(&l2_value).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to serialize {} for caching: {e}",
-                    self.cache_type
-                ))
-            })?;
+            let new_json = self.serialize_l2_envelope(value.clone(), Some(new_ts), None)?;
 
             // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor.
             let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
@@ -800,7 +866,13 @@ where
                     return Ok(FenceReadResult::Hit(l1_value));
                 }
                 VersionedFenceRead::UseL2(json) => {
-                    let value = self.deserialize_l2_value(&json)?;
+                    let Some(value) = self.deserialize_l2_value(&redis_key, &json)? else {
+                        self.l2.delete_scoped(&self.key_prefix, &redis_key).await?;
+                        crate::metrics::cache::CACHE_MISSES
+                            .with_label_values(&[&self.cache_type, "fence"])
+                            .inc();
+                        return Ok(FenceReadResult::DbFallback);
+                    };
                     self.maybe_insert_l1_after_fetch(
                         key,
                         value.clone(),
@@ -828,7 +900,13 @@ where
             .read_versioned_l2_by_fence(fence_key, &redis_key)
             .await?
         {
-            let value = self.deserialize_l2_value(&json)?;
+            let Some(value) = self.deserialize_l2_value(&redis_key, &json)? else {
+                self.l2.delete_scoped(&self.key_prefix, &redis_key).await?;
+                crate::metrics::cache::CACHE_MISSES
+                    .with_label_values(&[&self.cache_type, "fence"])
+                    .inc();
+                return Ok(FenceReadResult::DbFallback);
+            };
             self.maybe_insert_l1_after_fetch(
                 key,
                 value.clone(),
@@ -858,21 +936,7 @@ where
 
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
-            let mut l2_value = serde_json::to_value(&value).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to serialize {} for caching: {e}",
-                    self.cache_type
-                ))
-            })?;
-            if let Some(object) = l2_value.as_object_mut() {
-                object.insert("cache_version".to_string(), serde_json::json!(version));
-            }
-            let new_json = serde_json::to_string(&l2_value).map_err(|e| {
-                Error::Internal(format!(
-                    "Failed to serialize {} for caching: {e}",
-                    self.cache_type
-                ))
-            })?;
+            let new_json = self.serialize_l2_envelope(value.clone(), None, Some(version))?;
 
             let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
@@ -1047,7 +1111,7 @@ mod tests {
         }
 
         async fn delete(&self, _key: &str) -> Result<()> {
-            Err(Error::Internal("unexpected L2 delete".to_string()))
+            Ok(())
         }
 
         async fn set_if_newer(
@@ -1074,6 +1138,57 @@ mod tests {
             Err(Error::Internal(format!(
                 "unexpected L2 prefix delete: {prefix}"
             )))
+        }
+
+        fn is_active(&self) -> bool {
+            true
+        }
+    }
+
+    struct NonCanonicalSingleL2;
+
+    #[async_trait]
+    impl CacheL2Backend for NonCanonicalSingleL2 {
+        async fn get(&self, _key: &str) -> Result<Option<String>> {
+            Ok(Some(
+                r#"{"name":"legacy","updatedAt":"2024-01-01T00:00:00Z"}"#.to_string(),
+            ))
+        }
+
+        async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
+            Ok(vec![None; keys.len()])
+        }
+
+        async fn set(&self, _key: &str, _json: &str, _ttl_secs: u64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn delete(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn set_if_newer(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _new_ts_millis: i64,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn set_if_version_at_least(
+            &self,
+            _key: &str,
+            _json: &str,
+            _ttl_secs: u64,
+            _version: i64,
+        ) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn delete_by_prefix(&self, _prefix: &str) -> Result<()> {
+            Ok(())
         }
 
         fn is_active(&self) -> bool {
@@ -1162,18 +1277,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_batch_lookup_rejects_corrupt_l2_json() {
+    async fn test_batch_lookup_discards_non_canonical_l2_json() {
         let cache = make_cache_with_l2(Arc::new(CorruptBatchL2));
-        let err = cache
+        let result = cache
             .get_batch(&[TestId("k1".to_string())])
             .await
-            .expect_err("corrupt L2 JSON should fail the batch lookup");
+            .checked("non-canonical L2 JSON should be treated as a miss");
 
-        assert!(
-            err.to_string()
-                .contains("Failed to deserialize cached test"),
-            "unexpected error: {err}"
-        );
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_l2_discards_non_canonical_l2_json() {
+        let cache = make_cache_with_l2(Arc::new(NonCanonicalSingleL2));
+        let result = cache
+            .get_l2(&TestId("k1".to_string()))
+            .await
+            .checked("non-canonical L2 JSON should be treated as a miss");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_discards_non_canonical_l2_json() {
+        let cache = make_cache_with_l2(Arc::new(NonCanonicalSingleL2));
+        let result = cache
+            .get(&TestId("k1".to_string()))
+            .await
+            .checked("non-canonical L2 JSON should be treated as a miss");
+
+        assert!(result.is_none());
     }
 
     #[tokio::test]

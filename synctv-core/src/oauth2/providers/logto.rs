@@ -2,9 +2,10 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_oauth2_redirect_url, validate_provider_url,
+    validate_oauth2_redirect_url, validate_provider_url, validate_required_oauth2_field,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
+use crate::service::{OAuth2LogtoProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
@@ -205,22 +206,30 @@ fn username_from_profile(
         .unwrap_or_else(|| provider_user_id.to_string())
 }
 
-/// Factory function for Logto provider
-pub fn logto_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
-    logto_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
-}
-
-pub fn logto_factory_with_ssrf_guard(
-    config: &serde_json::Value,
+pub fn logto_factory_from_private_config(
+    config: &OAuth2ProviderPrivateConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
-    let config: LogtoConfig = serde_json::from_value(config.clone())
-        .map_err(|e| Error::InvalidInput(format!("Invalid Logto config: {e}")))?;
+    let OAuth2ProviderPrivateConfig::Logto(config) = config else {
+        return Err(Error::InvalidInput(
+            "Logto provider requires logto config".to_string(),
+        ));
+    };
+    logto_factory_from_typed_config(config, ssrf_guard)
+}
 
+fn logto_factory_from_typed_config(
+    config: &OAuth2LogtoProviderConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_required_oauth2_field("Logto", "client_id", &config.client_id)?;
+    validate_required_oauth2_field("Logto", "client_secret", &config.client_secret)?;
+    validate_required_oauth2_field("Logto", "redirect_url", &config.redirect_url)?;
+    validate_required_oauth2_field("Logto", "endpoint", &config.endpoint)?;
     Ok(Box::new(LogtoProvider::create_with_ssrf_guard(
-        config.client_id,
-        config.client_secret,
-        config.redirect_url,
+        config.client_id.clone(),
+        config.client_secret.clone(),
+        config.redirect_url.clone(),
         &config.endpoint,
         ssrf_guard,
     )?))
@@ -230,6 +239,20 @@ pub fn logto_factory_with_ssrf_guard(
 mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
+
+    fn logto_private_config(
+        client_id: &str,
+        client_secret: &str,
+        redirect_url: &str,
+        endpoint: &str,
+    ) -> OAuth2ProviderPrivateConfig {
+        OAuth2ProviderPrivateConfig::Logto(OAuth2LogtoProviderConfig {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            redirect_url: redirect_url.to_string(),
+            endpoint: endpoint.to_string(),
+        })
+    }
 
     #[test]
     fn test_create_provider_valid_config() {
@@ -379,13 +402,16 @@ mod tests {
 
     #[test]
     fn test_factory_valid_config() {
-        let config = serde_json::json!({
-            "client_id": "logto_id",
-            "client_secret": "logto_secret",
-            "redirect_url": "https://example.com/oauth/logto/callback",
-            "endpoint": "https://logto.example.com"
-        });
-        let provider = logto_factory(&config);
+        let config = logto_private_config(
+            "logto_id",
+            "logto_secret",
+            "https://example.com/oauth/logto/callback",
+            "https://logto.example.com",
+        );
+        let provider = logto_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(provider.is_ok());
         assert_eq!(
             provider.checked("operation should succeed").provider_type(),
@@ -395,40 +421,33 @@ mod tests {
 
     #[test]
     fn test_factory_missing_endpoint() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb"
-        });
-        let result = logto_factory(&config);
+        let config = logto_private_config("id", "secret", "https://example.com/cb", "");
+        let result = logto_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_factory_missing_fields() {
-        // Missing client_id
-        let config = serde_json::json!({
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb",
-            "endpoint": "https://logto.example.com"
-        });
-        assert!(logto_factory(&config).is_err());
+        let guard = synctv_common::ssrf::SsrfGuard::strict_policy();
 
-        // Missing client_secret
-        let config = serde_json::json!({
-            "client_id": "id",
-            "redirect_url": "https://example.com/cb",
-            "endpoint": "https://logto.example.com"
-        });
-        assert!(logto_factory(&config).is_err());
-    }
+        let config = logto_private_config(
+            "",
+            "secret",
+            "https://example.com/cb",
+            "https://logto.example.com",
+        );
+        assert!(logto_factory_from_private_config(&config, &guard).is_err());
 
-    #[test]
-    fn test_factory_empty_json() {
-        let config = serde_json::json!({});
-        let result = logto_factory(&config);
-        assert!(result.is_err());
-        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
+        let config = logto_private_config(
+            "id",
+            "",
+            "https://example.com/cb",
+            "https://logto.example.com",
+        );
+        assert!(logto_factory_from_private_config(&config, &guard).is_err());
     }
 
     #[test]

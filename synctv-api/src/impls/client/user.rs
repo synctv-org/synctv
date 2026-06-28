@@ -16,7 +16,10 @@ use synctv_proto::client::{
     OpaquePasswordUpdateVerificationMethod, SensitiveOperationVerificationMethod,
 };
 
-use super::convert::{stored_file_reference_to_media_cover, try_user_to_proto};
+use super::convert::{
+    file_metadata_from_proto, room_settings_to_proto, stored_file_reference_to_media_cover,
+    try_user_to_proto,
+};
 use super::media::{
     complete_upload_response_fields, complete_upload_session_request, file_byte_range_to_proto,
     proto_file_range_request, proto_file_upload_range, proto_upload_manifest_parts,
@@ -243,9 +246,7 @@ fn user_preferences_to_proto(
         notifications: Some(user_notification_preferences_to_proto(
             &preferences.notifications,
         )),
-        settings: serde_json::to_vec(&preferences.settings).map_err(|error| {
-            ApiError::Internal(format!("Failed to serialize settings: {error}"))
-        })?,
+        settings: Some(room_settings_to_proto(&preferences.settings)),
     })
 }
 
@@ -494,13 +495,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         req: synctv_proto::client::CreateUserAvatarUploadSessionRequest,
     ) -> Result<synctv_proto::client::CreateUserAvatarUploadSessionResponse, ApiError> {
-        let metadata = if req.metadata.is_empty() {
-            serde_json::Value::Object(Default::default())
-        } else {
-            serde_json::from_slice(&req.metadata).map_err(|error| {
-                ApiError::InvalidInput(format!("Invalid avatar metadata: {error}"))
-            })?
-        };
+        let metadata = file_metadata_from_proto(req.metadata.as_ref())?;
         let session = self
             .user_service
             .create_avatar_upload_session(
@@ -750,11 +745,11 @@ impl ClientApiImpl {
             .start_user_verification(user_id)
             .await
             .map_err(ApiError::from)?;
-        let options = super::passkey::passkey_options_to_json_bytes(challenge.options_json)?;
+        let options = super::passkey::passkey_request_options_to_proto(&challenge.options)?;
         Ok(
             synctv_proto::client::StartSensitiveOperationPasskeyResponse {
                 passkey_session_id: challenge.session_id,
-                options,
+                options: Some(options),
             },
         )
     }
@@ -865,12 +860,14 @@ impl ClientApiImpl {
                     .map_err(ApiError::from)?
             }
             AuthFactorMethod::WebAuthn => {
+                let passkey_credential = req.passkey_credential.as_ref().ok_or_else(|| {
+                    ApiError::InvalidInput("passkey_credential is required".to_string())
+                })?;
+                let credential = super::passkey::passkey_authentication_credential_from_proto(
+                    passkey_credential,
+                )?;
                 self.passkey_service()?
-                    .finish_user_verification(
-                        &req.passkey_session_id,
-                        &req.passkey_credential,
-                        user_id,
-                    )
+                    .finish_user_verification(&req.passkey_session_id, credential, user_id)
                     .await
                     .map_err(ApiError::from)?;
                 self.user_service
@@ -951,7 +948,9 @@ impl ClientApiImpl {
                     credential_response: Vec::new(),
                     registration_response: challenge.registration_response,
                     passkey_session_id: passkey_challenge.session_id,
-                    passkey_options: passkey_challenge.options_json,
+                    passkey_options: Some(super::passkey::passkey_request_options_to_proto(
+                        &passkey_challenge.options,
+                    )?),
                 });
             }
             OpaquePasswordUpdateVerificationMethod::Unspecified => {
@@ -966,7 +965,7 @@ impl ClientApiImpl {
             credential_response: challenge.credential_response,
             registration_response: challenge.registration_response,
             passkey_session_id: String::new(),
-            passkey_options: Vec::new(),
+            passkey_options: None,
         })
     }
 
@@ -976,9 +975,14 @@ impl ClientApiImpl {
         req: synctv_proto::client::FinishOpaquePasswordUpdateRequest,
     ) -> Result<synctv_proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let user = if !req.passkey_session_id.is_empty() || !req.passkey_credential.is_empty() {
+        let user = if !req.passkey_session_id.is_empty() || req.passkey_credential.is_some() {
+            let passkey_credential = req.passkey_credential.as_ref().ok_or_else(|| {
+                ApiError::InvalidInput("passkey_credential is required".to_string())
+            })?;
+            let credential =
+                super::passkey::passkey_authentication_credential_from_proto(passkey_credential)?;
             self.passkey_service()?
-                .finish_user_verification(&req.passkey_session_id, &req.passkey_credential, user_id)
+                .finish_user_verification(&req.passkey_session_id, credential, user_id)
                 .await
                 .map_err(ApiError::from)?;
             self.user_service

@@ -6,9 +6,7 @@ use std::collections::HashSet;
 
 use crate::{
     models::{
-        oauth2_client::{
-            OAuth2Provider, OAuth2ProviderTypeName, OAuth2UserInfo, UserOAuthProviderMapping,
-        },
+        oauth2_client::{OAuth2Provider, OAuth2UserInfo, UserOAuthProviderMapping},
         UserId,
     },
     Result,
@@ -138,7 +136,7 @@ impl UserOAuthProviderRepository {
         let row = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider_type as "provider: OAuth2ProviderTypeName",
+            SELECT id, provider_type as "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
                    user_id as "user_id: UserId",
                    username, email, avatar_url, created_at, updated_at
@@ -171,7 +169,7 @@ impl UserOAuthProviderRepository {
         let rows = sqlx::query_as!(
             OAuth2ClientRow,
             r#"
-            SELECT id, provider_type as "provider: OAuth2ProviderTypeName",
+            SELECT id, provider_type as "provider: OAuth2Provider",
                    provider_instance_name, provider_issuer, provider_user_id,
                    user_id as "user_id: UserId",
                    username, email, avatar_url, created_at, updated_at
@@ -190,7 +188,7 @@ impl UserOAuthProviderRepository {
     pub async fn count_active_by_user_with_executor<'e, E>(
         &self,
         user_id: &UserId,
-        active_provider_keys: &HashSet<(String, String)>,
+        active_provider_keys: &HashSet<(String, OAuth2Provider)>,
         executor: E,
     ) -> Result<usize>
     where
@@ -282,7 +280,7 @@ impl UserOAuthProviderRepository {
 /// Row representation for SQL queries.
 struct OAuth2ClientRow {
     pub id: i64,
-    pub provider: OAuth2ProviderTypeName,
+    pub provider: OAuth2Provider,
     pub provider_instance_name: String,
     pub provider_issuer: Option<String>,
     pub provider_user_id: String,
@@ -298,7 +296,7 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
     fn from(row: OAuth2ClientRow) -> Self {
         Self {
             id: row.id,
-            provider: row.provider.0,
+            provider: row.provider,
             provider_instance_name: row.provider_instance_name,
             provider_issuer: row.provider_issuer,
             provider_user_id: row.provider_user_id,
@@ -322,7 +320,7 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 1,
-            provider: OAuth2ProviderTypeName("github".to_string()),
+            provider: OAuth2Provider::GitHub,
             provider_instance_name: "github-main".to_string(),
             provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_user_456".to_string(),
@@ -336,7 +334,7 @@ mod tests {
 
         let mapping: UserOAuthProviderMapping = row.into();
         assert_eq!(mapping.id, 1);
-        assert_eq!(mapping.provider, "github");
+        assert_eq!(mapping.provider, OAuth2Provider::GitHub);
         assert_eq!(mapping.provider_instance_name, "github-main");
         assert_eq!(
             mapping.provider_issuer.as_deref(),
@@ -359,7 +357,7 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 2,
-            provider: OAuth2ProviderTypeName("oidc".to_string()),
+            provider: OAuth2Provider::Oidc,
             provider_instance_name: "corp_oidc".to_string(),
             provider_issuer: None,
             provider_user_id: "oidc_user_001".to_string(),
@@ -381,7 +379,7 @@ mod tests {
         let now = Utc::now();
         let row = OAuth2ClientRow {
             id: 3,
-            provider: OAuth2ProviderTypeName("google".to_string()),
+            provider: OAuth2Provider::Google,
             provider_instance_name: "google".to_string(),
             provider_issuer: Some("https://accounts.google.com".to_string()),
             provider_user_id: "goog_123".to_string(),
@@ -394,9 +392,6 @@ mod tests {
         };
 
         let mapping: UserOAuthProviderMapping = row.into();
-        assert_eq!(
-            mapping.provider_enum(),
-            Some(crate::models::oauth2_client::OAuth2Provider::Google)
-        );
+        assert_eq!(mapping.provider, OAuth2Provider::Google);
     }
 }

@@ -13,10 +13,10 @@ use synctv_proto::client::{GetRoomMembersRequest, GetRoomMembersResponse};
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/members",
+        path = "/api/rooms/{roomId}/members",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             GetRoomMembersRequest
         ),
         responses(

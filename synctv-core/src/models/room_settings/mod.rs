@@ -350,6 +350,10 @@ impl RoomSettingProvider for AutoPlay {
 }
 
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    Decode, Encode, Postgres, Type,
+};
 
 /// Room settings composed of individual type-safe settings
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -376,6 +380,35 @@ pub struct RoomSettings {
     pub guest_added_permissions: GuestAddedPermissions,
     #[serde(default)]
     pub guest_removed_permissions: GuestRemovedPermissions,
+}
+
+impl Type<Postgres> for RoomSettings {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<RoomSettings> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<RoomSettings> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for RoomSettings {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> std::result::Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for RoomSettings {
+    fn decode(
+        value: PgValueRef<'r>,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(settings) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(settings)
+    }
 }
 
 impl RoomSettings {

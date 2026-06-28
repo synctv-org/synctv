@@ -4,7 +4,6 @@
 //!
 
 use chrono::Utc;
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::{
@@ -173,7 +172,7 @@ async fn setup_media_edit_fixture(
 
     ok(
         providers_manager
-            .create_provider("direct_url", "direct_url", &json!({}))
+            .create_provider_with_default_config("direct_url", "direct_url")
             .await,
         "direct_url provider instance should be registered",
     );

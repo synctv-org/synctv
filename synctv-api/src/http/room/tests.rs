@@ -1,17 +1,16 @@
-use std::collections::HashMap;
-
 use super::{
-    build_get_playback_request, parse_optional_query_bool, parse_optional_query_i32,
-    sse_event_from_server_message, sse_event_id_from_resource_event, watch_after_event_sequence,
-    CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery, MediaCoverObjectQuery,
-    PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery, WatchQuery,
+    build_get_playback_request, sse_event_from_server_message, sse_event_id_from_resource_event,
+    watch_after_event_sequence, CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery,
+    MediaCoverObjectQuery, PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery,
+    WatchQuery,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
-    DeletePlaylistQuery, GetChatHistoryRequest, GetChatMessageContextRequest,
-    GetChatMessageRequest, GetHotRoomsRequest, GetRoomMembersRequest, ListPlaylistItemsRequest,
-    ListPlaylistsRequest, ListRoomsRequest, MoveMediaRequest, UpdatePlaybackStateRequest,
+    DeletePlaylistQuery, EditMediaRequest, GetChatHistoryRequest, GetHotRoomsRequest,
+    GetRoomMembersRequest, JoinRoomRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    ListRoomsRequest, MoveMediaRequest, MovePlaylistRequest, StartRoomPasswordLoginRequest,
+    UpdatePlaybackStateRequest, UpdatePlaylistRequest,
 };
 
 type TestResult<T = ()> = anyhow::Result<T>;
@@ -153,13 +152,23 @@ fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResul
 #[test]
 fn test_build_get_playback_request_parses_generic_profile_query() -> TestResult {
     let request = app_ok(build_get_playback_request(&GetPlaybackQuery {
-        stream_preference: Some("transcode".to_string()),
+        stream_preference: Some(synctv_proto::client::PlaybackStreamPreference::Transcode as i32),
         max_streaming_bitrate: Some(8_000_000),
         max_audio_channels: Some(2),
-        video_codecs: Some("h264,av1".to_string()),
-        containers: Some("mp4,webm".to_string()),
-        audio_capability: Some("surround".to_string()),
-        subtitle_preference: Some("embedded_or_external".to_string()),
+        video_codecs: Some(format!(
+            "{},{}",
+            synctv_proto::client::PlaybackVideoCodec::H264 as i32,
+            synctv_proto::client::PlaybackVideoCodec::Av1 as i32
+        )),
+        containers: Some(format!(
+            "{},{}",
+            synctv_proto::client::PlaybackContainer::Mp4 as i32,
+            synctv_proto::client::PlaybackContainer::Webm as i32
+        )),
+        audio_capability: Some(synctv_proto::client::PlaybackAudioCapability::Surround as i32),
+        subtitle_preference: Some(
+            synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal as i32,
+        ),
     }))?;
 
     let profile = request
@@ -206,12 +215,11 @@ fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestRe
 
 #[test]
 fn test_handwritten_room_queries_reject_unknown_fields() {
-    assert!(serde_urlencoded::from_str::<GetPlaybackQuery>(
-        "stream_preference=direct_play&extra=true"
-    )
-    .is_err());
+    assert!(
+        serde_urlencoded::from_str::<GetPlaybackQuery>("streamPreference=2&extra=true").is_err()
+    );
     assert!(serde_urlencoded::from_str::<WatchQuery>(
-        "format=json&after_event_sequence=12&extra=true"
+        "format=json&afterEventSequence=12&extra=true"
     )
     .is_err());
     assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
@@ -219,7 +227,7 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
     )
     .is_err());
     let playback_watch =
-        serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&after_event_sequence=12")
+        serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&afterEventSequence=12")
             .expect("watch playback should accept a replay cursor");
     assert_eq!(playback_watch.after_event_sequence, Some(12));
     assert!(
@@ -238,20 +246,20 @@ fn test_build_get_playback_request_rejects_invalid_video_codec() {
         stream_preference: None,
         max_streaming_bitrate: None,
         max_audio_channels: None,
-        video_codecs: Some("h264,divx".to_string()),
+        video_codecs: Some("1,999".to_string()),
         containers: None,
         audio_capability: None,
         subtitle_preference: None,
     })
     .expect_err("unknown codec must be rejected");
 
-    assert!(error.message.contains("video codec"), "{error:?}");
+    assert!(error.message.contains("videoCodecs"), "{error:?}");
 }
 
 #[test]
 fn test_build_get_playback_request_rejects_invalid_stream_preference() {
     let error = build_get_playback_request(&GetPlaybackQuery {
-        stream_preference: Some("download".to_string()),
+        stream_preference: Some(999),
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,
@@ -261,7 +269,7 @@ fn test_build_get_playback_request_rejects_invalid_stream_preference() {
     })
     .expect_err("unknown stream preference must be rejected");
 
-    assert!(error.message.contains("stream_preference"), "{error:?}");
+    assert!(error.message.contains("streamPreference"), "{error:?}");
 }
 
 #[test]
@@ -271,7 +279,7 @@ fn test_build_get_playback_request_rejects_invalid_container() {
         max_streaming_bitrate: None,
         max_audio_channels: None,
         video_codecs: None,
-        containers: Some("mp4,avi".to_string()),
+        containers: Some("1,999".to_string()),
         audio_capability: None,
         subtitle_preference: None,
     })
@@ -288,12 +296,12 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
         max_audio_channels: None,
         video_codecs: None,
         containers: None,
-        audio_capability: Some("mono".to_string()),
+        audio_capability: Some(999),
         subtitle_preference: None,
     })
     .expect_err("unknown audio capability must be rejected");
 
-    assert!(error.message.contains("audio_capability"), "{error:?}");
+    assert!(error.message.contains("audioCapability"), "{error:?}");
 }
 
 #[test]
@@ -305,17 +313,16 @@ fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> Test
         video_codecs: None,
         containers: None,
         audio_capability: None,
-        subtitle_preference: Some("burn_in".to_string()),
+        subtitle_preference: Some(999),
     }))?;
 
-    assert!(error.message.contains("subtitle_preference"), "{error:?}");
+    assert!(error.message.contains("subtitlePreference"), "{error:?}");
     Ok(())
 }
 
 #[test]
 fn test_members_query_params_deserialize_sorting_and_filters() -> TestResult {
-    let json =
-        r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
+    let json = r#"{"page":2,"pageSize":25,"search":"alice","role":2,"sortBy":2,"sortDirection":1}"#;
     let query: GetRoomMembersRequest = serde_json::from_str(json)?;
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
@@ -337,16 +344,12 @@ fn test_members_query_params_deserialize_sorting_and_filters() -> TestResult {
 
 #[test]
 fn test_scalar_query_parsers_reject_invalid_values() {
-    let mut params = HashMap::new();
-    params.insert("page".to_string(), "abc".to_string());
-    assert!(parse_optional_query_i32(&params, "page").is_err());
-
-    let mut params = HashMap::new();
-    params.insert("dynamic_only".to_string(), "sometimes".to_string());
-    assert!(parse_optional_query_bool(&params, "dynamic_only").is_err());
-
     assert!(serde_urlencoded::from_str::<DeleteMediaQuery>("force=definitely").is_err());
     assert!(serde_urlencoded::from_str::<DeletePlaylistQuery>("force=definitely").is_err());
+    assert!(serde_urlencoded::from_str::<WatchQuery>("deliveryMode=notify_only").is_err());
+    assert!(
+        serde_urlencoded::from_str::<WatchPlaybackQuery>("deliveryMode=push_snapshot").is_err()
+    );
 }
 
 #[test]
@@ -364,7 +367,7 @@ fn test_list_rooms_query_deserializes_proto_defaults() -> TestResult {
 #[test]
 fn test_list_rooms_query_deserializes_explicit_values() -> TestResult {
     let query: ListRoomsRequest =
-        serde_urlencoded::from_str("page=2&page_size=25&search=room&sort_by=4&sort_direction=1")?;
+        serde_urlencoded::from_str("page=2&pageSize=25&search=room&sortBy=4&sortDirection=1")?;
 
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
@@ -383,7 +386,7 @@ fn test_list_rooms_query_deserializes_explicit_values() -> TestResult {
 #[test]
 fn test_check_room_path_deserializes_proto_field_name() -> TestResult {
     let req: synctv_proto::client::CheckRoomRequest =
-        serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
+        serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     Ok(())
@@ -392,7 +395,7 @@ fn test_check_room_path_deserializes_proto_field_name() -> TestResult {
 #[test]
 fn test_room_path_request_deserializes_proto_field_name() -> TestResult {
     let req: synctv_proto::client::RoomPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
+        serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     Ok(())
@@ -401,7 +404,7 @@ fn test_room_path_request_deserializes_proto_field_name() -> TestResult {
 #[test]
 fn test_room_media_target_path_request_deserializes_proto_field_names() -> TestResult {
     let req: synctv_proto::client::RoomMediaTargetPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1","media_id":"med_1"}"#)?;
+        serde_json::from_str(r#"{"roomId":"room_1","mediaId":"med_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     assert_eq!(req.media_id, "med_1");
@@ -409,12 +412,62 @@ fn test_room_media_target_path_request_deserializes_proto_field_names() -> TestR
 }
 
 #[test]
-fn test_kick_room_stream_body_does_not_require_path_media_id() -> TestResult {
-    let empty: super::KickRoomStreamBody = serde_json::from_str("{}")?;
+fn test_path_scoped_room_requests_override_path_owned_fields() -> TestResult {
+    let mut join_req: JoinRoomRequest =
+        serde_json::from_str(r#"{"roomId":"room_body","password":"secret"}"#)?;
+    join_req.room_id = "room_1".to_string();
+    assert_eq!(join_req.room_id, "room_1");
+    assert_eq!(join_req.password, "secret");
+
+    let mut login_req: StartRoomPasswordLoginRequest =
+        serde_json::from_str(r#"{"roomId":"room_body","credentialRequest":"AQID"}"#)?;
+    login_req.room_id = "room_1".to_string();
+    assert_eq!(login_req.room_id, "room_1");
+    assert_eq!(login_req.credential_request, vec![1, 2, 3]);
+
+    let mut edit_media_req: EditMediaRequest = serde_json::from_str(
+        r#"{"mediaId":"med_body","name":"Episode 1","description":"Updated"}"#,
+    )?;
+    edit_media_req.media_id = "med_1".to_string();
+    assert_eq!(edit_media_req.media_id, "med_1");
+    assert_eq!(edit_media_req.name, "Episode 1");
+    assert_eq!(edit_media_req.description, "Updated");
+
+    let mut update_playlist_req: UpdatePlaylistRequest = serde_json::from_str(
+        r#"{"playlistId":"pl_body","name":"Season 1","description":"Updated"}"#,
+    )?;
+    update_playlist_req.playlist_id = "pl_1".to_string();
+    assert_eq!(update_playlist_req.playlist_id, "pl_1");
+    assert_eq!(update_playlist_req.name, "Season 1");
+    assert_eq!(update_playlist_req.description, "Updated");
+
+    let mut move_playlist_req: MovePlaylistRequest =
+        serde_json::from_str(r#"{"playlistId":"pl_body","beforePlaylistId":"pl_anchor"}"#)?;
+    move_playlist_req.playlist_id = "pl_1".to_string();
+    assert_eq!(move_playlist_req.playlist_id, "pl_1");
+    assert!(matches!(
+        move_playlist_req.anchor,
+        Some(synctv_proto::client::move_playlist_request::Anchor::BeforePlaylistId(id))
+            if id == "pl_anchor"
+    ));
+    assert!(serde_json::from_str::<MovePlaylistRequest>(
+        r#"{"beforePlaylistId":"pl_before","afterPlaylistId":"pl_after"}"#
+    )
+    .is_err());
+    Ok(())
+}
+
+#[test]
+fn test_kick_room_stream_request_overrides_path_media_id() -> TestResult {
+    let mut empty: synctv_proto::client::KickRoomStreamRequest = serde_json::from_str("{}")?;
+    empty.media_id = "med_1".to_string();
+    assert_eq!(empty.media_id, "med_1");
     assert_eq!(empty.reason, "");
 
-    let with_reason: super::KickRoomStreamBody =
-        serde_json::from_str(r#"{"reason":"moderation"}"#)?;
+    let mut with_reason: synctv_proto::client::KickRoomStreamRequest =
+        serde_json::from_str(r#"{"mediaId":"med_body","reason":"moderation"}"#)?;
+    with_reason.media_id = "med_1".to_string();
+    assert_eq!(with_reason.media_id, "med_1");
     assert_eq!(with_reason.reason, "moderation");
     Ok(())
 }
@@ -422,7 +475,7 @@ fn test_kick_room_stream_body_does_not_require_path_media_id() -> TestResult {
 #[test]
 fn test_room_playlist_target_path_request_deserializes_proto_field_names() -> TestResult {
     let req: synctv_proto::client::RoomPlaylistTargetPathRequest =
-        serde_json::from_str(r#"{"room_id":"room_1","playlist_id":"pl_1"}"#)?;
+        serde_json::from_str(r#"{"roomId":"room_1","playlistId":"pl_1"}"#)?;
 
     assert_eq!(req.room_id, "room_1");
     assert_eq!(req.playlist_id, "pl_1");
@@ -443,9 +496,8 @@ fn test_list_playlists_query_deserializes_proto_defaults() -> TestResult {
 
 #[test]
 fn test_list_playlists_query_deserializes_explicit_values() -> TestResult {
-    let query: ListPlaylistsRequest = serde_urlencoded::from_str(
-        "page=2&page_size=25&sort_by=4&sort_direction=2&availability=2",
-    )?;
+    let query: ListPlaylistsRequest =
+        serde_urlencoded::from_str("page=2&pageSize=25&sortBy=4&sortDirection=2&availability=2")?;
 
     assert_eq!(query.page, 2);
     assert_eq!(query.page_size, 25);
@@ -466,8 +518,6 @@ fn test_list_playlists_query_deserializes_explicit_values() -> TestResult {
 
 #[test]
 fn test_chat_history_parser_rejects_invalid_limit() {
-    let mut params = HashMap::new();
-    params.insert("limit".to_string(), "many".to_string());
     assert!(serde_urlencoded::from_str::<GetChatHistoryRequest>("limit=many").is_err());
 }
 
@@ -494,7 +544,7 @@ fn test_list_playlist_items_body_deserialize_room_root() -> TestResult {
     let json = r"{}";
     let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert!(req.playlist_id.is_empty());
-    assert!(req.target.is_empty());
+    assert!(req.target.is_none());
     assert_eq!(req.page, 0);
     assert_eq!(req.page_size, 0);
     assert_eq!(req.availability, 0);
@@ -502,12 +552,17 @@ fn test_list_playlist_items_body_deserialize_room_root() -> TestResult {
 }
 
 #[test]
-fn test_list_playlist_items_body_deserialize_dynamic_target() -> TestResult {
-    let json = r#"{"playlist_id":"pl1","target":{"cursor":"season-1"},"page":2,"page_size":25}"#;
+fn test_list_playlist_items_body_deserialize_alist_target() -> TestResult {
+    let json = r#"{"playlistId":"pl1","target":{"alist":{"relativePath":"season-1"}},"page":2,"pageSize":25}"#;
     let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert_eq!(req.playlist_id, "pl1");
-    let target: serde_json::Value = serde_json::from_slice(&req.target)?;
-    assert_eq!(target, serde_json::json!({"cursor":"season-1"}));
+    let Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Alist(target)),
+    }) = req.target
+    else {
+        return Err(test_error("alist target should deserialize"));
+    };
+    assert_eq!(target.relative_path, "season-1");
     assert_eq!(req.page, 2);
     assert_eq!(req.page_size, 25);
     assert_eq!(req.availability, 0);
@@ -531,11 +586,11 @@ fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() -> T
     let json = r#"{
         "items": [
             {
-                "playlist_id": "playlist-1",
-                "source_provider": "direct_url",
-                "provider_instance_name": "default",
-                "source_config": {
-                    "direct_url": {
+                "playlistId": "playlist-1",
+                "sourceProvider": 1,
+                "providerInstanceName": "default",
+                "sourceConfig": {
+                    "directUrl": {
                         "medias": [
                             {
                                 "url": "https://example.com/video.mp4"
@@ -555,8 +610,8 @@ fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() -> T
 #[test]
 fn test_move_media_request_deserializes_anchor_fields_without_wrapper() -> TestResult {
     let json = r#"{
-        "media_ids": ["media-1"],
-        "before_media_id": "media-2"
+        "mediaIds": ["media-1"],
+        "beforeMediaId": "media-2"
     }"#;
     let req: MoveMediaRequest = serde_json::from_str(json)?;
     assert_eq!(req.media_ids, vec!["media-1".to_string()]);
@@ -576,17 +631,23 @@ fn test_parse_chat_history_request_accepts_cursor_only() -> TestResult {
 }
 
 #[test]
-fn test_chat_message_path_injected_queries_deserialize_without_message_id() -> TestResult {
-    let message: GetChatMessageRequest = serde_urlencoded::from_str("include_deleted=true")?;
-    assert!(message.message_id.is_empty());
-    assert!(message.include_deleted);
+fn test_chat_message_path_injected_queries_reject_message_id() -> TestResult {
+    let _: super::chat::GetChatMessageQuery = serde_urlencoded::from_str("includeDeleted=true")?;
+    assert!(
+        serde_urlencoded::from_str::<super::chat::GetChatMessageQuery>(
+            "messageId=msg_1&includeDeleted=true"
+        )
+        .is_err()
+    );
 
-    let context: GetChatMessageContextRequest =
-        serde_urlencoded::from_str("before_limit=5&after_limit=6&include_deleted=true")?;
-    assert!(context.message_id.is_empty());
-    assert_eq!(context.before_limit, 5);
-    assert_eq!(context.after_limit, 6);
-    assert!(context.include_deleted);
+    let _: super::chat::GetChatMessageContextQuery =
+        serde_urlencoded::from_str("beforeLimit=5&afterLimit=6&includeDeleted=true")?;
+    assert!(
+        serde_urlencoded::from_str::<super::chat::GetChatMessageContextQuery>(
+            "messageId=msg_1&beforeLimit=5"
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -605,7 +666,7 @@ fn test_delete_force_query_deserialization_accepts_bool_only() -> TestResult {
 #[test]
 fn test_delete_entries_body_deserializes_force_true() -> TestResult {
     let body: DeleteEntriesRequest = serde_json::from_str(
-        r#"{"playlist_ids":["playlist-1"],"media_ids":["media-1"],"force":true}"#,
+        r#"{"playlistIds":["playlist-1"],"mediaIds":["media-1"],"force":true}"#,
     )?;
 
     assert_eq!(body.playlist_ids, vec!["playlist-1"]);
@@ -619,10 +680,10 @@ fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
     let body: CreatePlaylistRequest = serde_json::from_str(
         r#"{
             "name":"Dynamic Folder",
-            "parent_id":"playlist-root",
-            "source_provider":"alist",
-            "source_config":{"alist":{"server_id":"alist-server","path":"/tv"}},
-            "provider_instance_name":"alist-main"
+            "parentId":"playlist-root",
+            "sourceProvider":3,
+            "sourceConfig":{"alist":{"serverId":"alist-server","path":"/tv"}},
+            "providerInstanceName":"alist-main"
         }"#,
     )?;
 
@@ -648,11 +709,10 @@ fn test_create_playlist_body_deserializes_dynamic_fields() -> TestResult {
 }
 
 #[test]
-fn test_move_playlist_body_deserializes_without_path_playlist_id() -> TestResult {
+fn test_move_playlist_request_deserializes_anchor() -> TestResult {
     let body: synctv_proto::client::MovePlaylistRequest =
-        serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#)?;
+        serde_json::from_str(r#"{"playlistId":"playlist-1","beforePlaylistId":"playlist-2"}"#)?;
 
-    assert!(body.playlist_id.is_empty());
     assert_eq!(
         body.anchor,
         Some(

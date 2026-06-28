@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, QueryBuilder};
 
-use crate::models::{AuditAction, AuditTargetType, PageParams, UserId};
+use crate::models::{AuditAction, AuditDetails, AuditTargetType, PageParams, UserId};
 use crate::repository::pools::RepoPools;
 use crate::{Error, Result};
 
@@ -14,7 +14,7 @@ pub struct AuditLogRow {
     pub action: AuditAction,
     pub target_type: Option<AuditTargetType>,
     pub target_id: Option<String>,
-    pub details: Option<serde_json::Value>,
+    pub details: Option<AuditDetails>,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -28,7 +28,7 @@ struct AuditLogDbRow {
     action: i16,
     target_type: Option<i16>,
     target_id: Option<String>,
-    details: Option<serde_json::Value>,
+    details: Option<AuditDetails>,
     ip_address: Option<String>,
     user_agent: Option<String>,
     created_at: DateTime<Utc>,
@@ -185,7 +185,7 @@ impl AuditLogRepository {
                    action,
                    target_type,
                    target_id,
-                   details AS "details?: serde_json::Value",
+                   details AS "details?: AuditDetails",
                    ip_address,
                    user_agent,
                    created_at

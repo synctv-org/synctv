@@ -1,87 +1,59 @@
 use axum::http::HeaderMap;
 
 use super::AppResult;
-use synctv_proto::client::GetPlaybackRequest;
-
-#[cfg(test)]
-pub(in crate::http::room) fn parse_optional_query_i32(
-    params: &std::collections::HashMap<String, String>,
-    key: &str,
-) -> AppResult<Option<i32>> {
-    params
-        .get(key)
-        .map(|value| {
-            value.parse::<i32>().map_err(|_| {
-                super::super::AppError::bad_request(format!(
-                    "Invalid {key} query parameter '{value}'. Expected an integer"
-                ))
-            })
-        })
-        .transpose()
-}
-
-#[cfg(test)]
-pub(in crate::http::room) fn parse_optional_query_bool(
-    params: &std::collections::HashMap<String, String>,
-    key: &str,
-) -> AppResult<Option<bool>> {
-    params
-        .get(key)
-        .map(|value| {
-            value.parse::<bool>().map_err(|_| {
-                super::super::AppError::bad_request(format!(
-                    "Invalid {key} query parameter '{value}'. Expected true or false"
-                ))
-            })
-        })
-        .transpose()
-}
+use synctv_proto::client::{GetPlaybackRequest, ResourceDeliveryMode};
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
-#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+#[cfg_attr(
+    feature = "openapi",
+    into_params(parameter_in = Query, rename_all = "camelCase")
+)]
 pub struct GetPlaybackQuery {
-    pub stream_preference: Option<String>,
+    pub stream_preference: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
     pub video_codecs: Option<String>,
     pub containers: Option<String>,
-    pub audio_capability: Option<String>,
-    pub subtitle_preference: Option<String>,
+    pub audio_capability: Option<i32>,
+    pub subtitle_preference: Option<i32>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WatchQuery {
-    pub delivery_mode: Option<String>,
+    pub delivery_mode: Option<i32>,
     pub format: Option<String>,
     pub after_event_sequence: Option<i64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WatchPlaybackQuery {
-    pub delivery_mode: Option<String>,
+    pub delivery_mode: Option<i32>,
     pub format: Option<String>,
     pub after_event_sequence: Option<i64>,
-    pub stream_preference: Option<String>,
+    pub stream_preference: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,
     pub video_codecs: Option<String>,
     pub containers: Option<String>,
-    pub audio_capability: Option<String>,
-    pub subtitle_preference: Option<String>,
+    pub audio_capability: Option<i32>,
+    pub subtitle_preference: Option<i32>,
 }
 
-pub(crate) fn parse_watch_delivery_mode(value: Option<&str>) -> AppResult<i32> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None | Some("push_snapshot") => {
-            Ok(synctv_proto::client::ResourceDeliveryMode::PushSnapshot as i32)
+pub(crate) fn parse_watch_delivery_mode(value: Option<i32>) -> AppResult<i32> {
+    match value.map(ResourceDeliveryMode::try_from).transpose() {
+        Ok(None | Some(ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot)) => {
+            Ok(ResourceDeliveryMode::PushSnapshot as i32)
         }
-        Some("notify_only") => Ok(synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32),
-        Some(other) => Err(super::super::AppError::bad_request(format!(
-            "Invalid delivery_mode '{other}'. Expected push_snapshot or notify_only"
+        Ok(Some(ResourceDeliveryMode::NotifyOnly)) => Ok(ResourceDeliveryMode::NotifyOnly as i32),
+        Err(_) => Err(super::super::AppError::bad_request(format!(
+            "Invalid deliveryMode '{}'. Expected enum integer {} or {}",
+            value.expect("value exists when enum parsing fails"),
+            ResourceDeliveryMode::NotifyOnly as i32,
+            ResourceDeliveryMode::PushSnapshot as i32
         ))),
     }
 }
@@ -118,33 +90,23 @@ pub(crate) fn watch_after_event_sequence(
 }
 
 fn parse_stream_preference(
-    value: Option<&str>,
+    value: Option<i32>,
 ) -> Result<synctv_proto::client::PlaybackStreamPreference, super::super::AppError> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(synctv_proto::client::PlaybackStreamPreference::Unspecified),
-        Some("auto") => Ok(synctv_proto::client::PlaybackStreamPreference::Auto),
-        Some("direct_play") => Ok(synctv_proto::client::PlaybackStreamPreference::DirectPlay),
-        Some("transcode") => Ok(synctv_proto::client::PlaybackStreamPreference::Transcode),
-        Some(other) => Err(super::super::AppError::bad_request(format!(
-            "Invalid stream_preference '{other}'. Expected auto, direct_play, or transcode"
-        ))),
-    }
+    value
+        .map(synctv_proto::client::PlaybackStreamPreference::try_from)
+        .transpose()
+        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackStreamPreference::Unspecified))
+        .map_err(|_| super::super::AppError::bad_request("Invalid streamPreference enum integer"))
 }
 
 fn parse_subtitle_preference(
-    value: Option<&str>,
+    value: Option<i32>,
 ) -> Result<synctv_proto::client::PlaybackSubtitlePreference, super::super::AppError> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(synctv_proto::client::PlaybackSubtitlePreference::Unspecified),
-        Some("external") => Ok(synctv_proto::client::PlaybackSubtitlePreference::External),
-        Some("embedded_or_external") => {
-            Ok(synctv_proto::client::PlaybackSubtitlePreference::EmbeddedOrExternal)
-        }
-        Some("none") => Ok(synctv_proto::client::PlaybackSubtitlePreference::None),
-        Some(other) => Err(super::super::AppError::bad_request(format!(
-            "Invalid subtitle_preference '{other}'. Expected external, embedded_or_external, or none"
-        ))),
-    }
+    value
+        .map(synctv_proto::client::PlaybackSubtitlePreference::try_from)
+        .transpose()
+        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackSubtitlePreference::Unspecified))
+        .map_err(|_| super::super::AppError::bad_request("Invalid subtitlePreference enum integer"))
 }
 
 fn parse_video_codecs(value: Option<&str>) -> Result<Vec<i32>, super::super::AppError> {
@@ -156,14 +118,15 @@ fn parse_video_codecs(value: Option<&str>) -> Result<Vec<i32>, super::super::App
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|codec| match codec {
-            "h264" => Ok(synctv_proto::client::PlaybackVideoCodec::H264 as i32),
-            "hevc" => Ok(synctv_proto::client::PlaybackVideoCodec::Hevc as i32),
-            "vp9" => Ok(synctv_proto::client::PlaybackVideoCodec::Vp9 as i32),
-            "av1" => Ok(synctv_proto::client::PlaybackVideoCodec::Av1 as i32),
-            other => Err(super::super::AppError::bad_request(format!(
-                "Invalid video codec '{other}'. Expected h264, hevc, vp9, or av1"
-            ))),
+        .map(|codec| {
+            let value = codec.parse::<i32>().map_err(|_| {
+                super::super::AppError::bad_request("Invalid videoCodecs enum integer")
+            })?;
+            synctv_proto::client::PlaybackVideoCodec::try_from(value)
+                .map(|_| value)
+                .map_err(|_| {
+                    super::super::AppError::bad_request("Invalid videoCodecs enum integer")
+                })
         })
         .collect()
 }
@@ -177,31 +140,25 @@ fn parse_containers(value: Option<&str>) -> Result<Vec<i32>, super::super::AppEr
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|container| match container {
-            "mp4" => Ok(synctv_proto::client::PlaybackContainer::Mp4 as i32),
-            "mkv" => Ok(synctv_proto::client::PlaybackContainer::Mkv as i32),
-            "webm" => Ok(synctv_proto::client::PlaybackContainer::Webm as i32),
-            other => Err(super::super::AppError::bad_request(format!(
-                "Invalid container '{other}'. Expected mp4, mkv, or webm"
-            ))),
+        .map(|container| {
+            let value = container.parse::<i32>().map_err(|_| {
+                super::super::AppError::bad_request("Invalid containers enum integer")
+            })?;
+            synctv_proto::client::PlaybackContainer::try_from(value)
+                .map(|_| value)
+                .map_err(|_| super::super::AppError::bad_request("Invalid containers enum integer"))
         })
         .collect()
 }
 
 fn parse_audio_capability(
-    value: Option<&str>,
+    value: Option<i32>,
 ) -> Result<synctv_proto::client::PlaybackAudioCapability, super::super::AppError> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(synctv_proto::client::PlaybackAudioCapability::Unspecified),
-        Some("stereo") => Ok(synctv_proto::client::PlaybackAudioCapability::Stereo),
-        Some("surround") => Ok(synctv_proto::client::PlaybackAudioCapability::Surround),
-        Some("lossless_surround") => {
-            Ok(synctv_proto::client::PlaybackAudioCapability::LosslessSurround)
-        }
-        Some(other) => Err(super::super::AppError::bad_request(format!(
-            "Invalid audio_capability '{other}'. Expected stereo, surround, or lossless_surround"
-        ))),
-    }
+    value
+        .map(synctv_proto::client::PlaybackAudioCapability::try_from)
+        .transpose()
+        .map(|value| value.unwrap_or(synctv_proto::client::PlaybackAudioCapability::Unspecified))
+        .map_err(|_| super::super::AppError::bad_request("Invalid audioCapability enum integer"))
 }
 
 pub(crate) fn build_get_playback_request(
@@ -217,14 +174,13 @@ pub(crate) fn build_get_playback_request(
 
     let playback_client_profile = if has_profile {
         Some(synctv_proto::client::PlaybackClientProfile {
-            stream_preference: parse_stream_preference(query.stream_preference.as_deref())? as i32,
+            stream_preference: parse_stream_preference(query.stream_preference)? as i32,
             max_streaming_bitrate: query.max_streaming_bitrate,
             max_audio_channels: query.max_audio_channels,
             supported_video_codecs: parse_video_codecs(query.video_codecs.as_deref())?,
             supported_containers: parse_containers(query.containers.as_deref())?,
-            audio_capability: parse_audio_capability(query.audio_capability.as_deref())? as i32,
-            subtitle_preference: parse_subtitle_preference(query.subtitle_preference.as_deref())?
-                as i32,
+            audio_capability: parse_audio_capability(query.audio_capability)? as i32,
+            subtitle_preference: parse_subtitle_preference(query.subtitle_preference)? as i32,
         })
     } else {
         None
@@ -240,13 +196,13 @@ pub(crate) fn build_playback_client_profile_from_watch_query(
     query: &WatchPlaybackQuery,
 ) -> AppResult<Option<synctv_proto::client::PlaybackClientProfile>> {
     build_get_playback_request(&GetPlaybackQuery {
-        stream_preference: query.stream_preference.clone(),
+        stream_preference: query.stream_preference,
         max_streaming_bitrate: query.max_streaming_bitrate,
         max_audio_channels: query.max_audio_channels,
         video_codecs: query.video_codecs.clone(),
         containers: query.containers.clone(),
-        audio_capability: query.audio_capability.clone(),
-        subtitle_preference: query.subtitle_preference.clone(),
+        audio_capability: query.audio_capability,
+        subtitle_preference: query.subtitle_preference,
     })
     .map(|request| request.playback_client_profile)
 }

@@ -5,13 +5,12 @@ use crate::service::file_storage::{
     file_object_key, file_ownership_proof_digest, file_part_manifest_digest,
     file_storage_object_base_path, file_storage_public_url, ownership_proof_chunks_from_bytes,
     upload_session_part_size, validate_create_file_upload_session, DatabaseFileStorageService,
-    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_OWNERSHIP_PROOF_KEY,
-    FILE_UPLOAD_TOKEN_HEADER, FILE_UPLOAD_TOKEN_KEY,
+    S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
 };
 use crate::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        ChatMentionInput, ChatPinEvent, ChatPinEventKind, ChatReadState, CreateFileUploadSession,
+        ChatMentionInput, ChatPinEventKind, ChatReadState, CreateFileUploadSession,
         FileUploadManifestPart, FileUploadSession, FileUploadSessionCreateResult, NewStoredFile,
         PinChatMessage, SignupMethod, SubmittedFileReference, UnpinChatMessage, User,
     },
@@ -153,7 +152,7 @@ async fn send_database_chat_attachment(
                     duration_seconds: None,
                     bitrate_bps: None,
                     parts: single_manifest_part(size_bytes, hex::encode(Sha256::digest(payload))),
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: crate::models::FileMetadata::default(),
                 })
                 .await,
             "attachment upload session should be created",
@@ -193,7 +192,7 @@ async fn send_database_chat_attachment(
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![submitted_file_reference(&session.file)],
                 mentions: Vec::new(),
             })
@@ -291,7 +290,7 @@ impl FileStorageService for PrefixingFileStorageService {
                 size_bytes: Some(128),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
             })
             .collect::<Vec<_>>();
         validate_chat_attachments(&files)?;
@@ -391,7 +390,7 @@ impl FileStorageService for RecordingFileStorageService {
                 size_bytes: Some(128),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
             })
             .collect::<Vec<_>>();
         validate_chat_attachments(&files)?;
@@ -426,19 +425,15 @@ fn test_user_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> Arc<
 }
 
 #[test]
-fn validate_chat_metadata_rejects_non_object_values() {
-    let error = err(
-        validate_chat_metadata(&serde_json::json!(["tag"])),
-        "chat metadata should be an object",
-    );
-
-    assert!(
-        matches!(error, Error::InvalidInput(message) if message == "chat metadata must be a JSON object")
+fn validate_chat_metadata_accepts_typed_metadata() {
+    ok(
+        validate_chat_metadata(&crate::models::ChatMetadata::default()),
+        "typed chat metadata should validate",
     );
 }
 
 #[test]
-fn validate_chat_attachments_rejects_non_object_metadata() {
+fn validate_chat_attachments_rejects_internal_metadata_fields() {
     let image = NewStoredFile {
         filename: None,
         id: "img-test".to_string(),
@@ -449,15 +444,18 @@ fn validate_chat_attachments_rejects_non_object_metadata() {
         size_bytes: Some(1024),
         width: Some(32),
         height: Some(32),
-        metadata: serde_json::json!(["tag"]),
+        metadata: crate::models::FileMetadata {
+            upload_token: Some("internal-upload-token".to_string()),
+            ..Default::default()
+        },
     };
 
     let error = err(
         validate_chat_attachments(&[image]),
-        "attachment metadata should be object",
+        "attachment metadata should reject internal fields",
     );
     assert!(
-        matches!(error, Error::InvalidInput(message) if message == "chat metadata must be a JSON object")
+        matches!(error, Error::InvalidInput(message) if message == "file metadata includes internal fields")
     );
 }
 
@@ -491,7 +489,7 @@ fn playback_query_with_context() -> ChatPlaybackMessagesQuery {
 fn chat_playback_query_normalize_treats_empty_target_as_absent() {
     let query = ChatPlaybackMessagesQuery {
         media_id: None,
-        target: Some(Vec::new()),
+        target: None,
         ..playback_query_with_context()
     }
     .normalize();
@@ -503,7 +501,7 @@ fn chat_playback_query_normalize_treats_empty_target_as_absent() {
 fn validate_chat_playback_query_rejects_empty_context_after_normalize() {
     let query = ChatPlaybackMessagesQuery {
         media_id: None,
-        target: Some(Vec::new()),
+        target: None,
         ..playback_query_with_context()
     };
 
@@ -769,7 +767,7 @@ fn test_chat_message(id: i64, created_at: chrono::DateTime<Utc>) -> ChatMessage 
         version: 1,
         reply_to_message_id: None,
         reply_to_message_created_at: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::ChatMetadata::default(),
         edited_at: None,
         deleted_at: None,
         deleted_by: None,
@@ -918,7 +916,7 @@ async fn disabled_file_storage_rejects_images() {
                 size_bytes: Some(-1),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
             }],
         )
         .await;
@@ -938,7 +936,7 @@ fn validate_chat_attachments_rejects_duplicates_in_one_message() {
         size_bytes: Some(1024),
         width: Some(640),
         height: Some(480),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
     };
 
     let duplicate_id = validate_chat_attachments(&[
@@ -976,7 +974,7 @@ fn validate_chat_attachments_rejects_zero_size() {
         size_bytes: Some(0),
         width: Some(640),
         height: Some(480),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::FileMetadata::default(),
     }]);
 
     assert!(matches!(result, Err(Error::InvalidInput(_))));
@@ -998,7 +996,10 @@ async fn disabled_file_storage_rejects_upload_session() {
             duration_seconds: None,
             bitrate_bps: None,
             parts: single_manifest_part(1024, "a".repeat(64)),
-            metadata: serde_json::json!({"blurhash": "abc"}),
+            metadata: crate::models::FileMetadata {
+                blurhash: Some("abc".to_string()),
+                ..Default::default()
+            },
             policy: chat_attachment_upload_policy(),
         })
         .await;
@@ -1028,7 +1029,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
                 size_bytes: Some(1024),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
             }],
         )
         .await;
@@ -1095,7 +1096,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(size_bytes, part_checksum.clone()),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1180,7 +1181,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(size_bytes, part_checksum.clone()),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1209,14 +1210,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         stored.size_bytes,
         chunks.iter().map(Vec::as_slice),
     );
-    some(
-        reuse_session.file.metadata.as_object_mut(),
-        "metadata should be object",
-    )
-    .insert(
-        FILE_OWNERSHIP_PROOF_KEY.to_string(),
-        serde_json::Value::String(proof),
-    );
+    reuse_session.file.metadata.ownership_proof = Some(proof);
     let prepared = ok(
         service
             .prepare_files(
@@ -1293,7 +1287,7 @@ async fn database_file_storage_rejects_checksum_mismatch() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(4, hex::encode(Sha256::digest(b"data"))),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1349,7 +1343,7 @@ async fn image_upload_session_requires_checksum() {
             duration_seconds: None,
             bitrate_bps: None,
             parts: Vec::new(),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: crate::models::FileMetadata::default(),
             policy: chat_attachment_upload_policy(),
         })
         .await;
@@ -1389,7 +1383,7 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(1024, "b".repeat(64)),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1461,7 +1455,10 @@ async fn s3_file_storage_creates_resumable_upload_session() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(2048, "a".repeat(64)),
-                metadata: serde_json::json!({"blurhash": "abc"}),
+                metadata: crate::models::FileMetadata {
+                    blurhash: Some("abc".to_string()),
+                    ..Default::default()
+                },
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1492,12 +1489,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
     assert!(session.upload_id.is_none());
     assert!(session.file.id.starts_with("file_"));
     assert_eq!(session.file.storage_backend, "s3");
-    assert!(session
-        .file
-        .metadata
-        .get(FILE_UPLOAD_TOKEN_KEY)
-        .and_then(serde_json::Value::as_str)
-        .is_some());
+    assert!(session.file.metadata.upload_token.as_deref().is_some());
     let content_manifest_sha256 = file_part_manifest_digest(
         2048,
         upload_session_part_size(),
@@ -1555,7 +1547,7 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(2048, "c".repeat(64)),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1575,7 +1567,7 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(2048, "c".repeat(64)),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1620,7 +1612,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 mime_type: "image/webp",
                 size_bytes: 4,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "object registry should be written",
@@ -1645,7 +1637,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(4, part_checksum.clone()),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
                 policy: chat_attachment_upload_policy(),
             })
             .await,
@@ -1671,14 +1663,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
         i64::try_from(b"data".len()).expect("payload size should fit"),
         chunks.iter().map(Vec::as_slice),
     );
-    some(
-        session.file.metadata.as_object_mut(),
-        "metadata should be object",
-    )
-    .insert(
-        FILE_OWNERSHIP_PROOF_KEY.to_string(),
-        serde_json::Value::String(proof),
-    );
+    session.file.metadata.ownership_proof = Some(proof);
 
     assert!(session.file.url.is_none());
 
@@ -1748,7 +1733,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
                 size_bytes: Some(1024),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::FileMetadata::default(),
             }],
         )
         .await;
@@ -1828,12 +1813,15 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 duration_seconds: None,
                 bitrate_bps: None,
                 parts: single_manifest_part(size_bytes, hex::encode(Sha256::digest(&payload))),
-                metadata: serde_json::json!({"blurhash": "abc"}),
+                metadata: crate::models::FileMetadata {
+                    blurhash: Some("abc".to_string()),
+                    ..Default::default()
+                },
             })
             .await,
         "upload session should be created",
     );
-    assert!(session.file.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_some());
+    assert!(session.file.metadata.upload_token.is_some());
     let upload_url = some(
         session.upload_url.as_deref(),
         "database upload url should be returned",
@@ -1868,7 +1856,7 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![submitted_file_reference(&session.file)],
                 mentions: Vec::new(),
             })
@@ -1880,11 +1868,8 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
         event.message.attachments.first(),
         "attachment should be present",
     );
-    assert!(attachment.metadata.get(FILE_UPLOAD_TOKEN_KEY).is_none());
-    assert_eq!(
-        attachment.metadata.get("blurhash").and_then(|v| v.as_str()),
-        Some("abc")
-    );
+    assert!(attachment.metadata.upload_token.is_none());
+    assert_eq!(attachment.metadata.blurhash.as_deref(), Some("abc"));
 }
 
 #[tokio::test]
@@ -1946,7 +1931,7 @@ async fn attachment_message_does_not_require_inline_content_reference() {
                 mime_type: "image/webp",
                 size_bytes: 128,
                 content_manifest_sha256: &"a".repeat(64),
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "attachment object should be registered",
@@ -1961,7 +1946,7 @@ async fn attachment_message_does_not_require_inline_content_reference() {
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![SubmittedFileReference {
                     id: "attachment-inline-free".to_string(),
                     kind: crate::models::SubmittedFileReferenceKind::Upload,
@@ -2093,7 +2078,7 @@ async fn visible_chat_attachment_can_be_reused_without_uploading_bytes() {
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
                     reuse_token,
                 )],
@@ -2241,7 +2226,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
             content: String::new(),
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: crate::models::ChatMetadata::default(),
             attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
                 reuse_token.clone(),
             )],
@@ -2261,7 +2246,7 @@ async fn chat_attachment_reuse_token_requires_source_room_visibility() {
             content: String::new(),
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: crate::models::ChatMetadata::default(),
             attachments: vec![crate::service::submitted_file_reference_from_reuse_token(
                 reuse_token,
             )],
@@ -2348,7 +2333,7 @@ async fn chat_mentions_must_point_to_inline_at_token() {
                 content: String::new(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: vec![ChatMentionInput {
                     user_id: mentioned.id,
@@ -2372,7 +2357,7 @@ async fn chat_mentions_must_point_to_inline_at_token() {
                 content: "hello target".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: vec![ChatMentionInput {
                     user_id: mentioned.id,
@@ -2442,7 +2427,7 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
                 mime_type: "image/webp",
                 size_bytes: 123,
                 content_manifest_sha256: &hex::encode(Sha256::digest(b"raw/attachment.webp")),
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "normalized attachment object should be registered",
@@ -2457,7 +2442,7 @@ async fn custom_file_storage_can_normalize_attachment_metadata() {
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![SubmittedFileReference {
                     id: "attachment-storage-1".to_string(),
                     kind: crate::models::SubmittedFileReferenceKind::Upload,
@@ -2535,7 +2520,7 @@ async fn deleting_attachment_message_releases_attachment_objects() {
                 content_manifest_sha256: &hex::encode(Sha256::digest(
                     b"raw/delete-attachment.webp",
                 )),
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &crate::models::FileMetadata::default(),
             })
             .await,
         "normalized attachment object should be registered",
@@ -2550,7 +2535,7 @@ async fn deleting_attachment_message_releases_attachment_objects() {
                 content: String::new(),
                 message_type: ChatMessageType::Attachment,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: vec![SubmittedFileReference {
                     id: "delete-attachment-1".to_string(),
                     kind: crate::models::SubmittedFileReferenceKind::Upload,
@@ -2647,7 +2632,7 @@ async fn cleanup_all_rooms_releases_attachment_objects() {
                     mime_type: "image/webp",
                     size_bytes: 123,
                     content_manifest_sha256: &hex::encode(Sha256::digest(attachment_id.as_bytes())),
-                    metadata: &serde_json::Value::Object(Default::default()),
+                    metadata: &crate::models::FileMetadata::default(),
                 })
                 .await,
             "attachment object should be registered",
@@ -2661,7 +2646,7 @@ async fn cleanup_all_rooms_releases_attachment_objects() {
                     content: String::new(),
                     message_type: ChatMessageType::Attachment,
                     reply_to_message_id: None,
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: crate::models::ChatMetadata::default(),
                     attachments: vec![SubmittedFileReference {
                         id: attachment_id.to_string(),
                         kind: crate::models::SubmittedFileReferenceKind::Upload,
@@ -2742,7 +2727,7 @@ async fn concurrent_idempotent_send_returns_existing_created_event() {
         content: "same payload".to_string(),
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: crate::models::ChatMetadata::default(),
         attachments: Vec::new(),
         mentions: Vec::new(),
     };
@@ -2868,7 +2853,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
                 content: "before edit".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -2881,7 +2866,7 @@ async fn concurrent_same_edit_returns_existing_edit_event() {
         user_id: user.id,
         client_operation_id: None,
         content: "after edit".to_string(),
-        metadata: serde_json::json!({"edited": true}),
+        metadata: crate::models::ChatMetadata::default(),
         expected_version: Some(created.message.message.version),
     };
     let worker_count = 6;
@@ -2992,7 +2977,7 @@ async fn concurrent_same_delete_returns_existing_delete_event() {
                 content: "delete me".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3130,7 +3115,7 @@ async fn chat_reactions_update_history_and_emit_reaction_events() {
                 content: "react to this".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3361,7 +3346,7 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
                 content: "pin this".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3415,7 +3400,7 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
                 user_id: owner.id,
                 client_operation_id: Some("edit-pinned-op".to_string()),
                 content: "pin this after edit".to_string(),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 expected_version: Some(message.message.message.version),
             })
             .await,
@@ -3435,7 +3420,12 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
 
     let pin_resource_events = ok(
         RoomResourceEventRepository::new(pool.clone())
-            .list_room_events_after_sequence_for_resource_types(&room.id, &["chat_pins"], 0, 10)
+            .list_room_events_after_sequence_for_resource_types(
+                &room.id,
+                &[crate::repository::RoomResourceKind::ChatPins],
+                0,
+                10,
+            )
             .await,
         "chat pin room resource events should replay",
     );
@@ -3444,7 +3434,10 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
             .iter()
             .filter(|event| event.event_type == ChatPinEventKind::MessageUpdated.as_str())
             .filter_map(|event| event.payload.clone())
-            .find_map(|payload| serde_json::from_value::<ChatPinEvent>(payload).ok()),
+            .find_map(|payload| match payload {
+                crate::repository::RoomResourceEventPayload::ChatPin { event } => Some(event),
+                crate::repository::RoomResourceEventPayload::Realtime { .. } => None,
+            }),
         "editing a pinned message should persist a replayable chat pin event",
     );
     assert_eq!(replayed_edit_pin_event.event_id, edit_pin_event.event_id);
@@ -3486,7 +3479,7 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
                 content: "delete this pin".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3611,7 +3604,7 @@ async fn pinning_chat_message_respects_runtime_room_pin_limit() {
                 content: "first pin".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3627,7 +3620,7 @@ async fn pinning_chat_message_respects_runtime_room_pin_limit() {
                 content: "second pin".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3747,7 +3740,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 content: "first".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3763,7 +3756,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 content: "second".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3779,7 +3772,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 content: "reader own message".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -3794,7 +3787,7 @@ async fn read_state_tracks_unread_count_and_stays_monotonic() {
                 user_id: user.id,
                 client_operation_id: None,
                 content: "first edited after second".to_string(),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 expected_version: Some(first.message.message.version),
             })
             .await,
@@ -3934,7 +3927,7 @@ async fn message_context_returns_messages_around_anchor_in_chronological_order()
                     content: format!("message {index}"),
                     message_type: ChatMessageType::Text,
                     reply_to_message_id: None,
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: crate::models::ChatMetadata::default(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
                 })
@@ -4023,7 +4016,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 content: "   \n\t ".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -4041,7 +4034,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 content: "valid".to_string(),
                 message_type: ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -4057,7 +4050,7 @@ async fn chat_text_validation_rejects_whitespace_send_and_edit() {
                 user_id: user.id,
                 client_operation_id: None,
                 content: " \n ".to_string(),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: crate::models::ChatMetadata::default(),
                 expected_version: Some(message.message.message.version),
             })
             .await,

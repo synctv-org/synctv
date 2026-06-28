@@ -13,7 +13,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use synctv_core::cache::{CacheKey, CacheL2Backend, TieredCache, Timestamped, Versioned};
 use synctv_core::Result;
-use synctv_core_testing::{ok, some};
+use synctv_core_testing::{ok, some, timestamped_l2_envelope};
 
 // Test types
 
@@ -156,10 +156,8 @@ async fn test_epoch_prevents_stale_l1_write() {
         name: "stale".to_string(),
         updated_at: chrono::Utc::now() - chrono::Duration::seconds(60),
     };
-    let stale_json = ok(
-        serde_json::to_string(&stale_value),
-        "stale cache value should serialize",
-    );
+    let stale_json =
+        timestamped_l2_envelope(&stale_value, stale_value.updated_at.timestamp_millis());
     ok(
         l2.set("test:epoch:k1", &stale_json, 300).await,
         "stale cache value should be written to L2",

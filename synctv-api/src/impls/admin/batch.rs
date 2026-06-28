@@ -1,8 +1,8 @@
-use synctv_core::models::{UserId, UserRole};
+use synctv_core::models::{AuditDetails, UserId, UserRole};
 
 use super::{
-    check_role_hierarchy, list_owned_room_ids, AdminApiImpl, ApiError, BatchResultsAccumulator,
-    RequestContext,
+    check_role_hierarchy, list_owned_room_ids, usize_to_i32_api, AdminApiImpl, ApiError,
+    BatchResultsAccumulator, RequestContext,
 };
 
 impl AdminApiImpl {
@@ -40,19 +40,21 @@ impl AdminApiImpl {
         }
 
         let (results, succeeded, failed) = accumulator.into_parts();
+        let total = usize_to_i32_api(req.user_ids.len(), "batch user count")?;
 
         self.log_admin_action(
             admin_user_id,
             synctv_core::models::AuditAction::UserBanned,
             synctv_core::models::AuditTargetType::User,
             None,
-            serde_json::json!({
-                "action": "batch_ban",
-                "total": req.user_ids.len(),
-                "succeeded": succeeded,
-                "failed": failed,
-                "reason": req.reason,
-            }),
+            AuditDetails {
+                action: Some("batch_ban".to_string()),
+                total: Some(total),
+                succeeded: Some(succeeded),
+                failed: Some(failed),
+                reason: (!req.reason.trim().is_empty()).then_some(req.reason),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -125,18 +127,20 @@ impl AdminApiImpl {
         }
 
         let (results, succeeded, failed) = accumulator.into_parts();
+        let total = usize_to_i32_api(req.user_ids.len(), "batch user count")?;
 
         self.log_admin_action(
             admin_user_id,
             synctv_core::models::AuditAction::UserDeleted,
             synctv_core::models::AuditTargetType::User,
             None,
-            serde_json::json!({
-                "action": "batch_delete",
-                "total": req.user_ids.len(),
-                "succeeded": succeeded,
-                "failed": failed,
-            }),
+            AuditDetails {
+                action: Some("batch_delete".to_string()),
+                total: Some(total),
+                succeeded: Some(succeeded),
+                failed: Some(failed),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -197,19 +201,21 @@ impl AdminApiImpl {
         }
 
         let (results, succeeded, failed) = accumulator.into_parts();
+        let total = usize_to_i32_api(req.room_ids.len(), "batch room count")?;
 
         self.log_admin_action(
             admin_user_id,
             synctv_core::models::AuditAction::RoomBanned,
             synctv_core::models::AuditTargetType::Room,
             None,
-            serde_json::json!({
-                "action": "batch_ban",
-                "total": req.room_ids.len(),
-                "succeeded": succeeded,
-                "failed": failed,
-                "reason": req.reason,
-            }),
+            AuditDetails {
+                action: Some("batch_ban".to_string()),
+                total: Some(total),
+                succeeded: Some(succeeded),
+                failed: Some(failed),
+                reason: (!req.reason.trim().is_empty()).then_some(req.reason),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -263,18 +269,20 @@ impl AdminApiImpl {
         }
 
         let (results, succeeded, failed) = accumulator.into_parts();
+        let total = usize_to_i32_api(req.room_ids.len(), "batch room count")?;
 
         self.log_admin_action(
             admin_user_id,
             synctv_core::models::AuditAction::RoomDeleted,
             synctv_core::models::AuditTargetType::Room,
             None,
-            serde_json::json!({
-                "action": "batch_delete",
-                "total": req.room_ids.len(),
-                "succeeded": succeeded,
-                "failed": failed,
-            }),
+            AuditDetails {
+                action: Some("batch_delete".to_string()),
+                total: Some(total),
+                succeeded: Some(succeeded),
+                failed: Some(failed),
+                ..Default::default()
+            },
             ctx,
         )
         .await;

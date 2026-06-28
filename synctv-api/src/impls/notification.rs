@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
-    MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationListQuery,
+    MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationData, NotificationListQuery,
     NotificationListSortBy, NotificationType as CoreNotificationType,
 };
 use synctv_core::models::PageParams;
@@ -29,19 +29,8 @@ pub fn notification_to_proto(
     n: Notification,
     public_id_codec: &PublicIdCodec,
 ) -> Result<NotificationProto, ApiError> {
-    let notification_type = match n.notification_type {
-        CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
-        CoreNotificationType::SystemAnnouncement => ProtoNotificationType::SystemAnnouncement,
-        CoreNotificationType::RoomEvent => ProtoNotificationType::RoomEvent,
-        CoreNotificationType::PasswordReset => ProtoNotificationType::PasswordReset,
-        CoreNotificationType::EmailBind => ProtoNotificationType::EmailBind,
-    };
-    let notification_id = n.id;
-    let data = serde_json::to_vec(&n.data).map_err(|error| {
-        ApiError::Internal(format!(
-            "Failed to serialize notification {notification_id} data: {error}"
-        ))
-    })?;
+    let notification_type = notification_type_to_proto(n.notification_type);
+    let data = Some(notification_data_to_proto(&n.data));
 
     Ok(NotificationProto {
         id: n.id.to_string(),
@@ -58,6 +47,31 @@ pub fn notification_to_proto(
         created_at: n.created_at.timestamp(),
         updated_at: n.updated_at.timestamp(),
     })
+}
+
+pub(crate) fn notification_type_to_proto(
+    notification_type: CoreNotificationType,
+) -> ProtoNotificationType {
+    match notification_type {
+        CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
+        CoreNotificationType::SystemAnnouncement => ProtoNotificationType::SystemAnnouncement,
+        CoreNotificationType::RoomEvent => ProtoNotificationType::RoomEvent,
+        CoreNotificationType::PasswordReset => ProtoNotificationType::PasswordReset,
+        CoreNotificationType::EmailBind => ProtoNotificationType::EmailBind,
+    }
+}
+
+pub(crate) fn notification_data_to_proto(
+    data: &NotificationData,
+) -> synctv_proto::client::NotificationData {
+    synctv_proto::client::NotificationData {
+        room_id: data.room_id.clone(),
+        room_name: data.room_name.clone(),
+        user_id: data.user_id.clone(),
+        username: data.username.clone(),
+        message_id: data.message_id.clone(),
+        action_url: data.action_url.clone(),
+    }
 }
 
 /// Error type for notification type parsing failures.

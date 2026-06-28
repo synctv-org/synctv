@@ -34,15 +34,15 @@ use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketRe
 /// Authorization: Bearer <jwt>
 /// Content-Type: application/json
 ///
-/// { "room_id": "abc123" }
+/// { "roomId": "abc123" }
 /// ```
 ///
 /// Response:
 /// ```json
 /// {
 /// "ticket": "abc123...",
-/// "room_id": "abc123",
-/// "expires_in_secs": 30,
+/// "roomId": "abc123",
+/// "expiresInSecs": 30,
 /// "usage": "Use in WebSocket URL: ws://host/ws/rooms/abc123?ticket=xxx"
 /// }
 /// ```

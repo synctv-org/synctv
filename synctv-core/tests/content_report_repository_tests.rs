@@ -130,7 +130,7 @@ async fn room_context_report_list_includes_room_member_and_chat_message_reports(
                     target: ContentReportTarget::Room { room_id: room.id },
                     reason_code: "room".to_string(),
                     reason: String::new(),
-                    metadata: serde_json::json!({}),
+                    metadata: synctv_core::models::ContentReportMetadata::default(),
                 },
                 None,
             )
@@ -148,7 +148,7 @@ async fn room_context_report_list_includes_room_member_and_chat_message_reports(
                     },
                     reason_code: "member".to_string(),
                     reason: String::new(),
-                    metadata: serde_json::json!({}),
+                    metadata: synctv_core::models::ContentReportMetadata::default(),
                 },
                 None,
             )
@@ -166,7 +166,7 @@ async fn room_context_report_list_includes_room_member_and_chat_message_reports(
                     },
                     reason_code: "chat".to_string(),
                     reason: String::new(),
-                    metadata: serde_json::json!({}),
+                    metadata: synctv_core::models::ContentReportMetadata::default(),
                 },
                 Some(chat_message.created_at),
             )

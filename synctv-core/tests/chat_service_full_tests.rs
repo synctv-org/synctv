@@ -817,16 +817,19 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
     let expected_creator_id = creator.id.to_string();
     let expected_admin_id = admin.id.to_string();
     assert_eq!(
-        audit_row.details["room_id"].as_str(),
+        audit_row.details["roomId"].as_str(),
         Some(expected_room_id.as_str())
     );
-    assert_eq!(audit_row.details["message_id"].as_i64(), Some(msg.id));
     assert_eq!(
-        audit_row.details["original_author_id"].as_str(),
+        audit_row.details["messageId"].as_str(),
+        Some(msg.id.to_string().as_str())
+    );
+    assert_eq!(
+        audit_row.details["originalAuthorId"].as_str(),
         Some(expected_creator_id.as_str())
     );
     assert_eq!(
-        audit_row.details["deleted_by"].as_str(),
+        audit_row.details["deletedBy"].as_str(),
         Some(expected_admin_id.as_str())
     );
     assert_eq!(
@@ -834,11 +837,11 @@ async fn test_admin_delete_records_actor_reason_and_original_author() {
         Some("policy violation")
     );
     assert_eq!(
-        audit_row.details["event_id"].as_str(),
+        audit_row.details["eventId"].as_str(),
         Some(deleted.event_id.as_str())
     );
     assert_eq!(
-        audit_row.details["client_operation_id"].as_str(),
+        audit_row.details["clientOperationId"].as_str(),
         Some("admin-delete-op")
     );
 }
@@ -1427,7 +1430,7 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
         content: "same payload".to_string(),
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: synctv_core::models::ChatMetadata::default(),
         attachments: Vec::new(),
         mentions: Vec::new(),
     };
@@ -1501,7 +1504,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             content: "cursor one".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -1515,7 +1518,7 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             content: "cursor two".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -1617,7 +1620,7 @@ async fn test_send_message_event_idempotency_rejects_different_payload() {
         content: "original payload".to_string(),
         message_type: ChatMessageType::Text,
         reply_to_message_id: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: synctv_core::models::ChatMetadata::default(),
         attachments: Vec::new(),
         mentions: Vec::new(),
     };
@@ -1678,7 +1681,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "after edit".to_string(),
-            metadata: serde_json::json!({"edited": true}),
+            metadata: synctv_core::models::ChatMetadata::default(),
             expected_version: Some(created.version),
         })
         .await
@@ -1696,7 +1699,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "after edit".to_string(),
-            metadata: serde_json::json!({"edited": true}),
+            metadata: synctv_core::models::ChatMetadata::default(),
             expected_version: Some(created.version),
         })
         .await
@@ -1723,7 +1726,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "stale edit".to_string(),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             expected_version: Some(created.version),
         })
         .await
@@ -1768,7 +1771,7 @@ async fn test_edit_message_client_operation_id_replays_without_expected_version(
         user_id: creator.id,
         client_operation_id: Some("edit-op-1".to_string()),
         content: "after edit".to_string(),
-        metadata: serde_json::json!({"edited": true}),
+        metadata: synctv_core::models::ChatMetadata::default(),
         expected_version: None,
     };
 
@@ -1990,7 +1993,10 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             duration_seconds: None,
             bitrate_bps: None,
             parts: Vec::new(),
-            metadata: serde_json::json!({"blurhash": "abc"}),
+            metadata: synctv_core::models::FileMetadata {
+                blurhash: Some("abc".to_string()),
+                ..Default::default()
+            },
         },
         &payload,
     )
@@ -2005,7 +2011,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             content: String::new(),
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
@@ -2040,7 +2046,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
     let object_key = "database/chat/attachments/shared.webp";
     let payload = b"shared-attachment";
     let checksum_sha256 = hex::encode(sha2::Sha256::digest(payload));
-    let metadata = serde_json::Value::Object(Default::default());
+    let metadata = synctv_core::models::FileMetadata::default();
 
     file_repo
         .upsert_blob(UpsertFileBlob {
@@ -2101,7 +2107,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         size_bytes: Some(i64::try_from(payload.len()).checked("test operation should succeed")),
         width: Some(640),
         height: Some(480),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: synctv_core::models::FileMetadata::default(),
     };
 
     let mut first_message = ChatMessage::new(room.id, creator.id, String::new());
@@ -2230,7 +2236,10 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
             duration_seconds: None,
             bitrate_bps: None,
             parts: Vec::new(),
-            metadata: serde_json::json!({"blurhash": "abc"}),
+            metadata: synctv_core::models::FileMetadata {
+                blurhash: Some("abc".to_string()),
+                ..Default::default()
+            },
         },
         &payload,
     )
@@ -2244,7 +2253,7 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         content: String::new(),
         message_type: ChatMessageType::Attachment,
         reply_to_message_id: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: synctv_core::models::ChatMetadata::default(),
         attachments: vec![submitted_file_reference(&session.file)],
         mentions: Vec::new(),
     };
@@ -2284,7 +2293,10 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
             duration_seconds: None,
             bitrate_bps: None,
             parts: Vec::new(),
-            metadata: serde_json::json!({"blurhash": "abc"}),
+            metadata: synctv_core::models::FileMetadata {
+                blurhash: Some("abc".to_string()),
+                ..Default::default()
+            },
         },
         &changed_payload,
     )
@@ -2342,7 +2354,7 @@ async fn test_chat_message_attachments_require_matching_room_id() {
             content: "message".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2417,7 +2429,10 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             duration_seconds: None,
             bitrate_bps: None,
             parts: Vec::new(),
-            metadata: serde_json::json!({"blurhash": "abc"}),
+            metadata: synctv_core::models::FileMetadata {
+                blurhash: Some("abc".to_string()),
+                ..Default::default()
+            },
         },
         &payload,
     )
@@ -2432,7 +2447,7 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             content: String::new(),
             message_type: ChatMessageType::Attachment,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
@@ -2503,7 +2518,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             content: "reply".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(9_999_999),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2519,7 +2534,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             content: "target".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2533,7 +2548,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             content: "valid reply".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(target.message.message.id),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2568,7 +2583,7 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             content: "reply".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: Some(target.message.message.id),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2612,7 +2627,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
             content: "target".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2625,7 +2640,7 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
         content: "reply".to_string(),
         message_type: ChatMessageType::Text,
         reply_to_message_id: Some(target.message.message.id),
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: synctv_core::models::ChatMetadata::default(),
         attachments: Vec::new(),
         mentions: Vec::new(),
     };

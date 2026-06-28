@@ -14,7 +14,7 @@
 //!
 //! For browser clients, the ticket system is recommended:
 //! - First call POST /api/tickets to get a short-lived ticket
-//! - Then use `ws://host/ws/rooms/{room_id}?ticket=xxx`
+//! - Then use `ws://host/ws/rooms/{roomId}?ticket=xxx`
 //! - Tickets are single-use and expire quickly (30 seconds by default)
 
 use axum::{
@@ -993,16 +993,16 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// 2. Ticket query parameter: `?ticket=<ticket>` (recommended for browsers)
 ///
 /// Example:
-/// - Native clients: `ws://host/ws/rooms/{room_id}` with `Authorization: Bearer <token>`
-/// - Browser clients: `ws://host/ws/rooms/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
+/// - Native clients: `ws://host/ws/rooms/{roomId}` with `Authorization: Bearer <token>`
+/// - Browser clients: `ws://host/ws/rooms/{roomId}?ticket=<ticket>` (obtained from POST /api/tickets)
 #[cfg(feature = "openapi")]
 #[utoipa::path(
         get,
-        path = "/ws/rooms/{room_id}",
+        path = "/ws/rooms/{roomId}",
         tag = "WebSocket",
         operation_id = "connectRoomWebSocket",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ("ticket" = Option<String>, Query, description = "Short-lived one-time ticket returned by POST /api/tickets. Optional when the Authorization header is provided."),
             ("Authorization" = Option<String>, Header, description = "Bearer access token in the form `Bearer <jwt>`. Optional when the ticket query parameter is provided."),
             ("Origin" = Option<String>, Header, description = "Browser origin header. When WebSocket origin checks are enabled, this header must match an allowed origin.")

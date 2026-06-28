@@ -1,11 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use crate::{
-    repository::room_resource_event::{NewRoomResourceEvent, RoomResourceEventScope},
+    models::{RealtimeEvent, RoomPermissionSet},
+    repository::room_resource_event::{
+        NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
+        RoomResourceEventScope, RoomResourceEventSummary, RoomResourceEventSummaryDetails,
+        RoomResourceKind,
+    },
     Error, Result,
 };
 
@@ -72,7 +75,7 @@ pub struct NewRealtimeOutboxEvent {
     pub event_type: String,
     pub event_version: i64,
     pub aggregate_version: Option<i64>,
-    pub payload: Value,
+    pub payload: RealtimeEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,7 +86,7 @@ pub struct RealtimeOutboxEvent {
     pub event_type: String,
     pub event_version: i64,
     pub aggregate_version: Option<i64>,
-    pub payload: Value,
+    pub payload: RealtimeEvent,
     pub status: RealtimeOutboxStatus,
     pub attempts: i32,
     pub next_retry_at: DateTime<Utc>,
@@ -102,7 +105,7 @@ struct RealtimeOutboxEventRow {
     event_type: String,
     event_version: i64,
     aggregate_version: Option<i64>,
-    payload: Value,
+    payload: sqlx::types::Json<RealtimeEvent>,
     status: i16,
     attempts: i32,
     next_retry_at: DateTime<Utc>,
@@ -124,7 +127,7 @@ impl TryFrom<RealtimeOutboxEventRow> for RealtimeOutboxEvent {
             event_type: row.event_type,
             event_version: row.event_version,
             aggregate_version: row.aggregate_version,
-            payload: row.payload,
+            payload: row.payload.0,
             status: RealtimeOutboxStatus::try_from(row.status).map_err(Error::Internal)?,
             attempts: row.attempts,
             next_retry_at: row.next_retry_at,
@@ -167,6 +170,7 @@ impl RealtimeOutboxRepository {
     {
         let resource_event = room_resource_event_from_outbox_event(event)?;
         let resource_event = resource_event.as_ref();
+        let payload = sqlx::types::Json(&event.payload);
         sqlx::query!(
             r"
             WITH resource_insert AS (
@@ -215,7 +219,7 @@ impl RealtimeOutboxRepository {
             &event.event_type,
             event.event_version,
             event.aggregate_version,
-            &event.payload,
+            payload as _,
             RealtimeOutboxStatus::Pending.as_i16(),
             REALTIME_OUTBOX_CHANNEL,
             resource_event.as_ref().map(|event| event.event_id.as_str()),
@@ -232,7 +236,7 @@ impl RealtimeOutboxRepository {
                 .map(|event| event.aggregate_id.as_str()),
             resource_event
                 .as_ref()
-                .map(|event| event.resource_type.as_str()),
+                .map(|event| event.resource_type.as_db_str()),
             resource_event
                 .as_ref()
                 .map(|event| event.resource_id.as_str()),
@@ -248,8 +252,10 @@ impl RealtimeOutboxRepository {
                 .and_then(|event| event.actor_user_id),
             resource_event
                 .as_ref()
-                .and_then(|event| event.payload.as_ref()),
-            resource_event.as_ref().map(|event| &event.summary),
+                .and_then(|event| event.payload.as_ref().map(sqlx::types::Json)) as _,
+            resource_event
+                .as_ref()
+                .map(|event| sqlx::types::Json(&event.summary)) as _,
             resource_event.as_ref().map(|event| event.occurred_at),
             event.enqueue_outbox,
         )
@@ -288,7 +294,7 @@ impl RealtimeOutboxRepository {
                 o.event_type,
                 o.event_version,
                 o.aggregate_version,
-                o.payload AS "payload!: serde_json::Value",
+                o.payload AS "payload!: sqlx::types::Json<RealtimeEvent>",
                 o.status,
                 o.attempts,
                 o.next_retry_at,
@@ -411,424 +417,382 @@ fn ensure_outbox_row_updated(rows_affected: u64, id: &str, operation: &str) -> R
 fn room_resource_event_from_outbox_event(
     event: &NewRealtimeOutboxEvent,
 ) -> Result<Option<NewRoomResourceEvent>> {
-    let Some(room_id) = json_i64(&event.payload, "room_id") else {
+    let Some(room_id) = event.payload.room_id().copied() else {
         return Ok(None);
     };
-    let Some(timestamp) = json_datetime(&event.payload, "timestamp")? else {
+    let actor_user_id = event
+        .payload
+        .user_id()
+        .map(super::super::models::id::UserId::as_i64);
+    let Some((resource_type, resource_id, details)) = resource_summary_details(event)? else {
         return Ok(None);
     };
 
-    let actor_user_id = actor_user_id(event);
-    let resource = match event.event_type.as_str() {
-        "playback_state_changed" => {
-            let state = event.payload.get("state").unwrap_or(&Value::Null);
-            (
-                "playback_state".to_string(),
-                room_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("playback_version", opt(json_i64(state, "version"))),
-                    ("is_playing", opt(json_bool(state, "is_playing"))),
-                    ("position", opt(json_f64(state, "position"))),
-                    ("speed", opt(json_f64(state, "speed"))),
-                    ("media_id", opt(json_i64(state, "playing_media_id"))),
-                    ("playlist_id", opt(json_i64(state, "playing_playlist_id"))),
-                    ("target_hash", opt(json_target_hash(state, "target"))),
-                ]),
-            )
-        }
-        "room_settings_changed" => (
-            "room_settings".to_string(),
-            room_id.to_string(),
-            json_object(vec![
-                ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                ("username", opt(json_string(&event.payload, "username"))),
-                ("settings_version", opt(event.aggregate_version)),
-            ]),
-        ),
-        "media_added" | "media_updated" => {
-            let media_id = required_json_i64(&event.payload, "media_id", &event.event_type)?;
-            (
-                "media".to_string(),
-                media_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("media_id", opt(Some(media_id))),
-                    (
-                        "media_title",
-                        opt(json_string(&event.payload, "media_title")),
-                    ),
-                ]),
-            )
-        }
-        "media_removed" => {
-            let media_id = required_json_i64(&event.payload, "media_id", &event.event_type)?;
-            (
-                "media".to_string(),
-                media_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("media_id", opt(Some(media_id))),
-                ]),
-            )
-        }
-        "media_removed_batch" | "playlist_reordered" => (
-            "playlist_items".to_string(),
-            room_id.to_string(),
-            json_object(vec![
-                ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                ("username", opt(json_string(&event.payload, "username"))),
-                (
-                    "media_ids",
-                    event
-                        .payload
-                        .get("media_ids")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                ),
-            ]),
-        ),
-        "playlist_created" | "playlist_updated" => {
-            let playlist = event.payload.get("playlist").unwrap_or(&Value::Null);
-            let playlist_id = required_json_i64(playlist, "id", &event.event_type)?;
-            (
-                "playlist".to_string(),
-                playlist_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("playlist_id", opt(Some(playlist_id))),
-                    ("playlist_name", opt(json_string(playlist, "name"))),
-                    ("parent_id", opt(json_i64(playlist, "parent_id"))),
-                ]),
-            )
-        }
-        "playlist_deleted" => {
-            let playlist_id = required_json_i64(&event.payload, "playlist_id", &event.event_type)?;
-            (
-                "playlist".to_string(),
-                playlist_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(json_i64(&event.payload, "user_id"))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("playlist_id", opt(Some(playlist_id))),
-                ]),
-            )
-        }
-        "user_joined" => {
-            let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                user_id.to_string(),
-                json_object(vec![
-                    ("member_kind", opt(Some("user".to_string()))),
-                    ("user_id", opt(Some(user_id))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("role", opt(json_i64(&event.payload, "role"))),
-                    (
-                        "permissions",
-                        opt(permission_bits(&event.payload, "permissions")),
-                    ),
-                    (
-                        "added_permissions",
-                        opt(permission_bits(&event.payload, "added_permissions")),
-                    ),
-                    (
-                        "removed_permissions",
-                        opt(permission_bits(&event.payload, "removed_permissions")),
-                    ),
-                    (
-                        "admin_added_permissions",
-                        opt(permission_bits(&event.payload, "admin_added_permissions")),
-                    ),
-                    (
-                        "admin_removed_permissions",
-                        opt(permission_bits(&event.payload, "admin_removed_permissions")),
-                    ),
-                    (
-                        "joined_at",
-                        event
-                            .payload
-                            .get("joined_at")
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    ),
-                ]),
-            )
-        }
-        "guest_joined" => {
-            let guest_id = required_json_string(&event.payload, "guest_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                guest_id.clone(),
-                json_object(vec![
-                    ("member_kind", opt(Some("guest".to_string()))),
-                    ("guest_id", opt(Some(guest_id))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                    ("role", opt(json_i64(&event.payload, "role"))),
-                    (
-                        "permissions",
-                        opt(permission_bits(&event.payload, "permissions")),
-                    ),
-                    (
-                        "joined_at",
-                        event
-                            .payload
-                            .get("joined_at")
-                            .cloned()
-                            .unwrap_or(Value::Null),
-                    ),
-                ]),
-            )
-        }
-        "user_left" => {
-            let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                user_id.to_string(),
-                json_object(vec![
-                    ("member_kind", opt(Some("user".to_string()))),
-                    ("user_id", opt(Some(user_id))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                ]),
-            )
-        }
-        "guest_left" => {
-            let guest_id = required_json_string(&event.payload, "guest_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                guest_id.clone(),
-                json_object(vec![
-                    ("member_kind", opt(Some("guest".to_string()))),
-                    ("guest_id", opt(Some(guest_id))),
-                    ("username", opt(json_string(&event.payload, "username"))),
-                ]),
-            )
-        }
-        "permission_changed" => {
-            let target_user_id =
-                required_json_i64(&event.payload, "target_user_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                target_user_id.to_string(),
-                json_object(vec![
-                    ("target_user_id", opt(Some(target_user_id))),
-                    (
-                        "target_username",
-                        opt(json_string(&event.payload, "target_username")),
-                    ),
-                    ("changed_by", opt(json_i64(&event.payload, "changed_by"))),
-                    (
-                        "role_changed",
-                        opt(json_bool(&event.payload, "role_changed")),
-                    ),
-                    (
-                        "changed_by_username",
-                        opt(json_string(&event.payload, "changed_by_username")),
-                    ),
-                    ("role", opt(json_i64(&event.payload, "role"))),
-                    (
-                        "new_permissions",
-                        opt(permission_bits(&event.payload, "new_permissions")),
-                    ),
-                    (
-                        "added_permissions",
-                        opt(permission_bits(&event.payload, "added_permissions")),
-                    ),
-                    (
-                        "removed_permissions",
-                        opt(permission_bits(&event.payload, "removed_permissions")),
-                    ),
-                    (
-                        "admin_added_permissions",
-                        opt(permission_bits(&event.payload, "admin_added_permissions")),
-                    ),
-                    (
-                        "admin_removed_permissions",
-                        opt(permission_bits(&event.payload, "admin_removed_permissions")),
-                    ),
-                ]),
-            )
-        }
-        "kick_publisher" => {
-            let media_id = required_json_i64(&event.payload, "media_id", &event.event_type)?;
-            (
-                "playback_stream".to_string(),
-                media_id.to_string(),
-                json_object(vec![
-                    ("media_id", opt(Some(media_id))),
-                    ("reason", opt(json_string(&event.payload, "reason"))),
-                ]),
-            )
-        }
-        "kick_user_from_room" => {
-            let user_id = required_json_i64(&event.payload, "user_id", &event.event_type)?;
-            (
-                "room_member_events".to_string(),
-                user_id.to_string(),
-                json_object(vec![
-                    ("user_id", opt(Some(user_id))),
-                    ("reason", opt(json_string(&event.payload, "reason"))),
-                ]),
-            )
-        }
-        "room_created" => (
-            "room".to_string(),
-            room_id.to_string(),
-            json_object(vec![
-                ("room_name", opt(json_string(&event.payload, "room_name"))),
-                ("creator_id", opt(json_i64(&event.payload, "creator_id"))),
-            ]),
-        ),
-        "room_deleted" => (
-            "room".to_string(),
-            room_id.to_string(),
-            json_object(vec![(
-                "deleted_by",
-                opt(json_i64(&event.payload, "deleted_by")),
-            )]),
-        ),
-        "room_banned" => (
-            "room".to_string(),
-            room_id.to_string(),
-            json_object(vec![(
-                "banned_by",
-                opt(json_i64(&event.payload, "banned_by")),
-            )]),
-        ),
-        "room_owner_inactive" => (
-            "room".to_string(),
-            room_id.to_string(),
-            json_object(vec![
-                ("owner_id", opt(json_i64(&event.payload, "owner_id"))),
-                (
-                    "triggered_by",
-                    opt(json_i64(&event.payload, "triggered_by")),
-                ),
-            ]),
-        ),
-        _ => return Ok(None),
-    };
-
-    let (resource_type, resource_id, details) = resource;
     Ok(Some(NewRoomResourceEvent {
         event_id: event.id.clone(),
         scope_type: RoomResourceEventScope::Room,
-        room_id: Some(room_id),
+        room_id: Some(room_id.as_i64()),
         user_id: None,
         aggregate_type: event.aggregate_type.clone(),
         aggregate_id: event.aggregate_id.clone(),
-        resource_type: resource_type.clone(),
+        resource_type,
         resource_id,
         event_type: event.event_type.clone(),
         event_version: event.event_version,
         aggregate_version: event.aggregate_version,
         actor_user_id,
-        payload: Some(event.payload.clone()),
-        summary: serde_json::json!({
-            "event_type": event.event_type,
-            "room_id": room_id,
-            "actor_user_id": actor_user_id,
-            "resource_type": resource_type,
-            "details": details,
+        payload: Some(RoomResourceEventPayload::Realtime {
+            event: event.payload.clone(),
         }),
-        occurred_at: timestamp,
+        summary: RoomResourceEventSummary {
+            event_type: event.event_type.clone(),
+            room_id: Some(room_id.as_i64()),
+            actor_user_id,
+            resource_type,
+            details,
+        },
+        occurred_at: *event.payload.timestamp(),
     }))
 }
 
-fn actor_user_id(event: &NewRealtimeOutboxEvent) -> Option<i64> {
-    match event.event_type.as_str() {
-        "permission_changed" => json_i64(&event.payload, "changed_by"),
-        "room_created" => json_i64(&event.payload, "creator_id"),
-        "room_deleted" => json_i64(&event.payload, "deleted_by"),
-        "room_banned" => json_i64(&event.payload, "banned_by"),
-        "room_owner_inactive" => json_i64(&event.payload, "triggered_by"),
-        "kick_publisher" => None,
-        _ => json_i64(&event.payload, "user_id"),
-    }
+type ResourceSummary = (RoomResourceKind, String, RoomResourceEventSummaryDetails);
+
+fn resource_summary_details(event: &NewRealtimeOutboxEvent) -> Result<Option<ResourceSummary>> {
+    let summary = match &event.payload {
+        RealtimeEvent::PlaybackStateChanged {
+            user_id,
+            username,
+            state,
+            ..
+        } => (
+            RoomResourceKind::PlaybackState,
+            state.room_id.to_string(),
+            RoomResourceEventSummaryDetails::PlaybackState {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                playback_version: Some(state.version),
+                is_playing: state.is_playing,
+                position: state.position,
+                speed: state.speed,
+                media_id: state.playing_media_id.map(|id| id.as_i64()),
+                playlist_id: state.playing_playlist_id.map(|id| id.as_i64()),
+                target_hash: state.target_hash()?,
+            },
+        ),
+        RealtimeEvent::RoomSettingsChanged {
+            room_id,
+            user_id,
+            username,
+            version,
+            ..
+        } => (
+            RoomResourceKind::RoomSettings,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::RoomSettings {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                settings_version: Some(*version),
+            },
+        ),
+        RealtimeEvent::MediaAdded {
+            user_id,
+            username,
+            media_id,
+            media_title,
+            ..
+        }
+        | RealtimeEvent::MediaUpdated {
+            user_id,
+            username,
+            media_id,
+            media_title,
+            ..
+        } => (
+            RoomResourceKind::Media,
+            media_id.to_string(),
+            RoomResourceEventSummaryDetails::Media {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                media_id: media_id.as_i64(),
+                media_title: Some(media_title.clone()),
+            },
+        ),
+        RealtimeEvent::MediaRemoved {
+            user_id,
+            username,
+            media_id,
+            ..
+        } => (
+            RoomResourceKind::Media,
+            media_id.to_string(),
+            RoomResourceEventSummaryDetails::Media {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                media_id: media_id.as_i64(),
+                media_title: None,
+            },
+        ),
+        RealtimeEvent::MediaRemovedBatch {
+            room_id,
+            user_id,
+            username,
+            media_ids,
+            ..
+        }
+        | RealtimeEvent::PlaylistReordered {
+            room_id,
+            user_id,
+            username,
+            media_ids,
+            ..
+        } => (
+            RoomResourceKind::PlaylistItems,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::PlaylistItems {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                media_ids: media_ids
+                    .iter()
+                    .map(super::super::models::id::MediaId::as_i64)
+                    .collect(),
+            },
+        ),
+        RealtimeEvent::PlaylistCreated {
+            user_id,
+            username,
+            playlist,
+            ..
+        }
+        | RealtimeEvent::PlaylistUpdated {
+            user_id,
+            username,
+            playlist,
+            ..
+        } => (
+            RoomResourceKind::Playlist,
+            playlist.id.to_string(),
+            RoomResourceEventSummaryDetails::Playlist {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                playlist_id: playlist.id.as_i64(),
+                playlist_name: Some(playlist.name.clone()),
+                parent_id: playlist.parent_id.map(|id| id.as_i64()),
+            },
+        ),
+        RealtimeEvent::PlaylistDeleted {
+            user_id,
+            username,
+            playlist_id,
+            ..
+        } => (
+            RoomResourceKind::Playlist,
+            playlist_id.to_string(),
+            RoomResourceEventSummaryDetails::Playlist {
+                user_id: Some(user_id.as_i64()),
+                username: Some(username.clone()),
+                playlist_id: playlist_id.as_i64(),
+                playlist_name: None,
+                parent_id: None,
+            },
+        ),
+        RealtimeEvent::UserJoined {
+            user_id,
+            username,
+            role,
+            permissions,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            joined_at,
+            ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            user_id.to_string(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::User {
+                    user_id: user_id.as_i64(),
+                    username: Some(username.clone()),
+                    role: Some(i64::from(*role)),
+                    permissions: Some(permission_bits(*permissions)),
+                    added_permissions: Some(permission_bits(*added_permissions)),
+                    removed_permissions: Some(permission_bits(*removed_permissions)),
+                    admin_added_permissions: Some(permission_bits(*admin_added_permissions)),
+                    admin_removed_permissions: Some(permission_bits(*admin_removed_permissions)),
+                    joined_at: Some(*joined_at),
+                },
+            },
+        ),
+        RealtimeEvent::GuestJoined {
+            guest_id,
+            username,
+            role,
+            permissions,
+            joined_at,
+            ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            guest_id.clone(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::Guest {
+                    guest_id: guest_id.clone(),
+                    username: Some(username.clone()),
+                    role: Some(i64::from(*role)),
+                    permissions: Some(permission_bits(*permissions)),
+                    joined_at: Some(*joined_at),
+                },
+            },
+        ),
+        RealtimeEvent::UserLeft {
+            user_id, username, ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            user_id.to_string(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::UserLeft {
+                    user_id: user_id.as_i64(),
+                    username: Some(username.clone()),
+                },
+            },
+        ),
+        RealtimeEvent::GuestLeft {
+            guest_id, username, ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            guest_id.clone(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::GuestLeft {
+                    guest_id: guest_id.clone(),
+                    username: Some(username.clone()),
+                },
+            },
+        ),
+        RealtimeEvent::PermissionChanged {
+            target_user_id,
+            target_username,
+            changed_by,
+            changed_by_username,
+            role_changed,
+            role,
+            new_permissions,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            target_user_id.to_string(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::PermissionChanged {
+                    target_user_id: target_user_id.as_i64(),
+                    target_username: Some(target_username.clone()),
+                    changed_by: Some(changed_by.as_i64()),
+                    changed_by_username: Some(changed_by_username.clone()),
+                    role_changed: *role_changed,
+                    role: Some(i64::from(*role)),
+                    new_permissions: Some(permission_bits(*new_permissions)),
+                    added_permissions: Some(permission_bits(*added_permissions)),
+                    removed_permissions: Some(permission_bits(*removed_permissions)),
+                    admin_added_permissions: Some(permission_bits(*admin_added_permissions)),
+                    admin_removed_permissions: Some(permission_bits(*admin_removed_permissions)),
+                },
+            },
+        ),
+        RealtimeEvent::KickPublisher {
+            media_id, reason, ..
+        } => (
+            RoomResourceKind::PlaybackStream,
+            media_id.to_string(),
+            RoomResourceEventSummaryDetails::PlaybackStream {
+                media_id: media_id.as_i64(),
+                reason: Some(reason.clone()),
+            },
+        ),
+        RealtimeEvent::KickUserFromRoom {
+            user_id, reason, ..
+        } => (
+            RoomResourceKind::RoomMemberEvents,
+            user_id.to_string(),
+            RoomResourceEventSummaryDetails::RoomMember {
+                member: RoomMemberResourceSummary::Kicked {
+                    user_id: user_id.as_i64(),
+                    reason: Some(reason.clone()),
+                },
+            },
+        ),
+        RealtimeEvent::RoomCreated {
+            room_id,
+            room_name,
+            creator_id,
+            ..
+        } => (
+            RoomResourceKind::Room,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::Room {
+                room_name: Some(room_name.clone()),
+                creator_id: Some(creator_id.as_i64()),
+                deleted_by: None,
+                banned_by: None,
+                owner_id: None,
+                triggered_by: None,
+            },
+        ),
+        RealtimeEvent::RoomDeleted {
+            room_id,
+            deleted_by,
+            ..
+        } => (
+            RoomResourceKind::Room,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::Room {
+                room_name: None,
+                creator_id: None,
+                deleted_by: Some(deleted_by.as_i64()),
+                banned_by: None,
+                owner_id: None,
+                triggered_by: None,
+            },
+        ),
+        RealtimeEvent::RoomBanned {
+            room_id, banned_by, ..
+        } => (
+            RoomResourceKind::Room,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::Room {
+                room_name: None,
+                creator_id: None,
+                deleted_by: None,
+                banned_by: Some(banned_by.as_i64()),
+                owner_id: None,
+                triggered_by: None,
+            },
+        ),
+        RealtimeEvent::RoomOwnerInactive {
+            room_id,
+            owner_id,
+            triggered_by,
+            ..
+        } => (
+            RoomResourceKind::Room,
+            room_id.to_string(),
+            RoomResourceEventSummaryDetails::Room {
+                room_name: None,
+                creator_id: None,
+                deleted_by: None,
+                banned_by: None,
+                owner_id: Some(owner_id.as_i64()),
+                triggered_by: Some(triggered_by.as_i64()),
+            },
+        ),
+        _ => return Ok(None),
+    };
+
+    Ok(Some(summary))
 }
 
-fn json_i64(value: &Value, key: &str) -> Option<i64> {
-    value.get(key).and_then(value_i64)
-}
-
-fn value_i64(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-}
-
-fn json_f64(value: &Value, key: &str) -> Option<f64> {
-    value.get(key).and_then(Value::as_f64)
-}
-
-fn json_bool(value: &Value, key: &str) -> Option<bool> {
-    value.get(key).and_then(Value::as_bool)
-}
-
-fn json_string(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
-fn json_target_hash(value: &Value, key: &str) -> Option<String> {
-    let target = value.get(key)?.as_array()?;
-    let mut bytes = Vec::with_capacity(target.len());
-    for item in target {
-        let byte = item.as_u64().and_then(|value| u8::try_from(value).ok())?;
-        bytes.push(byte);
-    }
-    Some(hex::encode(Sha256::digest(&bytes)))
-}
-
-fn json_datetime(value: &Value, key: &str) -> Result<Option<DateTime<Utc>>> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(|timestamp| {
-            DateTime::parse_from_rfc3339(timestamp)
-                .map(|timestamp| timestamp.with_timezone(&Utc))
-                .map_err(|error| {
-                    Error::Internal(format!("Invalid realtime event timestamp: {error}"))
-                })
-        })
-        .transpose()
-}
-
-fn required_json_i64(value: &Value, key: &str, event_type: &str) -> Result<i64> {
-    json_i64(value, key).ok_or_else(|| {
-        Error::Internal(format!(
-            "Realtime event {event_type} is missing numeric payload field {key}"
-        ))
-    })
-}
-
-fn required_json_string(value: &Value, key: &str, event_type: &str) -> Result<String> {
-    json_string(value, key).ok_or_else(|| {
-        Error::Internal(format!(
-            "Realtime event {event_type} is missing string payload field {key}"
-        ))
-    })
-}
-
-fn permission_bits(value: &Value, key: &str) -> Option<i64> {
-    value
-        .get(key)
-        .and_then(|value| json_i64(value, "bits").or_else(|| value_i64(value)))
-}
-
-fn json_object(entries: Vec<(&'static str, Value)>) -> Value {
-    let mut object = serde_json::Map::with_capacity(entries.len());
-    for (key, value) in entries {
-        object.insert(key.to_string(), value);
-    }
-    Value::Object(object)
-}
-
-fn opt<T: Into<Value>>(value: Option<T>) -> Value {
-    value.map_or(Value::Null, Into::into)
+fn permission_bits(permissions: RoomPermissionSet) -> i64 {
+    i64::try_from(permissions.bits()).unwrap_or(i64::MAX)
 }
 
 fn retry_delay_seconds(attempts: i32) -> i64 {

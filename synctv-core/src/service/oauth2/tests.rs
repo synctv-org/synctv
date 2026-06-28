@@ -583,7 +583,7 @@ async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc
         .build();
     let registry = create_test_settings_registry(&guard);
     let configs: crate::service::OAuth2ProviderConfigs = ok(
-        r#"{"casdoor_oidc":{"type":"oidc","enable_signup":true,"config":{"client_id":"id","client_secret":"secret","redirect_url":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}}"#.parse(),
+        r#"{"casdoor_oidc":{"type":"oidc","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}"#.parse(),
         "test OAuth2 provider config should parse",
     );
     ok(

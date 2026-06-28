@@ -52,10 +52,17 @@ mod ws_query {
     }
 
     #[test]
-    fn test_deserialize_ignores_unknown_params() {
+    fn test_deserialize_rejects_unknown_params() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Query {
+            #[serde(default, rename = "ticket")]
+            _ticket: String,
+        }
+
         let params = "ticket=tix&unknown=value";
-        let query: WebSocketConnectRequest = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.ticket, "tix");
+        let error = serde_urlencoded::from_str::<Query>(params).unwrap_err();
+        assert!(error.to_string().contains("unknown"));
     }
 
     #[test]
@@ -126,7 +133,7 @@ mod ticket_types {
 
     #[test]
     fn test_create_ticket_request_deserialize() {
-        let json = r#"{"room_id": "room_abc"}"#;
+        let json = r#"{"roomId": "room_abc"}"#;
         let req: CreateWebSocketTicketRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.room_id.as_str(), "room_abc");
     }
@@ -141,8 +148,8 @@ mod ticket_types {
         };
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["ticket"], "ticket_abc123");
-        assert_eq!(json["room_id"], "room_abc");
-        assert_eq!(json["expires_in_secs"], "30");
+        assert_eq!(json["roomId"], "room_abc");
+        assert_eq!(json["expiresInSecs"], "30");
         assert!(json["usage"].as_str().unwrap().contains("WebSocket"));
     }
 
@@ -157,8 +164,8 @@ mod ticket_types {
         let json = serde_json::to_value(&resp).unwrap();
         let obj = json.as_object().unwrap();
         assert!(obj.contains_key("ticket"));
-        assert!(obj.contains_key("room_id"));
-        assert!(obj.contains_key("expires_in_secs"));
+        assert!(obj.contains_key("roomId"));
+        assert!(obj.contains_key("expiresInSecs"));
         assert!(obj.contains_key("usage"));
     }
 
@@ -1041,7 +1048,7 @@ mod websocket_e2e {
             .expect("test HTTP app state should build");
 
         let app = axum::Router::new()
-            .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
+            .route("/ws/rooms/{roomId}", axum::routing::get(websocket_handler))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -1839,7 +1846,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -2001,7 +2008,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -2339,7 +2346,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -2611,7 +2618,7 @@ mod websocket_e2e {
                         client_message_id: String::new(),
                         attachments: Vec::new(),
                         reply_to_message_id: String::new(),
-                        metadata: Vec::new(),
+                        metadata: None,
                         mentions: Vec::new(),
                     },
                 )),
@@ -2936,7 +2943,7 @@ mod websocket_e2e {
                         client_message_id: String::new(),
                         attachments: Vec::new(),
                         reply_to_message_id: String::new(),
-                        metadata: Vec::new(),
+                        metadata: None,
                         mentions: Vec::new(),
                     },
                 )),
@@ -3040,7 +3047,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -3199,7 +3206,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -3301,7 +3308,7 @@ mod websocket_e2e {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),

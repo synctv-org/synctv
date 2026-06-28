@@ -4,12 +4,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 
 use super::{
     id::{PlaylistId, RoomId, UserId},
     query::SortDirection,
-    SourceProvider,
+    PlaylistSourceConfig, SourceProvider,
 };
 
 sort_field_enum! {
@@ -69,7 +68,7 @@ pub struct Playlist {
 
     // Dynamic folder fields
     pub source_provider: Option<SourceProvider>,
-    pub source_config: Option<JsonValue>,
+    pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,
 
     pub created_at: DateTime<Utc>,
@@ -110,7 +109,7 @@ pub struct CreatePlaylistRequest {
 
     // Dynamic folder fields
     pub source_provider: Option<SourceProvider>,
-    pub source_config: Option<JsonValue>,
+    pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,
 }
 

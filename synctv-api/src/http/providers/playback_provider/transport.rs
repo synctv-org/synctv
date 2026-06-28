@@ -5,7 +5,7 @@ use axum::{
 };
 use futures::{Stream, StreamExt};
 use std::convert::Infallible;
-use synctv_proto::playback_provider::common::StreamChunk;
+use synctv_proto::{client::ErrorMessage, playback_provider::common::StreamChunk};
 
 use crate::http::{
     error::{map_api_error, AppResult},
@@ -33,9 +33,14 @@ pub fn bilibili_danmaku_sse_event(
                     .data(r#"{"message":"Failed to serialize danmaku event"}"#)
             }
         },
-        Err(error) => Event::default()
-            .event("error")
-            .data(serde_json::json!({ "message": error.to_string() }).to_string()),
+        Err(error) => Event::default().event("error").data(
+            serde_json::to_string(&ErrorMessage {
+                message: error.to_string(),
+                code: error.code(),
+                detail: String::new(),
+            })
+            .unwrap_or_else(|_| r#"{"message":"Failed to serialize provider error"}"#.to_string()),
+        ),
     };
     Ok(event)
 }
@@ -63,7 +68,12 @@ pub fn signed_query_fields(query: &str) -> Result<(String, String, String, i64),
                         .map_err(|_| ApiError::InvalidInput("exp is invalid".to_string()))?,
                 );
             }
-            _ => {}
+            "targetUrl" => {}
+            _ => {
+                return Err(ApiError::InvalidInput(format!(
+                    "unknown signed query parameter '{key}'"
+                )));
+            }
         }
     }
 
@@ -78,11 +88,27 @@ pub fn signed_query_fields(query: &str) -> Result<(String, String, String, i64),
     ))
 }
 
+pub fn unsigned_query_field(query: &str, allowed_key: &str) -> Result<Option<String>, ApiError> {
+    let mut found = None;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "sig" | "uid" | "rid" | "exp" | "targetUrl" => {}
+            key if key == allowed_key => found = Some(value.into_owned()),
+            _ => {
+                return Err(ApiError::InvalidInput(format!(
+                    "unknown query parameter '{key}'"
+                )));
+            }
+        }
+    }
+    Ok(found)
+}
+
 pub fn target_url(query: &str) -> Result<String, ApiError> {
     url::form_urlencoded::parse(query.as_bytes())
-        .find_map(|(key, value)| (key == "target_url").then(|| value.into_owned()))
+        .find_map(|(key, value)| (key == "targetUrl").then(|| value.into_owned()))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| ApiError::InvalidInput("target_url is required".to_string()))
+        .ok_or_else(|| ApiError::InvalidInput("targetUrl is required".to_string()))
 }
 
 pub fn range_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
@@ -280,4 +306,28 @@ fn insert_optional_header(
     })?;
     headers.insert(name, value);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_url_query_uses_lower_camel_case() {
+        let parsed = target_url("targetUrl=https%3A%2F%2Fcdn.example%2Fseg.ts&sig=s")
+            .expect("targetUrl should parse");
+        assert_eq!(parsed, "https://cdn.example/seg.ts");
+
+        let error = target_url("sig=s").expect_err("missing targetUrl should be rejected");
+        assert!(
+            matches!(error, ApiError::InvalidInput(message) if message == "targetUrl is required")
+        );
+    }
+
+    #[test]
+    fn signed_query_fields_rejects_unknown_params() {
+        let error = signed_query_fields("sig=s&uid=u&rid=r&exp=1&extra=1")
+            .expect_err("unknown query parameter should be rejected");
+        assert!(matches!(error, ApiError::InvalidInput(message) if message.contains("extra")));
+    }
 }

@@ -53,7 +53,7 @@ BASE_URL=http://localhost:8080
 
 curl -sS "$BASE_URL/api/auth/opaque/login/start" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"root","credential_request":[/* bytes from your OPAQUE client */]}'
+  -d '{"username":"root","credentialRequest":[/* bytes from your OPAQUE client */]}'
 ```
 
 Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. If the finish response has `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
@@ -64,7 +64,7 @@ Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. If the finish r
 ```bash
 curl -sS "$BASE_URL/api/auth/refresh" \
   -H 'Content-Type: application/json' \
-  -d '{"refresh_token":"paste-refresh-token"}'
+  -d '{"refreshToken":"paste-refresh-token"}'
 ```
 
 Replace locally stored tokens after refresh succeeds.
@@ -92,7 +92,7 @@ ROOM_ID=room_1
 curl -sS "$BASE_URL/api/tickets" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d "{\"room_id\":\"$ROOM_ID\"}"
+  -d "{\"roomId\":\"$ROOM_ID\"}"
 ```
 
 The ticket is short-lived, one-time, and room-bound.
@@ -123,7 +123,7 @@ send({
   observeResource: {
     observeId: 'playback-state',
     version: cachedVersion ?? '',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playbackState: {},
   },
 });
@@ -143,11 +143,11 @@ The public AuthService local password flow uses OPAQUE. Generate the credential 
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  -d '{"username":"root","credentialRequest":"<base64-opaque-request>"}' \
   localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
 
-`AuthService/Login` is reserved for passwordless email-token login. Legacy password mode is retained for compatibility/bootstrap paths and is not exposed by this public request.
+`AuthService/Login` is reserved for passwordless email-token login.
 
 Room RPCs need room metadata:
 
@@ -174,10 +174,10 @@ Alist list request:
 curl -sS "$BASE_URL/api/providers/alist/list" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"server_id":"<server_id-from-login-or-binds>","path":"/","provider_instance_name":"alist-main"}'
+  -d '{"serverId":"<serverId-from-login-or-binds>","path":"/","instanceName":"alist-main"}'
 ```
 
-When adding media, the `source_provider`, `provider_instance_name`, and `source_config` combination is defined by the Provider. Provider credentials should not be placed directly in `source_config`; they are resolved by the server-side Provider credential layer.
+When adding media, the `sourceProvider`, `providerInstanceName`, and `sourceConfig` combination is defined by the Provider. Provider credentials are resolved by the server-side Provider credential layer.
 
 ## Error Handling
 
@@ -188,7 +188,7 @@ HTTP error response:
   "error": "Invalid username or password",
   "status": 401,
   "code": 1002,
-  "request_id": "01HX..."
+  "requestId": "01HX..."
 }
 ```
 
@@ -196,7 +196,7 @@ Client rules:
 
 - Use HTTP `status` for the broad category.
 - Use `code` for programmatic branches.
-- Log `request_id` for support.
+- Log `requestId` for support.
 - Respect `Retry-After` on `429`.
 - Do not depend on raw 5xx text; it is sanitized.
 

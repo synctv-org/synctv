@@ -383,6 +383,7 @@ impl UserService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::RealtimeEvent;
 
     fn test_outbox_event(room_id: RoomId) -> NewRealtimeOutboxEvent {
         NewRealtimeOutboxEvent {
@@ -393,7 +394,12 @@ mod tests {
             event_type: "room_deleted".to_string(),
             event_version: 1,
             aggregate_version: None,
-            payload: serde_json::json!({ "room_id": room_id.to_string() }),
+            payload: RealtimeEvent::RoomDeleted {
+                event_id: format!("event-{room_id}"),
+                room_id,
+                deleted_by: UserId::expect_positive(1),
+                timestamp: chrono::Utc::now(),
+            },
         }
     }
 

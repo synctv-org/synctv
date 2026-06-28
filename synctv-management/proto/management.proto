@@ -405,7 +405,7 @@ message CreateRoomRequest {
     string name = 2;
     string password = 3;
     string description = 4;
-    bytes settings_json = 5;
+    synctv.client.RoomSettings settings = 5;
     string category_id = 6;
     repeated string label_ids = 7;
 }
@@ -482,7 +482,7 @@ message GetRoomSettingsRequest {
 
 message UpdateRoomSettingsRequest {
     string room_id = 1;
-    bytes settings_json = 2;
+    synctv.client.RoomSettingsPatch settings = 2;
 }
 
 message ResetRoomSettingsRequest {
@@ -521,7 +521,7 @@ message StartPlaybackRequest {
     string room_id = 1;
     string media_id = 2;
     string playlist_id = 3;
-    bytes target_json = 4;
+    synctv.client.ProviderTarget target = 4;
 }
 
 message StopPlaybackRequest {
@@ -638,7 +638,7 @@ message DeletePlaylistRequest {
 message ListMediaRequest {
     string room_id = 1;
     string playlist_id = 2;
-    bytes target_json = 3;
+    synctv.client.ProviderTarget target = 3;
     int32 page = 4;
     int32 page_size = 5;
     string search = 6;
@@ -854,7 +854,19 @@ message GetSettingsGroupRequest {
 
 message UpdateSettingsRequest {
     string group = 1;
-    map<string, string> settings = 2;
+    oneof settings {
+        synctv.admin.ServerSettings server = 2;
+        synctv.admin.PermissionSettings permissions = 3;
+        synctv.admin.RoomPolicySettings room = 4;
+        synctv.admin.UserSettings user = 5;
+        synctv.admin.OAuth2Settings oauth2 = 6;
+        synctv.admin.ProxySettings proxy = 7;
+        synctv.admin.RtmpSettings rtmp = 8;
+        synctv.admin.EmailSettings email = 9;
+        synctv.admin.WebRtcSettings webrtc = 10;
+        synctv.admin.ChatSettings chat = 11;
+        synctv.admin.CorsSettings cors = 12;
+    }
 }
 
 message SendTestEmailRequest {

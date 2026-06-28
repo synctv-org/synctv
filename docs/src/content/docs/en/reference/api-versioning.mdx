@@ -7,7 +7,7 @@ import { Aside, Steps } from '@astrojs/starlight/components';
 
 ## Current Phase
 
-SyncTV is currently treated as a new project. Its own protobuf and API drafts may be reorganized without preserving backward compatibility. Field order, numbers, and message structure can be cleaned up without adding `reserved` entries for draft history.
+SyncTV is currently treated as a new project. Its own protobuf and API drafts may be reorganized freely while contracts are still being shaped. Field order, numbers, and message structure can be cleaned up without adding `reserved` entries for draft history.
 
 Do not modify third-party vendored protobuf files such as:
 
@@ -15,7 +15,7 @@ Do not modify third-party vendored protobuf files such as:
 - Other vendored proto or code-generation dependency files
 
 <Aside type="caution">
-No backward compatibility requirement does not mean untracked changes. Protocol changes still need generated code, tests, examples, and docs updated together.
+Protocol changes still need generated code, tests, examples, and docs updated together.
 </Aside>
 
 ## Protocol Surfaces

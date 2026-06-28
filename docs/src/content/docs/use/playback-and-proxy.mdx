@@ -66,10 +66,10 @@ SyncTV proxy slice cache 的边界：
 
 新客户端使用 Realtime 资源观察订阅播放信息：
 
-- `playback_state`：当前播放位置、状态和版本。
+- `playbackState`：当前播放位置、状态和版本。
 - `playback`：当前媒体的播放 URL、headers、字幕和过期时间。
 
-断线重连时，重新获取 `playback_state`，并用当前 `playback_client_profile` 观察 `playback`。播放信息是当前播放源可直接交给播放器使用的数据，生命周期跟随其中的 URL。
+断线重连时，重新获取 `playbackState`，并用当前 `playbackClientProfile` 观察 `playback`。播放信息是当前播放源可直接交给播放器使用的数据，生命周期跟随其中的 URL。
 
 完整协议见 [Realtime API](../../develop/realtime-api/)。
 

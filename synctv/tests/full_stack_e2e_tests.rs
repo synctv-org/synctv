@@ -17,7 +17,8 @@ use opaque_ke::{
 };
 use prost::Message;
 use reqwest::StatusCode;
-use serde_json::{json, Value};
+use serde::Serialize;
+use serde_json::Value;
 use sha2_010::Sha512;
 use synctv::{Application, ApplicationBuildOptions};
 use synctv_core::config::Config;
@@ -138,6 +139,7 @@ fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMes
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::Playback(ObservePlayback {
                 playback_client_profile: None,
+                after_event_sequence: None,
             })),
         })),
     }
@@ -268,6 +270,43 @@ fn resource_room_settings(
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn room_settings_value(
+    settings: Option<&synctv_proto::client::RoomSettings>,
+    context: &str,
+) -> Value {
+    serde_json::to_value(settings.expect(context)).expect("room settings should encode")
+}
+
+fn room_settings_patch_json(chat_enabled: bool, allow_guest_join: bool) -> String {
+    serde_json::to_string(&synctv_proto::client::RoomSettingsPatch {
+        chat_enabled: Some(chat_enabled),
+        allow_guest_join: Some(allow_guest_join),
+        ..Default::default()
+    })
+    .expect("room settings patch should serialize")
+}
+
+fn create_ticket_request(room_id: &str) -> synctv_proto::client::CreateWebSocketTicketRequest {
+    synctv_proto::client::CreateWebSocketTicketRequest {
+        room_id: room_id.to_string(),
+    }
+}
+
+fn create_room_request(
+    name: &str,
+    description: &str,
+    password: &str,
+) -> synctv_proto::client::CreateRoomRequest {
+    synctv_proto::client::CreateRoomRequest {
+        name: name.to_string(),
+        settings: None,
+        description: description.to_string(),
+        password: password.to_string(),
+        category_id: String::new(),
+        label_ids: Vec::new(),
     }
 }
 
@@ -1223,7 +1262,7 @@ fn test_http_client() -> reqwest::Client {
 async fn post_json(
     client: &reqwest::Client,
     url: &str,
-    body: Value,
+    body: impl Serialize,
     bearer: Option<&str>,
 ) -> reqwest::Response {
     let request = client.post(url).json(&body);
@@ -1447,7 +1486,7 @@ async fn opaque_grpc_join_room(
 async fn put_json(
     client: &reqwest::Client,
     url: &str,
-    body: Value,
+    body: impl Serialize,
     bearer: &str,
 ) -> reqwest::Response {
     client
@@ -1486,6 +1525,8 @@ async fn opaque_http_register(
     email: &str,
     password: &str,
 ) -> reqwest::Response {
+    use synctv_proto::client::{FinishOpaqueRegistrationRequest, StartOpaqueRegistrationRequest};
+
     let client = test_http_client();
     let mut rng = OsRng;
     let client_start =
@@ -1495,11 +1536,11 @@ async fn opaque_http_register(
     let start = post_json(
         &client,
         &format!("{}/api/auth/opaque/registration/start", server.api_base_url),
-        json!({
-            "username": username,
-            "email": email,
-            "registration_request": BASE64_STANDARD.encode(client_start.message.serialize())
-        }),
+        StartOpaqueRegistrationRequest {
+            username: username.to_string(),
+            email: Some(email.to_string()),
+            registration_request: client_start.message.serialize().to_vec(),
+        },
         None,
     )
     .await;
@@ -1508,13 +1549,13 @@ async fn opaque_http_register(
     }
 
     let challenge = response_json(start).await;
-    let session_id = challenge["session_id"]
+    let session_id = challenge["sessionId"]
         .as_str()
         .expect("OPAQUE registration start should return session_id")
         .to_string();
     let registration_response = BASE64_STANDARD
         .decode(
-            challenge["registration_response"]
+            challenge["registrationResponse"]
                 .as_str()
                 .expect("OPAQUE registration start should return base64 registration_response"),
         )
@@ -1538,10 +1579,10 @@ async fn opaque_http_register(
             "{}/api/auth/opaque/registration/finish",
             server.api_base_url
         ),
-        json!({
-            "session_id": session_id,
-            "registration_upload": BASE64_STANDARD.encode(client_finish.message.serialize())
-        }),
+        FinishOpaqueRegistrationRequest {
+            session_id,
+            registration_upload: client_finish.message.serialize().to_vec(),
+        },
         None,
     )
     .await
@@ -1552,6 +1593,10 @@ async fn opaque_http_login_token(
     username: &str,
     password: &str,
 ) -> Result<String, String> {
+    use synctv_proto::client::{
+        start_opaque_login_request::Identifier, FinishOpaqueLoginRequest, StartOpaqueLoginRequest,
+    };
+
     let client = test_http_client();
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
@@ -1559,10 +1604,10 @@ async fn opaque_http_login_token(
     let start = post_json(
         &client,
         &format!("{}/api/auth/opaque/login/start", server.api_base_url),
-        json!({
-            "username": username,
-            "credential_request": BASE64_STANDARD.encode(client_start.message.serialize())
-        }),
+        StartOpaqueLoginRequest {
+            identifier: Some(Identifier::Username(username.to_string())),
+            credential_request: client_start.message.serialize().to_vec(),
+        },
         None,
     )
     .await;
@@ -1575,13 +1620,13 @@ async fn opaque_http_login_token(
     }
 
     let challenge = response_json(start).await;
-    let session_id = challenge["session_id"]
+    let session_id = challenge["sessionId"]
         .as_str()
         .expect("OPAQUE login start should return session_id")
         .to_string();
     let credential_response = BASE64_STANDARD
         .decode(
-            challenge["credential_response"]
+            challenge["credentialResponse"]
                 .as_str()
                 .expect("OPAQUE login start should return base64 credential_response"),
         )
@@ -1602,10 +1647,10 @@ async fn opaque_http_login_token(
     let finish = post_json(
         &client,
         &format!("{}/api/auth/opaque/login/finish", server.api_base_url),
-        json!({
-            "session_id": session_id,
-            "credential_finalization": BASE64_STANDARD.encode(client_finish.message.serialize())
-        }),
+        FinishOpaqueLoginRequest {
+            session_id,
+            credential_finalization: client_finish.message.serialize().to_vec(),
+        },
         None,
     )
     .await;
@@ -1616,10 +1661,10 @@ async fn opaque_http_login_token(
             "OPAQUE login finish for {username} failed with {finish_status}: {body}"
         ));
     }
-    body["access_token"]
+    body["accessToken"]
         .as_str()
         .map(ToString::to_string)
-        .ok_or_else(|| format!("OPAQUE login response for {username} lacked access_token: {body}"))
+        .ok_or_else(|| format!("OPAQUE login response for {username} lacked accessToken: {body}"))
 }
 
 async fn login_http_ok_token(server: &TestServer, username: &str, password: &str) -> String {
@@ -1638,7 +1683,10 @@ async fn join_room_http(
     put_json(
         &client,
         &format!("{}/api/rooms/{room_id}/members/@me", server.api_base_url),
-        json!({ "password": password }),
+        synctv_proto::client::JoinRoomRequest {
+            room_id: room_id.to_string(),
+            password: password.to_string(),
+        },
         bearer,
     )
     .await
@@ -1673,19 +1721,14 @@ struct IdleRtmpPublisher {
 }
 
 impl IdleRtmpPublisher {
-    async fn wait_for_disconnect(&mut self, context: &str) {
+    async fn shutdown(&mut self, context: &str) {
         if let Some(task) = self.session_task.take() {
+            task.abort();
             tokio::time::timeout(Duration::from_secs(10), task)
                 .await
-                .unwrap_or_else(|_| panic!("{context} should disconnect the RTMP publisher"))
-                .unwrap_or_else(|error| {
-                    panic!("{context} RTMP publisher task should join cleanly: {error}")
-                });
+                .unwrap_or_else(|_| panic!("{context} RTMP publisher task should stop"))
+                .unwrap_or_else(|error| assert!(error.is_cancelled()));
         }
-    }
-
-    async fn shutdown(&mut self, context: &str) {
-        self.wait_for_disconnect(context).await;
     }
 }
 
@@ -1792,16 +1835,41 @@ async fn run_idle_rtmp_publisher(
     let mut publish_sent = false;
     let mut publish_started = false;
     let mut started_tx = Some(started_tx);
+    let mut keepalive = tokio::time::interval(Duration::from_millis(500));
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         let read_result = if publish_started {
-            io.lock().await.read().await
+            tokio::select! {
+                read_result = async {
+                    io.lock().await.read_timeout(Duration::from_millis(500)).await
+                } => read_result,
+                _ = keepalive.tick() => {
+                    let mut control_messages = ProtocolControlMessagesWriter::new(
+                        synctv_xiu::bytesio::bytes_writer::AsyncBytesWriter::new(
+                            std::sync::Arc::clone(&io),
+                        ),
+                    );
+                    control_messages
+                        .write_acknowledgement(0)
+                        .await
+                        .map_err(|error| {
+                            format!("RTMP publisher should send keepalive acknowledgement: {error}")
+                        })?;
+                    continue;
+                }
+            }
         } else {
             io.lock().await.read_timeout(Duration::from_secs(15)).await
         };
 
         let data = match read_result {
             Ok(data) => data,
+            Err(error)
+                if publish_started && matches!(error.value, BytesIOErrorValue::TimeoutError(_)) =>
+            {
+                continue;
+            }
             Err(error)
                 if publish_started
                     && matches!(
@@ -2004,7 +2072,7 @@ async fn wait_for_room_stream_total(
         server,
         &["room", "stream", "list", "--room-id", room_id],
         "wait for room stream total",
-        |response| response["total"].as_i64() == Some(expected_total),
+        |response| response["total"].as_i64().unwrap_or(0) == expected_total,
     )
     .await
 }
@@ -2021,7 +2089,9 @@ async fn wait_for_system_stream_count(
         |response| {
             response["streams"]
                 .as_array()
-                .is_some_and(|streams| streams.len() == expected_count)
+                .map_or(expected_count == 0, |streams| {
+                    streams.len() == expected_count
+                })
         },
     )
     .await
@@ -2346,7 +2416,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
     assert_eq!(ready_body["details"]["database"], "healthy");
     assert_eq!(ready_body["details"]["redis"], "healthy");
     assert_eq!(
-        ready_body["details"]["ws_ticket"],
+        ready_body["details"]["wsTicket"],
         "healthy (cross-node capable ticket storage)"
     );
 
@@ -2481,7 +2551,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
             "--username",
             BOOTSTRAP_ROOT_USERNAME,
             "--source-provider",
-            "direct_url",
+            "direct-url",
             "--source-config-json",
             "{\"medias\":[{\"url\":\"https://cdn.example.com/cli-e2e.mp4\"}]}",
             "--name",
@@ -2585,7 +2655,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
 
     let mut list_items = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: String::new(),
@@ -2702,7 +2772,7 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: room_name.clone(),
-        settings: Vec::new(),
+        settings: None,
         description: "cli room get e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -2756,7 +2826,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: room_name,
-        settings: Vec::new(),
+        settings: None,
         description: "cli room ban lifecycle e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -2788,9 +2858,9 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     let room_ban_body: Value =
         serde_json::from_slice(&room_ban.stdout).expect("CLI room ban output should be JSON");
     assert_eq!(room_ban_body["room"]["id"], room_id);
-    assert_eq!(room_ban_body["room"]["is_banned"], true);
+    assert_eq!(room_ban_body["room"]["isBanned"], true);
     assert_eq!(
-        room_ban_body["room"]["creator_username"],
+        room_ban_body["room"]["creatorUsername"],
         BOOTSTRAP_ROOT_USERNAME
     );
 
@@ -2804,9 +2874,11 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     let room_unban_body: Value =
         serde_json::from_slice(&room_unban.stdout).expect("CLI room unban output should be JSON");
     assert_eq!(room_unban_body["room"]["id"], room_id);
-    assert_eq!(room_unban_body["room"]["is_banned"], false);
+    assert!(!room_unban_body["room"]["isBanned"]
+        .as_bool()
+        .unwrap_or(false));
     assert_eq!(
-        room_unban_body["room"]["creator_username"],
+        room_unban_body["room"]["creatorUsername"],
         BOOTSTRAP_ROOT_USERNAME
     );
 
@@ -2850,7 +2922,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .expect("connect public user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: format!("CLI Settings Room {suffix}"),
-        settings: Vec::new(),
+        settings: None,
         description: "cli room settings lifecycle e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -2883,14 +2955,7 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         initial_settings_version > 0,
         "CLI room settings get should return a persisted initial version"
     );
-    let mut updated_settings = settings_get_body["settings"]
-        .as_object()
-        .expect("CLI room settings get output should contain settings object")
-        .clone();
-    updated_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    updated_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let updated_settings_json = serde_json::to_string(&Value::Object(updated_settings))
-        .expect("settings JSON should encode");
+    let updated_settings_json = room_settings_patch_json(false, true);
 
     let settings_update = run_synctv_remote_cli(
         &server,
@@ -2926,10 +2991,12 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .await
         .expect("management get_room_settings should succeed after CLI update")
         .into_inner();
-    let updated_settings_json: Value = serde_json::from_slice(&updated_settings_response.settings)
-        .expect("updated room settings JSON should decode");
-    assert_eq!(updated_settings_json["chat_enabled"], false);
-    assert_eq!(updated_settings_json["allow_guest_join"], true);
+    let updated_settings = updated_settings_response
+        .settings
+        .as_ref()
+        .expect("updated room settings should be present");
+    assert!(!updated_settings.chat_enabled);
+    assert!(updated_settings.allow_guest_join);
     assert!(
         updated_settings_response.version > initial_settings_version,
         "updated settings version should increase"
@@ -2953,10 +3020,12 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .await
         .expect("management get_room_settings should succeed after CLI reset")
         .into_inner();
-    let reset_settings_json: Value = serde_json::from_slice(&reset_settings_response.settings)
-        .expect("reset room settings JSON should decode");
-    assert_eq!(reset_settings_json["chat_enabled"], true);
-    assert_eq!(reset_settings_json["allow_guest_join"], false);
+    let reset_settings = reset_settings_response
+        .settings
+        .as_ref()
+        .expect("reset room settings should be present");
+    assert!(reset_settings.chat_enabled);
+    assert!(!reset_settings.allow_guest_join);
     assert!(
         reset_settings_response.version > updated_settings_response.version,
         "reset settings version should increase"
@@ -3246,8 +3315,10 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert!(
-        room_settings_group["settings"]["create_room_need_review"].is_boolean(),
-        "settings get room should include create_room_need_review: {room_settings_group}"
+        !room_settings_group["room"]["createRoomNeedReview"]
+            .as_bool()
+            .unwrap_or(false),
+        "settings get room should default createRoomNeedReview to false: {room_settings_group}"
     );
 
     let test_email_result = run_synctv_remote_cli_json(
@@ -3257,7 +3328,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert!(
-        test_email_result["success"] == false,
+        !test_email_result["success"].as_bool().unwrap_or(false),
         "settings test-email should report failure when SMTP is not configured: {test_email_result}"
     );
     assert!(
@@ -3287,19 +3358,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         .expect("room create should include room.id")
         .to_string();
 
-    let current_room_settings = run_synctv_remote_cli_json(
-        &server,
-        &["room", "settings", "get", &room_id],
-        "get room settings before full update",
-    )
-    .await;
-    let mut full_room_settings = current_room_settings["settings"]
-        .as_object()
-        .expect("room settings get should return settings object")
-        .clone();
-    full_room_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    full_room_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let full_room_settings_json = Value::Object(full_room_settings).to_string();
+    let full_room_settings_json = room_settings_patch_json(false, true);
 
     let updated_room_settings = run_synctv_remote_cli_json(
         &server,
@@ -3325,12 +3384,11 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         "get room settings after full update",
     )
     .await;
+    assert!(!fetched_updated_room_settings["settings"]["chatEnabled"]
+        .as_bool()
+        .unwrap_or(false));
     assert_eq!(
-        fetched_updated_room_settings["settings"]["chat_enabled"],
-        false
-    );
-    assert_eq!(
-        fetched_updated_room_settings["settings"]["allow_guest_join"],
+        fetched_updated_room_settings["settings"]["allowGuestJoin"],
         true
     );
 
@@ -3351,8 +3409,10 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         "get room settings after reset",
     )
     .await;
-    assert_eq!(fetched_room_settings["settings"]["chat_enabled"], true);
-    assert_eq!(fetched_room_settings["settings"]["allow_guest_join"], false);
+    assert_eq!(fetched_room_settings["settings"]["chatEnabled"], true);
+    assert!(!fetched_room_settings["settings"]["allowGuestJoin"]
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -3522,7 +3582,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
             .as_array()
             .expect("user rooms should return rooms array")
             .iter()
-            .any(|room| room["id"] == room_id && room["creator_username"] == renamed_username),
+            .any(|room| room["id"] == room_id && room["creatorUsername"] == renamed_username),
         "user rooms should include the created room: {related_rooms}"
     );
 
@@ -3782,13 +3842,13 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "update",
             "room",
             "--set",
-            "create_room_need_review=true",
+            "createRoomNeedReview=true",
         ],
-        "enable create_room_need_review",
+        "enable createRoomNeedReview",
     )
     .await;
     assert_eq!(
-        updated_global_room_settings["settings"]["create_room_need_review"],
+        updated_global_room_settings["room"]["createRoomNeedReview"],
         true
     );
 
@@ -3825,7 +3885,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         approved_room["room"]["status"].as_i64(),
         Some(synctv_proto::common::RoomStatus::Active as i64)
     );
-    assert_eq!(approved_room["room"]["creator_username"], owner_username);
+    assert_eq!(approved_room["room"]["creatorUsername"], owner_username);
 
     let reset_global_room_review = run_synctv_remote_cli_json(
         &server,
@@ -3834,15 +3894,14 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "update",
             "room",
             "--set",
-            "create_room_need_review=false",
+            "createRoomNeedReview=false",
         ],
-        "disable create_room_need_review",
+        "disable createRoomNeedReview",
     )
     .await;
-    assert_eq!(
-        reset_global_room_review["settings"]["create_room_need_review"],
-        false
-    );
+    assert!(!reset_global_room_review["room"]["createRoomNeedReview"]
+        .as_bool()
+        .unwrap_or(false));
 
     let room_password_set = run_synctv_remote_cli_json(
         &server,
@@ -3880,13 +3939,13 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     let room_after_joins =
         run_synctv_remote_cli_json(&server, &["room", "get", &room_id], "get room after joins")
             .await;
-    assert_eq!(room_after_joins["room"]["member_count"].as_i64(), Some(3));
+    assert_eq!(room_after_joins["room"]["memberCount"].as_i64(), Some(3));
     let joined_subject_user_id = initial_members["members"]
         .as_array()
         .expect("room member list should return members array")
         .iter()
         .find(|member| member["username"] == subject_username)
-        .and_then(|member| member["user_id"].as_str())
+        .and_then(|member| member["userId"].as_str())
         .expect("subject should appear in room member list")
         .to_string();
 
@@ -3936,7 +3995,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             .as_array()
             .expect("admin member list should contain members array")
             .iter()
-            .any(|member| member["user_id"] == member_user_id),
+            .any(|member| member["userId"] == member_user_id),
         "promoted admin should appear in filtered member list: {admin_members}"
     );
 
@@ -3976,7 +4035,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     let kicked_subject_ticket = post_json(
         &test_http_client(),
         &format!("{}/api/tickets", server.api_base_url),
-        json!({ "room_id": room_id }),
+        create_ticket_request(&room_id),
         Some(&subject_token),
     )
     .await;
@@ -4000,7 +4059,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "transfer room ownership",
     )
     .await;
-    assert_eq!(transferred_room["room"]["created_by"], member_user_id);
+    assert_eq!(transferred_room["room"]["createdBy"], member_user_id);
 
     let room_password_cleared = run_synctv_remote_cli_json(
         &server,
@@ -4024,7 +4083,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
     assert_eq!(
-        room_after_transfer["room"]["creator_username"],
+        room_after_transfer["room"]["creatorUsername"],
         member_username
     );
 
@@ -4217,7 +4276,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "move media into playlist",
     )
     .await;
-    assert_eq!(moved_media["moved_count"].as_i64(), Some(1));
+    assert_eq!(moved_media["movedCount"].as_i64(), Some(1));
 
     let playlist_media = run_synctv_remote_cli_json(
         &server,
@@ -4265,11 +4324,11 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
     assert_eq!(
-        playback_state["playback_state"]["playing_media_id"],
+        playback_state["playbackState"]["playingMediaId"],
         media_one_id
     );
-    assert_eq!(playback_state["playback_state"]["is_playing"], true);
-    assert_eq!(playback_state["playback"]["media_id"], media_one_id);
+    assert_eq!(playback_state["playbackState"]["isPlaying"], true);
+    assert_eq!(playback_state["playback"]["mediaId"], media_one_id);
 
     let stopped_playback = run_synctv_remote_cli_json(
         &server,
@@ -4288,7 +4347,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "get room playback after stop",
     )
     .await;
-    assert_eq!(playback_after_stop["playback_state"]["is_playing"], false);
+    assert!(!playback_after_stop["playbackState"]["isPlaying"]
+        .as_bool()
+        .unwrap_or(false));
 
     let deleted_media = run_synctv_remote_cli_json(
         &server,
@@ -4352,9 +4413,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "batch",
             "ban",
-            "--room-id",
             &batch_room_one_id,
-            "--room-id",
             &batch_room_two_id,
             "--reason",
             "cli-room-batch-ban",
@@ -4393,9 +4452,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
             "room",
             "batch",
             "delete",
-            "--room-id",
             &batch_room_one_id,
-            "--room-id",
             &batch_room_two_id,
         ],
         "batch delete rooms",
@@ -4499,16 +4556,16 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "create rtmp publish key",
     )
     .await;
-    let rtmp_url = publish_key["rtmp_url"]
+    let rtmp_url = publish_key["rtmpUrl"]
         .as_str()
-        .expect("publish key response should include rtmp_url")
+        .expect("publish key response should include rtmpUrl")
         .to_string();
-    let stream_key = publish_key["stream_key"]
+    let stream_key = publish_key["streamKey"]
         .as_str()
-        .expect("publish key response should include stream_key")
+        .expect("publish key response should include streamKey")
         .to_string();
     assert!(
-        publish_key["publish_key"]
+        publish_key["publishKey"]
             .as_str()
             .is_some_and(|value| !value.is_empty()),
         "publish key should include a non-empty token"
@@ -4543,7 +4600,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         |response| {
             response["total"].as_i64() == Some(1)
                 && response["streams"].as_array().is_some_and(|streams| {
-                    streams.iter().any(|stream| stream["media_id"] == media_id)
+                    streams.iter().any(|stream| stream["mediaId"] == media_id)
                 })
         },
     )
@@ -4564,7 +4621,7 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
     )
     .await;
     assert_eq!(room_stream_info["active"], true);
-    assert_eq!(room_stream_info["publisher"]["user_id"], owner_user_id);
+    assert_eq!(room_stream_info["publisher"]["userId"], owner_user_id);
 
     let system_streams = wait_for_remote_cli_json(
         &server,
@@ -4587,9 +4644,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         |response| {
             response["streams"].as_array().is_some_and(|streams| {
                 streams.len() == 1
-                    && streams[0]["room_id"] == room_id
-                    && streams[0]["media_id"] == media_id
-                    && streams[0]["user_id"] == owner_user_id
+                    && streams[0]["roomId"] == room_id
+                    && streams[0]["mediaId"] == media_id
+                    && streams[0]["userId"] == owner_user_id
             })
         },
     )
@@ -4623,16 +4680,17 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "kick stream should emit a JSON object"
     );
 
-    publisher.wait_for_disconnect("system stream kick").await;
+    publisher.shutdown("stream test cleanup after kick").await;
 
     let room_streams_after_kick = wait_for_room_stream_total(&server, &room_id, 0).await;
-    assert_eq!(room_streams_after_kick["total"].as_i64(), Some(0));
+    assert_eq!(room_streams_after_kick["total"].as_i64().unwrap_or(0), 0);
 
     let system_streams_after_kick = wait_for_system_stream_count(&server, &room_id, 0).await;
     assert_eq!(
         system_streams_after_kick["streams"]
             .as_array()
-            .expect("system stream list should return streams array")
+            .cloned()
+            .unwrap_or_default()
             .len(),
         0
     );
@@ -4650,9 +4708,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "get rtmp stream info after kick",
     )
     .await;
-    assert_eq!(room_stream_info_after_kick["active"], false);
-
-    publisher.shutdown("stream test cleanup after kick").await;
+    assert!(!room_stream_info_after_kick["active"]
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -4818,7 +4876,7 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         "ban room before creator publish key",
     )
     .await;
-    assert_eq!(banned_room["room"]["is_banned"], true);
+    assert_eq!(banned_room["room"]["isBanned"], true);
 
     let creator_banned_room_publish_key_error = run_synctv_remote_cli_failure(
         &server,
@@ -5010,7 +5068,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let settings_get_body: Value = serde_json::from_slice(&settings_get.stdout)
         .expect("CLI settings get output should be JSON");
     assert_eq!(settings_get_body["name"], "server");
-    assert_eq!(settings_get_body["settings"]["allow_room_creation"], true);
+    assert_eq!(settings_get_body["server"]["allowRoomCreation"], true);
 
     let settings_update = run_synctv_remote_cli(
         &server,
@@ -5019,7 +5077,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
             "update",
             "server",
             "--set",
-            "max_rooms_per_user=42",
+            "maxRoomsPerUser=42",
         ],
     )
     .await;
@@ -5032,7 +5090,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let settings_update_body: Value = serde_json::from_slice(&settings_update.stdout)
         .expect("CLI settings update output should be JSON");
     assert_eq!(settings_update_body["name"], "server");
-    assert_eq!(settings_update_body["settings"]["max_rooms_per_user"], 42);
+    assert_eq!(settings_update_body["server"]["maxRoomsPerUser"], "42");
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -5051,9 +5109,12 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
         .into_inner()
         .group
         .expect("server settings group");
-    let server_group_settings: Value = serde_json::from_slice(&server_group.settings)
-        .expect("server settings group payload should decode");
-    assert_eq!(server_group_settings["max_rooms_per_user"], 42);
+    let Some(synctv_proto::admin::settings_group::Settings::Server(settings)) =
+        server_group.settings
+    else {
+        panic!("expected server settings group");
+    };
+    assert_eq!(settings.max_rooms_per_user, 42);
 
     let system_stats = run_synctv_remote_cli(&server, &["system", "stats"]).await;
     assert!(
@@ -5065,9 +5126,9 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI system stats output should be JSON");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5099,9 +5160,9 @@ async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_with
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI explicit endpoint system stats output should be JSON");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5122,9 +5183,9 @@ async fn full_stack_cli_system_stats_works_when_bootstrap_root_username_differs(
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI system stats output should be JSON when bootstrap root username differs");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5197,7 +5258,13 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
         .expect("CLI remote provider add output should be JSON");
     assert_eq!(provider_add_body["instance"]["name"], provider_name);
     assert_eq!(provider_add_body["instance"]["enabled"], true);
-    assert_eq!(provider_add_body["instance"]["providers"], json!(["alist"]));
+    assert_eq!(
+        provider_add_body["instance"]["providers"],
+        serde_json::to_value(vec![
+            synctv_proto::source_config::SourceProvider::Alist as i32
+        ])
+        .expect("provider list should serialize")
+    );
 
     let provider_list_filtered =
         run_synctv_remote_cli(&server, &["provider", "list", "--provider-type", "alist"]).await;
@@ -5237,7 +5304,9 @@ async fn full_stack_cli_provider_commands_manage_remote_provider_lifecycle() {
     );
     let provider_disable_body: Value = serde_json::from_slice(&provider_disable.stdout)
         .expect("CLI remote provider disable output should be JSON");
-    assert_eq!(provider_disable_body["instance"]["enabled"], false);
+    assert!(!provider_disable_body["instance"]["enabled"]
+        .as_bool()
+        .unwrap_or(false));
 
     let provider_enable =
         run_synctv_remote_cli(&server, &["provider", "enable", &provider_name]).await;
@@ -5358,9 +5427,9 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats over unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5451,9 +5520,9 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI default unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats over default unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5550,9 +5619,9 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["total_users"]
+        system_stats_body["totalUsers"]
             .as_i64()
-            .expect("total_users should be an integer")
+            .expect("totalUsers should be an integer")
             >= 1,
         "system stats over authenticated unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
@@ -5804,7 +5873,7 @@ async fn full_stack_cli_config_validate_and_show_use_explicit_config_file() {
     let show_body = cli_json_output(&show_output, "config show");
     let show_text = cli_stdout(&show_output);
     assert_eq!(show_body["server"]["port"], api_port);
-    assert_eq!(show_body["management"]["auth_token"], "<redacted>");
+    assert_eq!(show_body["management"]["authToken"], "<redacted>");
     assert!(
         show_body["database"]["url"]
             .as_str()
@@ -6247,10 +6316,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
         run_synctv_cli_with_env_async(&["system", "stats", "--output", "json"], &envs).await;
     let system_stats_body = cli_json_output(&system_stats, "system stats against server binary");
     assert!(
-        system_stats_body["total_users"]
-            .as_i64()
-            .unwrap_or_default()
-            >= 1,
+        system_stats_body["totalUsers"].as_i64().unwrap_or_default() >= 1,
         "system stats should report the bootstrap root user: {system_stats_body}"
     );
 
@@ -6311,7 +6377,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     let fetched_room_body = cli_json_output(&fetched_room, "room get against server binary");
     assert_eq!(fetched_room_body["room"]["id"], room_id);
     assert_eq!(
-        fetched_room_body["room"]["creator_username"],
+        fetched_room_body["room"]["creatorUsername"],
         "binary_cli_owner"
     );
 
@@ -6560,12 +6626,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     let create_room = post_json(
         &client,
         &format!("{}/api/rooms", server.api_base_url),
-        json!({
-            "name": "Full Stack Room",
-            "password": "RoomPass12345!",
-            "settings": [],
-            "description": "end-to-end room"
-        }),
+        create_room_request("Full Stack Room", "end-to-end room", "RoomPass12345!"),
         Some(&owner_token),
     )
     .await;
@@ -6590,7 +6651,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     let forbidden_ticket = post_json(
         &client,
         &format!("{}/api/tickets", server.api_base_url),
-        json!({ "room_id": room_id }),
+        create_ticket_request(&room_id),
         Some(&member_token),
     )
     .await;
@@ -6604,7 +6665,10 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     let join_room = put_json(
         &client,
         &format!("{}/api/rooms/{room_id}/members/@me", server.api_base_url),
-        json!({ "password": "RoomPass12345!" }),
+        synctv_proto::client::JoinRoomRequest {
+            room_id: room_id.clone(),
+            password: "RoomPass12345!".to_string(),
+        },
         &member_token,
     )
     .await;
@@ -6619,13 +6683,13 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     let member_ticket = post_json(
         &client,
         &format!("{}/api/tickets", server.api_base_url),
-        json!({ "room_id": room_id }),
+        create_ticket_request(&room_id),
         Some(&member_token),
     )
     .await;
     assert_eq!(member_ticket.status(), StatusCode::OK);
     let member_ticket_body = response_json(member_ticket).await;
-    assert_eq!(member_ticket_body["room_id"], room_id);
+    assert_eq!(member_ticket_body["roomId"], room_id);
     assert!(
         member_ticket_body["ticket"]
             .as_str()
@@ -6663,12 +6727,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     let create_room = post_json(
         &client,
         &format!("{}/api/rooms", server.api_base_url),
-        json!({
-            "name": "WS Ticket Room",
-            "password": "",
-            "settings": [],
-            "description": "ticket to websocket e2e"
-        }),
+        create_room_request("WS Ticket Room", "ticket to websocket e2e", ""),
         Some(&token),
     )
     .await;
@@ -6682,7 +6741,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     let create_ticket = post_json(
         &client,
         &format!("{}/api/tickets", server.api_base_url),
-        json!({ "room_id": room_id }),
+        create_ticket_request(&room_id),
         Some(&token),
     )
     .await;
@@ -6837,7 +6896,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     let unauthenticated = user_client
         .create_room(CreateRoomRequest {
             name: "gRPC room".to_string(),
-            settings: Vec::new(),
+            settings: None,
             description: "created through full-stack gRPC e2e".to_string(),
             password: String::new(),
             category_id: String::new(),
@@ -6849,7 +6908,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
 
     let mut request = tonic::Request::new(CreateRoomRequest {
         name: "gRPC room".to_string(),
-        settings: Vec::new(),
+        settings: None,
         description: "created through full-stack gRPC e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -6915,7 +6974,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC metadata room".to_string(),
-        settings: Vec::new(),
+        settings: None,
         description: "room-scoped grpc e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -7057,7 +7116,7 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC stream room".to_string(),
-        settings: Vec::new(),
+        settings: None,
         description: "grpc stream e2e".to_string(),
         password: String::new(),
         category_id: String::new(),
@@ -7338,20 +7397,12 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
     .await;
     let settings = resource_room_settings(&initial_settings)
         .expect("room settings snapshot should be present");
-    let decoded: Value =
-        serde_json::from_slice(&settings.settings).expect("decode initial settings");
+    let decoded = room_settings_value(settings.settings.as_ref(), "initial room settings");
     assert_eq!(decoded, expected_initial_settings);
     assert_eq!(settings.version, expected_initial_version);
     let initial_version = settings.version;
 
-    let mut current_settings = current_settings_response["settings"]
-        .as_object()
-        .expect("room settings get should return settings object")
-        .clone();
-    current_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    current_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let updated_settings_json =
-        serde_json::to_string(&Value::Object(current_settings)).expect("encode room settings json");
+    let updated_settings_json = room_settings_patch_json(false, true);
 
     let _ = run_synctv_remote_cli_json(
         &server,
@@ -7380,10 +7431,12 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
 
     let settings =
         resource_room_settings(&updated_settings).expect("updated settings should be present");
-    let decoded: Value =
-        serde_json::from_slice(&settings.settings).expect("decode updated settings");
-    assert_eq!(decoded["chat_enabled"], false);
-    assert_eq!(decoded["allow_guest_join"], true);
+    let decoded = settings
+        .settings
+        .as_ref()
+        .expect("updated room settings should be present");
+    assert!(!decoded.chat_enabled);
+    assert!(decoded.allow_guest_join);
     assert!(settings.version > initial_version);
 }
 
@@ -7409,7 +7462,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
 
     let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: String::new(),
@@ -7441,7 +7494,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
             String::new(),
             ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -7770,7 +7823,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
-                target: Vec::new(),
+                target: None,
             },
         ),
     )
@@ -7885,7 +7938,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 client_message_id: String::new(),
                 attachments: Vec::new(),
                 reply_to_message_id: String::new(),
-                metadata: Vec::new(),
+                metadata: None,
                 mentions: Vec::new(),
             })),
         },
@@ -7917,7 +7970,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
                 client_message_id: String::new(),
                 attachments: Vec::new(),
                 reply_to_message_id: String::new(),
-                metadata: Vec::new(),
+                metadata: None,
                 mentions: Vec::new(),
             })),
         },
@@ -8085,20 +8138,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     )
     .await;
 
-    let current_settings = run_synctv_remote_cli_json(
-        &server,
-        &["room", "settings", "get", &room_id],
-        "get room settings before websocket update",
-    )
-    .await;
-    let mut updated_settings = current_settings["settings"]
-        .as_object()
-        .expect("room settings get should return settings object")
-        .clone();
-    updated_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    updated_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let updated_settings_json =
-        serde_json::to_string(&Value::Object(updated_settings)).expect("encode room settings json");
+    let updated_settings_json = room_settings_patch_json(false, true);
     let _ = run_synctv_remote_cli_json(
         &server,
         &[
@@ -8117,9 +8157,10 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         Duration::from_secs(10),
         |message| {
             resource_room_settings(message).is_some_and(|settings| {
-                serde_json::from_slice::<Value>(&settings.settings).is_ok_and(|decoded| {
-                    decoded["chat_enabled"] == false && decoded["allow_guest_join"] == true
-                })
+                settings
+                    .settings
+                    .as_ref()
+                    .is_some_and(|settings| !settings.chat_enabled && settings.allow_guest_join)
             })
         },
         "room settings broadcast",
@@ -8127,10 +8168,12 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     .await;
     let settings =
         resource_room_settings(&room_settings_message).expect("room settings payload expected");
-    let decoded: Value =
-        serde_json::from_slice(&settings.settings).expect("decode room settings payload");
-    assert_eq!(decoded["chat_enabled"], false);
-    assert_eq!(decoded["allow_guest_join"], true);
+    let decoded = settings
+        .settings
+        .as_ref()
+        .expect("room settings payload should be present");
+    assert!(!decoded.chat_enabled);
+    assert!(decoded.allow_guest_join);
     assert!(
         settings.version > 0,
         "room settings change should carry version"
@@ -8359,7 +8402,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
                 sort_direction: synctv_proto::client::SortDirection::Asc as i32,
                 availability: synctv_proto::client::ResourceAvailabilityFilter::All as i32,
                 refresh: false,
-                target: Vec::new(),
+                target: None,
             },
         ),
     )
@@ -8602,20 +8645,12 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     .await;
     let settings = resource_room_settings(&initial_settings)
         .expect("room settings snapshot should be present");
-    let decoded: Value =
-        serde_json::from_slice(&settings.settings).expect("decode initial settings");
+    let decoded = room_settings_value(settings.settings.as_ref(), "initial room settings");
     assert_eq!(decoded, expected_initial_settings);
     assert_eq!(settings.version, expected_initial_version);
     let initial_version = settings.version;
 
-    let mut current_settings = current_settings_response["settings"]
-        .as_object()
-        .expect("room settings get should return settings object")
-        .clone();
-    current_settings.insert("chat_enabled".to_string(), Value::Bool(false));
-    current_settings.insert("allow_guest_join".to_string(), Value::Bool(true));
-    let updated_settings_json =
-        serde_json::to_string(&Value::Object(current_settings)).expect("encode room settings json");
+    let updated_settings_json = room_settings_patch_json(false, true);
 
     let _ = run_synctv_remote_cli_json(
         &server,
@@ -8644,10 +8679,12 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
 
     let settings =
         resource_room_settings(&updated_settings).expect("updated settings should be present");
-    let decoded: Value =
-        serde_json::from_slice(&settings.settings).expect("decode updated settings");
-    assert_eq!(decoded["chat_enabled"], false);
-    assert_eq!(decoded["allow_guest_join"], true);
+    let decoded = settings
+        .settings
+        .as_ref()
+        .expect("updated room settings should be present");
+    assert!(!decoded.chat_enabled);
+    assert!(decoded.allow_guest_join);
     assert!(settings.version > initial_version);
 }
 
@@ -8674,7 +8711,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         .expect("connect member room gRPC client");
     let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: String::new(),
@@ -8709,7 +8746,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
             String::new(),
             ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -8847,7 +8884,7 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
             .as_array()
             .expect("members should be an array")
             .iter()
-            .any(|member| member["user_id"].as_str() == Some(member_user_id.as_str())),
+            .any(|member| member["userId"].as_str() == Some(member_user_id.as_str())),
         "room members snapshot should include the joined member"
     );
 
@@ -8949,7 +8986,7 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .expect("connect owner user gRPC client");
     let mut create_room = tonic::Request::new(CreateRoomRequest {
         name: "gRPC outsider stream room".to_string(),
-        settings: Vec::new(),
+        settings: None,
         description: "membership denial for grpc stream".to_string(),
         password: String::new(),
         category_id: String::new(),

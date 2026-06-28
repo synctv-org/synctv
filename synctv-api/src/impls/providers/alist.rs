@@ -145,11 +145,7 @@ impl AlistApiImpl {
             provider: synctv_core::provider::AlistProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
-            credential_data: serde_json::to_value(&credential_data).map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to serialize credential: {e}"
-                ))
-            })?,
+            credential_data,
             expires_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

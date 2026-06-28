@@ -1574,7 +1574,7 @@ impl RoomRepository {
                       AND rmkc.user_id = $2
                       AND rmkc.ends_at > CURRENT_TIMESTAMP
                 ) AS "is_in_kick_cooldown!",
-                rs_settings.value AS "settings_json?: String",
+                rs_settings.settings AS "settings?: RoomSettings",
                 rpc.opaque_record,
                 rpc.opaque_credential_identifier,
                 rpc.opaque_ciphersuite,
@@ -1584,7 +1584,7 @@ impl RoomRepository {
             FROM rooms r
             LEFT JOIN room_categories rc ON rc.id = r.category_id
             LEFT JOIN room_settings rs_settings
-                ON rs_settings.room_id = r.id AND rs_settings.key = '_settings'
+                ON rs_settings.room_id = r.id
             LEFT JOIN room_password_credentials rpc
                 ON rpc.room_id = r.id
             WHERE r.id = $1 AND r.deleted_at IS NULL
@@ -1621,12 +1621,7 @@ impl RoomRepository {
         }
         .into();
 
-        let settings: RoomSettings = match row.settings_json.as_deref() {
-            Some(json) => serde_json::from_str(json).map_err(|e| {
-                crate::Error::Internal(format!("Failed to deserialize room settings: {e}"))
-            })?,
-            None => RoomSettings::default(),
-        };
+        let settings = row.settings.unwrap_or_default();
 
         let password_credential = match (
             row.opaque_record,

@@ -262,7 +262,7 @@ impl Common {
                         self.send_metadata(BytesMut::from(&data[..]), timestamp)
                             .await?;
                     }
-                    _ => {}
+                    FrameData::MediaInfo { .. } => {}
                 }
             } else {
                 // recv() returning None means all senders are dropped -- channel is permanently closed.
@@ -334,18 +334,18 @@ impl Common {
     pub(crate) fn on_video_data(
         &mut self,
         data: &mut BytesMut,
-        timestamp: &u32,
+        timestamp: u32,
     ) -> Result<(), SessionError> {
         if !self.accept_frame_with_rate_limit(FrameType::Video) {
             return Ok(());
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_video_data(data, *timestamp)?;
+        self.stream_handler.save_video_data(data, timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Video {
-            timestamp: *timestamp,
+            timestamp,
             data: data.split().freeze(),
         };
 
@@ -355,18 +355,18 @@ impl Common {
     pub(crate) fn on_audio_data(
         &mut self,
         data: &mut BytesMut,
-        timestamp: &u32,
+        timestamp: u32,
     ) -> Result<(), SessionError> {
         if !self.accept_frame_with_rate_limit(FrameType::Audio) {
             return Ok(());
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_audio_data(data, *timestamp)?;
+        self.stream_handler.save_audio_data(data, timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Audio {
-            timestamp: *timestamp,
+            timestamp,
             data: data.split().freeze(),
         };
 
@@ -376,17 +376,17 @@ impl Common {
     pub(crate) fn on_meta_data(
         &mut self,
         data: &mut BytesMut,
-        timestamp: &u32,
+        timestamp: u32,
     ) -> Result<(), SessionError> {
         if !self.accept_frame_with_rate_limit(FrameType::Metadata) {
             return Ok(());
         }
 
         // Save to cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_metadata(data, *timestamp);
+        self.stream_handler.save_metadata(data, timestamp);
 
         let channel_data = FrameData::MetaData {
-            timestamp: *timestamp,
+            timestamp,
             data: data.split().freeze(),
         };
 
@@ -597,14 +597,14 @@ impl Common {
 
 /// RTMP stream handler with split cache for reduced lock contention.
 ///
-/// Uses `parking_lot::RwLock` instead of `tokio::sync::Mutex` because:
+/// Uses parking_lot::RwLock instead of `tokio::sync::Mutex` because:
 /// 1. Cache operations are synchronous (no async points inside)
 /// 2. RwLock allows concurrent reads from multiple subscribers
 /// 3. parking_lot has better performance under contention
 ///
 /// The cache is split into independent components:
-/// - `video_seq`: Video sequence header (infrequent updates)
-/// - `audio_seq`: Audio sequence header (infrequent updates)
+/// - video_seq: Video sequence header (infrequent updates)
+/// - audio_seq: Audio sequence header (infrequent updates)
 /// - `metadata`: Stream metadata (infrequent updates)
 /// - `gops`: GOP cache (frequent updates, shared by audio and video)
 ///
@@ -722,7 +722,7 @@ impl TStreamHandler for RtmpStreamHandler {
                         }
                     }
                 }
-                _ => {}
+                SubscribeType::RtmpRelay => {}
             }
         }
 

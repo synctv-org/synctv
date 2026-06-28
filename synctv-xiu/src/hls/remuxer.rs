@@ -972,7 +972,7 @@ impl StreamProcessor {
 
                 (self.audio_pid, audio_data.pts, audio_data.dts, 0, payload)
             }
-            _ => return Ok(()),
+            FlvData::MetaData { .. } => return Ok(()),
         };
 
         // Detect DTS regression (timestamp going backward) which indicates dropped frames

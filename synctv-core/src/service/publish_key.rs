@@ -146,9 +146,9 @@ impl std::fmt::Debug for PublishKeyService {
 
 impl PublishKeyService {
     fn decode_publish_claims(&self, token: &str) -> Result<PublishClaims> {
-        let claims_value = self.jwt_service.verify_custom(token)?;
-
-        let claims: PublishClaims = serde_json::from_value(claims_value)
+        let claims: PublishClaims = self
+            .jwt_service
+            .verify_custom(token)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
 
         let now = unix_timestamp_now()?;
@@ -304,10 +304,7 @@ impl PublishKeyService {
             jti: synctv_common::snanoid!(32),
         };
 
-        let claims_json = serde_json::to_value(&claims)
-            .map_err(|e| Error::Internal(format!("Failed to serialize claims: {e}")))?;
-
-        let token = self.jwt_service.sign_custom(&claims_json)?;
+        let token = self.jwt_service.sign_custom(&claims)?;
 
         Ok(PublishKey {
             token,

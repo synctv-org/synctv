@@ -16,7 +16,6 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use super::dedup::{DedupKey, MessageDeduplicator};
-use super::events::RealtimeEvent;
 use super::redis_pubsub::PublishRequest;
 use super::room_hub::{ConnectionId, RoomMessageHub};
 use super::runtime::{ConnectionRuntime, RoomMessageRuntime};
@@ -24,6 +23,7 @@ use super::transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,
     RealtimeMessageTransportFactory,
 };
+use super::RealtimeEvent;
 use crate::error::Result as RealtimeResult;
 use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
 use synctv_core::config::ClusterChannelConfig;

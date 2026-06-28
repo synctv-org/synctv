@@ -114,7 +114,7 @@ async fn file_blob_response_sets_partial_content_headers() -> TestResult {
                 start: 2,
                 end_inclusive: 5,
             }),
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::FileMetadata::default(),
             created_at: chrono::Utc::now(),
         },
         stream: futures::stream::once(async {
@@ -161,7 +161,7 @@ async fn file_object_download_response_sets_streaming_headers() -> TestResult {
             content_manifest_sha256: "b".repeat(64),
             compression: synctv_core::models::FileBlobCompression::None,
             range: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::FileMetadata::default(),
             created_at: chrono::Utc::now(),
         },
         stream: futures::stream::iter([
@@ -322,112 +322,6 @@ fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() -> TestResult 
 
     assert_eq!(error.status, StatusCode::BAD_REQUEST);
     assert!(error.message.contains("x-forwarded-proto"));
-    Ok(())
-}
-
-#[test]
-fn test_path_injected_json_proto_requests_deserialize_without_injected_fields() -> TestResult {
-    let join_room: synctv_proto::client::JoinRoomRequest = serde_json::from_str(r"{}")?;
-    assert!(join_room.room_id.is_empty());
-
-    let room_password_login: synctv_proto::client::StartRoomPasswordLoginRequest =
-        serde_json::from_str(r#"{"credential_request":"AQID"}"#)?;
-    assert!(room_password_login.room_id.is_empty());
-    assert_eq!(room_password_login.credential_request, vec![1, 2, 3]);
-
-    let edit_media: synctv_proto::client::EditMediaRequest =
-        serde_json::from_str(r#"{"name":"Episode 1"}"#)?;
-    assert_eq!(edit_media.name, "Episode 1");
-    assert!(edit_media.media_id.is_empty());
-
-    let update_playlist: synctv_proto::client::UpdatePlaylistRequest =
-        serde_json::from_str(r#"{"name":"Season 1"}"#)?;
-    assert_eq!(update_playlist.name, "Season 1");
-    assert!(update_playlist.playlist_id.is_empty());
-
-    let move_playlist: synctv_proto::client::MovePlaylistRequest =
-        serde_json::from_str(r#"{"after_playlist_id":"pl_anchor123"}"#)?;
-    assert!(move_playlist.playlist_id.is_empty());
-    assert!(matches!(
-        move_playlist.anchor,
-        Some(synctv_proto::client::move_playlist_request::Anchor::AfterPlaylistId(
-            ref id
-        )) if id == "pl_anchor123"
-    ));
-
-    let member_permissions: synctv_proto::client::UpdateMemberPermissionsRequest =
-        serde_json::from_str(r#"{"role":2,"added_permissions":1}"#)?;
-    assert!(member_permissions.user_id.is_empty());
-    assert_eq!(member_permissions.role, 2);
-    assert_eq!(member_permissions.added_permissions, 1);
-
-    let delete_passkey: synctv_proto::client::DeletePasskeyRequest =
-        serde_json::from_str(r#"{"verification_id":"verify_123"}"#)?;
-    assert!(delete_passkey.credential_id.is_empty());
-    assert_eq!(delete_passkey.verification_id, "verify_123");
-    Ok(())
-}
-
-#[test]
-fn test_admin_path_injected_json_proto_requests_deserialize_without_injected_fields() -> TestResult
-{
-    let user_preferences: synctv_proto::admin::UpdateUserPreferencesRequest =
-        serde_json::from_str(r#"{"two_factor_enabled":true}"#)?;
-    assert!(user_preferences.user_id.is_empty());
-    assert_eq!(user_preferences.two_factor_enabled, Some(true));
-
-    let user_role: synctv_proto::admin::UpdateUserRoleRequest =
-        serde_json::from_str(r#"{"role":1}"#)?;
-    assert!(user_role.user_id.is_empty());
-    assert_eq!(user_role.role, 1);
-
-    let user_password: synctv_proto::admin::SetUserPasswordRequest =
-        serde_json::from_str(r#"{"password":"NewPassword123!","reason":"support reset"}"#)?;
-    assert!(user_password.user_id.is_empty());
-    assert_eq!(user_password.password, "NewPassword123!");
-    assert_eq!(user_password.reason, "support reset");
-
-    let user_username: synctv_proto::admin::UpdateUserUsernameRequest =
-        serde_json::from_str(r#"{"new_username":"new_admin_name"}"#)?;
-    assert!(user_username.user_id.is_empty());
-    assert_eq!(user_username.new_username, "new_admin_name");
-
-    let ban_user: synctv_proto::admin::BanUserRequest =
-        serde_json::from_str(r#"{"reason":"spam"}"#)?;
-    assert!(ban_user.user_id.is_empty());
-    assert_eq!(ban_user.reason, "spam");
-
-    let room_password: synctv_proto::admin::UpdateRoomPasswordRequest =
-        serde_json::from_str(r#"{"new_password":""}"#)?;
-    assert!(room_password.room_id.is_empty());
-    assert!(room_password.new_password.is_empty());
-
-    let ban_room: synctv_proto::admin::BanRoomRequest =
-        serde_json::from_str(r#"{"reason":"abuse"}"#)?;
-    assert!(ban_room.room_id.is_empty());
-    assert_eq!(ban_room.reason, "abuse");
-
-    let room_settings: synctv_proto::admin::UpdateRoomSettingsRequest =
-        serde_json::from_str(r#"{"settings":{"room":"settings"}}"#)?;
-    let settings: serde_json::Value = serde_json::from_slice(&room_settings.settings)?;
-    assert_eq!(settings, serde_json::json!({"room":"settings"}));
-    Ok(())
-}
-
-#[test]
-fn test_provider_path_injected_json_proto_requests_deserialize_without_injected_fields(
-) -> TestResult {
-    let update_provider: synctv_proto::providers::common::UpdateProviderInstanceRequest =
-        serde_json::from_str(r#"{"endpoint":"https://provider.internal","providers":["alist"]}"#)?;
-
-    assert_eq!(
-        update_provider.endpoint.as_deref(),
-        Some("https://provider.internal")
-    );
-    assert_eq!(
-        update_provider.providers,
-        vec![synctv_proto::source_config::SourceProvider::Alist as i32]
-    );
     Ok(())
 }
 
@@ -902,7 +796,7 @@ async fn test_playback_patch_route_is_reachable_via_project_router() -> TestResu
             .method("PATCH")
             .uri("/api/rooms/room_123/playback")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"state":1}"#)),
+            .body(Body::from(r#"{"type":1}"#)),
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
@@ -934,7 +828,7 @@ async fn test_chat_message_patch_route_is_reachable_via_project_router() -> Test
             .method("PATCH")
             .uri("/api/rooms/room_123/chat/messages/msg_456")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"content":"edited","expected_version":"1"}"#)),
+            .body(Body::from(r#"{"content":"edited","expectedVersion":"1"}"#)),
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
@@ -968,7 +862,7 @@ async fn test_chat_message_delete_route_is_reachable_via_project_router() -> Tes
             .method("DELETE")
             .uri("/api/rooms/room_123/chat/messages/msg_456")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"expected_version":"1","reason":"cleanup"}"#)),
+            .body(Body::from(r#"{"expectedVersion":"1","reason":"cleanup"}"#)),
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
@@ -1075,7 +969,7 @@ async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
                 synctv_proto::client::SendChatMessageRequest {
                     client_message_id: "http-sse-live-send-1".to_string(),
                     content: "live push event".to_string(),
-                    metadata: br"{}".to_vec(),
+                    metadata: None,
                     ..Default::default()
                 },
             )
@@ -1157,7 +1051,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 content: "first replay".to_string(),
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: synctv_core::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -1172,7 +1066,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 content: "second replay".to_string(),
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: synctv_core::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -1187,7 +1081,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
                 content: "third replay".to_string(),
                 message_type: synctv_core::models::ChatMessageType::Text,
                 reply_to_message_id: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: synctv_core::models::ChatMetadata::default(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
             })
@@ -1316,7 +1210,7 @@ async fn test_public_rooms_route_is_reachable_without_auth() -> TestResult {
     let request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/rooms?page=1&page_size=10")
+            .uri("/api/rooms?page=1&pageSize=10")
             .body(Body::empty()),
     )?;
     let response = test_response(app.oneshot(request).await)?;
@@ -1413,7 +1307,7 @@ async fn test_passkey_login_routes_fail_closed_when_service_missing() -> TestRes
             .uri("/api/auth/passkeys/login/finish")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
+                r#"{"sessionId":"session","credential":{"id":"cred","rawId":"cmF3","response":{"authenticatorData":"YXV0aA","clientDataJSON":"Y2xpZW50","signature":"c2ln"},"type":1}}"#,
             )),
     )?;
     let finish_response = test_response(app.oneshot(finish_request).await)?;
@@ -1431,7 +1325,7 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() ->
         (
             "PATCH",
             "/api/user/preferences",
-            Some(r#"{"two_factor_enabled":true}"#),
+            Some(r#"{"twoFactorEnabled":true}"#),
         ),
         ("GET", "/api/user/passkeys", None),
         (
@@ -1443,27 +1337,27 @@ async fn test_passkey_user_routes_are_registered_and_require_authentication() ->
             "POST",
             "/api/user/passkeys/bind/finish",
             Some(
-                r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"},"verification_id":"verification-id"}"#,
+                r#"{"sessionId":"session","credential":{"id":"cred","rawId":"cmF3","response":{"attestationObject":"YXR0","clientDataJSON":"Y2xpZW50"},"type":1},"verificationId":"verification-id"}"#,
             ),
         ),
         (
             "DELETE",
             "/api/user/passkeys/Y3JlZGVudGlhbA",
-            Some(r#"{"verification_id":"verification-id"}"#),
+            Some(r#"{"verificationId":"verification-id"}"#),
         ),
         (
             "PUT",
-            "/api/rooms/room_123/chat/messages/42/reactions/like",
+            "/api/rooms/room_abc123/chat/messages/42/reactions/like",
             None,
         ),
         (
             "DELETE",
-            "/api/rooms/room_123/chat/messages/42/reactions/like",
+            "/api/rooms/room_abc123/chat/messages/42/reactions/like",
             None,
         ),
         (
             "GET",
-            "/api/rooms/room_123/chat/messages/42/reactions/like/users",
+            "/api/rooms/room_abc123/chat/messages/42/reactions/like/users",
             None,
         ),
     ] {
@@ -1498,7 +1392,7 @@ async fn test_member_approval_routes_are_reachable_via_project_router() -> TestR
         (
             "POST",
             "/api/rooms/room1234_abx/members",
-            Some(r#"{"user_id":"usr_1","role":1,"notify":true}"#),
+            Some(r#"{"userId":"usr_1","role":1,"notify":true}"#),
         ),
         ("GET", "/api/rooms/room1234_abx/reviews/joins", None),
         (
@@ -1509,7 +1403,7 @@ async fn test_member_approval_routes_are_reachable_via_project_router() -> TestR
         (
             "POST",
             "/api/rooms/room1234_abx/reviews/joins/AbC123xYz890/reject",
-            Some(r#"{"request_id":"usr_1","reason":"no longer eligible"}"#),
+            Some(r#"{"requestId":"usr_1","reason":"no longer eligible"}"#),
         ),
     ] {
         let builder = Request::builder().method(method).uri(uri);
@@ -1550,6 +1444,23 @@ async fn test_oauth2_unlink_route_is_reachable() -> TestResult {
     )?;
     let new_route_response = test_response(app.clone().oneshot(request).await)?;
     assert_ne!(new_route_response.status(), StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oauth2_unlink_provider_path_rejects_non_canonical_case() -> TestResult {
+    let state = test_app_state();
+    let app = register_all_routes().with_state(state);
+
+    let request = test_request(
+        Request::builder()
+            .method("DELETE")
+            .uri("/api/oauth2/type/GitHub/unlink")
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     Ok(())
 }
 
@@ -1706,7 +1617,7 @@ async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
             .method("POST")
             .uri("/api/tickets")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+            .body(Body::from(r#"{"roomId":"room_123"}"#)),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(
@@ -1720,7 +1631,7 @@ async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
             .method("POST")
             .uri("/api/tickets")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+            .body(Body::from(r#"{"roomId":"room_123"}"#)),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
@@ -1745,7 +1656,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let first_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-segments?target_url=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/bilibili/v1/hls-segments?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
@@ -1754,7 +1665,7 @@ async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResul
     let second_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/playback-providers/bilibili/v1/hls-segments?target_url=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
+            .uri("/api/playback-providers/bilibili/v1/hls-segments?targetUrl=https%3A%2F%2Fcdn.example.com%2Fseg.ts&sig=s&uid=u&rid=r&exp=1")
             .body(Body::empty()),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
@@ -2045,9 +1956,9 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/auth/email/registration/confirm"].is_object());
     assert!(json["paths"]["/api/tickets"].is_object());
     assert!(json["paths"]["/api/user"].is_object());
-    assert!(json["paths"]["/api/rooms/{room_id}/media"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/media"].is_object());
     assert!(json["paths"]["/api/admin/users"].is_object());
-    assert!(json["paths"]["/api/rooms/{room_id}/webrtc/ice-servers"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"].is_object());
     assert!(json["paths"]["/api/oauth2/{provider}/exchange"].is_object());
     assert!(json["paths"]["/api/oauth2/providers"].is_object());
     assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
@@ -2055,11 +1966,9 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/providers/bilibili/parse"].is_object());
     assert!(json["paths"]["/api/providers/alist/login"].is_object());
     assert!(json["paths"]["/api/providers/instances"].is_object());
-    assert!(json["paths"]["/api/rooms/{room_id}/streams"].is_object());
-    assert!(
-        json["paths"]["/api/providers/rtmp/rooms/{room_id}/publish-key/{media_id}"].is_object()
-    );
-    assert!(json["paths"]["/api/providers/rtmp/rooms/{room_id}/info/{media_id}"].is_object());
+    assert!(json["paths"]["/api/rooms/{roomId}/streams"].is_object());
+    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/publish-key/{mediaId}"].is_object());
+    assert!(json["paths"]["/api/providers/rtmp/rooms/{roomId}/info/{mediaId}"].is_object());
     assert_eq!(
         json["paths"]["/api/providers/alist/login"]["post"]["responses"]["200"]["content"]
             ["application/json"]["schema"]["$ref"],
@@ -2086,7 +1995,7 @@ async fn test_openapi_json_route_is_available() -> TestResult {
         "#/components/schemas/synctv_client_CreateWebSocketTicketResponse"
     );
     assert_eq!(
-        json["paths"]["/api/rooms/{room_id}/webrtc/ice-servers"]["get"]["responses"]["200"]
+        json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"]["get"]["responses"]["200"]
             ["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/synctv_client_GetIceServersResponse"
     );
@@ -2132,18 +2041,18 @@ async fn test_openapi_json_route_is_available() -> TestResult {
         "alist login schema should expose token"
     );
     assert!(
-        alist_login_properties["server_id"].is_object(),
-        "alist login schema should expose server_id"
+        alist_login_properties["serverId"].is_object(),
+        "alist login schema should expose serverId"
     );
     assert!(
-        alist_login_properties["user_id"].is_null(),
+        alist_login_properties["userId"].is_null(),
         "alist login schema must not be overwritten by emby login response"
     );
 
     let emby_login_properties =
         &json["components"]["schemas"][emby_login_schema_name]["properties"];
     assert!(
-        emby_login_properties["user_id"].is_object(),
+        emby_login_properties["userId"].is_object(),
         "emby login schema should expose user_id"
     );
     assert!(
@@ -2151,8 +2060,8 @@ async fn test_openapi_json_route_is_available() -> TestResult {
         "emby login schema should expose username"
     );
     assert!(
-        emby_login_properties["is_admin"].is_object(),
-        "emby login schema should expose is_admin"
+        emby_login_properties["isAdmin"].is_object(),
+        "emby login schema should expose isAdmin"
     );
     assert!(
         emby_login_properties["token"].is_null(),
@@ -2306,7 +2215,7 @@ async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
             .method("POST")
             .uri("/api/tickets")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+            .body(Body::from(r#"{"roomId":"room_123"}"#)),
     )?;
     let first = test_response(app.clone().oneshot(first_request).await)?;
     assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
@@ -2316,7 +2225,7 @@ async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
             .method("POST")
             .uri("/api/tickets")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"room_id":"room_123"}"#)),
+            .body(Body::from(r#"{"roomId":"room_123"}"#)),
     )?;
     let second = test_response(app.oneshot(second_request).await)?;
     assert_eq!(
@@ -2337,7 +2246,7 @@ async fn test_ticket_route_fails_closed_when_websocket_runtime_is_unavailable() 
             .method("POST")
             .uri("/api/tickets")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"room_id":"room1234_abx"}"#)),
+            .body(Body::from(r#"{"roomId":"room1234_abx"}"#)),
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
@@ -2381,7 +2290,7 @@ async fn test_websocket_ticket_runtime_gate_does_not_leak_to_other_write_routes(
             .method("PATCH")
             .uri("/api/user")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"new_username":"patched-name"}"#)),
+            .body(Body::from(r#"{"newUsername":"patched-name"}"#)),
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
@@ -2401,7 +2310,7 @@ async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
     let api_request = test_request(
         Request::builder()
             .method("POST")
-            .uri("/api/providers/rtmp/rooms/AbC123xYz890/publish-key/ZyX098wVu765")
+            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/publish-key/med_ZyX098wVu765")
             .body(Body::empty()),
     )?;
     let api_response = test_response(app.clone().oneshot(api_request).await)?;
@@ -2410,7 +2319,7 @@ async fn test_rtmp_publish_key_routes_are_reachable_under_api() -> TestResult {
     let info_request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/providers/rtmp/rooms/AbC123xYz890/info/ZyX098wVu765")
+            .uri("/api/providers/rtmp/rooms/room_AbC123xYz890/info/med_ZyX098wVu765")
             .body(Body::empty()),
     )?;
     let info_api_response = test_response(app.clone().oneshot(info_request).await)?;
@@ -2538,7 +2447,7 @@ async fn test_live_provider_routes_remain_registered_when_infrastructure_missing
     let request = test_request(
         Request::builder()
             .method("GET")
-            .uri("/api/rooms/room_123/streams")
+            .uri("/api/rooms/room_abc123/streams")
             .body(Body::empty()),
     )?;
     let response = test_response(app.oneshot(request).await)?;

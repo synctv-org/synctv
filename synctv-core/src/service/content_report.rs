@@ -148,11 +148,6 @@ fn normalize_report_text(request: &mut CreateContentReport) -> Result<()> {
             "report reason must be at most 2000 characters".to_string(),
         ));
     }
-    if !request.metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "report metadata must be a JSON object".to_string(),
-        ));
-    }
     Ok(())
 }
 

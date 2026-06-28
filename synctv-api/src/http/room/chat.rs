@@ -21,14 +21,121 @@ use synctv_proto::client::{
     UnpinChatMessageRequest,
 };
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct GetChatMessageQuery {
+    #[serde(default)]
+    include_deleted: bool,
+}
+
+impl GetChatMessageQuery {
+    fn into_request(self, message_id: String) -> GetChatMessageRequest {
+        GetChatMessageRequest {
+            message_id,
+            include_deleted: self.include_deleted,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct GetChatMessageContextQuery {
+    #[serde(default)]
+    before_limit: i32,
+    #[serde(default)]
+    after_limit: i32,
+    #[serde(default)]
+    include_deleted: bool,
+}
+
+impl GetChatMessageContextQuery {
+    fn into_request(self, message_id: String) -> GetChatMessageContextRequest {
+        GetChatMessageContextRequest {
+            message_id,
+            before_limit: self.before_limit,
+            after_limit: self.after_limit,
+            include_deleted: self.include_deleted,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct UnpinChatMessageQuery {
+    #[serde(default)]
+    client_operation_id: String,
+}
+
+impl UnpinChatMessageQuery {
+    fn into_request(self, message_id: String) -> UnpinChatMessageRequest {
+        UnpinChatMessageRequest {
+            message_id,
+            client_operation_id: self.client_operation_id,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct ListChatReactionUsersQuery {
+    #[serde(default)]
+    limit: i32,
+    #[serde(default)]
+    cursor: String,
+}
+
+impl ListChatReactionUsersQuery {
+    fn into_request(
+        self,
+        message_id: String,
+        reaction_key: String,
+    ) -> ListChatReactionUsersRequest {
+        ListChatReactionUsersRequest {
+            message_id,
+            reaction_key,
+            limit: self.limit,
+            cursor: self.cursor,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct GetChatMessageReadReceiptsQuery {
+    #[serde(default)]
+    page: i32,
+    #[serde(default)]
+    page_size: i32,
+}
+
+impl GetChatMessageReadReceiptsQuery {
+    fn into_request(self, message_id: String) -> GetChatMessageReadReceiptsRequest {
+        GetChatMessageReadReceiptsRequest {
+            message_id,
+            page: self.page,
+            page_size: self.page_size,
+        }
+    }
+}
+
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/history",
+        path = "/api/rooms/{roomId}/chat/history",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             GetChatHistoryRequest
         ),
         responses(
@@ -68,10 +175,10 @@ pub async fn get_chat_history(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/search",
+        path = "/api/rooms/{roomId}/chat/search",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             SearchChatMessagesRequest
         ),
         responses(
@@ -111,12 +218,12 @@ pub async fn search_chat_messages(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("include_deleted" = Option<bool>, Query, description = "Include soft-deleted message metadata when allowed")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            GetChatMessageQuery
         ),
         responses(
             (status = 200, description = "Chat message", body = GetChatMessageResponse),
@@ -134,10 +241,10 @@ pub async fn get_chat_message(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoQuery(mut req): ProtoQuery<GetChatMessageRequest>,
+    ProtoQuery(query): ProtoQuery<GetChatMessageQuery>,
 ) -> AppResult<Json<GetChatMessageResponse>> {
     let room_id = path.room_id;
-    req.message_id = path.message_id;
+    let req = query.into_request(path.message_id);
     let response =
         execute_room_actor_endpoint(
             &state,
@@ -158,14 +265,12 @@ pub async fn get_chat_message(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/context",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Anchor chat message ID"),
-            ("before_limit" = Option<i32>, Query, description = "Messages before anchor"),
-            ("after_limit" = Option<i32>, Query, description = "Messages after anchor"),
-            ("include_deleted" = Option<bool>, Query, description = "Include soft-deleted messages when allowed")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Anchor chat message ID"),
+            GetChatMessageContextQuery
         ),
         responses(
             (status = 200, description = "Chat message context", body = GetChatMessageContextResponse),
@@ -183,10 +288,10 @@ pub async fn get_chat_message_context(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoQuery(mut req): ProtoQuery<GetChatMessageContextRequest>,
+    ProtoQuery(query): ProtoQuery<GetChatMessageContextQuery>,
 ) -> AppResult<Json<GetChatMessageContextResponse>> {
     let room_id = path.room_id;
-    req.message_id = path.message_id;
+    let req = query.into_request(path.message_id);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -208,18 +313,18 @@ pub async fn get_chat_message_context(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/playback-messages",
+        path = "/api/rooms/{roomId}/chat/playback-messages",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("playback_media_id" = Option<String>, Query, description = "Playback media ID"),
-            ("playback_playlist_id" = Option<String>, Query, description = "Playback playlist ID"),
-            ("playback_target" = Option<Vec<u8>>, Query, description = "Playback target bytes"),
-            ("position_seconds" = Option<f64>, Query, description = "Playback position in seconds"),
-            ("before_seconds" = Option<f64>, Query, description = "Seconds before position"),
-            ("after_seconds" = Option<f64>, Query, description = "Seconds after position"),
+            ("roomId" = String, Path, description = "Room ID"),
+            ("playbackMediaId" = Option<String>, Query, description = "Playback media ID"),
+            ("playbackPlaylistId" = Option<String>, Query, description = "Playback playlist ID"),
+            ("playbackTarget" = Option<synctv_proto::client::ProviderTarget>, Query, description = "Structured provider playback target"),
+            ("positionSeconds" = Option<f64>, Query, description = "Playback position in seconds"),
+            ("beforeSeconds" = Option<f64>, Query, description = "Seconds before position"),
+            ("afterSeconds" = Option<f64>, Query, description = "Seconds after position"),
             ("limit" = Option<i32>, Query, description = "Maximum messages to return"),
-            ("include_deleted" = Option<bool>, Query, description = "Include deleted messages")
+            ("includeDeleted" = Option<bool>, Query, description = "Include deleted messages")
         ),
         responses(
             (status = 200, description = "Chat messages around playback position", body = GetChatPlaybackMessagesResponse),
@@ -260,10 +365,10 @@ pub async fn get_chat_playback_messages(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/chat/messages",
+        path = "/api/rooms/{roomId}/chat/messages",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = SendChatMessageRequest,
         responses(
@@ -304,11 +409,11 @@ pub async fn send_chat_message(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID")
         ),
         request_body = EditChatMessageRequest,
         responses(
@@ -351,11 +456,11 @@ pub async fn edit_chat_message(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID")
         ),
         request_body = DeleteChatMessageRequest,
         responses(
@@ -398,10 +503,10 @@ pub async fn delete_chat_message(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/pinned-messages",
+        path = "/api/rooms/{roomId}/chat/pinned-messages",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ("limit" = Option<i32>, Query, description = "Maximum pinned messages to return")
         ),
         responses(
@@ -443,11 +548,11 @@ pub async fn list_pinned_chat_messages(
     feature = "openapi",
     utoipa::path(
         put,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/pin",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID")
         ),
         request_body = PinChatMessageRequest,
         responses(
@@ -490,12 +595,12 @@ pub async fn pin_chat_message(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/pin",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("client_operation_id" = Option<String>, Query, description = "Client-generated idempotency key")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            UnpinChatMessageQuery
         ),
         responses(
             (status = 200, description = "Chat message unpinned event", body = ChatPinEventResponse),
@@ -513,9 +618,9 @@ pub async fn unpin_chat_message(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoQuery(mut req): ProtoQuery<UnpinChatMessageRequest>,
+    ProtoQuery(query): ProtoQuery<UnpinChatMessageQuery>,
 ) -> AppResult<Json<ChatPinEventResponse>> {
-    req.message_id = path.message_id;
+    let req = query.into_request(path.message_id);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -535,12 +640,12 @@ pub async fn unpin_chat_message(
     feature = "openapi",
     utoipa::path(
         put,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/reactions/{reactionKey}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            ("reactionKey" = String, Path, description = "Reaction key, for example like or an emoji")
         ),
         responses(
             (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
@@ -583,12 +688,12 @@ pub async fn set_chat_reaction(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/reactions/{reactionKey}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            ("reactionKey" = String, Path, description = "Reaction key, for example like or an emoji")
         ),
         responses(
             (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
@@ -631,13 +736,13 @@ pub async fn clear_chat_reaction(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}/users",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/reactions/{reactionKey}/users",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("reaction_key" = String, Path, description = "Reaction key, for example like or an emoji"),
-            ListChatReactionUsersRequest
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            ("reactionKey" = String, Path, description = "Reaction key, for example like or an emoji"),
+            ListChatReactionUsersQuery
         ),
         responses(
             (status = 200, description = "Users who reacted to the chat message", body = ListChatReactionUsersResponse),
@@ -655,10 +760,9 @@ pub async fn list_chat_reaction_users(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatReactionPath>,
-    ProtoQuery(mut req): ProtoQuery<ListChatReactionUsersRequest>,
+    ProtoQuery(query): ProtoQuery<ListChatReactionUsersQuery>,
 ) -> AppResult<Json<ListChatReactionUsersResponse>> {
-    req.message_id = path.message_id;
-    req.reaction_key = path.reaction_key;
+    let req = query.into_request(path.message_id, path.reaction_key);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,
@@ -680,10 +784,10 @@ pub async fn list_chat_reaction_users(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/chat/read-state",
+        path = "/api/rooms/{roomId}/chat/read-state",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = MarkChatReadRequest,
         responses(
@@ -725,10 +829,10 @@ pub async fn mark_chat_read(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/read-state",
+        path = "/api/rooms/{roomId}/chat/read-state",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "Chat read state", body = ChatReadStateResponse),
@@ -766,13 +870,12 @@ pub async fn get_chat_read_state(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/chat/messages/{message_id}/read-receipts",
+        path = "/api/rooms/{roomId}/chat/messages/{messageId}/read-receipts",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("message_id" = String, Path, description = "Chat message ID"),
-            ("page" = Option<i32>, Query, description = "Page number, defaults to 1"),
-            ("page_size" = Option<i32>, Query, description = "Page size, defaults to service limit")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("messageId" = String, Path, description = "Chat message ID"),
+            GetChatMessageReadReceiptsQuery
         ),
         responses(
             (status = 200, description = "Chat message read receipts", body = GetChatMessageReadReceiptsResponse),
@@ -789,10 +892,10 @@ pub async fn get_chat_message_read_receipts(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
-    ProtoQuery(mut req): ProtoQuery<GetChatMessageReadReceiptsRequest>,
+    ProtoQuery(query): ProtoQuery<GetChatMessageReadReceiptsQuery>,
 ) -> AppResult<Json<GetChatMessageReadReceiptsResponse>> {
     let room_id = path.room_id;
-    req.message_id = path.message_id;
+    let req = query.into_request(path.message_id);
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,

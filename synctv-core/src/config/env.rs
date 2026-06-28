@@ -388,7 +388,6 @@ impl Config {
             "SYNCTV_DATABASE_HOST",
             "SYNCTV_DATABASE_PORT",
             "SYNCTV_DATABASE_USERNAME",
-            "SYNCTV_DATABASE_USER",
             "SYNCTV_DATABASE_PASSWORD",
             "SYNCTV_DATABASE_PASSWORD_FILE",
             "SYNCTV_DATABASE_NAME",
@@ -415,11 +414,7 @@ impl Config {
         env_override_parse("SYNCTV_DATABASE_READ_PORT", &mut self.database.read_port)?;
         env_override_str("SYNCTV_DATABASE_HOST", &mut self.database.host);
         env_override_parse("SYNCTV_DATABASE_PORT", &mut self.database.port)?;
-        if let Some(username) = get_env("SYNCTV_DATABASE_USERNAME") {
-            self.database.username = username;
-        } else {
-            env_override_str("SYNCTV_DATABASE_USER", &mut self.database.username);
-        }
+        env_override_str("SYNCTV_DATABASE_USERNAME", &mut self.database.username);
         env_override_str("SYNCTV_DATABASE_PASSWORD", &mut self.database.password);
         env_override_str_file(
             "SYNCTV_DATABASE_PASSWORD_FILE",

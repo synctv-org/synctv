@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_core::models::notification::{Notification, NotificationType};
+use synctv_core::models::notification::{Notification, NotificationData, NotificationType};
 use synctv_core::models::{
     ChatAttachment, ChatEventKind, ChatMessage, ChatMessageEvent, ChatMessageStatus,
     ChatMessageType, ChatMessageWithAttachments, MediaId, Playlist, PlaylistId,
@@ -17,7 +17,8 @@ use synctv_core::models::{
 };
 use synctv_core::repository::NotificationRepository;
 use synctv_core::repository::{
-    ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository,
+    ChatRepository, RoomMemberRepository, RoomRepository, RoomResourceEventSummary,
+    RoomResourceEventSummaryDetails, RoomResourceKind, RoomSettingsRepository, UserRepository,
 };
 use synctv_core::service::user_notification::NotificationCreatedEvent;
 use synctv_core::service::{
@@ -218,7 +219,7 @@ fn chat_attachment() -> ChatAttachment {
         size_bytes: Some(1024),
         width: Some(320),
         height: Some(240),
-        metadata: serde_json::json!({"sha256": "abc"}),
+        metadata: synctv_core::models::FileMetadata::default(),
         created_at: chrono::Utc::now(),
         reuse_token: None,
         reuse_expires_at: None,
@@ -336,12 +337,13 @@ fn core_chat_attachment_to_proto_requires_storage_metadata_and_allows_optional_d
 
 #[test]
 fn chat_display_metadata_reads_valid_presentation() {
-    let metadata = serde_json::json!({
-        "presentation": {
-            "display_position": " top ",
-            "display_color": " #ff0000 "
-        }
-    });
+    let metadata = synctv_core::models::ChatMetadata {
+        presentation: Some(synctv_core::models::ChatPresentationMetadata {
+            display_position: Some(" top ".to_string()),
+            display_color: Some(" #ff0000 ".to_string()),
+        }),
+        ..Default::default()
+    };
 
     assert_eq!(
         chat_display_position_from_metadata(&metadata).checked("display position should parse"),
@@ -355,28 +357,14 @@ fn chat_display_metadata_reads_valid_presentation() {
 
 #[test]
 fn chat_display_metadata_rejects_invalid_presentation_fields() {
-    let invalid_container = serde_json::json!({
-        "presentation": ["top"]
-    });
-    let invalid_type = serde_json::json!({
-        "presentation": {
-            "display_position": 7
-        }
-    });
-    let control_character = serde_json::json!({
-        "presentation": {
-            "display_color": "red\nblue"
-        }
-    });
+    let control_character = synctv_core::models::ChatMetadata {
+        presentation: Some(synctv_core::models::ChatPresentationMetadata {
+            display_color: Some("red\nblue".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
 
-    assert!(matches!(
-        chat_display_position_from_metadata(&invalid_container),
-        Err(message) if message.contains("presentation")
-    ));
-    assert!(matches!(
-        chat_display_position_from_metadata(&invalid_type),
-        Err(message) if message.contains("display position")
-    ));
     assert!(matches!(
         chat_display_color_from_metadata(&control_character),
         Err(message) if message.contains("display color")
@@ -385,12 +373,16 @@ fn chat_display_metadata_rejects_invalid_presentation_fields() {
 
 #[test]
 fn chat_playback_metadata_encodes_public_ids() {
-    let metadata = serde_json::json!({
-        "playback": {
-            "media_id": media_id().as_i64().to_string(),
-            "playlist_id": playlist().id.as_i64().to_string()
-        }
-    });
+    let metadata = synctv_core::models::ChatMetadata {
+        playback: Some(synctv_core::models::ChatPlaybackMetadata {
+            media_id: Some(media_id()),
+            playlist_id: Some(playlist().id),
+            target: None,
+            target_hash: None,
+            position_seconds: None,
+        }),
+        ..Default::default()
+    };
     let codec = public_id_codec();
 
     assert_eq!(
@@ -405,7 +397,7 @@ fn chat_playback_metadata_encodes_public_ids() {
 
 #[test]
 fn chat_playback_metadata_without_source_returns_empty_ids() {
-    let metadata = serde_json::json!({});
+    let metadata = synctv_core::models::ChatMetadata::default();
     let codec = public_id_codec();
 
     assert_eq!(
@@ -421,70 +413,83 @@ fn chat_playback_metadata_without_source_returns_empty_ids() {
 #[test]
 fn chat_playback_metadata_rejects_invalid_source_ids() {
     let codec = public_id_codec();
-    let invalid_container = serde_json::json!({
-        "playback": "current"
-    });
-    let invalid_media = serde_json::json!({
-        "playback": {
-            "media_id": "abc"
-        }
-    });
-    let invalid_playlist = serde_json::json!({
-        "playback": {
-            "playlist_id": "0"
-        }
-    });
+    let metadata = synctv_core::models::ChatMetadata::default();
 
-    assert!(matches!(
-        chat_playback_metadata_from_metadata(&invalid_container, &codec),
-        Err(message) if message.contains("playback")
-    ));
-    assert!(matches!(
-        chat_playback_media_id_from_metadata(&invalid_media, &codec),
-        Err(message) if message.contains("media_id")
-    ));
-    assert!(matches!(
-        chat_playback_playlist_id_from_metadata(&invalid_playlist, &codec),
-        Err(message) if message.contains("playlist_id")
-    ));
+    assert_eq!(
+        chat_playback_media_id_from_metadata(&metadata, &codec),
+        Ok(String::new())
+    );
+    assert_eq!(
+        chat_playback_playlist_id_from_metadata(&metadata, &codec),
+        Ok(String::new())
+    );
 }
 
 #[test]
-fn chat_playback_metadata_decodes_target_hex() {
-    let metadata = serde_json::json!({
-        "playback": {
-            "target_hex": "746172676574"
-        }
-    });
+fn chat_playback_metadata_decodes_structured_target() {
+    let metadata = synctv_core::models::ChatMetadata {
+        playback: Some(synctv_core::models::ChatPlaybackMetadata {
+            media_id: None,
+            playlist_id: None,
+            target: Some(synctv_core::models::ProviderTarget::alist(
+                "/episode-1.mp4".to_string(),
+            )),
+            target_hash: None,
+            position_seconds: None,
+        }),
+        ..Default::default()
+    };
 
     assert_eq!(
         chat_playback_target_from_metadata(&metadata),
-        Ok(b"target".to_vec())
+        Ok(Some(synctv_core::models::ProviderTarget::alist(
+            "/episode-1.mp4".to_string()
+        )))
     );
 }
 
 #[test]
 fn chat_playback_metadata_derives_target_hash_from_target() {
-    let metadata = serde_json::json!({
-        "playback": {
-            "target_hex": "746172676574",
-            "target_hash": "stale"
-        }
-    });
+    let metadata = synctv_core::models::ChatMetadata {
+        playback: Some(synctv_core::models::ChatPlaybackMetadata {
+            media_id: None,
+            playlist_id: None,
+            target: Some(synctv_core::models::ProviderTarget::alist(
+                "/episode-1.mp4".to_string(),
+            )),
+            target_hash: None,
+            position_seconds: None,
+        }),
+        ..Default::default()
+    };
     let playback = chat_playback_metadata_from_metadata(&metadata, &public_id_codec())
         .checked("playback metadata should parse");
 
-    assert_eq!(playback.target, b"target".to_vec());
-    assert_eq!(playback.target_hash, chat_playback_target_hash(b"target"));
+    let target = synctv_core::models::ProviderTarget::alist("/episode-1.mp4".to_string());
+    assert!(matches!(
+        playback.target,
+        Some(synctv_proto::client::ProviderTarget {
+            target: Some(synctv_proto::client::provider_target::Target::Alist(_))
+        })
+    ));
+    assert_eq!(
+        playback.target_hash,
+        chat_playback_target_hash(&target).checked("target hash should compute")
+    );
 }
 
 #[test]
 fn chat_playback_metadata_rejects_invalid_position_seconds() {
-    let metadata = serde_json::json!({
-        "playback": {
-            "position_seconds": -1.0
-        }
-    });
+    let metadata = synctv_core::models::ChatMetadata {
+        playback: Some(synctv_core::models::ChatPlaybackMetadata {
+            media_id: None,
+            playlist_id: None,
+            target: None,
+            target_hash: None,
+            position_seconds: Some(-1.0),
+        }),
+        ..Default::default()
+    };
 
     assert!(matches!(
         chat_playback_metadata_from_metadata(&metadata, &public_id_codec()),
@@ -493,26 +498,10 @@ fn chat_playback_metadata_rejects_invalid_position_seconds() {
 }
 
 #[test]
-fn chat_playback_metadata_rejects_invalid_target_hex() {
-    let metadata = serde_json::json!({
-        "playback": {
-            "target_hex": "not-hex"
-        }
-    });
-    let invalid_type = serde_json::json!({
-        "playback": {
-            "target_hex": 42
-        }
-    });
+fn chat_playback_metadata_rejects_invalid_target() {
+    let metadata = synctv_core::models::ChatMetadata::default();
 
-    assert!(matches!(
-        chat_playback_target_from_metadata(&metadata),
-        Err(message) if message.contains("target_hex")
-    ));
-    assert!(matches!(
-        chat_playback_target_from_metadata(&invalid_type),
-        Err(message) if message.contains("target_hex")
-    ));
+    assert_eq!(chat_playback_target_from_metadata(&metadata), Ok(None));
 }
 
 #[test]
@@ -611,7 +600,7 @@ fn chat_event_with_content(
                 version: 1,
                 reply_to_message_id: None,
                 reply_to_message_created_at: None,
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: synctv_core::models::ChatMetadata::default(),
                 edited_at: None,
                 deleted_at: None,
                 deleted_by: None,
@@ -2632,7 +2621,8 @@ async fn test_start_cancels_and_cleans_up_when_admin_notification_send_fails() {
         user_id: handler.user_id,
         title: "title".to_string(),
         content: "content".to_string(),
-        notification_type: "system".to_string(),
+        notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
+        data: synctv_core::models::NotificationData::default(),
         notification_id: "notif-1".to_string(),
         timestamp: now(),
     });
@@ -2795,7 +2785,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             content: "first replay".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2809,7 +2799,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             content: "second replay".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2823,7 +2813,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             content: "third replay".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2907,7 +2897,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             content: "first sequence replay".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2921,7 +2911,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             content: "second sequence replay".to_string(),
             message_type: ChatMessageType::Text,
             reply_to_message_id: None,
-            metadata: serde_json::Value::Object(Default::default()),
+            metadata: synctv_core::models::ChatMetadata::default(),
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -3146,11 +3136,12 @@ async fn test_observe_playback_sends_current_playback_on_subscribe() {
                     playlist_position: 0.0,
                     playback_infos: std::collections::HashMap::new(),
                     default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
+                    metadata: None,
                     expires_at: Some(12345),
                     duration_seconds: None,
                     is_live: false,
-                    provider: "test".to_string(),
+                    target: None,
+                    provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     provider_instance_name: String::new(),
                 },
             }))
@@ -3221,11 +3212,12 @@ async fn test_observe_playback_reports_current_playback_with_event_cursor() {
                     playlist_position: 0.0,
                     playback_infos: std::collections::HashMap::new(),
                     default_mode: String::new(),
-                    metadata: std::collections::HashMap::new(),
+                    metadata: None,
                     expires_at: Some(12345),
                     duration_seconds: None,
                     is_live: false,
-                    provider: "test".to_string(),
+                    target: None,
+                    provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     provider_instance_name: String::new(),
                 },
             }))
@@ -3296,17 +3288,24 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
             user_id: None,
             aggregate_type: "playlist".to_string(),
             aggregate_id: fixture.handler.room_id.to_string(),
-            resource_type: "playlist_items".to_string(),
+            resource_type: RoomResourceKind::PlaylistItems,
             resource_id: fixture.handler.room_id.to_string(),
             event_type: "playlist_items_changed".to_string(),
             event_version: 1,
             aggregate_version: Some(1),
             actor_user_id: Some(fixture.handler.user_id.as_i64()),
             payload: None,
-            summary: serde_json::json!({
-                "changed": true,
-                "reason": "audit-only test event",
-            }),
+            summary: RoomResourceEventSummary {
+                event_type: "playlist_items_changed".to_string(),
+                room_id: Some(fixture.handler.room_id.as_i64()),
+                actor_user_id: Some(fixture.handler.user_id.as_i64()),
+                resource_type: RoomResourceKind::PlaylistItems,
+                details: RoomResourceEventSummaryDetails::PlaylistItems {
+                    user_id: Some(fixture.handler.user_id.as_i64()),
+                    username: None,
+                    media_ids: Vec::new(),
+                },
+            },
             occurred_at: now,
         })
         .await
@@ -3433,11 +3432,12 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 playlist_position: 0.0,
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: String::new(),
-                metadata: std::collections::HashMap::new(),
+                metadata: None,
                 expires_at: Some(chrono::Utc::now().timestamp() + 3600),
                 duration_seconds: None,
                 is_live: false,
-                provider: "test".to_string(),
+                target: None,
+                provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                 provider_instance_name: String::new(),
             });
             *playback_service_out
@@ -3509,11 +3509,12 @@ async fn test_observe_playback_sends_current_playback_immediately() {
                 playlist_position: 0.0,
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: String::new(),
-                metadata: std::collections::HashMap::new(),
+                metadata: None,
                 expires_at: Some(12345),
                 duration_seconds: None,
                 is_live: false,
-                provider: "test".to_string(),
+                target: None,
+                provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                 provider_instance_name: String::new(),
             },
         }));
@@ -3571,11 +3572,12 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let handler = handler
@@ -3611,11 +3613,12 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
 
@@ -3628,7 +3631,7 @@ async fn test_observed_playback_receives_future_playback_state_updates() {
             room_id: handler.room_id,
             playing_media_id: None,
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 12.0,
             speed: 1.0,
@@ -3683,11 +3686,12 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let handler = handler
@@ -3740,7 +3744,7 @@ async fn test_observed_playback_ignores_play_pause_state_updates() {
             room_id: handler.room_id,
             playing_media_id: Some(media_id()),
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 12.0,
             speed: 1.0,
@@ -3804,9 +3808,9 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
             description: String::new(),
             position: 0.0,
             source_provider: synctv_core::models::SourceProvider::DirectUrl,
-            source_config: serde_json::json!({
-                "url": "https://example.com/provider-credential-dependent.mp4"
-            }),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/provider-credential-dependent.mp4",
+            ),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: now(),
@@ -3841,11 +3845,12 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     playback_service.replace_dependencies(vec![
@@ -3881,11 +3886,12 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_801),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
 
@@ -3939,9 +3945,9 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
             description: String::new(),
             position: 0.0,
             source_provider: synctv_core::models::SourceProvider::DirectUrl,
-            source_config: serde_json::json!({
-                "url": "https://example.com/provider-credential-unrelated.mp4"
-            }),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/provider-credential-unrelated.mp4",
+            ),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: now(),
@@ -3976,11 +3982,12 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     playback_service.replace_dependencies(vec![
@@ -4036,11 +4043,12 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: None,
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
@@ -4052,7 +4060,7 @@ async fn test_playback_auto_advance_subscriber_runs_for_playing_observed_state()
                 room_id: room_id(),
                 playing_media_id: Some(MediaId::expect_positive(10)),
                 playing_playlist_id: None,
-                target: Vec::new(),
+                target: None,
                 current_progress_id: None,
                 position: 11.0,
                 speed: 1.0,
@@ -4079,11 +4087,12 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: None,
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let subscriber = PlaybackAutoAdvanceSubscriber::new(playback_service.clone());
@@ -4095,7 +4104,7 @@ async fn test_playback_auto_advance_subscriber_skips_paused_state() {
                 room_id: room_id(),
                 playing_media_id: Some(MediaId::expect_positive(10)),
                 playing_playlist_id: None,
-                target: Vec::new(),
+                target: None,
                 current_progress_id: None,
                 position: 11.0,
                 speed: 1.0,
@@ -4137,11 +4146,12 @@ async fn test_observed_playback_lifecycle_source_triggers_auto_advance_subscribe
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: None,
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let mut observed_state = RoomPlaybackState::new(handler.room_id);
@@ -4211,9 +4221,9 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
             description: String::new(),
             position: 0.0,
             source_provider: synctv_core::models::SourceProvider::DirectUrl,
-            source_config: serde_json::json!({
-                "url": "https://example.com/observe-playback-media-update.mp4"
-            }),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/observe-playback-media-update.mp4",
+            ),
             provider_instance_name: None,
             cover_file_reference_id: None,
             added_at: now(),
@@ -4231,7 +4241,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
             |state| {
                 state.playing_media_id = Some(media.id);
                 state.playing_playlist_id = None;
-                state.target = Vec::new();
+                state.target = None;
                 state.position = 0.0;
                 state.speed = 1.0;
                 state.is_playing = true;
@@ -4253,11 +4263,12 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let handler = handler
@@ -4306,14 +4317,15 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::from([(
-            "token".to_string(),
-            "\"media-updated\"".to_string(),
-        )]),
+        metadata: Some(synctv_proto::client::PlaybackMetadata {
+            name: Some("media-updated".to_string()),
+            ..Default::default()
+        }),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
 
@@ -4333,8 +4345,9 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
                 resource_playback(message).is_some_and(|playback| {
                     playback
                         .metadata
-                        .get("token")
-                        .is_some_and(|token| token == "\"media-updated\"")
+                        .as_ref()
+                        .and_then(|metadata| metadata.name.as_deref())
+                        .is_some_and(|name| name == "media-updated")
                 })
             }) {
                 break;
@@ -4391,7 +4404,9 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .checked("playback state row should exist");
     playback_state.playing_media_id = None;
     playback_state.playing_playlist_id = Some(playlist.id);
-    playback_state.target = br#"{"relative_path":"/playlist-item-1.mp4"}"#.to_vec();
+    playback_state.target = Some(synctv_core::models::ProviderTarget::alist(
+        "/playlist-item-1.mp4".to_string(),
+    ));
     playback_state.position = 0.0;
     playback_state.speed = 1.0;
     playback_state.is_playing = true;
@@ -4412,11 +4427,12 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::new(),
+        metadata: None,
         expires_at: Some(4_102_444_800),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
     let handler = handler
@@ -4469,14 +4485,15 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: std::collections::HashMap::from([(
-            "token".to_string(),
-            "\"playlist-updated\"".to_string(),
-        )]),
+        metadata: Some(synctv_proto::client::PlaybackMetadata {
+            name: Some("playlist-updated".to_string()),
+            ..Default::default()
+        }),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
         is_live: false,
-        provider: "test".to_string(),
+        target: None,
+        provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
         provider_instance_name: String::new(),
     });
 
@@ -4495,8 +4512,9 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
                 resource_playback(message).is_some_and(|playback| {
                     playback
                         .metadata
-                        .get("token")
-                        .is_some_and(|token| token == "\"playlist-updated\"")
+                        .as_ref()
+                        .and_then(|metadata| metadata.name.as_deref())
+                        .is_some_and(|name| name == "playlist-updated")
                 })
             }) {
                 break;
@@ -4540,11 +4558,12 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
             expires_at: Some(4_102_444_800),
             duration_seconds: None,
             is_live: false,
-            provider: "test".to_string(),
+            target: None,
+            provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             provider_instance_name: String::new(),
         }),
         Ok(synctv_proto::client::Playback {
@@ -4557,14 +4576,15 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: std::collections::HashMap::from([(
-                "token".to_string(),
-                "\"refreshed\"".to_string(),
-            )]),
+            metadata: Some(synctv_proto::client::PlaybackMetadata {
+                name: Some("refreshed".to_string()),
+                ..Default::default()
+            }),
             expires_at: Some(4_102_444_860),
             duration_seconds: None,
             is_live: false,
-            provider: "test".to_string(),
+            target: None,
+            provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             provider_instance_name: String::new(),
         }),
     ]);
@@ -4599,7 +4619,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             |state| {
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
-                state.target = b"target-b".to_vec();
+                state.target = None;
                 state.position = 12.0;
                 state.speed = 1.0;
                 state.is_playing = true;
@@ -4625,8 +4645,9 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
                 resource_playback(message).is_some_and(|playback| {
                     playback
                         .metadata
-                        .get("token")
-                        .is_some_and(|token| token == "\"refreshed\"")
+                        .as_ref()
+                        .and_then(|metadata| metadata.name.as_deref())
+                        .is_some_and(|name| name == "refreshed")
                 })
             }) {
                 break;
@@ -4662,11 +4683,12 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
             expires_at: Some(111),
             duration_seconds: None,
             is_live: false,
-            provider: "test".to_string(),
+            target: None,
+            provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             provider_instance_name: String::new(),
         }),
         Err(crate::impls::ApiError::ServiceUnavailable(
@@ -4700,7 +4722,7 @@ async fn test_playback_refresh_failure_removes_observation_without_closing_conne
             room_id: handler.room_id,
             playing_media_id: None,
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 5.0,
             speed: 1.0,
@@ -4772,11 +4794,12 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: std::collections::HashMap::new(),
+            metadata: None,
             expires_at: Some(refresh_at),
             duration_seconds: None,
             is_live: false,
-            provider: "test".to_string(),
+            target: None,
+            provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             provider_instance_name: String::new(),
         }),
         Ok(synctv_proto::client::Playback {
@@ -4789,14 +4812,15 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: std::collections::HashMap::from([(
-                "token".to_string(),
-                "\"refreshed\"".to_string(),
-            )]),
+            metadata: Some(synctv_proto::client::PlaybackMetadata {
+                name: Some("refreshed".to_string()),
+                ..Default::default()
+            }),
             expires_at: Some(refresh_at + 60),
             duration_seconds: None,
             is_live: false,
-            provider: "test".to_string(),
+            target: None,
+            provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             provider_instance_name: String::new(),
         }),
     ]);
@@ -4836,8 +4860,9 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             .any(|playback| {
                 playback
                     .metadata
-                    .get("token")
-                    .is_some_and(|token| token == "\"refreshed\"")
+                    .as_ref()
+                    .and_then(|metadata| metadata.name.as_deref())
+                    .is_some_and(|name| name == "refreshed")
             }),
         "expired playback refresh should send the refreshed playback"
     );
@@ -4862,7 +4887,10 @@ async fn test_observe_room_settings_without_cursor_sends_current_settings_immedi
 
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"chat_enabled":true}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+                ..Default::default()
+            },
             version: 7,
         },
     );
@@ -4898,7 +4926,10 @@ async fn test_observe_room_settings_without_cursor_sends_current_settings_immedi
     match messages.iter().find_map(resource_room_settings) {
         Some(changed) => {
             assert_eq!(changed.version, 7);
-            assert_eq!(changed.settings, br#"{"chat_enabled":true}"#.to_vec());
+            assert!(changed
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.chat_enabled));
         }
         None => std::panic::panic_any(format!(
             "expected RoomSettings after observe, got {messages:?}"
@@ -4937,7 +4968,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                     source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                     name: "test media".to_string(),
                     description: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     position: 1.0,
                     added_at: 1,
                     creator_id: handler.user_id.to_string(),
@@ -4963,7 +4994,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
             "playlist-items",
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -5034,7 +5065,7 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
     );
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "batch-coalesce".to_string(),
@@ -5104,7 +5135,10 @@ async fn test_resource_observations_are_bounded_per_connection() {
     let connection_service = test_connection_manager();
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"chat_enabled":true}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+                ..Default::default()
+            },
             version: 1,
         },
     );
@@ -5316,7 +5350,7 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "consume-refresh".to_string(),
@@ -5368,7 +5402,7 @@ async fn test_resource_event_send_failure_propagates_and_removes_observation() {
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "send-failure".to_string(),
@@ -5465,7 +5499,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "other-send-failure".to_string(),
@@ -5548,7 +5582,7 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "stale-refresh".to_string(),
@@ -5619,7 +5653,7 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
         test_handler_with_playlist_items_snapshot_service(handler, snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "stale-refresh-failure".to_string(),
@@ -5694,7 +5728,7 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
         .with_playlist_items_snapshot_service(snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "singleflight-concurrent".to_string(),
@@ -5753,7 +5787,7 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "missing-durable-cursor".to_string(),
@@ -5859,7 +5893,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "room-hub-refresh".to_string(),
@@ -5996,7 +6030,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
     .with_playlist_items_snapshot_service(snapshot_service.clone());
     let request_a = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
-        target: Vec::new(),
+        target: None,
         page: 1,
         page_size: 50,
         search: "generation-dedupe-a".to_string(),
@@ -6092,7 +6126,10 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
 async fn test_observed_room_settings_singleflight_coalesces_cross_user_loads() {
     let snapshot_service = SlowRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"chat_enabled":true}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+                ..Default::default()
+            },
             version: 7,
         },
         Duration::from_millis(50),
@@ -6158,7 +6195,7 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
     );
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"version":1}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings::default(),
             version: 1,
         },
     );
@@ -6190,7 +6227,7 @@ async fn test_observe_resource_does_not_reuse_completed_evaluation_across_invali
         .checked("unobserve should unregister the first observation");
 
     snapshot_service.replace(crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-        settings: br#"{"version":2}"#.to_vec(),
+        settings: synctv_core::models::RoomSettings::default(),
         version: 2,
     });
     handler
@@ -6270,7 +6307,7 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
             "playlist-items",
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -6340,7 +6377,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             "playlist-items",
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -6377,7 +6414,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
             name: "next media".to_string(),
             description: String::new(),
-            metadata: Vec::new(),
+            metadata: None,
             position: 2.0,
             added_at: 2,
             creator_id: handler.user_id.to_string(),
@@ -6440,7 +6477,10 @@ async fn test_observe_room_settings_sends_current_snapshot() {
 
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"chat_enabled":true}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+                ..Default::default()
+            },
             version: 7,
         },
     );
@@ -6490,7 +6530,10 @@ async fn test_observed_room_settings_receive_future_updates() {
 
     let snapshot_service = MutableRoomSettingsSnapshotService::new(
         crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-            settings: br#"{"chat_enabled":true}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(true),
+                ..Default::default()
+            },
             version: 7,
         },
     );
@@ -6518,7 +6561,10 @@ async fn test_observed_room_settings_receive_future_updates() {
     );
 
     snapshot_service.replace(crate::impls::room_settings_snapshot::RoomSettingsSnapshot {
-        settings: br#"{"chat_enabled":false}"#.to_vec(),
+        settings: synctv_core::models::RoomSettings {
+            chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+            ..Default::default()
+        },
         version: 8,
     });
 
@@ -6527,7 +6573,10 @@ async fn test_observed_room_settings_receive_future_updates() {
         room_id: handler.room_id,
         user_id: handler.user_id,
         username: handler.username.clone(),
-        settings_json: br#"{"chat_enabled":false}"#.to_vec(),
+        settings: synctv_core::models::RoomSettings {
+            chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+            ..Default::default()
+        },
         version: 8,
         timestamp: now(),
     });
@@ -6537,7 +6586,10 @@ async fn test_observed_room_settings_receive_future_updates() {
             if message_sender.sent_messages().iter().any(|message| {
                 resource_room_settings(message).is_some_and(|changed| {
                     changed.version == 8
-                        && changed.settings == br#"{"chat_enabled":false}"#.to_vec()
+                        && changed
+                            .settings
+                            .as_ref()
+                            .is_some_and(|settings| !settings.chat_enabled)
                 })
             }) {
                 break;
@@ -6575,7 +6627,8 @@ async fn test_run_after_join_cleans_up_when_admin_notification_send_fails() {
         user_id: handler.user_id,
         title: "title".to_string(),
         content: "content".to_string(),
-        notification_type: "system".to_string(),
+        notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
+        data: synctv_core::models::NotificationData::default(),
         notification_id: "notif-admin".to_string(),
         timestamp: now(),
     });
@@ -6643,7 +6696,7 @@ async fn test_run_after_join_cleans_up_when_direct_notification_send_fails() {
             notification_type: NotificationType::SystemAnnouncement,
             title: "title".to_string(),
             content: "content".to_string(),
-            data: serde_json::json!({}),
+            data: NotificationData::default(),
             is_read: false,
             created_at: now(),
             updated_at: now(),
@@ -6699,7 +6752,7 @@ fn test_durable_chat_message_event_conversion() {
                     version: 2,
                     reply_to_message_id: None,
                     reply_to_message_created_at: None,
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: synctv_core::models::ChatMetadata::default(),
                     edited_at: Some(created_at),
                     deleted_at: Some(created_at),
                     deleted_by: Some(user_id()),
@@ -6735,7 +6788,7 @@ fn test_playback_state_changed_event_conversion() {
             room_id: room_id(),
             playing_media_id: Some(media_id()),
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 123.456,
             speed: 1.5,
@@ -6766,7 +6819,7 @@ fn test_playback_state_changed_event_does_not_validate_direct_message_payload() 
             room_id: room_id(),
             playing_media_id: Some(media_id()),
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: f64::NAN,
             speed: 0.0,
@@ -6970,7 +7023,10 @@ fn test_resource_backed_events_do_not_emit_direct_server_messages() {
             room_id: room_id(),
             user_id: user_id(),
             username: "judy".to_string(),
-            settings_json: br#"{"chat_enabled":false}"#.to_vec(),
+            settings: synctv_core::models::RoomSettings {
+                chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+                ..Default::default()
+            },
             version: 12,
             timestamp: now(),
         },
@@ -7180,7 +7236,10 @@ fn test_system_notification_event_conversion() {
     match &msgs[0].message {
         Some(Message::Notification(n)) => {
             assert_eq!(n.title, "Server maintenance in 5 minutes");
-            assert_eq!(n.notification_type, "system_announcement");
+            assert_eq!(
+                n.notification_type,
+                synctv_proto::client::NotificationType::SystemAnnouncement as i32
+            );
         }
         other => std::panic::panic_any(format!(
             "Expected Notification message for SystemNotification, got: {other:?}"
@@ -7522,7 +7581,7 @@ async fn test_guest_chat_is_rejected_even_if_permission_bits_include_chat() {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -7555,7 +7614,7 @@ async fn test_guest_chat_with_client_id_is_rejected() {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),

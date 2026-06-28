@@ -6,14 +6,14 @@ use std::time::Duration;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{RoomId, UserId},
-    repository::RoomResourceEventRepository,
+    repository::{RoomResourceEventPayload, RoomResourceEventRepository, RoomResourceKind},
     service::{ChatService, OnlinePresenceService, RoomService},
 };
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
 use crate::impls::client::convert::{
-    playback_client_profile_from_proto, proto_role_filter_to_room_role,
+    playback_client_profile_from_proto, proto_role_filter_to_room_role, room_settings_to_proto,
     try_playback_state_to_proto, try_room_member_to_proto_with_permissions,
 };
 use crate::impls::client::RoomActor;
@@ -379,21 +379,31 @@ enum ObservedResource {
 }
 
 impl ResourceObservation {
-    fn room_resource_cursor_types(&self) -> Option<&'static [&'static str]> {
+    fn room_resource_cursor_types(&self) -> Option<&'static [RoomResourceKind]> {
         match &self.resource {
-            ObservedResource::PlaybackState => Some(&["playback_state"]),
-            ObservedResource::Playback { .. } => {
-                Some(&["playback_state", "media", "playlist", "playlist_items"])
+            ObservedResource::PlaybackState => Some(&[RoomResourceKind::PlaybackState]),
+            ObservedResource::Playback { .. } => Some(&[
+                RoomResourceKind::PlaybackState,
+                RoomResourceKind::Media,
+                RoomResourceKind::Playlist,
+                RoomResourceKind::PlaylistItems,
+            ]),
+            ObservedResource::RoomSettings => {
+                Some(&[RoomResourceKind::RoomSettings, RoomResourceKind::Room])
             }
-            ObservedResource::RoomSettings => Some(&["room_settings", "room"]),
-            ObservedResource::PlaylistItems { .. } => {
-                Some(&["playlist_items", "playlist", "media"])
-            }
-            ObservedResource::RoomMemberEvents => Some(&["room_member_events"]),
-            ObservedResource::SelfRoomMember => Some(&["room_member_events", "room_settings"]),
+            ObservedResource::PlaylistItems { .. } => Some(&[
+                RoomResourceKind::PlaylistItems,
+                RoomResourceKind::Playlist,
+                RoomResourceKind::Media,
+            ]),
+            ObservedResource::RoomMemberEvents => Some(&[RoomResourceKind::RoomMemberEvents]),
+            ObservedResource::SelfRoomMember => Some(&[
+                RoomResourceKind::RoomMemberEvents,
+                RoomResourceKind::RoomSettings,
+            ]),
             ObservedResource::ChatEvents | ObservedResource::OnlineEvent { .. } => None,
-            ObservedResource::ChatPinEvents => Some(&["chat_pins"]),
-            ObservedResource::OnlineCount { .. } => Some(&["online_count"]),
+            ObservedResource::ChatPinEvents => Some(&[RoomResourceKind::ChatPins]),
+            ObservedResource::OnlineCount { .. } => Some(&[RoomResourceKind::OnlineCount]),
         }
     }
 
@@ -2435,13 +2445,12 @@ impl ResourceObserver {
                     continue;
                 };
                 if matches!(observation.resource, ObservedResource::ChatPinEvents) {
-                    let mut event: synctv_core::models::ChatPinEvent =
-                        serde_json::from_value(payload).map_err(|error| {
-                            format!(
-                            "Failed to decode chat pin resource event {} at sequence {}: {error}",
+                    let RoomResourceEventPayload::ChatPin { mut event } = payload else {
+                        return Err(format!(
+                            "Room resource event {} at sequence {} is not a chat pin event",
                             logged.event_id, logged.sequence
-                        )
-                        })?;
+                        ));
+                    };
                     event.sequence = logged.sequence;
                     if !Self::apply_event_cursor_to_observation(&mut observation, &cursor) {
                         continue;
@@ -2465,13 +2474,15 @@ impl ResourceObserver {
                     self.room_hub.register_observation(self, observation).await;
                     continue;
                 }
-                let realtime_event: RealtimeEvent =
-                    serde_json::from_value(payload).map_err(|error| {
-                        format!(
-                            "Failed to decode room resource event {} at sequence {}: {error}",
-                            logged.event_id, logged.sequence
-                        )
-                    })?;
+                let RoomResourceEventPayload::Realtime {
+                    event: realtime_event,
+                } = payload
+                else {
+                    return Err(format!(
+                        "Room resource event {} at sequence {} is not a realtime event",
+                        logged.event_id, logged.sequence
+                    ));
+                };
                 let invalidations = resource_invalidations_for_room_event(&realtime_event);
                 if !invalidations.iter().any(|invalidation| {
                     Self::observation_invalidated_by_invalidation(&observation, invalidation)
@@ -3008,7 +3019,7 @@ impl ResourceObserver {
                     }
                     ResourceDeliveryMode::Unspecified | ResourceDeliveryMode::PushSnapshot => {
                         Payload::RoomSettings(synctv_proto::client::GetRoomSettingsResponse {
-                            settings: snapshot.settings,
+                            settings: Some(room_settings_to_proto(&snapshot.settings)),
                             version: snapshot.version,
                         })
                     }
@@ -3302,7 +3313,14 @@ mod tests {
 
         assert_eq!(
             observation.room_resource_cursor_types(),
-            Some(&["playback_state", "media", "playlist", "playlist_items"][..])
+            Some(
+                &[
+                    RoomResourceKind::PlaybackState,
+                    RoomResourceKind::Media,
+                    RoomResourceKind::Playlist,
+                    RoomResourceKind::PlaylistItems,
+                ][..]
+            )
         );
     }
 

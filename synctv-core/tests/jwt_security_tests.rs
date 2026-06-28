@@ -24,8 +24,6 @@ struct ExpiredClaims {
     exp: i64,
 }
 
-const JWT_SECRET: &str = "test-secret-key-for-jwt-security-tests-minimum-32-chars";
-
 fn sign_test_refresh_token(jwt_service: &JwtService, user_id: &UserId) -> String {
     ok(
         jwt_service.sign_refresh_token_with_session(
@@ -535,6 +533,13 @@ async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
 
 #[tokio::test]
 async fn test_verify_custom_skips_issuer_validation() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct CustomClaims {
+        sub: String,
+        custom_field: String,
+        exp: i64,
+    }
+
     let jwt_service = ok(
         JwtService::with_durations_and_claims(
             "test-secret-key-for-integration-tests-minimum-length-32-chars",
@@ -548,18 +553,18 @@ async fn test_verify_custom_skips_issuer_validation() {
         "JWT service with claims should be created",
     );
 
-    // Sign a custom token WITHOUT issuer/audience
-    let custom_claims = serde_json::json!({
-        "sub": "custom_subject",
-        "custom_field": "custom_value",
-    });
+    let custom_claims = CustomClaims {
+        sub: "custom_subject".to_string(),
+        custom_field: "custom_value".to_string(),
+        exp: chrono::Utc::now().timestamp() + 3600,
+    };
     let token = ok(
         jwt_service.sign_custom(&custom_claims),
         "custom token should be signed",
     );
 
     // verify_custom should succeed (it skips issuer/audience checks)
-    let result = jwt_service.verify_custom(&token);
+    let result = jwt_service.verify_custom::<CustomClaims>(&token);
     assert!(
         result.is_ok(),
         "verify_custom should skip issuer/audience validation: {:?}",
@@ -567,8 +572,8 @@ async fn test_verify_custom_skips_issuer_validation() {
     );
 
     let verified = ok(result, "custom token should verify");
-    assert_eq!(verified["sub"], "custom_subject");
-    assert_eq!(verified["custom_field"], "custom_value");
+    assert_eq!(verified.sub, "custom_subject");
+    assert_eq!(verified.custom_field, "custom_value");
 
     // In contrast, verify_token should FAIL for a custom token without proper issuer
     // (because verify_token validates issuer/audience when configured)
@@ -588,7 +593,7 @@ async fn test_verify_custom_skips_issuer_validation() {
     // when present in the token, but verify_custom doesn't set expected audiences.
     // This documents that verify_custom is intended for custom tokens only, NOT
     // for regular tokens that carry standard iss/aud claims.
-    let custom_on_regular = jwt_service.verify_custom(&regular_token);
+    let custom_on_regular = jwt_service.verify_custom::<CustomClaims>(&regular_token);
     assert!(
         custom_on_regular.is_err(),
         "verify_custom should fail on tokens with aud claim (no expected aud configured)"
@@ -597,15 +602,22 @@ async fn test_verify_custom_skips_issuer_validation() {
 
 #[tokio::test]
 async fn test_verify_custom_still_validates_expiry() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct ExpiringClaims {
+        sub: String,
+        exp: i64,
+        iat: i64,
+    }
+
     let jwt_service = create_test_jwt_service();
     let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
 
     let now = chrono::Utc::now().timestamp();
-    let expired_claims = serde_json::json!({
-        "sub": "expired_custom",
-        "exp": now - 3600,  // expired 1 hour ago
-        "iat": now - 7200,
-    });
+    let expired_claims = ExpiringClaims {
+        sub: "expired_custom".to_string(),
+        exp: now - 3600,
+        iat: now - 7200,
+    };
 
     // Sign it manually (can't use sign_custom since it adds a valid exp)
     let encoding_key = EncodingKey::from_secret(secret.as_bytes());
@@ -619,7 +631,7 @@ async fn test_verify_custom_still_validates_expiry() {
     );
 
     // verify_custom should still reject expired tokens
-    let result = jwt_service.verify_custom(&token);
+    let result = jwt_service.verify_custom::<ExpiringClaims>(&token);
     assert!(
         result.is_err(),
         "verify_custom should still validate expiry"
@@ -628,21 +640,31 @@ async fn test_verify_custom_still_validates_expiry() {
 
 #[tokio::test]
 async fn test_verify_custom_validates_signature() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SignedClaims {
+        sub: String,
+        data: i64,
+        exp: i64,
+    }
+
     let jwt_service1 = create_test_jwt_service();
     let jwt_service2 = ok(
         JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#"),
         "second JWT service should be created",
     );
 
-    // Sign custom token with service 1
-    let claims = serde_json::json!({"sub": "test", "data": 42});
+    let claims = SignedClaims {
+        sub: "test".to_string(),
+        data: 42,
+        exp: chrono::Utc::now().timestamp() + 3600,
+    };
     let token = ok(
         jwt_service1.sign_custom(&claims),
         "custom token should be signed",
     );
 
     // verify_custom with different secret should fail
-    let result = jwt_service2.verify_custom(&token);
+    let result = jwt_service2.verify_custom::<SignedClaims>(&token);
     assert!(
         result.is_err(),
         "verify_custom should reject tokens signed with different secret"
@@ -779,7 +801,8 @@ async fn test_expired_refresh_token_rejected() {
         exp: now - 3600,             // expired 1 hour ago
     };
 
-    let encoding_key = EncodingKey::from_secret(JWT_SECRET.as_bytes());
+    let encoding_key =
+        EncodingKey::from_secret(b"test-secret-key-for-integration-tests-minimum-length-32-chars");
     let expired_token = ok(
         jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key),
         "expired refresh token should encode",

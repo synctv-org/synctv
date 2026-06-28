@@ -1,5 +1,5 @@
 use crate::{
-    models::{AuditAction, AuditTargetType, Room, RoomId, UserId},
+    models::{AuditAction, AuditDetails, AuditTargetType, Room, RoomId, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::RoomService,
     Error, Result,
@@ -43,7 +43,7 @@ impl RoomService {
             AuditAction::RoomBanned,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({"reason": "Room banned by admin"}),
+            AuditDetails::reason("Room banned by admin"),
         )
         .await?;
 
@@ -70,7 +70,7 @@ impl RoomService {
             AuditAction::RoomUnbanned,
             AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({"reason": "Room unbanned by admin"}),
+            AuditDetails::reason("Room unbanned by admin"),
         )
         .await?;
 

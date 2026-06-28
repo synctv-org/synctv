@@ -709,7 +709,7 @@ async fn test_cache_invalidation_event() {
 
     // Serialize
     let json = serde_json::to_string(&event).expect("Should serialize");
-    assert!(json.contains("cache_invalidate"));
+    assert!(json.contains("cacheInvalidate"));
 
     // Deserialize
     let decoded: RealtimeEvent = serde_json::from_str(&json).expect("Should deserialize");
@@ -768,7 +768,8 @@ async fn test_user_notification_event() {
         notification_id: "notif-123".to_string(),
         title: "Room Invitation".to_string(),
         content: "You have been invited to room X".to_string(),
-        notification_type: "room_invitation".to_string(),
+        notification_type: synctv_core::models::NotificationType::RoomInvitation,
+        data: synctv_core::models::NotificationData::default(),
         timestamp: chrono::Utc::now(),
     };
 

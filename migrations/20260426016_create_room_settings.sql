@@ -1,11 +1,11 @@
 CREATE TABLE IF NOT EXISTS room_settings (
     room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE RESTRICT,
-    key VARCHAR(100) NOT NULL,
-    value TEXT NOT NULL DEFAULT '',
+    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
     version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (room_id, key)
+    PRIMARY KEY (room_id),
+    CHECK (jsonb_typeof(settings) = 'object')
 );
 
 CREATE TRIGGER update_room_settings_updated_at

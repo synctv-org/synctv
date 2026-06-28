@@ -56,7 +56,7 @@ database:
   read_port: 5432
 ```
 
-使用拆分字段且没有显式 `database.url` 时，SyncTV 会清空默认 URL 并从拆分字段构建连接。YAML 中 `user` 是 `username` 的别名；环境变量 `SYNCTV_DATABASE_USER` 是 `SYNCTV_DATABASE_USERNAME` 的别名。
+使用拆分字段且没有显式 `database.url` 时，SyncTV 会清空默认 URL 并从拆分字段构建连接。用户名字段统一使用 `username`，环境变量统一使用 `SYNCTV_DATABASE_USERNAME`。
 
 ## 连接池
 
@@ -116,7 +116,7 @@ redis:
   database: 0
 ```
 
-YAML 中 `user` 是 `username` 的别名；环境变量 `SYNCTV_REDIS_USER` 是 `SYNCTV_REDIS_USERNAME` 的别名。
+用户名字段统一使用 `username`，环境变量统一使用 `SYNCTV_REDIS_USERNAME`。
 
 ## Redis 超时和 pipeline buffer
 

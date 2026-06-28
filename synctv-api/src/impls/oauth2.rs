@@ -20,15 +20,15 @@
 //! 8. Backend returns JWT token to frontend
 
 use std::{collections::HashSet, sync::Arc};
-use synctv_core::models::{User, UserId, UserRole, UserStatus};
+use synctv_core::models::{OAuth2Provider, User, UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{OAuth2LinkResult, OAuth2Service, UserService};
 use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
     GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
-    LinkedProvider, ListAvailableProvidersResponse, OAuth2ProviderInstance, OAuth2UserInfo,
-    UnlinkProviderRequest, UnlinkProviderResponse,
+    LinkedProvider, ListAvailableProvidersResponse, OAuth2ProviderInstance, OAuth2ProviderType,
+    OAuth2UserInfo, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
 use super::ApiError;
@@ -42,15 +42,49 @@ pub struct OAuth2ApiImpl {
 }
 
 struct UnlinkProviderPlan {
-    provider_type: synctv_core::models::OAuth2Provider,
+    provider_type: OAuth2Provider,
     provider_instance_name: Option<String>,
     provider_user_id: Option<String>,
+    target_oauth2_identities: usize,
 }
 
 impl OAuth2ApiImpl {
     fn optional_non_empty_trimmed(value: &str) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    fn oauth2_provider_to_proto(provider: &OAuth2Provider) -> i32 {
+        (match provider {
+            OAuth2Provider::QQ => OAuth2ProviderType::Oauth2ProviderTypeQq,
+            OAuth2Provider::GitHub => OAuth2ProviderType::Oauth2ProviderTypeGithub,
+            OAuth2Provider::Google => OAuth2ProviderType::Oauth2ProviderTypeGoogle,
+            OAuth2Provider::Microsoft => OAuth2ProviderType::Oauth2ProviderTypeMicrosoft,
+            OAuth2Provider::Discord => OAuth2ProviderType::Oauth2ProviderTypeDiscord,
+            OAuth2Provider::Casdoor => OAuth2ProviderType::Oauth2ProviderTypeCasdoor,
+            OAuth2Provider::Logto => OAuth2ProviderType::Oauth2ProviderTypeLogto,
+            OAuth2Provider::Oidc => OAuth2ProviderType::Oauth2ProviderTypeOidc,
+            OAuth2Provider::Feishu => OAuth2ProviderType::Oauth2ProviderTypeFeishu,
+            OAuth2Provider::Gitee => OAuth2ProviderType::Oauth2ProviderTypeGitee,
+        }) as i32
+    }
+
+    fn proto_oauth2_provider(value: i32) -> Result<OAuth2Provider, ApiError> {
+        match OAuth2ProviderType::try_from(value) {
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeQq) => Ok(OAuth2Provider::QQ),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeGithub) => Ok(OAuth2Provider::GitHub),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeGoogle) => Ok(OAuth2Provider::Google),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeMicrosoft) => Ok(OAuth2Provider::Microsoft),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeDiscord) => Ok(OAuth2Provider::Discord),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeCasdoor) => Ok(OAuth2Provider::Casdoor),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeLogto) => Ok(OAuth2Provider::Logto),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeOidc) => Ok(OAuth2Provider::Oidc),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeFeishu) => Ok(OAuth2Provider::Feishu),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeGitee) => Ok(OAuth2Provider::Gitee),
+            Ok(OAuth2ProviderType::Oauth2ProviderTypeUnspecified) | Err(_) => Err(
+                ApiError::InvalidInput("OAuth2 provider type is required".to_string()),
+            ),
+        }
     }
 
     fn exchange_code_result_to_proto(
@@ -127,7 +161,7 @@ impl OAuth2ApiImpl {
 
     fn oauth2_identity_unlink_counts(
         linked_mappings: &[synctv_core::models::oauth2_client::UserOAuthProviderMapping],
-        provider_type: &synctv_core::models::OAuth2Provider,
+        provider_type: &OAuth2Provider,
         provider_instance_name: Option<&str>,
         provider_user_id: Option<&str>,
     ) -> (usize, usize) {
@@ -135,7 +169,7 @@ impl OAuth2ApiImpl {
             .iter()
             .fold((0_usize, 0_usize), |counts, mapping| {
                 let (mut target, mut remaining) = counts;
-                let same_provider = mapping.provider == provider_type.as_str();
+                let same_provider = &mapping.provider == provider_type;
                 let will_unlink = same_provider
                     && match provider_user_id {
                         Some(target_provider_user_id) => {
@@ -157,7 +191,7 @@ impl OAuth2ApiImpl {
 
     fn active_oauth2_mappings<'a>(
         linked_mappings: &'a [synctv_core::models::oauth2_client::UserOAuthProviderMapping],
-        active_provider_keys: &HashSet<(String, String)>,
+        active_provider_keys: &HashSet<(String, OAuth2Provider)>,
     ) -> Vec<&'a synctv_core::models::oauth2_client::UserOAuthProviderMapping> {
         linked_mappings
             .iter()
@@ -177,7 +211,6 @@ impl OAuth2ApiImpl {
         provider_instance_name: Option<&str>,
         provider_user_id: Option<&str>,
     ) -> Result<UnlinkProviderPlan, ApiError> {
-        use synctv_core::models::OAuth2Provider;
         let provider_type = OAuth2Provider::from_str_name(provider)
             .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
         let provider_instance_name = provider_instance_name
@@ -239,6 +272,7 @@ impl OAuth2ApiImpl {
             provider_type,
             provider_instance_name,
             provider_user_id,
+            target_oauth2_identities,
         })
     }
 
@@ -274,18 +308,22 @@ impl OAuth2ApiImpl {
 
         Ok(UnlinkResult {
             success: true,
-            removed_count: 1,
+            removed_count: i32::try_from(plan.target_oauth2_identities).map_err(|_| {
+                ApiError::Internal("removed OAuth2 identity count exceeds i32::MAX".to_string())
+            })?,
         })
     }
 
-    async fn active_oauth2_provider_keys(&self) -> Result<HashSet<(String, String)>, ApiError> {
+    async fn active_oauth2_provider_keys(
+        &self,
+    ) -> Result<HashSet<(String, OAuth2Provider)>, ApiError> {
         Ok(self
             .oauth2_service
             .list_available_instances()
             .await
             .map_err(ApiError::from)?
             .into_iter()
-            .map(|(name, provider, _)| (name, provider.as_str().to_string()))
+            .map(|(name, provider, _)| (name, provider))
             .collect())
     }
 
@@ -693,7 +731,7 @@ impl OAuth2ApiImpl {
             .into_iter()
             .map(|(name, provider_type, signup_policy)| ProviderInfo {
                 name,
-                provider_type: provider_type.as_str().to_string(),
+                provider_type,
                 signup_enabled: signup_policy.enable_signup,
                 signup_need_review: signup_policy.signup_need_review,
             })
@@ -744,10 +782,11 @@ impl OAuth2ApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let provider_user_id = Self::optional_non_empty_trimmed(&req.provider_user_id);
         let provider_instance_name = Self::optional_non_empty_trimmed(&req.provider_instance_name);
+        let provider = Self::proto_oauth2_provider(req.provider)?;
         let plan = self
             .plan_unlink_provider(
                 user_id,
-                &req.provider,
+                provider.as_str(),
                 provider_instance_name.as_deref(),
                 provider_user_id.as_deref(),
             )
@@ -827,7 +866,7 @@ pub struct ExchangeCodeResult {
 /// `OAuth2` provider information
 pub struct ProviderInfo {
     pub name: String,
-    pub provider_type: String,
+    pub provider_type: OAuth2Provider,
     pub signup_enabled: bool,
     pub signup_need_review: bool,
 }
@@ -840,7 +879,7 @@ pub struct UnlinkResult {
 
 /// Linked `OAuth2` provider information
 pub struct LinkedProviderInfo {
-    pub provider_type: String,
+    pub provider_type: OAuth2Provider,
     pub provider_instance_name: String,
     pub provider_issuer: Option<String>,
     pub provider_user_id: String,
@@ -885,7 +924,7 @@ impl From<ProviderInfo> for OAuth2ProviderInstance {
     fn from(info: ProviderInfo) -> Self {
         Self {
             name: info.name,
-            r#type: info.provider_type,
+            r#type: OAuth2ApiImpl::oauth2_provider_to_proto(&info.provider_type),
             signup_enabled: info.signup_enabled,
             signup_need_review: info.signup_need_review,
         }
@@ -896,7 +935,7 @@ impl From<ProviderInfo> for OAuth2ProviderInstance {
 impl From<LinkedProviderInfo> for LinkedProvider {
     fn from(info: LinkedProviderInfo) -> Self {
         Self {
-            provider_type: info.provider_type,
+            provider_type: OAuth2ApiImpl::oauth2_provider_to_proto(&info.provider_type),
             provider_username: info.provider_username,
             linked_at: info.linked_at,
             provider_instance_name: info.provider_instance_name,
@@ -1107,7 +1146,7 @@ mod tests {
     #[test]
     fn test_oauth2_request_validation_rejects_too_long_provider_user_id() {
         let err = crate::impls::validate_proto_request(&UnlinkProviderRequest {
-            provider: "github".to_string(),
+            provider: synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32,
             provider_user_id: "a".repeat(257),
             provider_instance_name: "github-main".to_string(),
             verification_id: "verification-id".to_string(),
@@ -1126,7 +1165,7 @@ mod tests {
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,
-                provider: "github".to_string(),
+                provider: OAuth2Provider::GitHub,
                 provider_instance_name: "github-main".to_string(),
                 provider_issuer: Some("https://github.com".to_string()),
                 provider_user_id: "github-a".to_string(),
@@ -1139,7 +1178,7 @@ mod tests {
             },
             UserOAuthProviderMapping {
                 id: 2,
-                provider: "github".to_string(),
+                provider: OAuth2Provider::GitHub,
                 provider_instance_name: "github-backup".to_string(),
                 provider_issuer: Some("https://github.example.com".to_string()),
                 provider_user_id: "github-b".to_string(),
@@ -1172,7 +1211,7 @@ mod tests {
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,
-                provider: "github".to_string(),
+                provider: OAuth2Provider::GitHub,
                 provider_instance_name: "github-main".to_string(),
                 provider_issuer: Some("https://github.com".to_string()),
                 provider_user_id: "github-a".to_string(),
@@ -1185,7 +1224,7 @@ mod tests {
             },
             UserOAuthProviderMapping {
                 id: 2,
-                provider: "github".to_string(),
+                provider: OAuth2Provider::GitHub,
                 provider_instance_name: "github-backup".to_string(),
                 provider_issuer: Some("https://github.example.com".to_string()),
                 provider_user_id: "github-b".to_string(),
@@ -1198,7 +1237,7 @@ mod tests {
             },
             UserOAuthProviderMapping {
                 id: 3,
-                provider: "google".to_string(),
+                provider: OAuth2Provider::Google,
                 provider_instance_name: "google".to_string(),
                 provider_issuer: Some("https://accounts.google.com".to_string()),
                 provider_user_id: "google-a".to_string(),
@@ -1225,13 +1264,13 @@ mod tests {
     #[test]
     fn test_active_oauth2_mappings_filters_missing_provider_instances() {
         use synctv_core::models::oauth2_client::UserOAuthProviderMapping;
-        use synctv_core::models::UserId;
+        use synctv_core::models::{OAuth2Provider, UserId};
 
         let now = chrono::Utc::now();
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,
-                provider: "github".to_string(),
+                provider: OAuth2Provider::GitHub,
                 provider_instance_name: "github-main".to_string(),
                 provider_issuer: Some("https://github.com".to_string()),
                 provider_user_id: "github-a".to_string(),
@@ -1244,7 +1283,7 @@ mod tests {
             },
             UserOAuthProviderMapping {
                 id: 2,
-                provider: "google".to_string(),
+                provider: OAuth2Provider::Google,
                 provider_instance_name: "removed-google".to_string(),
                 provider_issuer: Some("https://accounts.google.com".to_string()),
                 provider_user_id: "google-a".to_string(),
@@ -1256,7 +1295,7 @@ mod tests {
                 updated_at: now,
             },
         ];
-        let active = HashSet::from([("github-main".to_string(), "github".to_string())]);
+        let active = HashSet::from([("github-main".to_string(), OAuth2Provider::GitHub)]);
 
         let filtered = super::OAuth2ApiImpl::active_oauth2_mappings(&mappings, &active);
 
@@ -1267,7 +1306,7 @@ mod tests {
     #[test]
     fn test_linked_provider_proto_includes_provider_user_id() {
         let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
-            provider_type: "github".to_string(),
+            provider_type: synctv_core::models::OAuth2Provider::GitHub,
             provider_instance_name: "github-main".to_string(),
             provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_123".to_string(),
@@ -1276,7 +1315,10 @@ mod tests {
         }
         .into();
 
-        assert_eq!(proto.provider_type, "github");
+        assert_eq!(
+            proto.provider_type,
+            synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
+        );
         assert_eq!(proto.provider_instance_name, "github-main");
         assert_eq!(proto.provider_issuer.as_deref(), Some("https://github.com"));
         assert_eq!(proto.provider_user_id, "gh_123");
@@ -1286,7 +1328,7 @@ mod tests {
     #[test]
     fn test_linked_provider_proto_preserves_missing_provider_issuer() {
         let proto: synctv_proto::client::LinkedProvider = super::LinkedProviderInfo {
-            provider_type: "github".to_string(),
+            provider_type: synctv_core::models::OAuth2Provider::GitHub,
             provider_instance_name: "github-main".to_string(),
             provider_issuer: None,
             provider_user_id: "gh_123".to_string(),

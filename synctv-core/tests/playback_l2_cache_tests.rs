@@ -26,7 +26,7 @@ use synctv_core::{
 };
 use synctv_core_testing::{
     redis_connection_manager, start_redis as start_test_redis,
-    start_redis_client_manager_with_label,
+    start_redis_client_manager_with_label, timestamped_l2_envelope,
 };
 use synctv_core_testing::{TestOptionExt, TestResultExt};
 
@@ -117,7 +117,7 @@ async fn attach_test_media(
         .checked("playback state should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     playback_repo
         .update(&state)
@@ -289,7 +289,7 @@ async fn test_playback_state_l2_miss_reads_from_db() {
         r#"SELECT state.room_id AS "room_id!: RoomId",
                 state.playing_media_id AS "playing_media_id?: MediaId",
                 state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
-                state.target AS "target!",
+                state.target AS "target?: synctv_core::models::ProviderTarget",
                 state.current_progress_id AS "current_progress_id?",
                 COALESCE(progress."position", 0.0) AS "position!",
                 state.speed AS "speed!",
@@ -634,8 +634,8 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     newer_state.position = 100.0;
     newer_state.updated_at = Utc::now();
 
-    let newer_json = serde_json::to_string(&newer_state).checked("test operation should succeed");
     let newer_ts = newer_state.updated_at.timestamp_millis();
+    let newer_json = timestamped_l2_envelope(&newer_state, newer_ts);
 
     // Set newer state first
     let was_set = l2
@@ -650,8 +650,8 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
     older_state.position = 50.0;
     older_state.updated_at = Utc::now() - chrono::Duration::seconds(10);
 
-    let older_json = serde_json::to_string(&older_state).checked("test operation should succeed");
     let older_ts = older_state.updated_at.timestamp_millis();
+    let older_json = timestamped_l2_envelope(&older_state, older_ts);
 
     // Try to set older state - should be rejected
     let was_set = l2
@@ -666,8 +666,10 @@ async fn test_playback_state_l2_version_check_prevents_stale_overwrite() {
         .await
         .checked("test operation should succeed")
         .checked("test operation should succeed");
-    let stored: synctv_core::models::RoomPlaybackState =
+    let stored: serde_json::Value =
         serde_json::from_str(&from_l2).checked("test operation should succeed");
+    let stored: synctv_core::models::RoomPlaybackState =
+        serde_json::from_value(stored["payload"].clone()).checked("test operation should succeed");
     assert_eq!(stored.version, 10, "Version should still be 10");
 }
 

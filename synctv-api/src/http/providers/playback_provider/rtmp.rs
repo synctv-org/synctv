@@ -18,11 +18,13 @@ use crate::http::{
 };
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RtmpVersionPath {
     pub version: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RtmpSegmentPath {
     pub version: String,
     pub segment_name: String,
@@ -205,11 +207,11 @@ pub async fn get_rtmp_hls_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segment_name}",
+        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
         tag = "RTMP Playback Provider",
         params(
             ("version" = String, Path),
-            ("segment_name" = String, Path),
+            ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),
@@ -243,11 +245,11 @@ pub fn get_rtmp_hls_segment(
     feature = "openapi",
     utoipa::path(
         head,
-        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segment_name}",
+        path = "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
         tag = "RTMP Playback Provider",
         params(
             ("version" = String, Path),
-            ("segment_name" = String, Path),
+            ("segmentName" = String, Path),
             ("sig" = String, Query),
             ("uid" = String, Query),
             ("rid" = String, Query),

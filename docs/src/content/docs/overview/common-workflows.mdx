@@ -44,8 +44,8 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 <Steps>
 1. 创建房间，设置清晰名称和说明。
 2. 根据需要设置房间密码。
-3. 如果是半公开房间，启用 `require_approval`。
-4. 设置 `max_members`，避免超过服务和上游 Provider 能力。
+3. 如果是半公开房间，启用 `requireApproval`。
+4. 设置 `maxMembers`，避免超过服务和上游 Provider 能力。
 5. 检查 member/guest 默认权限，不要把播放控制、成员封禁等管理权限开放给游客。
 6. 用普通成员账号加入验证一次。
 </Steps>
@@ -97,9 +97,9 @@ import { Aside, Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 2. 启动带 OpenAPI 的服务，导出 `/api-docs/openapi.json`。
 3. 生成 SDK 或手写最小请求。
 4. 实现登录和 refresh token 流程。
-5. 创建 WebSocket ticket 并连接 `/ws/rooms/{room_id}`。
+5. 创建 WebSocket ticket 并连接 `/ws/rooms/{roomId}`。
 6. 用 [Realtime API](../../develop/realtime-api/) 订阅播放状态、播放信息、房间设置和成员列表。
-7. 按 [错误参考](../../reference/errors/) 处理 `status`、`code`、`request_id` 和 `Retry-After`。
+7. 按 [错误参考](../../reference/errors/) 处理 `status`、`code`、`requestId` 和 `Retry-After`。
 </Steps>
 
 ### 新增或修改 API

@@ -17,7 +17,8 @@ use synctv_core::{
     models::{
         room::AutoPlaySettings, room_settings::AutoPlay, Media, MediaId, PlayMode,
         PlaybackExternalMedia, PlaybackMedia, PlaybackMediaProvider, Playlist, PlaylistId,
-        ProviderInstance, RoomId, RoomSettings, SourceProvider, User, UserId, UserRole, UserStatus,
+        ProviderInstance, ProviderTarget, RoomId, RoomSettings, SourceProvider, User, UserId,
+        UserRole, UserStatus,
     },
     provider::{
         DirectoryItem, DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem,
@@ -115,18 +116,22 @@ fn make_settings_with_mode(mode: PlayMode) -> RoomSettings {
     }
 }
 
-fn dynamic_target(cursor: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "relative_path": cursor }))
-        .checked("dynamic playback target should serialize")
+fn alist_target(cursor: &str) -> ProviderTarget {
+    ProviderTarget::alist(cursor.to_string())
 }
 
-fn decode_dynamic_target(target: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(target)
-        .checked("dynamic playback target should deserialize")
-        .get("relative_path")
-        .and_then(serde_json::Value::as_str)
-        .checked("dynamic playback target should contain provider cursor")
-        .to_string()
+fn decode_alist_target(target: &ProviderTarget) -> String {
+    match target {
+        ProviderTarget::Alist(target) => target.relative_path.clone(),
+        ProviderTarget::Emby(_) => panic!("expected alist target"),
+    }
+}
+
+fn assert_alist_target(target: Option<&ProviderTarget>, expected: &str) {
+    let Some(ProviderTarget::Alist(target)) = target else {
+        panic!("expected alist target");
+    };
+    assert_eq!(target.relative_path, expected);
 }
 
 /// Helper: create a top-level playlist for a room.
@@ -288,7 +293,7 @@ impl TestDynamicProvider {
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             is_live: Some(false),
-            metadata: std::collections::HashMap::new(),
+            metadata: synctv_core::models::PlaybackMetadata::default(),
         }
     }
 
@@ -298,9 +303,7 @@ impl TestDynamicProvider {
             name,
             item_type: ItemType::Media,
             source_config: synctv_core_testing::alist_file_media_source_config("alist", path),
-            metadata: serde_json::json!({}),
-            provider_data: serde_json::json!({}),
-            target: dynamic_target(path),
+            target: alist_target(path),
         }
     }
 }
@@ -314,12 +317,14 @@ impl MediaProvider for TestDynamicProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &serde_json::Value,
+        source_config: &synctv_core::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        let path = source_config
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing path".to_string()))?;
+        let synctv_core::models::MediaSourceConfig::Alist(source_config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Missing Alist source_config".to_string(),
+            ));
+        };
+        let path = source_config.path.as_str();
         Ok(self.playback_result_for(path))
     }
 
@@ -334,14 +339,14 @@ impl DynamicFolder for TestDynamicProvider {
         &self,
         ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        target: Option<&[u8]>,
+        target: Option<&ProviderTarget>,
         _query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         if self.require_credential_encryption && ctx.credential_encryption.is_none() {
             return Err(ProviderError::EncryptionRequired(self.provider_type));
         }
         let items = match target
-            .map(decode_dynamic_target)
+            .map(decode_alist_target)
             .as_deref()
             .unwrap_or_default()
         {
@@ -352,7 +357,7 @@ impl DynamicFolder for TestDynamicProvider {
                         .trim_start_matches('/')
                         .to_string(),
                     item_type: ItemType::Media,
-                    target: dynamic_target(self.first_episode_path()),
+                    target: alist_target(self.first_episode_path()),
                     size: None,
                     thumbnail: None,
                     description: None,
@@ -364,7 +369,7 @@ impl DynamicFolder for TestDynamicProvider {
                         .trim_start_matches('/')
                         .to_string(),
                     item_type: ItemType::Media,
-                    target: dynamic_target(self.second_episode_path()),
+                    target: alist_target(self.second_episode_path()),
                     size: None,
                     thumbnail: None,
                     description: None,
@@ -380,9 +385,9 @@ impl DynamicFolder for TestDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        target: &[u8],
+        target: &ProviderTarget,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let cursor = decode_dynamic_target(target);
+        let cursor = decode_alist_target(target);
         Ok(match cursor.as_str() {
             path if path == self.first_episode_path() || path == self.second_episode_path() => {
                 Some(Self::item(&cursor))
@@ -395,11 +400,10 @@ impl DynamicFolder for TestDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _playing_media: &Media,
-        target: &[u8],
+        target: &ProviderTarget,
         play_mode: PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let cursor = decode_dynamic_target(target);
+        let cursor = decode_alist_target(target);
         Ok(match (cursor.as_str(), play_mode) {
             (path, PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::Shuffle)
                 if path == self.first_episode_path() =>
@@ -427,7 +431,7 @@ async fn register_alist_provider_instance(room_service: &RoomService, instance_i
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("alist", instance_id, &serde_json::json!({}))
+        .create_provider_with_default_config("alist", instance_id)
         .await
     {
         std::panic::panic_any(format!(
@@ -443,7 +447,7 @@ async fn register_alist_provider_instance_requiring_encryption(
     if let Err(error) = room_service
         .media_service()
         .providers_manager()
-        .create_provider("alist", instance_id, &serde_json::json!({}))
+        .create_provider_with_default_config("alist", instance_id)
         .await
     {
         std::panic::panic_any(format!(
@@ -565,7 +569,7 @@ async fn test_sequential_advance_to_next() {
     // Set currently playing to media1
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -612,7 +616,7 @@ async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media2.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media2.id), None, None)
         .await
         .checked("test operation should succeed");
     playback
@@ -620,7 +624,7 @@ async fn test_sequential_advance_restarts_next_media_with_saved_progress() {
         .await
         .checked("test operation should succeed");
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
     playback
@@ -675,7 +679,7 @@ async fn test_sequential_end_of_playlist_persists_paused_state() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
     playback
@@ -734,7 +738,7 @@ async fn test_repeat_one_replays_current() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -780,7 +784,7 @@ async fn test_repeat_all_wraps_around_at_end() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media3.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media3.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -828,7 +832,7 @@ async fn test_repeat_all_middle_advances_to_next() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -874,7 +878,7 @@ async fn test_shuffle_with_single_item_keeps_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -921,7 +925,7 @@ async fn test_shuffle_with_multiple_items_excludes_current_media() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -962,7 +966,7 @@ async fn test_auto_play_disabled_returns_none() {
 
     let playback = room_service.playback_service();
     playback
-        .switch(room.id, owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -1229,7 +1233,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
 
     room_service
         .playback_service()
-        .switch(room.id, room_owner.id, Some(media1.id), None, Vec::new())
+        .switch(room.id, room_owner.id, Some(media1.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -1295,7 +1299,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
             owner.id,
             None,
             Some(playlist.id),
-            dynamic_target("/episode-1.mp4"),
+            Some(alist_target("/episode-1.mp4")),
         )
         .await
         .checked("test operation should succeed");
@@ -1309,12 +1313,7 @@ async fn test_dynamic_playlist_sequential_advances_by_target() {
     let state = result.checked("dynamic playlist should advance to next item");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value =
-        serde_json::from_slice(&state.target).checked("test operation should succeed");
-    assert_eq!(
-        target,
-        serde_json::json!({"relative_path":"/episode-2.mp4"})
-    );
+    assert_alist_target(state.target.as_ref(), "/episode-2.mp4");
     assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!(state.is_playing);
 }
@@ -1378,7 +1377,7 @@ async fn test_switch_dynamic_playlist_rejects_inactive_creator() {
             room_owner.id,
             None,
             Some(playlist.id),
-            dynamic_target("/episode-1.mp4"),
+            Some(alist_target("/episode-1.mp4")),
         )
         .await;
 
@@ -1443,7 +1442,7 @@ async fn test_play_next_stops_when_dynamic_playlist_creator_becomes_inactive() {
             room_owner.id,
             None,
             Some(playlist.id),
-            dynamic_target("/episode-1.mp4"),
+            Some(alist_target("/episode-1.mp4")),
         )
         .await
         .checked("test operation should succeed");
@@ -1514,7 +1513,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
             owner.id,
             None,
             Some(playlist.id),
-            dynamic_target("/episode-2.mp4"),
+            Some(alist_target("/episode-2.mp4")),
         )
         .await
         .checked("test operation should succeed");
@@ -1528,12 +1527,7 @@ async fn test_dynamic_playlist_repeat_all_wraps_to_first_item() {
     let state = result.checked("dynamic playlist repeat-all should wrap to first item");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value =
-        serde_json::from_slice(&state.target).checked("test operation should succeed");
-    assert_eq!(
-        target,
-        serde_json::json!({"relative_path":"/episode-1.mp4"})
-    );
+    assert_alist_target(state.target.as_ref(), "/episode-1.mp4");
 }
 
 #[tokio::test]
@@ -1581,7 +1575,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
             owner.id,
             None,
             Some(playlist.id),
-            dynamic_target("/bound-episode-1.mp4"),
+            Some(alist_target("/bound-episode-1.mp4")),
         )
         .await
         .checked("test operation should succeed");
@@ -1595,12 +1589,7 @@ async fn test_dynamic_playlist_play_next_uses_bound_provider_instance() {
     let state = result.checked("dynamic playlist should advance using the bound provider instance");
     assert!(state.playing_media_id.is_none());
     assert_eq!(state.playing_playlist_id, Some(playlist.id));
-    let target: serde_json::Value =
-        serde_json::from_slice(&state.target).checked("test operation should succeed");
-    assert_eq!(
-        target,
-        serde_json::json!({"relative_path":"/bound-episode-2.mp4"})
-    );
+    assert_alist_target(state.target.as_ref(), "/bound-episode-2.mp4");
 }
 
 #[tokio::test]

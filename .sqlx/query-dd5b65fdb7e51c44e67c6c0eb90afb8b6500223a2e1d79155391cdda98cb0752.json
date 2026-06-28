@@ -1,0 +1,141 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO room_playback_progress (\n                room_id,\n                media_id,\n                playlist_id,\n                target,\n                target_hash,\n                \"position\",\n                version\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, 0)\n            ON CONFLICT (\n                room_id,\n                COALESCE(media_id, 0),\n                COALESCE(playlist_id, 0),\n                target_hash\n            )\n            DO UPDATE SET target = EXCLUDED.target,\n                          \"position\" = EXCLUDED.\"position\",\n                          version = room_playback_progress.version + 1\n            RETURNING id,\n                      room_id AS \"room_id: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target AS \"target?: crate::models::ProviderTarget\",\n                      target_hash,\n                      \"position\",\n                      created_at,\n                      updated_at,\n                      version\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "media_id?: MediaId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "media_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "playlist_id?: PlaylistId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "playlist_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target?: crate::models::ProviderTarget",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "target_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "position",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_playback_progress",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "dd5b65fdb7e51c44e67c6c0eb90afb8b6500223a2e1d79155391cdda98cb0752"
+}

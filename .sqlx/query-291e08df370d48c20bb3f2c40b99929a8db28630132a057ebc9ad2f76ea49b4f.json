@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO room_settings (room_id, settings, version)\n                VALUES ($1, $2, 1)\n                ON CONFLICT (room_id) DO NOTHING\n                RETURNING version\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_settings",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "291e08df370d48c20bb3f2c40b99929a8db28630132a057ebc9ad2f76ea49b4f"
+}

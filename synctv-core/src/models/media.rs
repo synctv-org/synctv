@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -8,6 +7,7 @@ use super::file_storage::FileReferenceTarget;
 use super::id::{MediaId, PlaylistId, RoomId, UserId};
 use super::normalize_provider_instance_name_owned;
 use super::query::SortDirection;
+use super::{MediaSourceConfig, ProviderTarget};
 
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,12 +75,12 @@ impl FromStr for SourceProvider {
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "direct_url" | "directurl" => Ok(Self::DirectUrl),
+            "direct_url" => Ok(Self::DirectUrl),
             "bilibili" => Ok(Self::Bilibili),
             "alist" => Ok(Self::Alist),
             "emby" => Ok(Self::Emby),
             "rtmp" => Ok(Self::Rtmp),
-            "live_proxy" | "liveproxy" => Ok(Self::LiveProxy),
+            "live_proxy" => Ok(Self::LiveProxy),
             other => Err(format!("Unknown provider type: {other}")),
         }
     }
@@ -210,11 +210,6 @@ impl std::fmt::Display for SourceProvider {
 }
 
 /// Media file (video/audio)
-///
-/// Note: `source_config` is provider-specific and should only be parsed by the provider itself.
-/// - For direct type: contains `PlaybackResult` (with danmakus in PlaybackInfo.danmakus)
-/// - For provider types: contains provider-specific config (e.g., `BilibiliConfig`)
-///   Provider's `generate_playback()` will deserialize `source_config` and return `PlaybackResult`
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Media {
     pub id: MediaId,
@@ -226,9 +221,7 @@ pub struct Media {
     pub description: String,
     pub position: f64,
     pub source_provider: SourceProvider,
-    /// Provider-specific configuration (JSONB)
-    /// Should ONLY be parsed by the provider implementation, NOT by Media model
-    pub source_config: JsonValue,
+    pub source_config: MediaSourceConfig,
     /// Provider instance name (e.g., "`bilibili_main`", "`alist_company`")
     /// Used to look up the provider from the registry at playback time.
     /// `None` means use the default local instance for `source_provider`.
@@ -249,7 +242,7 @@ pub struct FromProviderParams {
     pub creator_id: Option<UserId>,
     pub name: String,
     pub description: String,
-    pub source_config: JsonValue,
+    pub source_config: MediaSourceConfig,
     pub source_provider: SourceProvider,
     pub provider_instance_name: Option<String>,
     pub position: f64,
@@ -312,13 +305,7 @@ impl Media {
 
         let source_config = super::MediaSourceConfig::DirectUrl(
             super::DirectUrlMediaSourceConfig::single(default_url.to_string(), default_headers),
-        )
-        .into_provider_json()
-        .map_err(|error| {
-            crate::Error::Internal(format!(
-                "Failed to serialize DirectUrl source_config: {error}"
-            ))
-        })?;
+        );
 
         let now = Utc::now();
         Ok(Self {
@@ -427,9 +414,13 @@ pub struct PlaybackResult {
     #[serde(default)]
     pub is_live: bool,
 
+    /// Provider-facing playback target for dynamic playlist items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<ProviderTarget>,
+
     /// Media-level provider metadata for display-only, provider-specific fields.
     #[serde(default)]
-    pub metadata: std::collections::HashMap<String, JsonValue>,
+    pub metadata: PlaybackMetadata,
 }
 
 /// Complete playback information for a single mode
@@ -460,6 +451,7 @@ pub struct PlaybackInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackMedia {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -473,7 +465,12 @@ pub struct PlaybackMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "media", rename_all = "snake_case")]
+#[serde(
+    tag = "provider",
+    content = "media",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackMediaProvider {
     External(PlaybackExternalMedia),
     Alist(PlaybackAlistMedia),
@@ -485,6 +482,7 @@ pub enum PlaybackMediaProvider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackExternalMedia {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -492,7 +490,11 @@ pub struct PlaybackExternalMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackAlistMedia {
     Direct {
         url: String,
@@ -520,7 +522,11 @@ pub enum PlaybackAlistMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackBilibiliMedia {
     Direct {
         url: String,
@@ -560,7 +566,11 @@ pub enum PlaybackBilibiliMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackDirectUrlMedia {
     Direct {
         url: String,
@@ -588,7 +598,11 @@ pub enum PlaybackDirectUrlMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackEmbyMedia {
     Direct {
         url: String,
@@ -616,7 +630,11 @@ pub enum PlaybackEmbyMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackRtmpMedia {
     FlvStream {
         version: String,
@@ -633,7 +651,11 @@ pub enum PlaybackRtmpMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackLiveProxyMedia {
     FlvStream {
         version: String,
@@ -650,6 +672,7 @@ pub enum PlaybackLiveProxyMedia {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackSubtitle {
     pub name: String,
     pub language: String,
@@ -660,7 +683,12 @@ pub struct PlaybackSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "subtitle", rename_all = "snake_case")]
+#[serde(
+    tag = "provider",
+    content = "subtitle",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackSubtitleProvider {
     External(PlaybackExternalSubtitle),
     Alist(PlaybackAlistSubtitle),
@@ -670,6 +698,7 @@ pub enum PlaybackSubtitleProvider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackExternalSubtitle {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -677,6 +706,7 @@ pub struct PlaybackExternalSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackAlistSubtitle {
     pub version: String,
     pub expires_at: i64,
@@ -688,6 +718,7 @@ pub struct PlaybackAlistSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackBilibiliSubtitle {
     pub version: String,
     pub expires_at: i64,
@@ -699,6 +730,7 @@ pub struct PlaybackBilibiliSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackDirectUrlSubtitle {
     pub version: String,
     pub expires_at: i64,
@@ -710,6 +742,7 @@ pub struct PlaybackDirectUrlSubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackEmbySubtitle {
     pub version: String,
     pub expires_at: i64,
@@ -721,6 +754,7 @@ pub struct PlaybackEmbySubtitle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackDanmaku {
     pub name: String,
     pub format: Option<String>,
@@ -729,13 +763,19 @@ pub struct PlaybackDanmaku {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "provider", content = "danmaku", rename_all = "snake_case")]
+#[serde(
+    tag = "provider",
+    content = "danmaku",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackDanmakuProvider {
     External(PlaybackExternalDanmaku),
     Bilibili(PlaybackBilibiliDanmaku),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackExternalDanmaku {
     pub url: String,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -743,7 +783,11 @@ pub struct PlaybackExternalDanmaku {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum PlaybackBilibiliDanmaku {
     File {
         version: String,
@@ -761,6 +805,7 @@ pub enum PlaybackBilibiliDanmaku {
 
 /// Media-level metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlaybackMediaMetadata {
     /// Resolution (e.g., "1920x1080", "1280x720")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -777,10 +822,203 @@ pub struct PlaybackMediaMetadata {
     /// Frame rate
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps: Option<i32>,
+}
 
-    /// Additional metadata
-    #[serde(flatten)]
-    pub extra: std::collections::HashMap<String, JsonValue>,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_thumbnail: Option<PlaybackProxyResourceMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_subtitle_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_preview_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transcoding_tasks: Vec<AlistTranscodingTaskMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_preview: Option<AlistVideoPreviewMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_live: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<MediaId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<RoomId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bilibili: Option<BilibiliPlaybackMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emby: Option<EmbyPlaybackMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackProxyResourceMetadata {
+    pub version: String,
+    pub expires_at: i64,
+    pub resource: PlaybackProxyResource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlaybackProxyResource {
+    Thumbnail,
+}
+
+impl PlaybackProxyResource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Thumbnail => "thumbnail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlistTranscodingTaskMetadata {
+    pub mode_name: String,
+    pub template_id: String,
+    pub template_name: String,
+    pub template_width: u64,
+    pub template_height: u64,
+    pub stage: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlistVideoPreviewMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    pub transcoding_count: usize,
+    pub subtitle_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliPlaybackMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bvid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_buffer_time: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "BilibiliDashManifests::is_empty")]
+    pub dash_manifests: BilibiliDashManifests,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashManifests {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dash: Option<synctv_media_providers::grpc::bilibili::DashInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hevc: Option<synctv_media_providers::grpc::bilibili::DashInfo>,
+}
+
+impl BilibiliDashManifests {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.dash.is_none() && self.hevc.is_none()
+    }
+
+    pub fn set(
+        &mut self,
+        mode: BilibiliDashManifestSlot,
+        manifest: synctv_media_providers::grpc::bilibili::DashInfo,
+    ) {
+        match mode {
+            BilibiliDashManifestSlot::Dash => self.dash = Some(manifest),
+            BilibiliDashManifestSlot::Hevc => self.hevc = Some(manifest),
+        }
+    }
+
+    #[must_use]
+    pub const fn get(
+        &self,
+        mode: BilibiliDashManifestSlot,
+    ) -> Option<&synctv_media_providers::grpc::bilibili::DashInfo> {
+        match mode {
+            BilibiliDashManifestSlot::Dash => self.dash.as_ref(),
+            BilibiliDashManifestSlot::Hevc => self.hevc.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BilibiliDashManifestSlot {
+    Dash,
+    Hevc,
+}
+
+impl BilibiliDashManifestSlot {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "dash" => Some(Self::Dash),
+            "hevc" => Some(Self::Hevc),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dash => "dash",
+            Self::Hevc => "hevc",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbyPlaybackMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub season_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_session_id: Option<String>,
 }
 
 // Helper implementations
@@ -808,7 +1046,8 @@ impl PlaybackResult {
             default_mode: mode_name.to_string(),
             duration_seconds: None,
             is_live: false,
-            metadata: std::collections::HashMap::new(),
+            target: None,
+            metadata: PlaybackMetadata::default(),
         }
     }
 
@@ -832,14 +1071,15 @@ impl PlaybackResult {
             default_mode: None,
             duration_seconds: None,
             is_live: false,
-            metadata: std::collections::HashMap::new(),
+            target: None,
+            metadata: PlaybackMetadata::default(),
         }
     }
 
-    /// Add metadata field
+    /// Replace metadata.
     #[must_use]
-    pub fn with_metadata(mut self, key: String, value: JsonValue) -> Self {
-        self.metadata.insert(key, value);
+    pub fn with_metadata(mut self, metadata: PlaybackMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -866,7 +1106,8 @@ pub struct PlaybackResultBuilder {
     default_mode: Option<String>,
     duration_seconds: Option<f64>,
     is_live: bool,
-    metadata: std::collections::HashMap<String, JsonValue>,
+    target: Option<ProviderTarget>,
+    metadata: PlaybackMetadata,
 }
 
 impl PlaybackResultBuilder {
@@ -915,10 +1156,16 @@ impl PlaybackResultBuilder {
         self
     }
 
-    /// Add metadata
     #[must_use]
-    pub fn add_metadata(mut self, key: String, value: JsonValue) -> Self {
-        self.metadata.insert(key, value);
+    pub fn target(mut self, target: ProviderTarget) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// Replace metadata.
+    #[must_use]
+    pub fn metadata(mut self, metadata: PlaybackMetadata) -> Self {
+        self.metadata = metadata;
         self
     }
 
@@ -953,6 +1200,7 @@ impl PlaybackResultBuilder {
             default_mode,
             duration_seconds: self.duration_seconds,
             is_live: self.is_live,
+            target: self.target,
             metadata: self.metadata,
         })
     }
@@ -1255,7 +1503,6 @@ impl PlaybackMediaMetadata {
             codec: Some(codec),
             bitrate: None,
             fps: None,
-            extra: std::collections::HashMap::new(),
         }
     }
 }

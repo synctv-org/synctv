@@ -64,10 +64,10 @@ See [Proxy Slice Cache](../../configuration/proxy-slice-cache/).
 
 New clients observe playback resources over Realtime:
 
-- `playback_state`: current position, state, and version.
+- `playbackState`: current position, state, and version.
 - `playback`: playback URLs, headers, subtitles, and expiry.
 
-On reconnect, fetch `playback_state` and observe `playback` with the current `playback_client_profile`. Playback info is player-ready data for the current source and expires with its URLs.
+On reconnect, fetch `playbackState` and observe `playback` with the current `playbackClientProfile`. Playback info is player-ready data for the current source and expires with its URLs.
 
 See [Realtime API](../../develop/realtime-api/).
 

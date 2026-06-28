@@ -112,6 +112,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanAdminUser {
     id: String,
     username: String,
@@ -123,6 +124,7 @@ pub(in crate::cli) struct HumanAdminUser {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoom {
     id: String,
     name: String,
@@ -139,6 +141,7 @@ pub(in crate::cli) struct HumanRoom {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanAdminRoom {
     id: String,
     name: String,
@@ -156,6 +159,7 @@ pub(in crate::cli) struct HumanAdminRoom {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomCategory {
     id: String,
     key: String,
@@ -166,6 +170,7 @@ pub(in crate::cli) struct HumanRoomCategory {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomLabel {
     id: String,
     key: String,
@@ -179,6 +184,7 @@ pub(in crate::cli) struct HumanRoomLabel {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomMember {
     room_id: String,
     user_id: String,
@@ -200,6 +206,7 @@ pub(in crate::cli) struct HumanRoomMember {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanChatMessage {
     id: String,
     room_id: String,
@@ -231,6 +238,7 @@ pub(in crate::cli) struct HumanChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanChatMessagePin {
     pinned_by_user_id: String,
     pinned_by_username: String,
@@ -239,6 +247,7 @@ pub(in crate::cli) struct HumanChatMessagePin {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanProviderInstance {
     name: String,
     endpoint: String,
@@ -254,6 +263,7 @@ pub(in crate::cli) struct HumanProviderInstance {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaylist {
     id: String,
     room_id: String,
@@ -272,6 +282,7 @@ pub(in crate::cli) struct HumanPlaylist {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanMedia {
     id: String,
     room_id: String,
@@ -288,6 +299,7 @@ pub(in crate::cli) struct HumanMedia {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaybackState {
     room_id: String,
     playing_media_id: String,
@@ -302,12 +314,7 @@ pub(in crate::cli) struct HumanPlaybackState {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::cli) struct HumanSettingsGroup {
-    name: String,
-    settings: Value,
-}
-
-#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanReviewRequest {
     id: String,
     status: String,
@@ -321,6 +328,7 @@ pub(in crate::cli) struct HumanReviewRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomCreationReview {
     id: String,
     status: String,
@@ -335,6 +343,7 @@ pub(in crate::cli) struct HumanRoomCreationReview {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomJoinReview {
     id: String,
     status: String,
@@ -350,6 +359,7 @@ pub(in crate::cli) struct HumanRoomJoinReview {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanBanRecord {
     id: String,
     target_type: String,
@@ -368,6 +378,7 @@ pub(in crate::cli) struct HumanBanRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanCreatePublishKeyResponse {
     publish_key: String,
     rtmp_url: String,
@@ -376,35 +387,123 @@ pub(in crate::cli) struct HumanCreatePublishKeyResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanStreamPublisherInfo {
     user_id: String,
     started_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetStreamInfoResponse {
     active: bool,
     publisher: Option<HumanStreamPublisherInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanStreamEntry {
     media_id: String,
     active: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanListRoomStreamsResponse {
     streams: Vec<HumanStreamEntry>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanSliceCacheConfigInfo {
+    engine_enabled: bool,
+    backend: String,
+    file_cache_dir: String,
+    slice_size: u64,
+    max_cache_size: u64,
+    segment_ttl_secs: u64,
+    stale_max_age_secs: u64,
+    stale_while_revalidate: bool,
+    eviction_interval_secs: u64,
+    watermark_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanSliceCacheStatsResponse {
+    config: Option<HumanSliceCacheConfigInfo>,
+    current_size_bytes: u64,
+    entry_count: u64,
+    metadata_entries: u64,
+    updating_entries: u64,
+    lock_count: u64,
+    usage_ratio: f64,
+    node_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanSliceCacheNodeFailure {
+    node_id: String,
+    error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanGetSliceCacheStatsResponse {
+    nodes: Vec<HumanSliceCacheStatsResponse>,
+    failures: Vec<HumanSliceCacheNodeFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanPurgeSliceCacheNodeResult {
+    node_id: String,
+    success: bool,
+    removed_entries: u64,
+    freed_bytes: u64,
+    stats: Option<HumanSliceCacheStatsResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanPurgeSliceCacheResponse {
+    success: bool,
+    removed_entries: u64,
+    freed_bytes: u64,
+    stats: Option<HumanSliceCacheStatsResponse>,
+    nodes: Vec<HumanPurgeSliceCacheNodeResult>,
+    failures: Vec<HumanSliceCacheNodeFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanEvictExpiredSliceCacheNodeResult {
+    node_id: String,
+    success: bool,
+    removed_expired_entries: u64,
+    stats: Option<HumanSliceCacheStatsResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanEvictExpiredSliceCacheResponse {
+    success: bool,
+    removed_expired_entries: u64,
+    stats: Option<HumanSliceCacheStatsResponse>,
+    nodes: Vec<HumanEvictExpiredSliceCacheNodeResult>,
+    failures: Vec<HumanSliceCacheNodeFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserResponse<T> {
     user: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserAuthFactors {
     password: bool,
     webauthn: bool,
@@ -413,6 +512,7 @@ pub(in crate::cli) struct HumanUserAuthFactors {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserPreferences {
     two_factor_enabled: bool,
     notifications: Option<HumanUserNotificationPreferences>,
@@ -420,6 +520,7 @@ pub(in crate::cli) struct HumanUserPreferences {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserNotificationPreferences {
     room_invitation_in_app: bool,
     room_event_in_app: bool,
@@ -430,6 +531,7 @@ pub(in crate::cli) struct HumanUserNotificationPreferences {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserPreferencesResponse<T> {
     user: Option<T>,
     preferences: Option<HumanUserPreferences>,
@@ -437,6 +539,7 @@ pub(in crate::cli) struct HumanUserPreferencesResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserMutationCliOutput {
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -444,28 +547,33 @@ pub(in crate::cli) struct HumanUserMutationCliOutput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUsersResponse<T> {
     users: Vec<T>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanAdminsResponse<T> {
     admins: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomResponse<T> {
     room: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomsResponse<T> {
     rooms: Vec<T>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomMembersResponse<T> {
     members: Vec<T>,
     total: i32,
@@ -474,53 +582,63 @@ pub(in crate::cli) struct HumanRoomMembersResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanMemberResponse<T> {
     member: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanProviderInstancesResponse<T> {
     instances: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanProviderNamesResponse {
     instances: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanProviderBackendsResponse {
     backends: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanProviderInstanceResponse<T> {
     instance: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaylistResponse<T> {
     playlist: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaylistsResponse<T> {
     playlists: Vec<T>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanMediaResponse<T> {
     media: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanMediaBatchResponse<T> {
     moved_count: i32,
     media: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaylistItemsResponse<P, M> {
     playlists: Vec<P>,
     media: Vec<M>,
@@ -533,6 +651,7 @@ pub(in crate::cli) struct HumanPlaylistItemsResponse<P, M> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetPlaybackResponse<T> {
     playback_state: Option<T>,
     playback: Option<synctv_proto::client::Playback>,
@@ -554,27 +673,32 @@ pub(in crate::cli) struct HumanGetPlaybackResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUpdatePlaybackStateResponse<T> {
     playback_state: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanSettingsGroupsResponse<T> {
     groups: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanSettingsGroupResponse<T> {
     group: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetRoomWithPlaybackResponse<R, P> {
     room: Option<R>,
     playback_state: Option<P>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanJoinRoomResponse<R, P, M> {
     room: Option<R>,
     playback_state: Option<P>,
@@ -582,6 +706,7 @@ pub(in crate::cli) struct HumanJoinRoomResponse<R, P, M> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetPlaylistResponse<T> {
     playlist: Option<T>,
     child_folder_count: i32,
@@ -589,62 +714,73 @@ pub(in crate::cli) struct HumanGetPlaylistResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanReviewRequestsResponse<T> {
     reviews: Vec<T>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanApproveReviewRequestResponse<R, T> {
     review: Option<R>,
     result: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanApproveRoomJoinReviewResponse<R, M> {
     review: Option<R>,
     member: Option<M>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanApproveUserRegistrationReviewResponse<R, U> {
     review: Option<R>,
     user: Option<U>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRejectReviewRequestResponse<R> {
     review: Option<R>,
     success: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanBanRecordsResponse<T> {
     bans: Vec<T>,
     total: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomCategoriesResponse<T> {
     categories: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomCategoryResponse<T> {
     category: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomLabelsResponse<T> {
     labels: Vec<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomLabelResponse<T> {
     label: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanChatMessagesResponse<T> {
     messages: Vec<T>,
     next_cursor: String,
@@ -652,16 +788,13 @@ pub(in crate::cli) struct HumanChatMessagesResponse<T> {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanDeleteResponse {
     success: bool,
 }
 
-fn parse_json_bytes(bytes: &[u8]) -> Value {
-    if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(bytes).unwrap_or_else(|_| Value::String("<invalid json>".into()))
-    }
+fn proto_json_value<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or_else(|_| Value::String("<invalid json>".into()))
 }
 
 fn source_config_json<T: serde::Serialize>(config: Option<&T>) -> Value {
@@ -705,7 +838,7 @@ impl ToHuman for synctv_proto::client::Room {
             created_by: self.created_by.clone(),
             status: humanize_room_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
-            settings: parse_json_bytes(&self.settings),
+            settings: proto_json_value(&self.settings),
             created_at: humanize_timestamp(self.created_at),
             member_count: self.member_count,
             description: self.description.clone(),
@@ -731,7 +864,7 @@ impl ToHuman for synctv_proto::admin::AdminRoom {
                 .unwrap_or_else(|| self.creator_status.to_string()),
             status: humanize_room_status(i64::from(self.status))
                 .unwrap_or_else(|| self.status.to_string()),
-            settings: parse_json_bytes(&self.settings),
+            settings: proto_json_value(&self.settings),
             member_count: self.member_count,
             created_at: humanize_timestamp(self.created_at),
             updated_at: humanize_timestamp(self.updated_at),
@@ -1104,12 +1237,12 @@ impl ToHuman for synctv_proto::client::ChatMessageReceive {
             delete_reason: self.delete_reason.clone(),
             playback_media_id: self.playback_media_id.clone(),
             playback_playlist_id: self.playback_playlist_id.clone(),
-            playback_target: parse_json_bytes(&self.playback_target),
+            playback_target: proto_json_value(&self.playback_target),
             playback_target_hash: self.playback_target_hash.clone(),
             playback_position_seconds: self.playback_position_seconds,
             reactions: self.reactions.clone(),
             reaction_count: self.reaction_count,
-            metadata: parse_json_bytes(&self.metadata),
+            metadata: proto_json_value(&self.metadata),
             mentions: self.mentions.clone(),
             pin: self.pin.to_human(),
         }
@@ -1192,7 +1325,7 @@ impl ToHuman for synctv_proto::client::Media {
             room_id: self.room_id.clone(),
             source_provider: humanize_source_provider(self.source_provider),
             name: self.name.clone(),
-            metadata: parse_json_bytes(&self.metadata),
+            metadata: proto_json_value(&self.metadata),
             position: self.position,
             added_at: humanize_timestamp(self.added_at),
             creator_id: self.creator_id.clone(),
@@ -1219,19 +1352,16 @@ impl ToHuman for synctv_proto::client::PlaybackState {
             version: self.version,
             playing_playlist_id: self.playing_playlist_id.clone(),
             target_hash: self.target_hash.clone(),
-            target: parse_json_bytes(&self.target),
+            target: proto_json_value(&self.target),
         }
     }
 }
 
 impl ToHuman for synctv_proto::admin::SettingsGroup {
-    type Human = HumanSettingsGroup;
+    type Human = Value;
 
     fn to_human(&self) -> Self::Human {
-        HumanSettingsGroup {
-            name: self.name.clone(),
-            settings: parse_json_bytes(&self.settings),
-        }
+        proto_json_value(self)
     }
 }
 
@@ -1298,7 +1428,7 @@ impl ToHuman for synctv_proto::client::UserPreferences {
                     system_announcement_email: notifications.system_announcement_email,
                 }
             }),
-            settings: parse_json_bytes(&self.settings),
+            settings: proto_json_value(&self.settings),
         }
     }
 }
@@ -1624,7 +1754,7 @@ impl ToHuman for synctv_proto::providers::common::DisableProviderInstanceRespons
 }
 
 impl ToHuman for synctv_proto::admin::GetSettingsResponse {
-    type Human = HumanSettingsGroupsResponse<HumanSettingsGroup>;
+    type Human = HumanSettingsGroupsResponse<Value>;
 
     fn to_human(&self) -> Self::Human {
         HumanSettingsGroupsResponse {
@@ -1634,7 +1764,7 @@ impl ToHuman for synctv_proto::admin::GetSettingsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::GetSettingsGroupResponse {
-    type Human = HumanSettingsGroupResponse<HumanSettingsGroup>;
+    type Human = HumanSettingsGroupResponse<Value>;
 
     fn to_human(&self) -> Self::Human {
         HumanSettingsGroupResponse {
@@ -1936,6 +2066,120 @@ impl ToHuman for synctv_proto::client::ListRoomStreamsResponse {
     }
 }
 
+impl ToHuman for synctv_management::proto::SliceCacheConfigInfo {
+    type Human = HumanSliceCacheConfigInfo;
+
+    fn to_human(&self) -> Self::Human {
+        HumanSliceCacheConfigInfo {
+            engine_enabled: self.engine_enabled,
+            backend: self.backend.clone(),
+            file_cache_dir: self.file_cache_dir.clone(),
+            slice_size: self.slice_size,
+            max_cache_size: self.max_cache_size,
+            segment_ttl_secs: self.segment_ttl_secs,
+            stale_max_age_secs: self.stale_max_age_secs,
+            stale_while_revalidate: self.stale_while_revalidate,
+            eviction_interval_secs: self.eviction_interval_secs,
+            watermark_ratio: self.watermark_ratio,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::SliceCacheStatsResponse {
+    type Human = HumanSliceCacheStatsResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanSliceCacheStatsResponse {
+            config: self.config.to_human(),
+            current_size_bytes: self.current_size_bytes,
+            entry_count: self.entry_count,
+            metadata_entries: self.metadata_entries,
+            updating_entries: self.updating_entries,
+            lock_count: self.lock_count,
+            usage_ratio: self.usage_ratio,
+            node_id: self.node_id.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::SliceCacheNodeFailure {
+    type Human = HumanSliceCacheNodeFailure;
+
+    fn to_human(&self) -> Self::Human {
+        HumanSliceCacheNodeFailure {
+            node_id: self.node_id.clone(),
+            error: self.error.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::GetSliceCacheStatsResponse {
+    type Human = HumanGetSliceCacheStatsResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanGetSliceCacheStatsResponse {
+            nodes: self.nodes.to_human(),
+            failures: self.failures.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::PurgeSliceCacheNodeResult {
+    type Human = HumanPurgeSliceCacheNodeResult;
+
+    fn to_human(&self) -> Self::Human {
+        HumanPurgeSliceCacheNodeResult {
+            node_id: self.node_id.clone(),
+            success: self.success,
+            removed_entries: self.removed_entries,
+            freed_bytes: self.freed_bytes,
+            stats: self.stats.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::PurgeSliceCacheResponse {
+    type Human = HumanPurgeSliceCacheResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanPurgeSliceCacheResponse {
+            success: self.success,
+            removed_entries: self.removed_entries,
+            freed_bytes: self.freed_bytes,
+            stats: self.stats.to_human(),
+            nodes: self.nodes.to_human(),
+            failures: self.failures.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheNodeResult {
+    type Human = HumanEvictExpiredSliceCacheNodeResult;
+
+    fn to_human(&self) -> Self::Human {
+        HumanEvictExpiredSliceCacheNodeResult {
+            node_id: self.node_id.clone(),
+            success: self.success,
+            removed_expired_entries: self.removed_expired_entries,
+            stats: self.stats.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheResponse {
+    type Human = HumanEvictExpiredSliceCacheResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanEvictExpiredSliceCacheResponse {
+            success: self.success,
+            removed_expired_entries: self.removed_expired_entries,
+            stats: self.stats.to_human(),
+            nodes: self.nodes.to_human(),
+            failures: self.failures.to_human(),
+        }
+    }
+}
+
 impl_identity_to_human!(
     synctv_proto::admin::DeleteUserResponse,
     synctv_proto::admin::SetUserPasswordResponse,
@@ -1954,14 +2198,6 @@ impl_identity_to_human!(
     synctv_proto::providers::common::DeleteProviderInstanceResponse,
     synctv_proto::admin::UpdateSettingsResponse,
     synctv_proto::admin::SendTestEmailResponse,
-    synctv_management::proto::SliceCacheConfigInfo,
-    synctv_management::proto::SliceCacheStatsResponse,
-    synctv_management::proto::SliceCacheNodeFailure,
-    synctv_management::proto::GetSliceCacheStatsResponse,
-    synctv_management::proto::PurgeSliceCacheNodeResult,
-    synctv_management::proto::PurgeSliceCacheResponse,
-    synctv_management::proto::EvictExpiredSliceCacheNodeResult,
-    synctv_management::proto::EvictExpiredSliceCacheResponse,
     synctv_proto::client::LeaveRoomResponse,
     synctv_proto::client::DeleteRoomResponse,
     synctv_proto::client::GetRoomSettingsResponse,
@@ -2073,7 +2309,7 @@ fn humanize_resource_availability(raw: i64) -> Option<String> {
         match ResourceAvailability::try_from(i64_to_i32(raw)?).ok()? {
             ResourceAvailability::Unspecified => "unspecified",
             ResourceAvailability::Available => "available",
-            ResourceAvailability::CreatorInactive => "creator_inactive",
+            ResourceAvailability::CreatorInactive => "creatorInactive",
         }
         .to_string(),
     )
@@ -2082,12 +2318,12 @@ fn humanize_resource_availability(raw: i64) -> Option<String> {
 fn humanize_source_provider(raw: i32) -> String {
     match synctv_proto::source_config::SourceProvider::try_from(raw) {
         Ok(synctv_proto::source_config::SourceProvider::Unspecified) => String::new(),
-        Ok(synctv_proto::source_config::SourceProvider::DirectUrl) => "direct_url".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::DirectUrl) => "directUrl".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::Bilibili) => "bilibili".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::Alist) => "alist".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::Emby) => "emby".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::Rtmp) => "rtmp".to_string(),
-        Ok(synctv_proto::source_config::SourceProvider::LiveProxy) => "live_proxy".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::LiveProxy) => "liveProxy".to_string(),
         Err(_) => raw.to_string(),
     }
 }

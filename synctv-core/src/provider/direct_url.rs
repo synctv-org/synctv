@@ -10,11 +10,10 @@ use super::{
 use crate::models::media::{
     PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
     PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackSubtitle, PlaybackSubtitleProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
 use async_trait::async_trait;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfTargetError;
@@ -154,12 +153,8 @@ impl Default for DirectUrlProvider {
     }
 }
 
-impl TryFrom<&Value> for DirectUrlMediaSourceConfig {
-    type Error = ProviderError;
-
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        super::reject_source_config_provider_instance_name(value, "DirectUrl")?;
-        let config: DirectUrlMediaSourceConfig = super::parse_source_config(value, "DirectUrl")?;
+impl DirectUrlProvider {
+    fn validate_config_shape(config: &DirectUrlMediaSourceConfig) -> Result<(), ProviderError> {
         if config.medias.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "DirectUrl source_config.medias must contain at least one media".to_string(),
@@ -188,13 +183,13 @@ impl TryFrom<&Value> for DirectUrlMediaSourceConfig {
             "default_danmaku_index",
         )?;
         if config.is_live == Some(true)
-            && DirectUrlProvider::configured_duration_seconds(&config).is_some()
+            && DirectUrlProvider::configured_duration_seconds(config).is_some()
         {
             return Err(ProviderError::InvalidConfig(
                 "DirectUrl live source_config cannot set duration_seconds".to_string(),
             ));
         }
-        Ok(config)
+        Ok(())
     }
 }
 
@@ -436,9 +431,14 @@ impl MediaProvider for DirectUrlProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config.value(), "DirectUrl")?;
-
-        let config = DirectUrlMediaSourceConfig::try_from(source_config.value())?;
+        let SourceConfig::Media(crate::models::MediaSourceConfig::DirectUrl(config)) =
+            source_config
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl requires DirectUrl media source_config".to_string(),
+            ));
+        };
+        Self::validate_config_shape(config)?;
         for media in &config.medias {
             Self::validate_source_url(&media.url, &self.ssrf_guard)?;
             Self::validate_headers(&media.headers)?;
@@ -458,11 +458,14 @@ impl MediaProvider for DirectUrlProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config, "DirectUrl")?;
-
-        let config = DirectUrlMediaSourceConfig::try_from(source_config)?;
+        let crate::models::MediaSourceConfig::DirectUrl(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "DirectUrl requires DirectUrl media source_config".to_string(),
+            ));
+        };
+        Self::validate_config_shape(config)?;
         for media in &config.medias {
             Self::validate_source_url(&media.url, &self.ssrf_guard)?;
         }
@@ -473,7 +476,7 @@ impl MediaProvider for DirectUrlProvider {
             Self::validate_source_url(&danmaku.url, &self.ssrf_guard)?;
         }
 
-        let cache_key = Self::playback_cache_key(&config);
+        let cache_key = Self::playback_cache_key(config);
         let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
 
         let store = _ctx.store.as_ref();
@@ -589,20 +592,21 @@ impl MediaProvider for DirectUrlProvider {
             },
         );
 
-        let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), json!(format));
-        if let Some(is_live) = config.is_live {
-            metadata.insert("is_live".to_string(), json!(is_live));
-        }
-
-        if let Some(filename) = first_media.url.split('/').next_back() {
-            metadata.insert("filename".to_string(), json!(filename));
-        }
+        let metadata = PlaybackMetadata {
+            format: Some(format.clone()),
+            is_live: config.is_live,
+            filename: first_media
+                .url
+                .split('/')
+                .next_back()
+                .map(ToString::to_string),
+            ..Default::default()
+        };
         let is_live = config.inferred_live_status();
         let duration_seconds = if is_live == Some(true) {
             None
         } else {
-            Self::configured_duration_seconds(&config)
+            Self::configured_duration_seconds(config)
         };
 
         let result = PlaybackResult {
@@ -654,9 +658,7 @@ mod tests {
                 "https://example.com/video.mp4".to_string(),
                 HashMap::new(),
             ),
-        )
-        .into_provider_json()
-        .expect("direct url config should serialize");
+        );
 
         let result = provider
             .generate_playback(&ctx, &source_config)
@@ -676,9 +678,7 @@ mod tests {
                 "https://example.com/live.m3u8".to_string(),
                 HashMap::new(),
             ),
-        )
-        .into_provider_json()
-        .expect("direct url config should serialize");
+        );
 
         let result = provider
             .generate_playback(&ctx, &source_config)
@@ -698,9 +698,7 @@ mod tests {
             HashMap::new(),
         );
         config.prefer_proxy = Some(true);
-        let source_config = crate::models::MediaSourceConfig::DirectUrl(config)
-            .into_provider_json()
-            .expect("direct url config should serialize");
+        let source_config = crate::models::MediaSourceConfig::DirectUrl(config);
 
         let result = provider
             .generate_playback(&ctx, &source_config)

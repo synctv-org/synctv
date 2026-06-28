@@ -44,13 +44,11 @@ fn test_ice_candidate_event_serialization() {
 
     // Serialize
     let json = serde_json::to_string(&event).expect("Should serialize");
-    // Note: serde(rename_all = "snake_case") converts WebRTCSignaling to web_r_t_c_signaling
-    // because it treats each uppercase letter as a separate word.
     assert!(
-        json.contains(r#""type":"web_r_t_c_signaling"#),
+        json.contains(r#""type":"webRTCSignaling"#),
         "JSON should contain type field: {json}"
     );
-    assert!(json.contains("ice_candidate"));
+    assert!(json.contains("iceCandidate"));
     assert!(json.contains("candidate:842163049"));
 
     // Deserialize

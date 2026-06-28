@@ -5,12 +5,11 @@
 //! (Requires Docker)
 
 use chrono::{Duration, Utc};
-use serde_json::json;
 use synctv_core::{
     credential_encryption::CredentialEncryption,
     models::{
-        ProviderInstance, ProviderType, SignupMethod, SourceProvider, User, UserId,
-        UserProviderCredential,
+        ProviderCredential, ProviderInstance, ProviderType, SignupMethod, SourceProvider, User,
+        UserId, UserProviderCredential,
     },
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
 };
@@ -40,10 +39,24 @@ fn make_credential(user_id: UserId, provider: &str, server_id: &str) -> UserProv
         provider: provider.to_string(),
         server_id: server_id.to_string(),
         provider_instance_name: None,
-        credential_data: json!({
-            "type": provider,
-            "cookies": {"SESSDATA": "test_session"}
-        }),
+        credential_data: match provider {
+            "bilibili" => ProviderCredential::bilibili(std::collections::HashMap::from([(
+                "SESSDATA".to_string(),
+                "test_session".to_string(),
+            )])),
+            "alist" => ProviderCredential::alist(
+                "https://alist.example.com".to_string(),
+                "alice".to_string(),
+                "hashed_password".to_string(),
+                None,
+            ),
+            "emby" => ProviderCredential::emby(
+                "https://emby.example.com".to_string(),
+                "api_key".to_string(),
+                "emby_user".to_string(),
+            ),
+            _ => ProviderCredential::default(),
+        },
         expires_at: None,
         created_at: now,
         updated_at: now,
@@ -250,10 +263,10 @@ async fn test_update_credential() {
         .checked("test operation should succeed");
 
     // Update credential data
-    cred.credential_data = json!({
-        "type": "bilibili",
-        "cookies": {"SESSDATA": "new_session_value"}
-    });
+    cred.credential_data = ProviderCredential::bilibili(std::collections::HashMap::from([(
+        "SESSDATA".to_string(),
+        "new_session_value".to_string(),
+    )]));
     cred_repo
         .update(&cred)
         .await
@@ -266,9 +279,12 @@ async fn test_update_credential() {
         .checked("test operation should succeed")
         .checked("test operation should succeed");
 
+    let ProviderCredential::Bilibili { cookies } = found.credential_data else {
+        panic!("expected bilibili credential");
+    };
     assert_eq!(
-        found.credential_data["cookies"]["SESSDATA"],
-        "new_session_value"
+        cookies.get("SESSDATA").map(String::as_str),
+        Some("new_session_value")
     );
 }
 
@@ -590,10 +606,11 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
         .checked("test operation should succeed");
 
     let mut replacement = make_credential(user.id, "bilibili", &server_id);
-    replacement.credential_data = json!({
-        "type": "bilibili",
-        "cookies": {"SESSDATA": "replacement_session"}
-    });
+    replacement.credential_data =
+        ProviderCredential::bilibili(std::collections::HashMap::from([(
+            "SESSDATA".to_string(),
+            "replacement_session".to_string(),
+        )]));
     cred_repo
         .upsert_by_user_provider_server(&replacement)
         .await
@@ -619,9 +636,12 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
         found.id, first.id,
         "upsert should keep the stable credential id"
     );
+    let ProviderCredential::Bilibili { cookies } = found.credential_data else {
+        panic!("expected bilibili credential");
+    };
     assert_eq!(
-        found.credential_data["cookies"]["SESSDATA"],
-        "replacement_session"
+        cookies.get("SESSDATA").map(String::as_str),
+        Some("replacement_session")
     );
 }
 

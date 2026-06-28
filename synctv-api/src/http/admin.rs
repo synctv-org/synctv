@@ -4,7 +4,7 @@
 //! Thin handlers that delegate to `AdminApiImpl`.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     routing::{get, patch, post},
     Json, Router,
 };
@@ -28,9 +28,78 @@ fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RoomMemberTargetPath {
     room_id: String,
     user_id: String,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub(crate) struct AdminGetUserRoomsQuery {
+    #[serde(default)]
+    page: i32,
+    #[serde(default)]
+    page_size: i32,
+    #[serde(default)]
+    status: i32,
+    #[serde(default)]
+    search: String,
+    is_banned: Option<bool>,
+    #[serde(default)]
+    sort_by: i32,
+    #[serde(default)]
+    sort_direction: i32,
+}
+
+impl AdminGetUserRoomsQuery {
+    fn into_request(self, user_id: String) -> admin::GetUserRoomsRequest {
+        admin::GetUserRoomsRequest {
+            user_id,
+            page: self.page,
+            page_size: self.page_size,
+            status: self.status,
+            search: self.search,
+            is_banned: self.is_banned,
+            sort_by: self.sort_by,
+            sort_direction: self.sort_direction,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub(crate) struct AdminGetRoomMembersQuery {
+    #[serde(default)]
+    page: i32,
+    #[serde(default)]
+    page_size: i32,
+    #[serde(default)]
+    search: String,
+    #[serde(default)]
+    role: i32,
+    #[serde(default)]
+    sort_by: i32,
+    #[serde(default)]
+    sort_direction: i32,
+}
+
+impl AdminGetRoomMembersQuery {
+    fn into_request(self, room_id: String) -> admin::GetRoomMembersRequest {
+        admin::GetRoomMembersRequest {
+            room_id,
+            page: self.page,
+            page_size: self.page_size,
+            search: self.search,
+            role: self.role,
+            sort_by: self.sort_by,
+            sort_direction: self.sort_direction,
+        }
+    }
 }
 
 // Router
@@ -71,9 +140,9 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         .route("/bans", get(list_ban_records))
         // Moderation reports
         .route("/reports", get(list_content_reports))
-        .route("/reports/{report_id}", get(get_content_report))
+        .route("/reports/{reportId}", get(get_content_report))
         .route(
-            "/reports/{report_id}/status",
+            "/reports/{reportId}/status",
             post(update_content_report_status),
         )
         // Settings
@@ -83,17 +152,17 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         .route("/email/test", post(send_test_email))
         // User management
         .route("/users", get(list_users).post(create_user))
-        .route("/users/{user_id}", get(get_user).delete(delete_user))
+        .route("/users/{userId}", get(get_user).delete(delete_user))
         .route(
-            "/users/{user_id}/preferences",
+            "/users/{userId}/preferences",
             get(get_user_preferences).patch(update_user_preferences),
         )
-        .route("/users/{user_id}/role", post(set_user_role))
-        .route("/users/{user_id}/password", post(set_user_password))
-        .route("/users/{user_id}/username", post(set_user_username))
-        .route("/users/{user_id}/ban", post(ban_user))
-        .route("/users/{user_id}/unban", post(unban_user))
-        .route("/users/{user_id}/rooms", get(get_user_rooms))
+        .route("/users/{userId}/role", post(set_user_role))
+        .route("/users/{userId}/password", post(set_user_password))
+        .route("/users/{userId}/username", post(set_user_username))
+        .route("/users/{userId}/ban", post(ban_user))
+        .route("/users/{userId}/unban", post(unban_user))
+        .route("/users/{userId}/rooms", get(get_user_rooms))
         // Batch user operations
         .route("/users/batch/ban", post(batch_ban_users))
         .route("/users/batch/delete", post(batch_delete_users))
@@ -104,7 +173,7 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
             get(list_room_categories).post(upsert_room_category),
         )
         .route(
-            "/rooms/categories/{category_id}",
+            "/rooms/categories/{categoryId}",
             axum::routing::delete(delete_room_category),
         )
         .route(
@@ -112,27 +181,27 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
             get(list_room_labels).post(upsert_room_label),
         )
         .route(
-            "/rooms/labels/{label_id}",
+            "/rooms/labels/{labelId}",
             axum::routing::delete(delete_room_label),
         )
-        .route("/rooms/{room_id}", get(get_room).delete(delete_room))
-        .route("/rooms/{room_id}/taxonomy", patch(update_room_taxonomy))
-        .route("/rooms/{room_id}/password", post(set_room_password))
+        .route("/rooms/{roomId}", get(get_room).delete(delete_room))
+        .route("/rooms/{roomId}/taxonomy", patch(update_room_taxonomy))
+        .route("/rooms/{roomId}/password", post(set_room_password))
         .route(
-            "/rooms/{room_id}/members",
+            "/rooms/{roomId}/members",
             get(get_room_members).post(add_member),
         )
         .route(
-            "/rooms/{room_id}/members/{user_id}",
+            "/rooms/{roomId}/members/{userId}",
             patch(update_member_permissions).delete(kick_member),
         )
-        .route("/rooms/{room_id}/ban", post(ban_room))
-        .route("/rooms/{room_id}/unban", post(unban_room))
+        .route("/rooms/{roomId}/ban", post(ban_room))
+        .route("/rooms/{roomId}/unban", post(unban_room))
         .route(
-            "/rooms/{room_id}/settings",
+            "/rooms/{roomId}/settings",
             get(get_room_settings).post(set_room_settings),
         )
-        .route("/rooms/{room_id}/settings/reset", post(reset_room_settings))
+        .route("/rooms/{roomId}/settings/reset", post(reset_room_settings))
         // Batch room operations
         .route("/rooms/batch/ban", post(batch_ban_rooms))
         .route("/rooms/batch/delete", post(batch_delete_rooms))
@@ -141,7 +210,7 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         .route("/streams/kick", post(kick_stream))
         // Admin management (root only)
         .route("/admins", get(list_admins))
-        .route("/admins/{user_id}", post(add_admin).delete(remove_admin))
+        .route("/admins/{userId}", post(add_admin).delete(remove_admin))
 }
 
 #[cfg_attr(
@@ -450,16 +519,16 @@ pub(crate) async fn list_ban_records(
         tag = "Admin",
         params(
             ("page" = Option<i32>, Query, description = "Page number"),
-            ("page_size" = Option<i32>, Query, description = "Page size"),
+            ("pageSize" = Option<i32>, Query, description = "Page size"),
             ("status" = Option<i32>, Query, description = "Content report status"),
-            ("target_type" = Option<i32>, Query, description = "Content report target type"),
-            ("reporter_user_id" = Option<String>, Query, description = "Reporter public user id"),
-            ("room_id" = Option<String>, Query, description = "Related public room id"),
-            ("target_room_id" = Option<String>, Query, description = "Reported room public id"),
-            ("target_user_id" = Option<String>, Query, description = "Reported public user id"),
-            ("target_member_room_id" = Option<String>, Query, description = "Reported member room public id"),
-            ("target_member_user_id" = Option<String>, Query, description = "Reported room member public user id"),
-            ("target_chat_message_id" = Option<i64>, Query, description = "Reported chat message id"),
+            ("targetType" = Option<i32>, Query, description = "Content report target type"),
+            ("reporterUserId" = Option<String>, Query, description = "Reporter public user id"),
+            ("roomId" = Option<String>, Query, description = "Related public room id"),
+            ("targetRoomId" = Option<String>, Query, description = "Reported room public id"),
+            ("targetUserId" = Option<String>, Query, description = "Reported public user id"),
+            ("targetMemberRoomId" = Option<String>, Query, description = "Reported member room public id"),
+            ("targetMemberUserId" = Option<String>, Query, description = "Reported room member public user id"),
+            ("targetChatMessageId" = Option<i64>, Query, description = "Reported chat message id"),
             ("scope" = Option<i32>, Query, description = "Report list scope"),
             ("search" = Option<String>, Query, description = "Search text")
         ),
@@ -492,9 +561,9 @@ pub(crate) async fn list_content_reports(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/reports/{report_id}",
+        path = "/api/admin/reports/{reportId}",
         tag = "Admin",
-        params(("report_id" = String, Path, description = "Content report public id")),
+        params(("reportId" = String, Path, description = "Content report public id")),
         responses(
             (status = 200, description = "Content report", body = admin::GetContentReportResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -525,9 +594,9 @@ pub(crate) async fn get_content_report(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/reports/{report_id}/status",
+        path = "/api/admin/reports/{reportId}/status",
         tag = "Admin",
-        params(("report_id" = String, Path, description = "Content report public id")),
+        params(("reportId" = String, Path, description = "Content report public id")),
         request_body = admin::UpdateContentReportStatusRequest,
         responses(
             (status = 200, description = "Content report status updated", body = admin::UpdateContentReportStatusResponse),
@@ -751,9 +820,9 @@ pub(crate) async fn list_users(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/users/{user_id}",
+        path = "/api/admin/users/{userId}",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User detail", body = admin::GetUserResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
@@ -781,9 +850,9 @@ pub(crate) async fn get_user(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/users/{user_id}/preferences",
+        path = "/api/admin/users/{userId}/preferences",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User preferences", body = admin::GetUserPreferencesResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
@@ -811,9 +880,9 @@ pub(crate) async fn get_user_preferences(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/admin/users/{user_id}/preferences",
+        path = "/api/admin/users/{userId}/preferences",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         request_body = admin::UpdateUserPreferencesRequest,
         responses(
             (status = 200, description = "User preferences updated", body = admin::UpdateUserPreferencesResponse),
@@ -881,9 +950,9 @@ pub(crate) async fn create_user(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/users/{user_id}",
+        path = "/api/admin/users/{userId}",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User deleted", body = admin::DeleteUserResponse),
             (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -913,9 +982,9 @@ pub(crate) async fn delete_user(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/users/{user_id}/role",
+        path = "/api/admin/users/{userId}/role",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         request_body = admin::UpdateUserRoleRequest,
         responses(
             (status = 200, description = "User role updated", body = admin::UpdateUserRoleResponse),
@@ -949,9 +1018,9 @@ pub(crate) async fn set_user_role(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/users/{user_id}/password",
+        path = "/api/admin/users/{userId}/password",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         request_body = admin::SetUserPasswordRequest,
         responses(
             (status = 200, description = "User password updated", body = admin::SetUserPasswordResponse),
@@ -988,9 +1057,9 @@ pub(crate) async fn set_user_password(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/users/{user_id}/username",
+        path = "/api/admin/users/{userId}/username",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         request_body = admin::UpdateUserUsernameRequest,
         responses(
             (status = 200, description = "Username updated", body = admin::UpdateUserUsernameResponse),
@@ -1024,9 +1093,9 @@ pub(crate) async fn set_user_username(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/users/{user_id}/ban",
+        path = "/api/admin/users/{userId}/ban",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         request_body = admin::BanUserRequest,
         responses(
             (status = 200, description = "User banned", body = admin::BanUserResponse),
@@ -1060,9 +1129,9 @@ pub(crate) async fn ban_user(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/users/{user_id}/unban",
+        path = "/api/admin/users/{userId}/unban",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User unbanned", body = admin::UnbanUserResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1092,11 +1161,11 @@ pub(crate) async fn unban_user(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/users/{user_id}/rooms",
+        path = "/api/admin/users/{userId}/rooms",
         tag = "Admin",
         params(
-            ("user_id" = String, Path, description = "User ID"),
-            admin::GetUserRoomsRequest
+            ("userId" = String, Path, description = "User ID"),
+            AdminGetUserRoomsQuery
         ),
         responses(
             (status = 200, description = "Rooms belonging to user", body = admin::GetUserRoomsResponse),
@@ -1109,9 +1178,9 @@ pub(crate) async fn get_user_rooms(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
-    Query(mut req): Query<admin::GetUserRoomsRequest>,
+    ProtoQuery(query): ProtoQuery<AdminGetUserRoomsQuery>,
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
-    req.user_id = path.user_id;
+    let req = query.into_request(path.user_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1283,9 +1352,9 @@ pub(crate) async fn upsert_room_category(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/rooms/categories/{category_id}",
+        path = "/api/admin/rooms/categories/{categoryId}",
         tag = "Admin",
-        params(("category_id" = String, Path, description = "Room category ID")),
+        params(("categoryId" = String, Path, description = "Room category ID")),
         responses(
             (status = 200, description = "Room category deleted", body = admin::DeleteRoomCategoryResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1370,9 +1439,9 @@ pub(crate) async fn upsert_room_label(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/rooms/labels/{label_id}",
+        path = "/api/admin/rooms/labels/{labelId}",
         tag = "Admin",
-        params(("label_id" = String, Path, description = "Room label ID")),
+        params(("labelId" = String, Path, description = "Room label ID")),
         responses(
             (status = 200, description = "Room label deleted", body = admin::DeleteRoomLabelResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1399,9 +1468,9 @@ pub(crate) async fn delete_room_label(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/admin/rooms/{room_id}/taxonomy",
+        path = "/api/admin/rooms/{roomId}/taxonomy",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::UpdateRoomTaxonomyRequest,
         responses(
             (status = 200, description = "Room taxonomy updated", body = admin::UpdateRoomTaxonomyResponse),
@@ -1434,9 +1503,9 @@ pub(crate) async fn update_room_taxonomy(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/rooms/{room_id}",
+        path = "/api/admin/rooms/{roomId}",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Admin room detail", body = admin::GetRoomResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1463,9 +1532,9 @@ pub(crate) async fn get_room(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/rooms/{room_id}",
+        path = "/api/admin/rooms/{roomId}",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room deleted", body = admin::DeleteRoomResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1495,9 +1564,9 @@ pub(crate) async fn delete_room(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/password",
+        path = "/api/admin/rooms/{roomId}/password",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::UpdateRoomPasswordRequest,
         responses(
             (status = 200, description = "Room password updated", body = admin::UpdateRoomPasswordResponse),
@@ -1531,11 +1600,11 @@ pub(crate) async fn set_room_password(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/rooms/{room_id}/members",
+        path = "/api/admin/rooms/{roomId}/members",
         tag = "Admin",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            admin::GetRoomMembersRequest
+            ("roomId" = String, Path, description = "Room ID"),
+            AdminGetRoomMembersQuery
         ),
         responses(
             (status = 200, description = "Room members", body = admin::GetRoomMembersResponse),
@@ -1548,9 +1617,9 @@ pub(crate) async fn get_room_members(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Query(mut req): Query<admin::GetRoomMembersRequest>,
+    ProtoQuery(query): ProtoQuery<AdminGetRoomMembersQuery>,
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
-    req.room_id = path.room_id;
+    let req = query.into_request(path.room_id);
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1565,9 +1634,9 @@ pub(crate) async fn get_room_members(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/members",
+        path = "/api/admin/rooms/{roomId}/members",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::AddMemberRequest,
         responses(
             (status = 200, description = "Room member added", body = admin::AddMemberResponse),
@@ -1601,11 +1670,11 @@ pub(crate) async fn add_member(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/admin/rooms/{room_id}/members/{user_id}",
+        path = "/api/admin/rooms/{roomId}/members/{userId}",
         tag = "Admin",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
         ),
         request_body = admin::UpdateMemberPermissionsRequest,
         responses(
@@ -1641,11 +1710,11 @@ pub(crate) async fn update_member_permissions(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/rooms/{room_id}/members/{user_id}",
+        path = "/api/admin/rooms/{roomId}/members/{userId}",
         tag = "Admin",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("user_id" = String, Path, description = "Target user ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
         ),
         request_body = admin::KickMemberRequest,
         responses(
@@ -1681,9 +1750,9 @@ pub(crate) async fn kick_member(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/ban",
+        path = "/api/admin/rooms/{roomId}/ban",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::BanRoomRequest,
         responses(
             (status = 200, description = "Room banned", body = admin::BanRoomResponse),
@@ -1717,9 +1786,9 @@ pub(crate) async fn ban_room(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/unban",
+        path = "/api/admin/rooms/{roomId}/unban",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room unbanned", body = admin::UnbanRoomResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1749,9 +1818,9 @@ pub(crate) async fn unban_room(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/rooms/{room_id}/settings",
+        path = "/api/admin/rooms/{roomId}/settings",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room settings", body = admin::GetRoomSettingsResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -1778,10 +1847,10 @@ pub(crate) async fn get_room_settings(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/settings",
+        path = "/api/admin/rooms/{roomId}/settings",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
-        request_body = synctv_proto::http_serde::AdminUpdateRoomSettingsRequestDef,
+        params(("roomId" = String, Path, description = "Room ID")),
+        request_body = admin::UpdateRoomSettingsRequest,
         responses(
             (status = 200, description = "Room settings updated", body = admin::UpdateRoomSettingsResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -1794,9 +1863,8 @@ pub(crate) async fn set_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
-    Json(req): Json<synctv_proto::http_serde::AdminUpdateRoomSettingsRequestDef>,
+    Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
-    let mut req = admin::UpdateRoomSettingsRequest::from(req);
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1815,9 +1883,9 @@ pub(crate) async fn set_room_settings(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/rooms/{room_id}/settings/reset",
+        path = "/api/admin/rooms/{roomId}/settings/reset",
         tag = "Admin",
-        params(("room_id" = String, Path, description = "Room ID")),
+        params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room settings reset", body = admin::ResetRoomSettingsResponse),
             (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -2001,9 +2069,9 @@ pub(crate) async fn list_admins(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/admin/admins/{user_id}",
+        path = "/api/admin/admins/{userId}",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "Admin added", body = admin::AddAdminResponse),
             (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -2033,9 +2101,9 @@ pub(crate) async fn add_admin(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/admin/admins/{user_id}",
+        path = "/api/admin/admins/{userId}",
         tag = "Admin",
-        params(("user_id" = String, Path, description = "User ID")),
+        params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "Admin removed", body = admin::RemoveAdminResponse),
             (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
@@ -2078,11 +2146,12 @@ mod tests {
     #[test]
     fn test_update_user_role_request_deserialization() -> TestResult {
         let json = format!(
-            r#"{{"role":{}}}"#,
+            r#"{{"userId":"usr_body","role":{}}}"#,
             synctv_proto::common::UserRole::Admin as i32
         );
-        let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
-        assert_eq!(req.user_id, "");
+        let mut req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
+        req.user_id = "usr_1".to_string();
+        assert_eq!(req.user_id, "usr_1");
         assert_eq!(req.role, synctv_proto::common::UserRole::Admin as i32);
         Ok(())
     }
@@ -2096,7 +2165,7 @@ mod tests {
         ];
 
         for expected in role_mappings {
-            let json = format!(r#"{{"role":{expected}}}"#);
+            let json = format!(r#"{{"userId":"usr_1","role":{expected}}}"#);
             let req: admin::UpdateUserRoleRequest = serde_json::from_str(&json)?;
             assert_eq!(req.role, expected);
         }
@@ -2105,27 +2174,27 @@ mod tests {
 
     #[test]
     fn test_update_user_role_request_rejects_string_role() {
-        let err = serde_json::from_str::<admin::UpdateUserRoleRequest>(r#"{"role":"admin"}"#)
-            .expect_err("string role should be rejected");
+        let err = serde_json::from_str::<admin::UpdateUserRoleRequest>(
+            r#"{"userId":"usr_1","role":"admin"}"#,
+        )
+        .expect_err("string role should be rejected");
         assert!(err.is_data());
     }
 
     #[test]
-    fn test_update_room_settings_request_accepts_raw_json_body() -> TestResult {
-        let json = r#"{"theme":"dark","guest_enabled":true}"#;
-        let req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
-        assert_eq!(req.room_id, "");
-        let settings_json: serde_json::Value = serde_json::from_slice(&req.settings)?;
-        assert_eq!(
-            settings_json,
-            serde_json::json!({"theme":"dark","guest_enabled":true})
-        );
+    fn test_update_room_settings_request_accepts_protojson_body() -> TestResult {
+        let json = r#"{"roomId":"room_body","settings":{"allowGuestJoin":true}}"#;
+        let mut req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
+        req.room_id = "room_1".to_string();
+        assert_eq!(req.room_id, "room_1");
+        let settings = req.settings.expect("settings should deserialize");
+        assert_eq!(settings.allow_guest_join, Some(true));
         Ok(())
     }
 
     #[test]
     fn test_admin_user_path_request_deserializes_proto_field_name() -> TestResult {
-        let req: admin::UserPathRequest = serde_json::from_str(r#"{"user_id":"usr_1"}"#)?;
+        let req: admin::UserPathRequest = serde_json::from_str(r#"{"userId":"usr_1"}"#)?;
 
         assert_eq!(req.user_id, "usr_1");
         Ok(())
@@ -2133,7 +2202,7 @@ mod tests {
 
     #[test]
     fn test_admin_room_path_request_deserializes_proto_field_name() -> TestResult {
-        let req: admin::RoomPathRequest = serde_json::from_str(r#"{"room_id":"room_1"}"#)?;
+        let req: admin::RoomPathRequest = serde_json::from_str(r#"{"roomId":"room_1"}"#)?;
 
         assert_eq!(req.room_id, "room_1");
         Ok(())
@@ -2141,7 +2210,7 @@ mod tests {
 
     #[test]
     fn test_list_users_query_deserialization() -> TestResult {
-        let json = r#"{"page":2,"page_size":50,"status":1,"role":2,"search":"test","sort_by":3,"sort_direction":1}"#;
+        let json = r#"{"page":2,"pageSize":50,"status":1,"role":2,"search":"test","sortBy":3,"sortDirection":1}"#;
         let query: admin::ListUsersRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 50);
@@ -2158,7 +2227,7 @@ mod tests {
 
     #[test]
     fn test_list_rooms_query_deserialization() -> TestResult {
-        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false,"sort_by":3,"sort_direction":2}"#;
+        let json = r#"{"page":1,"pageSize":10,"status":1,"search":"room","creatorId":"user1","isBanned":false,"sortBy":3,"sortDirection":2}"#;
         let query: admin::ListRoomsRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 1);
         assert_eq!(query.page_size, 10);
@@ -2177,7 +2246,7 @@ mod tests {
     #[test]
     fn test_room_members_query_deserialization() -> TestResult {
         let json =
-            r#"{"page":2,"page_size":25,"search":"alice","role":2,"sort_by":2,"sort_direction":1}"#;
+            r#"{"page":2,"pageSize":25,"search":"alice","role":2,"sortBy":2,"sortDirection":1}"#;
         let query: admin::GetRoomMembersRequest = serde_json::from_str(json)?;
         assert_eq!(query.page, 2);
         assert_eq!(query.page_size, 25);
@@ -2280,7 +2349,7 @@ mod tests {
     #[test]
     fn test_list_active_streams_query_deserializes_explicit_values() -> TestResult {
         let query: admin::ListActiveStreamsRequest = serde_urlencoded::from_str(
-            "page=2&page_size=25&room_id=room123&user_id=user123&node_id=node-a&search=live&sort_by=5&sort_direction=1",
+            "page=2&pageSize=25&roomId=room123&userId=user123&nodeId=node-a&search=live&sortBy=5&sortDirection=1",
         )?;
 
         assert_eq!(query.page, 2);

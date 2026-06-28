@@ -94,7 +94,7 @@ async fn attach_test_media(
         .checked("test media should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     playback_repo
         .update(&state)

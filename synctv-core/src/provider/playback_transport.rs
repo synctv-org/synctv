@@ -102,22 +102,6 @@ pub(crate) fn parse_playback_user_id(
     parse_playback_id(codec, value, context)
 }
 
-pub(crate) fn parse_playback_room_id(
-    codec: &PublicIdCodec,
-    value: &str,
-    context: &str,
-) -> Result<RoomId, ProviderError> {
-    parse_playback_id(codec, value, context)
-}
-
-pub(crate) fn parse_playback_media_id(
-    codec: &PublicIdCodec,
-    value: &str,
-    context: &str,
-) -> Result<MediaId, ProviderError> {
-    parse_playback_id(codec, value, context)
-}
-
 fn parse_playback_id<T>(
     codec: &PublicIdCodec,
     value: &str,
@@ -236,7 +220,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: HashMap::new(),
+                metadata: crate::models::PlaybackMetadata::default(),
             },
             expires_at: 0, // Already expired
         };
@@ -264,7 +248,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: HashMap::new(),
+                metadata: crate::models::PlaybackMetadata::default(),
             },
             expires_at: chrono::Utc::now().timestamp() + 3600,
         };
@@ -282,22 +266,10 @@ mod tests {
         let codec = PublicIdCodec::plain();
 
         assert_eq!(
-            parse_playback_room_id(&codec, "room_42", "proxy metadata")
-                .checked("operation should succeed"),
-            RoomId::expect_positive(42)
-        );
-        assert_eq!(
-            parse_playback_media_id(&codec, "med_99", "proxy metadata")
-                .checked("operation should succeed"),
-            MediaId::expect_positive(99)
-        );
-        assert_eq!(
             parse_playback_user_id(&codec, "usr_7", "proxy metadata")
                 .checked("operation should succeed"),
             UserId::expect_positive(7)
         );
-        assert!(parse_playback_room_id(&codec, "42", "proxy metadata").is_err());
-        assert!(parse_playback_media_id(&codec, "99", "proxy metadata").is_err());
         assert!(parse_playback_user_id(&codec, "7", "proxy metadata").is_err());
     }
 
@@ -313,7 +285,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: HashMap::new(),
+                metadata: crate::models::PlaybackMetadata::default(),
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };

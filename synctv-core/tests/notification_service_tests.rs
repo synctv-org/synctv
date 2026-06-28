@@ -164,7 +164,7 @@ fn test_event_type_names_all_variants() {
         ),
         (
             RoomEvent::SettingsUpdated {
-                settings: serde_json::json!({}),
+                settings: synctv_core::models::RoomSettings::default(),
                 version: 1,
                 user_id: Some(UserId::new()),
                 username: "test".to_string(),
@@ -210,8 +210,8 @@ fn test_serialization_user_joined_uses_tagged_type() {
     );
 
     assert!(
-        json.contains(r#""type":"UserJoined""#),
-        "JSON should contain \"type\":\"UserJoined\", got: {json}"
+        json.contains(r#""type":"userJoined""#),
+        "JSON should contain \"type\":\"userJoined\", got: {json}"
     );
     assert!(json.contains("123"));
     assert!(json.contains("testuser"));

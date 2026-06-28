@@ -17,26 +17,14 @@ pub enum RoomSettingsSubcommand {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("room_settings_scope")
-        .args(["room_id", "room_id_flag"])
-        .required(true)
-        .multiple(false)
-))]
 pub struct RoomSettingsScopeArgs {
     #[arg(value_name = "ROOM_ID", allow_hyphen_values = true)]
-    pub room_id: Option<String>,
-
-    #[arg(long = "room-id", value_name = "ROOM_ID", allow_hyphen_values = true)]
-    pub room_id_flag: Option<String>,
+    pub room_id: String,
 }
 
 impl RoomSettingsScopeArgs {
-    pub(in crate::cli) fn resolved_room_id(&self) -> Result<&str> {
-        self.room_id
-            .as_deref()
-            .or(self.room_id_flag.as_deref())
-            .ok_or_else(|| anyhow!("room settings requires ROOM_ID or --room-id"))
+    pub(in crate::cli) fn resolved_room_id(&self) -> &str {
+        &self.room_id
     }
 }
 

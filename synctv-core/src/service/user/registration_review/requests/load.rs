@@ -1,12 +1,14 @@
 use sqlx::{Postgres, Transaction};
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, ReviewStatus, SignupMethod, UserId},
+    models::{ReviewStatus, SignupMethod, UserId},
     service::user::{
-        registration_types::{PendingRegistrationRequest, PendingRegistrationRequestRow},
+        registration_types::{
+            PendingRegistrationPasskey, PendingRegistrationRequest, PendingRegistrationRequestRow,
+        },
         UserService,
     },
-    Error, InternalExt, Result,
+    Error, Result,
 };
 
 impl UserService {
@@ -23,7 +25,7 @@ impl UserService {
                    opaque_ciphersuite,
                    opaque_server_setup_version,
                    signup_method AS "signup_method: SignupMethod",
-                   oauth2_provider_type AS "oauth2_provider: crate::models::OAuth2ProviderTypeName",
+                   oauth2_provider_type AS "oauth2_provider: crate::models::OAuth2Provider",
                    oauth2_provider_instance_name,
                    oauth2_provider_issuer,
                    oauth2_provider_user_id,
@@ -31,7 +33,7 @@ impl UserService {
                    oauth2_avatar_url,
                    oauth2_email_trusted,
                    webauthn_credential_id,
-                   webauthn_passkey,
+                   webauthn_passkey AS "webauthn_passkey: PendingRegistrationPasskey",
                    webauthn_credential_name
             FROM user_registration_requests
             WHERE id = $1 AND reviewed_at IS NULL AND status = $2
@@ -44,22 +46,9 @@ impl UserService {
         .await?;
 
         row.map(|row| {
-            let oauth2_provider = row
-                .oauth2_provider
-                .map(|provider| {
-                    OAuth2Provider::from_str_name(&provider.0).ok_or_else(|| {
-                        Error::InvalidInput(format!(
-                            "Unsupported OAuth2 provider in registration request: {}",
-                            provider.0
-                        ))
-                    })
-                })
-                .transpose()?;
             let webauthn_passkey = row
                 .webauthn_passkey
-                .map(serde_json::from_value)
-                .transpose()
-                .internal_with_err("Failed to deserialize pending WebAuthn passkey")?;
+                .map(PendingRegistrationPasskey::into_inner);
             let oauth2_email_trusted = match row.signup_method {
                 SignupMethod::OAuth2 => row.oauth2_email_trusted.ok_or_else(|| {
                     Error::Internal(
@@ -75,7 +64,7 @@ impl UserService {
                 opaque_credential_identifier: row.opaque_credential_identifier,
                 opaque_ciphersuite: row.opaque_ciphersuite,
                 opaque_server_setup_version: row.opaque_server_setup_version,
-                oauth2_provider,
+                oauth2_provider: row.oauth2_provider,
                 oauth2_provider_instance_name: row.oauth2_provider_instance_name,
                 oauth2_provider_issuer: row.oauth2_provider_issuer,
                 oauth2_provider_user_id: row.oauth2_provider_user_id,

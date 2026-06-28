@@ -140,10 +140,9 @@ impl std::str::FromStr for PermissionSet {
 
         let mut bits = RoomPermissionSet::empty();
         for name in names {
-            let canonical = name.replace('-', "_").to_ascii_lowercase();
             let Some((_, bit)) = NAMED_PERMISSIONS
                 .iter()
-                .find(|(permission_name, _)| *permission_name == canonical)
+                .find(|(permission_name, _)| *permission_name == name)
             else {
                 return Err(PermissionSetParseError(format!(
                     "unknown permission name '{name}'"
@@ -153,6 +152,34 @@ impl std::str::FromStr for PermissionSet {
         }
 
         Ok(Self(bits))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PermissionSet;
+    use crate::models::RoomAdminPermissionBits;
+    use std::str::FromStr;
+
+    #[test]
+    fn permission_set_accepts_exact_canonical_names() {
+        let permissions = PermissionSet::from_str(r#"["live_control","view_member_list"]"#)
+            .expect("canonical permission names should parse");
+
+        assert_eq!(
+            permissions.bits().0,
+            RoomAdminPermissionBits::LIVE_CONTROL | RoomAdminPermissionBits::VIEW_MEMBER_LIST
+        );
+    }
+
+    #[test]
+    fn permission_set_rejects_case_and_separator_aliases() {
+        for raw in [r#"["LIVE_CONTROL"]"#, r#"["live-control"]"#] {
+            assert!(
+                PermissionSet::from_str(raw).is_err(),
+                "{raw} should be rejected"
+            );
+        }
     }
 }
 
@@ -304,20 +331,93 @@ impl std::str::FromStr for CorsAllowedOrigins {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct OAuth2SignupPolicy {
     pub enable_signup: bool,
     pub signup_need_review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OAuth2ProviderConfig {
-    #[serde(rename = "type")]
-    pub provider_type: String,
     pub enable_signup: bool,
     pub signup_need_review: bool,
-    pub config: serde_json::Map<String, serde_json::Value>,
+    #[serde(flatten)]
+    pub config: OAuth2ProviderPrivateConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum OAuth2ProviderPrivateConfig {
+    #[serde(rename = "github")]
+    GitHub(OAuth2BasicProviderConfig),
+    #[serde(rename = "google")]
+    Google(OAuth2BasicProviderConfig),
+    #[serde(rename = "logto")]
+    Logto(OAuth2LogtoProviderConfig),
+    #[serde(rename = "casdoor")]
+    Casdoor(OAuth2OidcProviderConfig),
+    #[serde(rename = "oidc")]
+    Oidc(OAuth2OidcProviderConfig),
+}
+
+impl Default for OAuth2ProviderPrivateConfig {
+    fn default() -> Self {
+        Self::GitHub(OAuth2BasicProviderConfig::default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2BasicProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2LogtoProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2OidcProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+    #[serde(default)]
+    pub issuer: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub userinfo_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+}
+
+impl OAuth2ProviderPrivateConfig {
+    #[must_use]
+    pub const fn provider_type_name(&self) -> &'static str {
+        match self {
+            Self::GitHub(_) => "github",
+            Self::Google(_) => "google",
+            Self::Logto(_) => "logto",
+            Self::Casdoor(_) => "casdoor",
+            Self::Oidc(_) => "oidc",
+        }
+    }
 }
 
 impl OAuth2ProviderConfig {
@@ -330,8 +430,8 @@ impl OAuth2ProviderConfig {
     }
 
     #[must_use]
-    pub fn provider_config_value(&self) -> serde_json::Value {
-        serde_json::Value::Object(self.config.clone())
+    pub fn provider_type_name(&self) -> &'static str {
+        self.config.provider_type_name()
     }
 }
 
@@ -358,21 +458,15 @@ impl OAuth2ProviderConfigs {
     ) -> crate::Result<()> {
         for (instance_name, provider_config) in &self.0 {
             validate_oauth2_instance_name(instance_name)?;
-            let provider_type = provider_config.provider_type.trim();
-            if provider_type.is_empty() {
-                return Err(crate::Error::InvalidInput(format!(
-                    "OAuth2 provider '{instance_name}' must set a non-empty type"
-                )));
-            }
+            let provider_type = provider_config.provider_type_name();
             if crate::models::oauth2_client::OAuth2Provider::from_str_name(provider_type).is_none()
             {
                 return Err(crate::Error::InvalidInput(format!(
                     "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type}'"
                 )));
             }
-            let provider_config = provider_config.provider_config_value();
             crate::oauth2::providers::provider_registry(ssrf_guard.clone())
-                .create_provider(provider_type, &provider_config)
+                .create_provider(provider_type, &provider_config.config)
                 .map_err(|error| {
                     crate::Error::InvalidInput(format!(
                         "OAuth2 provider '{instance_name}' has invalid {provider_type} config: {error}"

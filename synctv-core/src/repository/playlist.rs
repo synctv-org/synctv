@@ -6,7 +6,7 @@ use super::{query_builder::ilike_contains_pattern, required_count};
 use crate::{
     models::{
         normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery,
-        ProviderTypeName, RoomId, SourceProvider,
+        PlaylistSourceConfig, ProviderTypeName, RoomId, SourceProvider,
     },
     Result,
 };
@@ -23,7 +23,7 @@ struct PlaylistRow {
     parent_id: Option<PlaylistId>,
     position: f64,
     source_provider: Option<i16>,
-    source_config: Option<serde_json::Value>,
+    source_config: Option<PlaylistSourceConfig>,
     provider_instance_name: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -34,6 +34,28 @@ impl TryFrom<PlaylistRow> for Playlist {
     type Error = crate::Error;
 
     fn try_from(row: PlaylistRow) -> Result<Self> {
+        let source_provider = row
+            .source_provider
+            .map(SourceProvider::try_from)
+            .transpose()
+            .map_err(crate::Error::InvalidInput)?;
+        let source_config = match (source_provider, row.source_config) {
+            (Some(provider), Some(config)) => {
+                Some(config.ensure_provider(provider).map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "Invalid persisted playlist source_config for {}: {error}",
+                        row.id
+                    ))
+                })?)
+            }
+            (None | Some(_), None) => None,
+            (None, Some(_)) => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Playlist {} has source_config without source_provider",
+                    row.id
+                )));
+            }
+        };
         Ok(Self {
             id: row.id,
             room_id: row.room_id,
@@ -43,12 +65,8 @@ impl TryFrom<PlaylistRow> for Playlist {
             cover_file_reference_id: row.cover_file_reference_id,
             parent_id: row.parent_id,
             position: row.position,
-            source_provider: row
-                .source_provider
-                .map(SourceProvider::try_from)
-                .transpose()
-                .map_err(crate::Error::InvalidInput)?,
-            source_config: row.source_config,
+            source_provider,
+            source_config,
             provider_instance_name: row.provider_instance_name,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -68,7 +86,7 @@ struct PlaylistListRow {
     parent_id: Option<PlaylistId>,
     position: f64,
     source_provider: Option<ProviderTypeName>,
-    source_config: Option<serde_json::Value>,
+    source_config: Option<PlaylistSourceConfig>,
     provider_instance_name: Option<String>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
@@ -76,9 +94,29 @@ struct PlaylistListRow {
     is_available: bool,
 }
 
-impl From<PlaylistListRow> for PlaylistListItem {
-    fn from(row: PlaylistListRow) -> Self {
-        Self {
+impl TryFrom<PlaylistListRow> for PlaylistListItem {
+    type Error = crate::Error;
+
+    fn try_from(row: PlaylistListRow) -> Result<Self> {
+        let source_provider = row.source_provider.map(|provider| provider.0);
+        let source_config = match (source_provider, row.source_config) {
+            (Some(provider), Some(config)) => {
+                Some(config.ensure_provider(provider).map_err(|error| {
+                    crate::Error::InvalidInput(format!(
+                        "Invalid persisted playlist source_config for {}: {error}",
+                        row.id
+                    ))
+                })?)
+            }
+            (None | Some(_), None) => None,
+            (None, Some(_)) => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "Playlist {} has source_config without source_provider",
+                    row.id
+                )));
+            }
+        };
+        Ok(Self {
             playlist: Playlist {
                 id: row.id,
                 room_id: row.room_id,
@@ -88,15 +126,15 @@ impl From<PlaylistListRow> for PlaylistListItem {
                 cover_file_reference_id: row.cover_file_reference_id,
                 parent_id: row.parent_id,
                 position: row.position,
-                source_provider: row.source_provider.map(|provider| provider.0),
-                source_config: row.source_config,
+                source_provider,
+                source_config,
                 provider_instance_name: row.provider_instance_name,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
                 version: row.version,
             },
             is_available: row.is_available,
-        }
+        })
     }
 }
 
@@ -281,7 +319,7 @@ impl PlaylistRepository {
             .build_query_as::<PlaylistListRow>()
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.into_iter().map(PlaylistListItem::from).collect())
+        rows.into_iter().map(PlaylistListItem::try_from).collect()
     }
 
     /// Get playlist by ID
@@ -298,7 +336,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",
@@ -332,7 +370,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",
@@ -370,7 +408,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",
@@ -414,7 +452,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",
@@ -457,7 +495,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -488,7 +526,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -538,7 +576,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -572,7 +610,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -641,7 +679,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -675,7 +713,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -725,7 +763,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -898,6 +936,30 @@ impl PlaylistRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let source_provider_code = playlist.source_provider.map(SourceProvider::as_i16);
+        let source_config = match (playlist.source_provider, playlist.source_config.as_ref()) {
+            (Some(provider), Some(config)) => {
+                if config.provider() != provider {
+                    return Err(crate::Error::InvalidInput(format!(
+                        "playlist source_config provider '{}' does not match source_provider '{}'",
+                        config.provider(),
+                        provider
+                    )));
+                }
+                Some(config)
+            }
+            (None, None) => None,
+            (Some(provider), None) => {
+                return Err(crate::Error::InvalidInput(format!(
+                    "source_config is required for {provider} playlist"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(crate::Error::InvalidInput(
+                    "source_provider is required when source_config is present".to_string(),
+                ));
+            }
+        };
+        let source_config = source_config.map(sqlx::types::Json);
         let parent_id = playlist.parent_id;
 
         let row = sqlx::query_as!(
@@ -916,7 +978,7 @@ impl PlaylistRepository {
                       parent_id as "parent_id: PlaylistId",
                       position,
                       source_provider,
-                      source_config,
+                      source_config as "source_config: crate::models::PlaylistSourceConfig",
                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                       created_at,
                       updated_at,
@@ -933,7 +995,7 @@ impl PlaylistRepository {
             parent_id.as_ref().map(PlaylistId::as_i64),
             playlist.position,
             source_provider_code,
-            playlist.source_config.as_ref(),
+            source_config as _,
             normalize_provider_instance_name(playlist.provider_instance_name.as_deref()),
         )
         .fetch_one(executor)
@@ -1012,7 +1074,7 @@ impl PlaylistRepository {
                       parent_id as "parent_id: PlaylistId",
                       position,
                       source_provider,
-                      source_config,
+                      source_config as "source_config: crate::models::PlaylistSourceConfig",
                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                       created_at,
                       updated_at,
@@ -1068,7 +1130,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -1098,7 +1160,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position,
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at,
                    updated_at,
@@ -1182,7 +1244,7 @@ impl PlaylistRepository {
                               parent_id as "parent_id: PlaylistId",
                               position,
                               source_provider,
-                              source_config,
+                              source_config as "source_config: crate::models::PlaylistSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                               created_at,
                               updated_at,
@@ -1238,7 +1300,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",
@@ -1290,7 +1352,7 @@ impl PlaylistRepository {
                    parent_id as "parent_id: PlaylistId",
                    position as "position!",
                    source_provider,
-                   source_config,
+                   source_config as "source_config: crate::models::PlaylistSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    created_at as "created_at!",
                    updated_at as "updated_at!",

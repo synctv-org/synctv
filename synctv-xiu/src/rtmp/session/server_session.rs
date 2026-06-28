@@ -404,13 +404,13 @@ impl ServerSession {
                 self.on_set_chunk_size(*chunk_size as usize);
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, timestamp)?;
+                self.common.on_audio_data(data, *timestamp)?;
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, timestamp)?;
+                self.common.on_video_data(data, *timestamp)?;
             }
             RtmpMessageData::AmfData { raw_data } => {
-                self.common.on_meta_data(raw_data, timestamp)?;
+                self.common.on_meta_data(raw_data, *timestamp)?;
             }
 
             _ => {}

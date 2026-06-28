@@ -1,7 +1,7 @@
 use super::*;
-use crate::sync::events::WebRTCSignalKind;
 use crate::sync::{
     CacheTarget, ConnectionId, RealtimeEventHandler, RoomMessageHub, RoomMessageRuntime,
+    WebRTCSignalKind,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -212,7 +212,7 @@ fn test_event_envelope_serialization() -> serde_json::Result<()> {
 
     let json = serde_json::to_string(&envelope)?;
     assert!(json.contains("node1"));
-    assert!(json.contains("chat_message"));
+    assert!(json.contains("chatMessage"));
 
     let deserialized: EventEnvelope = serde_json::from_str(&json)?;
     assert_eq!(deserialized.node_id, "node1");

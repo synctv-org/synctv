@@ -12,11 +12,11 @@ use super::{
     ProviderError, SourceConfig,
 };
 use crate::models::media::{PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
-use crate::models::{LiveProxyMediaSourceConfig, MediaId, RoomId};
+use crate::models::{MediaId, RoomId};
 use crate::PublicIdCodec;
 use async_trait::async_trait;
 use base64::Engine as _;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::time::Duration;
 use synctv_common::ssrf::SsrfTargetError;
 
@@ -28,12 +28,6 @@ use synctv_common::ssrf::SsrfTargetError;
 /// identity is injected at playback time through `ProviderContext`.
 pub struct LiveProxyProvider {
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
-}
-
-fn live_proxy_source_config(
-    source_config: &Value,
-) -> Result<LiveProxyMediaSourceConfig, ProviderError> {
-    super::parse_source_config(source_config, "LiveProxy")
 }
 
 impl Default for LiveProxyProvider {
@@ -191,28 +185,6 @@ impl LiveProxyProvider {
 
         Ok((room_id, media_id))
     }
-
-    fn validate_config_shape(
-        source_config: &Value,
-    ) -> Result<LiveProxyMediaSourceConfig, ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config, "LiveProxy")?;
-
-        for field in [
-            "room_id",
-            "media_id",
-            "rtmp_url",
-            "source_url",
-            "stream_url",
-        ] {
-            if source_config.get(field).is_some() {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Field '{field}' is not supported. Live proxy source_config only accepts 'url'; internal room/media identity comes from runtime context."
-                )));
-            }
-        }
-
-        live_proxy_source_config(source_config)
-    }
 }
 
 fn mark_live_proxy_playback_resources(result: &mut PlaybackResult, version: &str, expires_at: i64) {
@@ -265,12 +237,16 @@ impl MediaProvider for LiveProxyProvider {
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        let source_config = Self::validate_config_shape(source_config)?;
+        let crate::models::MediaSourceConfig::LiveProxy(source_config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "LiveProxy requires LiveProxy media source_config".to_string(),
+            ));
+        };
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
-        let source_url = source_config.url;
+        let source_url = source_config.url.clone();
         Self::validate_live_source_url(&source_url, &self.ssrf_guard).await?;
 
         let mut result = super::build_live_playback(*media_id, *room_id);
@@ -285,12 +261,8 @@ impl MediaProvider for LiveProxyProvider {
                 ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
             })?
             .to_string();
-        result
-            .metadata
-            .insert("source_host".to_string(), json!(redacted_host));
-        result
-            .metadata
-            .insert("provider".to_string(), json!("live_proxy"));
+        result.metadata.source_host = Some(redacted_host);
+        result.metadata.provider = Some("live_proxy".to_string());
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);
@@ -310,7 +282,13 @@ impl MediaProvider for LiveProxyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let source_config = Self::validate_config_shape(source_config.value())?;
+        let SourceConfig::Media(crate::models::MediaSourceConfig::LiveProxy(source_config)) =
+            source_config
+        else {
+            return Err(ProviderError::InvalidConfig(
+                "LiveProxy requires LiveProxy media source_config".to_string(),
+            ));
+        };
         Self::validate_live_source_url(&source_config.url, &self.ssrf_guard).await
     }
 }

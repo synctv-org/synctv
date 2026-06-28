@@ -333,24 +333,24 @@ impl ClientSession {
             }
             RtmpMessageData::SetChunkSize { chunk_size } => {
                 tracing::info!("[C <- S] on_set_chunk_size...");
-                self.on_set_chunk_size(chunk_size)?;
+                self.on_set_chunk_size(chunk_size);
             }
             RtmpMessageData::StreamBegin { stream_id } => {
                 tracing::info!("[C <- S] on_stream_begin...");
-                Self::on_stream_begin(stream_id)?;
+                Self::on_stream_begin(*stream_id);
             }
             RtmpMessageData::StreamIsRecorded { stream_id } => {
                 tracing::info!("[C <- S] on_stream_is_recorded...");
-                Self::on_stream_is_recorded(stream_id)?;
+                Self::on_stream_is_recorded(*stream_id);
             }
             RtmpMessageData::AudioData { data } => {
-                self.common.on_audio_data(data, timestamp)?;
+                self.common.on_audio_data(data, *timestamp)?;
             }
             RtmpMessageData::VideoData { data } => {
-                self.common.on_video_data(data, timestamp)?;
+                self.common.on_video_data(data, *timestamp)?;
             }
             RtmpMessageData::AmfData { raw_data } => {
-                self.common.on_meta_data(raw_data, timestamp)?;
+                self.common.on_meta_data(raw_data, *timestamp)?;
             }
 
             _ => {}
@@ -387,12 +387,12 @@ impl ClientSession {
                     if is_transaction_id(*number, define::TRANSACTION_ID_CREATE_STREAM) =>
                 {
                     tracing::info!("[C <- S] on_result_create_stream...");
-                    self.on_result_create_stream()?;
+                    self.on_result_create_stream();
                 }
                 _ => {}
             },
             "_error" => {
-                Self::on_error()?;
+                Self::on_error();
             }
             "onStatus" => {
                 if others.is_empty() {
@@ -565,7 +565,7 @@ impl ClientSession {
         Ok(())
     }
 
-    const fn on_result_create_stream(&mut self) -> Result<(), SessionError> {
+    const fn on_result_create_stream(&mut self) {
         match self.client_type {
             ClientSessionType::Pull => {
                 self.state = ClientSessionState::Play;
@@ -574,10 +574,9 @@ impl ClientSession {
                 self.state = ClientSessionState::PublishingContent;
             }
         }
-        Ok(())
     }
 
-    fn on_set_chunk_size(&mut self, chunk_size: &mut u32) -> Result<(), SessionError> {
+    fn on_set_chunk_size(&mut self, chunk_size: &mut u32) {
         // Clamp chunk size to valid RTMP range [128, 65536] to prevent issues
         // from malformed or malicious server responses (e.g. chunk_size=0).
         let clamped = (*chunk_size).clamp(128, 65536);
@@ -589,17 +588,14 @@ impl ClientSession {
             );
         }
         self.unpacketizer.update_max_chunk_size(clamped as usize);
-        Ok(())
     }
 
-    fn on_stream_is_recorded(stream_id: &u32) -> Result<(), SessionError> {
+    fn on_stream_is_recorded(stream_id: u32) {
         tracing::trace!("stream is recorded stream_id is {stream_id}");
-        Ok(())
     }
 
-    fn on_stream_begin(stream_id: &u32) -> Result<(), SessionError> {
+    fn on_stream_begin(stream_id: u32) {
         tracing::trace!("stream is begin stream_id is {stream_id}");
-        Ok(())
     }
 
     async fn on_set_peer_bandwidth(&mut self) -> Result<(), SessionError> {
@@ -608,9 +604,7 @@ impl ClientSession {
         Ok(())
     }
 
-    const fn on_error() -> Result<(), SessionError> {
-        Ok(())
-    }
+    const fn on_error() {}
 
     async fn on_status(
         &mut self,

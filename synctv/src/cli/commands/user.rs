@@ -283,12 +283,6 @@ pub struct UserUnbanArgs {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("user_role_input")
-        .args(["role", "role_arg"])
-        .required(true)
-        .multiple(false)
-))]
 pub struct UserSetRoleArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
@@ -296,18 +290,13 @@ pub struct UserSetRoleArgs {
     #[command(flatten)]
     pub user: UserRefArgs,
 
-    #[arg(long, value_enum, group = "user_role_input")]
-    pub role: Option<CliUserRole>,
-
-    #[arg(value_enum, hide = true, group = "user_role_input")]
-    pub role_arg: Option<CliUserRole>,
+    #[arg(long, value_enum, required = true)]
+    pub role: CliUserRole,
 }
 
 impl UserSetRoleArgs {
-    pub(in crate::cli) fn resolved_role(&self) -> Result<CliUserRole> {
+    pub(in crate::cli) const fn resolved_role(&self) -> CliUserRole {
         self.role
-            .or(self.role_arg)
-            .ok_or_else(|| anyhow!("user set-role requires ROLE or --role"))
     }
 }
 

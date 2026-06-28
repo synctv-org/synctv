@@ -3,9 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use synctv_core::models::{RoomId, RoomPlaybackState, SourceProvider, UserId};
+use synctv_core::models::{MediaSourceConfig, RoomId, RoomPlaybackState, SourceProvider, UserId};
 use synctv_core::provider::store::{ProviderStore, ProviderStoreExt, ProviderStoreResolver};
 use synctv_core::provider::{MediaProvider, PlaybackResult, ProviderContext};
 use synctv_core::service::{ProvidersManager, RoomService};
@@ -26,7 +24,7 @@ pub(crate) struct ProviderPlaybackSession {
     provider_instance_name: Option<String>,
     actor_user_id: UserId,
     credential_owner_id: Option<UserId>,
-    source_config: Value,
+    source_config: MediaSourceConfig,
     room_target_key: String,
     provider_session_id: String,
     #[serde(default)]
@@ -49,7 +47,7 @@ pub(crate) struct ProviderPlaybackRegistration<'a> {
     pub provider_name: &'a str,
     pub provider_instance_name: Option<&'a str>,
     pub credential_owner_id: Option<&'a UserId>,
-    pub source_config: &'a Value,
+    pub source_config: &'a MediaSourceConfig,
     pub result: &'a PlaybackResult,
 }
 
@@ -254,7 +252,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         let Some(provider_session_id) = provider.playback_lifecycle_session_id(result) else {
             return Ok(());
         };
-        let Some(room_target_key) = playback_target_key(state) else {
+        let Some(room_target_key) = playback_target_key(state)? else {
             return Ok(());
         };
         let store = self.lifecycle_store();
@@ -322,7 +320,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         state: &RoomPlaybackState,
         position: f64,
     ) -> Result<(), ApiError> {
-        let Some(target_key) = playback_target_key(state) else {
+        let Some(target_key) = playback_target_key(state)? else {
             return Ok(());
         };
         let store = self.lifecycle_store();
@@ -363,7 +361,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         is_paused: bool,
         force: bool,
     ) -> Result<(), ApiError> {
-        let Some(target_key) = playback_target_key(state) else {
+        let Some(target_key) = playback_target_key(state)? else {
             return Ok(());
         };
         let store = self.lifecycle_store();
@@ -450,8 +448,8 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
         previous: Option<&RoomPlaybackState>,
         current: &RoomPlaybackState,
     ) -> Result<(), ApiError> {
-        let previous_target = previous.and_then(playback_target_key);
-        let current_target = playback_target_key(current);
+        let previous_target = previous.map(playback_target_key).transpose()?.flatten();
+        let current_target = playback_target_key(current)?;
 
         if previous_target.is_some() && previous_target != current_target {
             if let Some(previous_state) = previous {
@@ -491,21 +489,16 @@ fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-fn dynamic_target_hash(target: &[u8]) -> String {
-    hex::encode(Sha256::digest(target))
-}
-
-fn playback_target_key(state: &RoomPlaybackState) -> Option<String> {
+fn playback_target_key(state: &RoomPlaybackState) -> Result<Option<String>, ApiError> {
     if let Some(media_id) = &state.playing_media_id {
-        return Some(format!("media:{media_id}"));
+        return Ok(Some(format!("media:{media_id}")));
     }
 
-    state.playing_playlist_id.as_ref().map(|playlist_id| {
-        format!(
-            "playlist:{playlist_id}:{}",
-            dynamic_target_hash(&state.target)
-        )
-    })
+    state
+        .playing_playlist_id
+        .as_ref()
+        .map(|playlist_id| Ok(format!("playlist:{playlist_id}:{}", state.target_hash()?)))
+        .transpose()
 }
 
 fn normalize_lifecycle_provider_instance_name(value: Option<&str>) -> Option<String> {
@@ -646,7 +639,7 @@ mod tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
-    use synctv_core::models::RoomId;
+    use synctv_core::models::{MediaSourceConfig, RoomId};
     use synctv_core::provider::store::ProviderStoreResolver;
     use synctv_core::provider::{
         PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, ProviderStoreRegistry,
@@ -711,7 +704,7 @@ mod tests {
         async fn generate_playback(
             &self,
             _ctx: &ProviderContext<'_>,
-            _source_config: &Value,
+            _source_config: &MediaSourceConfig,
         ) -> Result<PlaybackResult, ProviderError> {
             Ok(lifecycle_playback_result("session-a"))
         }
@@ -720,7 +713,7 @@ mod tests {
             &self,
             _ctx: &ProviderContext<'_>,
             session_id: &str,
-            _source_config: &Value,
+            _source_config: &MediaSourceConfig,
         ) -> Result<(), ProviderError> {
             if self
                 .start_failures_remaining
@@ -742,7 +735,7 @@ mod tests {
             &self,
             _ctx: &ProviderContext<'_>,
             session_id: &str,
-            _source_config: &Value,
+            _source_config: &MediaSourceConfig,
             position: f64,
         ) -> Result<(), ProviderError> {
             locked_push(&self.stop_calls, (session_id.to_string(), position))
@@ -751,9 +744,9 @@ mod tests {
         fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
             result
                 .metadata
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
+                .emby
+                .as_ref()
+                .and_then(|metadata| metadata.play_session_id.clone())
         }
     }
 
@@ -764,12 +757,6 @@ mod tests {
             test_provider_playback_info("https://example.com/video.mp4"),
         );
 
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert(
-            "session_id".to_string(),
-            Value::String(session_id.to_string()),
-        );
-
         PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
@@ -777,7 +764,13 @@ mod tests {
             provider_instance_name: None,
             duration_seconds: None,
             is_live: Some(false),
-            metadata,
+            metadata: synctv_core::models::PlaybackMetadata {
+                emby: Some(synctv_core::models::EmbyPlaybackMetadata {
+                    play_session_id: Some(session_id.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
         }
     }
 
@@ -822,10 +815,9 @@ mod tests {
             }),
         );
         providers_manager
-            .create_provider(
+            .create_provider_with_default_config(
                 LIFECYCLE_TEST_PROVIDER_NAME,
                 LIFECYCLE_TEST_PROVIDER_NAME,
-                &Value::Null,
             )
             .await
             .map(|_| ())
@@ -888,15 +880,28 @@ mod tests {
         let room_id = RoomId::expect_positive(1);
         let mut state = RoomPlaybackState::new(room_id);
         state.playing_media_id = Some(synctv_core::models::MediaId::expect_positive(2));
-        assert_eq!(playback_target_key(&state).as_deref(), Some("media:2"));
+        assert_eq!(
+            playback_target_key(&state)
+                .expect("target key should compute")
+                .as_deref(),
+            Some("media:2")
+        );
 
         state.playing_media_id = None;
         state.playing_playlist_id = Some(synctv_core::models::PlaylistId::expect_positive(3));
-        state.target = b"target-a".to_vec();
-        let first = playback_target_key(&state).checked("dynamic target key");
+        state.target = Some(synctv_core::models::ProviderTarget::alist(
+            "target-a".to_string(),
+        ));
+        let first = playback_target_key(&state)
+            .expect("dynamic target key should compute")
+            .checked("dynamic target key");
 
-        state.target = b"target-b".to_vec();
-        let second = playback_target_key(&state).checked("dynamic target key");
+        state.target = Some(synctv_core::models::ProviderTarget::alist(
+            "target-b".to_string(),
+        ));
+        let second = playback_target_key(&state)
+            .expect("dynamic target key should compute")
+            .checked("dynamic target key");
         assert_ne!(first, second);
         assert!(first.starts_with("playlist:3:"));
     }
@@ -908,7 +913,9 @@ mod tests {
             provider_instance_name: None,
             actor_user_id: UserId::expect_positive(100),
             credential_owner_id: None,
-            source_config: serde_json::json!({}),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
             room_target_key: "media:m".to_string(),
             provider_session_id: "session".to_string(),
             started: true,
@@ -939,7 +946,9 @@ mod tests {
             provider_instance_name: Some("primary".to_string()),
             actor_user_id,
             credential_owner_id: Some(credential_owner_id),
-            source_config: serde_json::json!({}),
+            source_config: synctv_core_testing::direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            ),
             room_target_key: "media:1".to_string(),
             provider_session_id: "session".to_string(),
             started: true,
@@ -976,8 +985,10 @@ mod tests {
         state.playing_media_id = Some(synctv_core::models::MediaId::expect_positive(41));
         state.is_playing = true;
 
-        let first_source = serde_json::json!({"token": "old"});
-        let second_source = serde_json::json!({"token": "new"});
+        let first_source =
+            synctv_core_testing::direct_url_media_source_config("https://example.com/old.mp4");
+        let second_source =
+            synctv_core_testing::direct_url_media_source_config("https://example.com/new.mp4");
         let result = lifecycle_playback_result("session-refresh");
 
         api.register_provider_playback_session(ProviderPlaybackRegistration {
@@ -1036,7 +1047,8 @@ mod tests {
         let mut state = RoomPlaybackState::new(room_id);
         state.playing_media_id = Some(synctv_core::models::MediaId::expect_positive(42));
         state.is_playing = true;
-        let source_config = serde_json::json!({"token": "retry"});
+        let source_config =
+            synctv_core_testing::direct_url_media_source_config("https://example.com/retry.mp4");
         let result = lifecycle_playback_result("session-retry");
 
         api.register_provider_playback_session(ProviderPlaybackRegistration {
@@ -1093,7 +1105,8 @@ mod tests {
         first_state.is_playing = true;
         first_state.position = 42.5;
 
-        let source_config = serde_json::json!({"item_id": "first"});
+        let source_config =
+            synctv_core_testing::direct_url_media_source_config("https://example.com/first.mp4");
         let result = lifecycle_playback_result("session-a");
         api.register_provider_playback_session(ProviderPlaybackRegistration {
             state: &first_state,

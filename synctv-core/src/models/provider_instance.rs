@@ -5,7 +5,6 @@
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha1::Sha1;
 use std::collections::HashMap;
 
@@ -273,8 +272,8 @@ pub struct UserProviderCredential {
     /// Associated media provider instance name (optional)
     pub provider_instance_name: Option<String>,
 
-    /// Credential data in JSONB format (encrypted at rest via AES-256-GCM)
-    pub credential_data: Value,
+    /// Typed credential data (encrypted at rest via AES-256-GCM).
+    pub credential_data: ProviderCredential,
 
     /// Credential expiration time (optional, for tokens/cookies with TTL)
     pub expires_at: Option<DateTime<Utc>>,
@@ -335,9 +334,9 @@ impl UserProviderCredential {
         !self.is_expired()
     }
 
-    /// Parse credential data into a typed structure
-    pub fn get_credential(&self) -> Result<ProviderCredential, serde_json::Error> {
-        serde_json::from_value(self.credential_data.clone())
+    #[must_use]
+    pub fn credential(&self) -> &ProviderCredential {
+        &self.credential_data
     }
 }
 
@@ -345,11 +344,18 @@ impl UserProviderCredential {
 ///
 /// Enum representing different credential formats for supported media providers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ProviderCredential {
+    #[serde(rename = "bilibili")]
     /// Bilibili credentials (cookies)
     Bilibili { cookies: HashMap<String, String> },
 
+    #[serde(rename = "alist")]
     /// Alist credentials (username/password)
     Alist {
         host: String,
@@ -359,12 +365,21 @@ pub enum ProviderCredential {
         otp_secret: Option<String>,
     },
 
+    #[serde(rename = "emby")]
     /// Emby credentials (API key)
     Emby {
         host: String,
         api_key: String,
         emby_user_id: String,
     },
+}
+
+impl Default for ProviderCredential {
+    fn default() -> Self {
+        Self::Bilibili {
+            cookies: HashMap::new(),
+        }
+    }
 }
 
 impl ProviderCredential {
@@ -649,7 +664,7 @@ mod tests {
             provider: "bilibili".to_string(),
             server_id: UserProviderCredential::bilibili_server_id(),
             provider_instance_name: None,
-            credential_data: serde_json::json!({}),
+            credential_data: ProviderCredential::default(),
             expires_at: Some(Utc::now() - Duration::hours(1)),
             created_at: Utc::now(),
             updated_at: Utc::now(),

@@ -8,8 +8,8 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        CreateNotificationRequest, NotificationListQuery, NotificationType, PageParams, User,
-        UserId, UserRole, UserStatus,
+        CreateNotificationRequest, NotificationData, NotificationListQuery, NotificationType,
+        PageParams, User, UserId, UserRole, UserStatus,
     },
     repository::{NotificationRepository, UserRepository},
 };
@@ -48,7 +48,7 @@ fn make_notif_request(user_id: &UserId, title: &str) -> CreateNotificationReques
         notification_type: NotificationType::SystemAnnouncement,
         title: title.to_string(),
         content: "test content".to_string(),
-        data: serde_json::json!({}),
+        data: NotificationData::default(),
     }
 }
 

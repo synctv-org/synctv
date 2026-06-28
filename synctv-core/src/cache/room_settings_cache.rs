@@ -13,6 +13,7 @@ use crate::models::{RoomId, RoomSettings};
 use crate::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoomSettingsSnapshot {
     pub settings: RoomSettings,
     pub version: i64,

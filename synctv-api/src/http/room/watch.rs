@@ -264,7 +264,7 @@ pub async fn watch_room_settings(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomSettingsRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         room_settings: Some(synctv_proto::client::ObserveRoomSettings {
             after_event_sequence,
         }),
@@ -286,7 +286,7 @@ pub async fn watch_playlist_items(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaylistItemsRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playlist_items: Some(synctv_proto::client::ObservePlaylistItems {
             request: Some(request),
             after_event_sequence,
@@ -308,7 +308,7 @@ pub async fn watch_room_members(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchRoomMemberEventsRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         room_member_events: Some(synctv_proto::client::ObserveRoomMemberEvents {
             after_event_sequence,
         }),
@@ -322,13 +322,13 @@ pub async fn watch_room_members(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/watch/chat-events",
+        path = "/api/rooms/{roomId}/watch/chat-events",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
-            ("after_event_sequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
-            ("delivery_mode" = Option<String>, Query, description = "Resource watch delivery mode")
+            ("afterEventSequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
+            ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
         ),
         responses(
             (status = 200, description = "SSE stream of chat resource events"),
@@ -353,7 +353,7 @@ pub async fn watch_chat_events(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchChatEventsRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         chat_events: Some(synctv_proto::client::ObserveChatEvents {
             after_event_sequence,
         }),
@@ -367,13 +367,13 @@ pub async fn watch_chat_events(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/watch/chat-pin-events",
+        path = "/api/rooms/{roomId}/watch/chat-pin-events",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
-            ("after_event_sequence" = Option<i64>, Query, description = "Replay chat pin events strictly after this durable event sequence"),
-            ("delivery_mode" = Option<String>, Query, description = "Resource watch delivery mode")
+            ("afterEventSequence" = Option<i64>, Query, description = "Replay chat pin events strictly after this durable event sequence"),
+            ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
         ),
         responses(
             (status = 200, description = "SSE stream of chat pin resource events"),
@@ -398,7 +398,7 @@ pub async fn watch_chat_pin_events(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchChatPinEventsRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         chat_pin_events: Some(synctv_proto::client::ObserveChatPinEvents {
             after_event_sequence,
         }),

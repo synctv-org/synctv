@@ -4,16 +4,25 @@
 //!
 
 use chrono::Utc;
-use serde_json::json;
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        Media, MediaId, Playlist, PlaylistId, Room, RoomId, RoomStatus, SourceProvider, User,
-        UserId, UserRole, UserStatus,
+        Media, MediaId, MediaSourceConfig, Playlist, PlaylistId, Room, RoomId, RoomStatus,
+        SourceProvider, User, UserId, UserRole, UserStatus,
     },
     repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
 };
 use synctv_core_testing::{create_test_pool, ok, some, TestContainer};
+
+fn direct_url_first_media_url(source_config: &MediaSourceConfig) -> &str {
+    let MediaSourceConfig::DirectUrl(config) = source_config else {
+        panic!("expected DirectUrl source_config");
+    };
+    config.medias.first().map_or_else(
+        || panic!("expected DirectUrl media resource"),
+        |media| media.url.as_str(),
+    )
+}
 
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -296,7 +305,8 @@ async fn test_concurrent_updates_detect_conflict() {
     assert_eq!(current.name, "client1_update.mp4");
     assert!((current.position - 1.0).abs() < f64::EPSILON);
     assert_eq!(
-        current.source_config["medias"][0]["url"], "https://example.com/video.mp4",
+        direct_url_first_media_url(&current.source_config),
+        "https://example.com/video.mp4",
         "source_config is immutable after media creation"
     );
     assert_eq!(current.version, 1);
@@ -397,9 +407,8 @@ async fn test_update_with_version_preserves_source_config() {
     // persist because source_config is creation-time provider state.
     let mut updated = media.clone();
     updated.name = "config_test_updated.mp4".to_string();
-    updated.source_config = json!({
-        "medias": [{"name": "1080P", "url": "https://example.com/new.mp4"}]
-    });
+    updated.source_config =
+        synctv_core_testing::direct_url_media_source_config("https://example.com/new.mp4");
 
     let result = some(
         ok(
@@ -412,15 +421,15 @@ async fn test_update_with_version_preserves_source_config() {
     assert_eq!(result.version, 1);
     assert_eq!(result.name, "config_test_updated.mp4");
     assert_eq!(
-        result.source_config["medias"][0]["url"],
+        direct_url_first_media_url(&result.source_config),
         "https://example.com/video.mp4"
     );
-    assert!(result.source_config.get("playback_infos").is_none());
 
     // Concurrent update with old version should fail
     let mut stale = media.clone();
     stale.name = "stale_config_test.mp4".to_string();
-    stale.source_config = json!({"stale": true});
+    stale.source_config =
+        synctv_core_testing::direct_url_media_source_config("https://example.com/stale.mp4");
     let stale_result = ok(
         media_repo.update_with_version(&stale, 0).await,
         "stale metadata media update should be evaluated",

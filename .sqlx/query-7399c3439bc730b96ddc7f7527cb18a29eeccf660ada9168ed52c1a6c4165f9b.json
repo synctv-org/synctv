@@ -1,0 +1,128 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO auth_webauthn_credentials (\n                user_id, credential_id, passkey, public_key, name\n            )\n            VALUES ($1, $2, $3, $4, $5)\n            RETURNING id,\n                      user_id as \"user_id: UserId\",\n                      credential_id,\n                      passkey as \"passkey!: StoredPasskey\",\n                      sign_count,\n                      name,\n                      last_used_at,\n                      created_at,\n                      updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "credential_id",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "credential_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "passkey!: StoredPasskey",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "passkey"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "sign_count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "sign_count"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_used_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "last_used_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "auth_webauthn_credentials",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Jsonb",
+        "Jsonb",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "7399c3439bc730b96ddc7f7527cb18a29eeccf660ada9168ed52c1a6c4165f9b"
+}

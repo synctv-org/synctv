@@ -6,19 +6,18 @@ use super::{
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
+    PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
+    SourceConfig,
 };
 use crate::models::media::{
-    PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackSubtitle, PlaybackSubtitleProvider,
+    EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::{EmbyMediaSourceConfig, EmbyPlaylistSourceConfig};
+use crate::models::{EmbyMediaSourceConfig, EmbyPlaylistSourceConfig, MediaSourceConfig};
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::prelude::IndexedRandom;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -381,11 +380,6 @@ pub struct EmbyProvider {
     client_manager: Arc<ProviderClientManager>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct EmbyBrowseTarget {
-    item_id: String,
-}
-
 impl EmbyProvider {
     /// Provider type name constant.
     pub const NAME: &'static str = "emby";
@@ -479,36 +473,34 @@ impl EmbyProvider {
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
-    fn encode_target(item_id: &str) -> Result<Vec<u8>, ProviderError> {
+    fn encode_target(item_id: &str) -> Result<crate::models::ProviderTarget, ProviderError> {
         if item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Emby target item_id cannot be empty".to_string(),
             ));
         }
 
-        serde_json::to_vec(&EmbyBrowseTarget {
-            item_id: item_id.to_string(),
-        })
-        .map_err(|e| ProviderError::InvalidConfig(format!("Failed to encode Emby target: {e}")))
+        Ok(crate::models::ProviderTarget::emby(item_id.to_string()))
     }
 
-    fn decode_target(target: Option<&[u8]>) -> Result<Option<String>, ProviderError> {
+    fn decode_target(
+        target: Option<&crate::models::ProviderTarget>,
+    ) -> Result<Option<String>, ProviderError> {
         let Some(target) = target else {
             return Ok(None);
         };
-        if target.is_empty() {
-            return Ok(None);
-        }
-
-        let payload: EmbyBrowseTarget = serde_json::from_slice(target)
-            .map_err(|e| ProviderError::InvalidConfig(format!("Invalid Emby target: {e}")))?;
+        let crate::models::ProviderTarget::Emby(payload) = target else {
+            return Err(ProviderError::InvalidConfig(
+                "Emby target must use emby payload".to_string(),
+            ));
+        };
         if payload.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Emby target item_id cannot be empty".to_string(),
             ));
         }
 
-        Ok(Some(payload.item_id))
+        Ok(Some(payload.item_id.clone()))
     }
 
     async fn fetch_item(
@@ -542,16 +534,19 @@ impl EmbyProvider {
 
     fn build_thumbnail_url(server_id: &str, credential_owner_id: &str, item_id: &str) -> String {
         format!(
-            "/api/providers/emby/thumbnail/{item_id}?server_id={server_id}&credential_owner_id={credential_owner_id}&max_height=300",
+            "/api/providers/emby/thumbnail/{item_id}?serverId={server_id}&credentialOwnerId={credential_owner_id}&maxHeight=300",
             server_id = urlencoding::encode(server_id),
             credential_owner_id = urlencoding::encode(credential_owner_id),
         )
     }
 
-    fn build_next_source_config(base_config: &EmbySourceConfig, item_id: &str) -> Value {
-        json!({
-            "item_id": item_id,
-            "server_id": base_config.server_id,
+    fn build_next_source_config(
+        base_config: &EmbySourceConfig,
+        item_id: &str,
+    ) -> MediaSourceConfig {
+        MediaSourceConfig::Emby(EmbyMediaSourceConfig {
+            item_id: item_id.to_string(),
+            server_id: base_config.server_id.clone(),
         })
     }
 
@@ -578,9 +573,8 @@ impl EmbyProvider {
     async fn resolve_config(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        config: EmbySourceConfig,
     ) -> Result<ResolvedEmbyConfig, ProviderError> {
-        let config = EmbySourceConfig::media_or_playlist_from_value(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -633,15 +627,16 @@ impl EmbyProvider {
 
         let item = client.get_item(item_request).await?;
 
-        let mut metadata = HashMap::new();
-        metadata.insert("name".to_string(), json!(item.name));
-        metadata.insert("type".to_string(), json!(item.r#type));
-        if !item.series_name.is_empty() {
-            metadata.insert("series_name".to_string(), json!(item.series_name));
-        }
-        if !item.season_name.is_empty() {
-            metadata.insert("season_name".to_string(), json!(item.season_name));
-        }
+        let mut metadata = PlaybackMetadata {
+            name: Some(item.name),
+            emby: Some(EmbyPlaybackMetadata {
+                item_type: Some(item.r#type),
+                series_name: (!item.series_name.is_empty()).then_some(item.series_name),
+                season_name: (!item.season_name.is_empty()).then_some(item.season_name),
+                play_session_id: None,
+            }),
+            ..Default::default()
+        };
 
         let playback_hints = grpc_playback_request_hints(playback_client_profile);
 
@@ -666,11 +661,10 @@ impl EmbyProvider {
 
         let playback_info = client.playback_info(playback_request).await?;
 
-        // Store play_session_id in metadata for lifecycle hooks
-        metadata.insert(
-            "emby_play_session_id".to_string(),
-            json!(playback_info.play_session_id),
-        );
+        metadata
+            .emby
+            .get_or_insert_with(EmbyPlaybackMetadata::default)
+            .play_session_id = Some(playback_info.play_session_id.clone());
 
         let mut playback_infos = HashMap::new();
 
@@ -864,24 +858,31 @@ impl From<EmbyPlaylistSourceConfig> for EmbySourceConfig {
 }
 
 impl EmbySourceConfig {
-    fn media_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::parse_source_config::<EmbyMediaSourceConfig>(value, "Emby media").map(Into::into)
-    }
-
-    fn playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::parse_source_config::<EmbyPlaylistSourceConfig>(value, "Emby playlist")
-            .map(Into::into)
-    }
-
-    fn media_or_playlist_from_value(value: &Value) -> Result<Self, ProviderError> {
-        super::reject_source_config_provider_instance_name(value, "Emby")?;
-        super::reject_source_config_credential_ref(value, "Emby")?;
-
-        if let Ok(config) = Self::media_from_value(value) {
-            return Ok(config);
+    fn media_from_config(value: &crate::models::MediaSourceConfig) -> Result<Self, ProviderError> {
+        match value {
+            crate::models::MediaSourceConfig::Emby(config) => Ok(config.clone().into()),
+            _ => Err(ProviderError::InvalidConfig(
+                "Emby media requires Emby source_config".to_string(),
+            )),
         }
+    }
 
-        Self::playlist_from_value(value)
+    fn playlist_from_config(
+        value: &crate::models::PlaylistSourceConfig,
+    ) -> Result<Self, ProviderError> {
+        match value {
+            crate::models::PlaylistSourceConfig::Emby(config) => Ok(config.clone().into()),
+            _ => Err(ProviderError::InvalidConfig(
+                "Emby playlist requires Emby source_config".to_string(),
+            )),
+        }
+    }
+
+    fn from_source_config(value: SourceConfig<'_>) -> Result<Self, ProviderError> {
+        match value {
+            SourceConfig::Media(config) => Self::media_from_config(config),
+            SourceConfig::DynamicPlaylist(config) => Self::playlist_from_config(config),
+        }
     }
 }
 
@@ -901,16 +902,7 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        super::reject_source_config_provider_instance_name(source_config.value(), "Emby")?;
-        super::reject_source_config_credential_ref(source_config.value(), "Emby")?;
-        let config = match source_config.kind() {
-            super::SourceConfigKind::Media => {
-                EmbySourceConfig::media_from_value(source_config.value())?
-            }
-            super::SourceConfigKind::DynamicPlaylist => {
-                EmbySourceConfig::playlist_from_value(source_config.value())?
-            }
-        };
+        let config = EmbySourceConfig::from_source_config(source_config)?;
 
         // Validate item_id is non-empty
         if config.item_id.is_empty() {
@@ -953,9 +945,9 @@ impl MediaProvider for EmbyProvider {
     fn credential_dependencies(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = EmbySourceConfig::media_or_playlist_from_value(source_config)?;
+        let config = EmbySourceConfig::from_source_config(source_config)?;
         let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
             ProviderError::Internal(
                 "credential_owner_id not available in ProviderContext".to_string(),
@@ -972,22 +964,19 @@ impl MediaProvider for EmbyProvider {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
-    ) -> Result<Value, ProviderError> {
-        super::reject_source_config_provider_instance_name(&source_config, "Emby")?;
-        super::reject_source_config_credential_ref(&source_config, "Emby")?;
-        let _config = EmbySourceConfig::media_or_playlist_from_value(&source_config)?;
-
-        Ok(source_config)
+        source_config: SourceConfig<'_>,
+    ) -> Result<PreparedSourceConfig, ProviderError> {
+        let _config = EmbySourceConfig::from_source_config(source_config)?;
+        Ok(source_config.into())
     }
 
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        let config = EmbySourceConfig::media_from_value(source_config)?;
-        let resolved = self.resolve_config(_ctx, source_config).await?;
+        let config = EmbySourceConfig::media_from_config(source_config)?;
+        let resolved = self.resolve_config(_ctx, config.clone()).await?;
         let playback_client_profile = _ctx.playback_client_profile();
         let playback_profile_cache_key = playback_client_profile.map_or_else(
             || "default".to_string(),
@@ -1028,8 +1017,19 @@ impl MediaProvider for EmbyProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         session_id: &str,
-        source_config: &Value,
+        source_config: &MediaSourceConfig,
     ) -> Result<(), ProviderError> {
+        let source_config = match EmbySourceConfig::media_from_config(source_config) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_start: failed to read source config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
@@ -1074,9 +1074,20 @@ impl MediaProvider for EmbyProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         session_id: &str,
-        source_config: &Value,
+        source_config: &MediaSourceConfig,
         position: f64,
     ) -> Result<(), ProviderError> {
+        let source_config = match EmbySourceConfig::media_from_config(source_config) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_stop: failed to read source config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
@@ -1142,10 +1153,21 @@ impl MediaProvider for EmbyProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         session_id: &str,
-        source_config: &Value,
+        source_config: &MediaSourceConfig,
         position: f64,
         is_paused: bool,
     ) -> Result<(), ProviderError> {
+        let source_config = match EmbySourceConfig::media_from_config(source_config) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    session_id = %session_id,
+                    "Emby on_playback_progress: failed to read source config, skipping"
+                );
+                return Ok(());
+            }
+        };
         let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
@@ -1195,8 +1217,9 @@ impl MediaProvider for EmbyProvider {
     fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
         result
             .metadata
-            .get("emby_play_session_id")
-            .and_then(serde_json::Value::as_str)
+            .emby
+            .as_ref()
+            .and_then(|metadata| metadata.play_session_id.as_deref())
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(std::string::ToString::to_string)
@@ -1320,15 +1343,15 @@ impl DynamicFolder for EmbyProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         let config = playlist
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::playlist_from_value(config)?;
-        let resolved = self.resolve_config(ctx, config).await?;
+        let base_config = EmbySourceConfig::playlist_from_config(config)?;
+        let resolved = self.resolve_config(ctx, base_config.clone()).await?;
         let target_item_id =
             Self::decode_target(target)?.unwrap_or_else(|| resolved.item_id.clone());
         let client = self
@@ -1390,7 +1413,7 @@ impl DynamicFolder for EmbyProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         let item_id = Self::decode_target(Some(target))?
             .ok_or_else(|| ProviderError::InvalidConfig("Emby target is required".to_string()))?;
@@ -1398,8 +1421,8 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::playlist_from_value(config)?;
-        let resolved = self.resolve_config(ctx, config).await?;
+        let base_config = EmbySourceConfig::playlist_from_config(config)?;
+        let resolved = self.resolve_config(ctx, base_config.clone()).await?;
         let item = self
             .fetch_item(&resolved, &item_id, ctx.request_context())
             .await?;
@@ -1414,8 +1437,6 @@ impl DynamicFolder for EmbyProvider {
             name: item.name,
             item_type,
             source_config: Self::build_next_source_config(&base_config, &item_id),
-            metadata: json!({}),
-            provider_data: json!({}),
             target: Self::encode_target(&item_id)?,
         }))
     }
@@ -1424,8 +1445,7 @@ impl DynamicFolder for EmbyProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        _playing_media: &crate::models::Media,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
@@ -1436,8 +1456,8 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::playlist_from_value(config)?;
-        let resolved = self.resolve_config(ctx, config).await?;
+        let base_config = EmbySourceConfig::playlist_from_config(config)?;
+        let resolved = self.resolve_config(ctx, base_config.clone()).await?;
         let current_item = self
             .fetch_item(&resolved, &item_id, ctx.request_context())
             .await?;
@@ -1489,13 +1509,11 @@ impl DynamicFolder for EmbyProvider {
                                         )
                                     })?,
                                 ),
-                                metadata: json!({}),
-                                provider_data: json!({}),
                                 target: next.target.clone(),
                             }));
                         }
                     } else if let Some(idx) =
-                        page_items.iter().position(|item| item.target == target)
+                        page_items.iter().position(|item| &item.target == target)
                     {
                         found_current = true;
                         if let Some(next) = page_items
@@ -1514,8 +1532,6 @@ impl DynamicFolder for EmbyProvider {
                                         )
                                     })?,
                                 ),
-                                metadata: json!({}),
-                                provider_data: json!({}),
                                 target: next.target.clone(),
                             }));
                         }
@@ -1556,8 +1572,6 @@ impl DynamicFolder for EmbyProvider {
                                     )
                                 })?,
                             ),
-                            metadata: json!({}),
-                            provider_data: json!({}),
                             target: first.target.clone(),
                         }));
                     }
@@ -1603,7 +1617,7 @@ impl DynamicFolder for EmbyProvider {
                 let mut rng = rand::rng();
                 let candidates: Vec<_> = playable_items
                     .iter()
-                    .filter(|item| item.target != target)
+                    .filter(|item| &item.target != target)
                     .collect();
 
                 let random_item = if candidates.is_empty() {
@@ -1622,8 +1636,6 @@ impl DynamicFolder for EmbyProvider {
                                 ProviderError::InvalidConfig("Missing Emby item target".to_string())
                             })?,
                         ),
-                        metadata: json!({}),
-                        provider_data: json!({}),
                         target: random.target.clone(),
                     }))
                 } else {
@@ -1637,7 +1649,7 @@ impl DynamicFolder for EmbyProvider {
         &self,
         ctx: &ProviderContext<'_>,
         playlist: &crate::models::Playlist,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
         let Some(mut current_id) = Self::decode_target(target)? else {
             return Ok(Vec::new());
@@ -1647,8 +1659,8 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config = EmbySourceConfig::playlist_from_value(config)?;
-        let resolved = self.resolve_config(ctx, config).await?;
+        let base_config = EmbySourceConfig::playlist_from_config(config)?;
+        let resolved = self.resolve_config(ctx, base_config.clone()).await?;
 
         let mut segments = Vec::new();
         for _ in 0..32 {

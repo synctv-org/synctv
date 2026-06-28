@@ -97,16 +97,16 @@ mod tests {
     fn protobuf_json_serde_accepts_proto3_int64_strings() -> TestResult {
         let req = serde_json::from_str::<synctv_proto::client::CreateUserAvatarUploadSessionRequest>(
             r#"{
-                    "client_avatar_id":"avatar-1",
-                    "mime_type":"image/png",
-                    "size_bytes":"1764839",
+                    "clientAvatarId":"avatar-1",
+                    "mimeType":"image/png",
+                    "sizeBytes":"1764839",
                     "width":256,
                     "height":256,
                     "parts":[{
-                        "part_number":1,
-                        "offset_bytes":"0",
-                        "size_bytes":"1764839",
-                        "checksum_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        "partNumber":1,
+                        "offsetBytes":"0",
+                        "sizeBytes":"1764839",
+                        "checksumSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                     }],
                     "metadata":{}
                 }"#,

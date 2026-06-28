@@ -203,6 +203,7 @@ where
     }
 
     /// Returns the current timeout duration.
+    #[must_use]
     pub const fn timeout(&self) -> Duration {
         self.timeout
     }

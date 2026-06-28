@@ -1,0 +1,198 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH picked AS (\n                SELECT id\n                FROM realtime_outbox\n                WHERE status = 1\n                  AND next_retry_at <= NOW()\n                ORDER BY next_retry_at, created_at, id\n                LIMIT $1\n                FOR UPDATE SKIP LOCKED\n            )\n            UPDATE realtime_outbox o\n            SET status = $2,\n                locked_by = $3,\n                locked_at = NOW()\n            FROM picked\n            WHERE o.id = picked.id\n            RETURNING\n                o.id,\n                o.aggregate_type,\n                o.aggregate_id,\n                o.event_type,\n                o.event_version,\n                o.aggregate_version,\n                o.payload AS \"payload!: sqlx::types::Json<RealtimeEvent>\",\n                o.status,\n                o.attempts,\n                o.next_retry_at,\n                o.locked_by,\n                o.locked_at,\n                o.created_at,\n                o.dispatched_at,\n                o.last_error\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "aggregate_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "aggregate_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "aggregate_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "aggregate_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "event_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "event_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "event_version"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "aggregate_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "aggregate_version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "payload!: sqlx::types::Json<RealtimeEvent>",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "status",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "next_retry_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "next_retry_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "locked_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "locked_by"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "locked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "locked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "dispatched_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "dispatched_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "realtime_outbox",
+            "name": "last_error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "e43a085f4f86843eff6c1e113cfeb7f8ee368169e9b62488355cf349e5cf8209"
+}

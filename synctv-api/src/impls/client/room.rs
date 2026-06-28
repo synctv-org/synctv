@@ -12,8 +12,10 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::room::ClientResourceAvailability;
 
 use super::convert::{
-    member_status_to_proto, resource_availability_enum_to_proto, room_role_to_proto,
-    try_members_to_proto, try_playback_state_to_proto,
+    apply_room_settings_patch_from_proto, chat_metadata_from_proto, file_metadata_from_proto,
+    member_status_to_proto, provider_target_from_proto, resource_availability_enum_to_proto,
+    room_role_to_proto, room_settings_from_proto, room_settings_to_proto, try_members_to_proto,
+    try_playback_state_to_proto,
 };
 use super::media::{
     complete_upload_response_fields, complete_upload_session_request,
@@ -305,11 +307,10 @@ impl ClientApiImpl {
 
         let uid = *user_id;
 
-        let settings = if req.settings.is_empty() {
-            None
-        } else {
-            Some(serde_json::from_slice(&req.settings)?)
-        };
+        let settings = req
+            .settings
+            .map(|settings| room_settings_from_proto(Some(settings)))
+            .transpose()?;
         let password = if req.password.is_empty() {
             None
         } else {
@@ -500,7 +501,7 @@ impl ClientApiImpl {
                     duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
                     bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                     parts: proto_upload_manifest_parts(req.parts),
-                    metadata: parse_json_metadata(&req.metadata)?,
+                    metadata: file_metadata_from_proto(req.metadata.as_ref())?,
                 },
             )
             .await
@@ -1052,21 +1053,26 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
-        let settings_patch = validate_update_room_settings_request(&req)?;
+        let current_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let settings = validate_update_room_settings_request(&req, current_settings)?;
         let username = self.user_username_for_event(&uid).await?;
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             &uid,
             &username,
-            Vec::new(),
+            settings.clone(),
             0,
         )?;
         let snapshot = self
             .room_service
-            .patch_settings_with_outbox(
+            .set_settings_with_outbox(
                 rid,
                 uid,
-                settings_patch,
+                settings,
                 Some(prepared_settings_fanout.settings_outbox_factory()),
             )
             .await
@@ -1209,11 +1215,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let settings_bytes = serde_json::to_vec(&settings)
-            .map_err(|e| ApiError::Internal(format!("Failed to serialize settings: {e}")))?;
-
         Ok(synctv_proto::client::GetRoomSettingsResponse {
-            settings: settings_bytes,
+            settings: Some(room_settings_to_proto(&settings)),
             version,
         })
     }
@@ -1241,12 +1244,11 @@ impl ClientApiImpl {
             .get_room_settings_with_version(&rid)
             .await
             .map_err(ApiError::from)?;
-        let settings_json = serde_json::to_vec(&default_settings).map_err(ApiError::from)?;
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             &uid,
             &username,
-            settings_json.clone(),
+            default_settings,
             current_version + 1,
         )?;
         let snapshot = self
@@ -1265,7 +1267,7 @@ impl ClientApiImpl {
         self.room_cache_fanout.publish_invalidation(&rid);
 
         Ok(synctv_proto::client::ResetRoomSettingsResponse {
-            settings: settings_json,
+            settings: Some(room_settings_to_proto(&snapshot.settings)),
         })
     }
 
@@ -1703,7 +1705,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let metadata = crate::impls::messaging::chat_metadata_for_send(
-            parse_json_metadata(&req.metadata)?,
+            chat_metadata_from_proto(req.metadata.as_ref())?,
             &req.display_position,
             &req.display_color,
             Some(&playback_state),
@@ -1765,7 +1767,7 @@ impl ClientApiImpl {
                 duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
                 bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                 parts: proto_upload_manifest_parts(req.parts),
-                metadata: parse_json_metadata(&req.metadata)?,
+                metadata: file_metadata_from_proto(req.metadata.as_ref())?,
             })
             .await
             .map_err(ApiError::from)?;
@@ -2325,7 +2327,7 @@ impl ClientApiImpl {
         let playlist_id = optional_trimmed_string(&req.playback_playlist_id)
             .map(|id| crate::impls::proto_validated_playlist_id(id, &self.public_id_codec))
             .transpose()?;
-        let target = (!req.playback_target.is_empty()).then(|| req.playback_target.clone());
+        let target = provider_target_from_proto(req.playback_target)?;
         let position_seconds = required_playback_position_seconds(req.position_seconds)?;
         let before_seconds =
             optional_positive_window_seconds(req.before_seconds, 0.0, "before_seconds")?;
@@ -2379,15 +2381,9 @@ impl ClientApiImpl {
 
 pub(crate) fn validate_update_room_settings_request(
     req: &synctv_proto::client::UpdateRoomSettingsRequest,
-) -> Result<serde_json::Value, ApiError> {
-    if req.settings.is_empty() {
-        return Err(ApiError::InvalidInput(
-            "settings patch is required".to_string(),
-        ));
-    }
-
-    serde_json::from_slice(&req.settings)
-        .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))
+    current: synctv_core::models::RoomSettings,
+) -> Result<synctv_core::models::RoomSettings, ApiError> {
+    apply_room_settings_patch_from_proto(current, req.settings)
 }
 
 #[cfg(test)]
@@ -2398,7 +2394,7 @@ mod tests {
         build_transfer_room_ownership_request, chat_pin_event_to_proto,
         delete_chat_message_request_to_core, edit_chat_message_request_to_core,
         optional_positive_limit, optional_positive_window_seconds, optional_trimmed_string,
-        parse_json_metadata, parse_proto_chat_attachments, required_playback_position_seconds,
+        parse_proto_chat_attachments, required_playback_position_seconds,
         required_room_availability, settings_registry_unavailable_error,
     };
     use crate::impls::ErrorKind;
@@ -2928,22 +2924,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn parse_json_metadata_rejects_non_object_values() -> TestResult {
-        let error = api_err(parse_json_metadata(br#"["tag"]"#))?;
-
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(
-                    message.contains("metadata must be a JSON object"),
-                    "{message}"
-                );
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
-        Ok(())
-    }
-
     #[tokio::test]
     async fn chat_pin_event_response_populates_message_username() -> TestResult {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
@@ -2998,7 +2978,12 @@ mod tests {
 
     #[test]
     fn chat_attachment_display_proto_hides_upload_token_metadata() -> TestResult {
-        let metadata = serde_json::json!({"blurhash": "abc"});
+        let metadata = synctv_core::models::FileMetadata {
+            width: Some(640),
+            height: Some(480),
+            blurhash: Some("abc".to_string()),
+            ..Default::default()
+        };
         let attachment = synctv_core::models::NewStoredFile {
             filename: None,
             id: "attachment-1".to_string(),
@@ -3019,9 +3004,9 @@ mod tests {
             proto.url,
             "https://cdn.example.test/rooms/1/chat/2/attachment-1.webp"
         );
-        let proto_metadata: serde_json::Value =
-            serde_json::from_slice(&proto.metadata).expect("metadata should decode");
-        assert_eq!(proto_metadata, metadata);
+        let proto_metadata = proto.metadata.expect("metadata should be present");
+        assert_eq!(proto_metadata.width, Some(640));
+        assert_eq!(proto_metadata.height, Some(480));
         Ok(())
     }
 
@@ -3037,7 +3022,10 @@ mod tests {
             size_bytes: Some(1024),
             width: Some(640),
             height: Some(480),
-            metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+            metadata: synctv_core::models::FileMetadata {
+                upload_token: Some("v1.payload.signature".to_string()),
+                ..Default::default()
+            },
         };
 
         let proto = api_ok(super::upload_session_chat_attachment_to_proto(&attachment))?;
@@ -3088,7 +3076,10 @@ mod tests {
                 size_bytes: Some(1024),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+                metadata: synctv_core::models::FileMetadata {
+                    upload_token: Some("v1.payload.signature".to_string()),
+                    ..Default::default()
+                },
             },
             encoded_object_key: "encoded-attachment-1".to_string(),
             upload_required: true,
@@ -3127,7 +3118,10 @@ mod tests {
                 size_bytes: Some(1024),
                 width: Some(640),
                 height: Some(480),
-                metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+                metadata: synctv_core::models::FileMetadata {
+                    upload_token: Some("v1.payload.signature".to_string()),
+                    ..Default::default()
+                },
             },
             encoded_object_key: "encoded-attachment-1".to_string(),
             upload_required: true,
@@ -3173,7 +3167,7 @@ mod tests {
             message_id: "42".to_string(),
             content: "hello".to_string(),
             expected_version: 7,
-            metadata: serde_json::to_vec(&serde_json::json!({"edited": true}))?,
+            metadata: None,
             client_operation_id: " edit-op-42 ".to_string(),
         };
         let core = api_ok(edit_chat_message_request_to_core(
@@ -3234,7 +3228,7 @@ mod tests {
                 message_id: "42".to_string(),
                 content: "hello".to_string(),
                 expected_version: 0,
-                metadata: Vec::new(),
+                metadata: None,
                 client_operation_id: String::new(),
             },
         ))?;
@@ -3270,7 +3264,7 @@ mod tests {
                 message_id: "42".to_string(),
                 content: "hello".to_string(),
                 expected_version: -1,
-                metadata: Vec::new(),
+                metadata: None,
                 client_operation_id: String::new(),
             },
         ))?;

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use crate::repository::RoomResourceEventPayload;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 use crate::{
@@ -9,7 +11,7 @@ use crate::{
         ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
         ChatMessageEventLog, ChatMessageOperationKind, ChatMessagePin,
         ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
-        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
+        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatMetadata, ChatPinEvent,
         ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
         ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
         ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery, EventCursor, NewStoredFile,
@@ -40,6 +42,50 @@ const CHAT_MESSAGE_EVENT_TYPES: [&str; 4] = [
 ];
 const CHAT_PINS_RESOURCE_TYPE: &str = "chat_pins";
 
+struct ChatMessageRow {
+    id: i64,
+    room_id: RoomId,
+    user_id: Option<UserId>,
+    client_message_id: Option<String>,
+    content: String,
+    message_type: ChatMessageType,
+    status: ChatMessageStatus,
+    version: i64,
+    reply_to_message_id: Option<i64>,
+    reply_to_message_created_at: Option<DateTime<Utc>>,
+    metadata: ChatMetadata,
+    edited_at: Option<DateTime<Utc>>,
+    deleted_at: Option<DateTime<Utc>>,
+    deleted_by: Option<UserId>,
+    delete_reason: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl TryFrom<ChatMessageRow> for ChatMessage {
+    type Error = crate::Error;
+
+    fn try_from(row: ChatMessageRow) -> Result<Self> {
+        Ok(Self {
+            id: row.id,
+            room_id: row.room_id,
+            user_id: row.user_id,
+            client_message_id: row.client_message_id,
+            content: row.content,
+            message_type: row.message_type,
+            status: row.status,
+            version: row.version,
+            reply_to_message_id: row.reply_to_message_id,
+            reply_to_message_created_at: row.reply_to_message_created_at,
+            metadata: row.metadata,
+            edited_at: row.edited_at,
+            deleted_at: row.deleted_at,
+            deleted_by: row.deleted_by,
+            delete_reason: row.delete_reason,
+            created_at: row.created_at,
+        })
+    }
+}
+
 fn chat_message_event_types() -> Vec<String> {
     CHAT_MESSAGE_EVENT_TYPES
         .into_iter()
@@ -49,6 +95,18 @@ fn chat_message_event_types() -> Vec<String> {
 
 fn chat_message_key(message: &ChatMessage) -> ChatMessageKey {
     (message.id, message.created_at)
+}
+
+fn chat_message_from_row(row: ChatMessageRow) -> Result<ChatMessage> {
+    row.try_into()
+}
+
+fn chat_messages_from_rows(rows: Vec<ChatMessageRow>) -> Result<Vec<ChatMessage>> {
+    rows.into_iter().map(chat_message_from_row).collect()
+}
+
+fn optional_chat_message_from_row(row: Option<ChatMessageRow>) -> Result<Option<ChatMessage>> {
+    row.map(chat_message_from_row).transpose()
 }
 
 fn chat_pin_resource_id(message: &ChatMessage) -> String {
@@ -91,11 +149,6 @@ fn validate_message_for_insert(message: &ChatMessage) -> Result<()> {
             "chat message version must be positive".to_string(),
         ));
     }
-    if !message.metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "chat metadata must be a JSON object".to_string(),
-        ));
-    }
     match (
         message.reply_to_message_id,
         message.reply_to_message_created_at,
@@ -134,11 +187,6 @@ fn validate_chat_attachment_for_insert(attachment: &NewStoredFile) -> Result<()>
     {
         return Err(Error::InvalidInput(
             "chat attachment size and dimensions must be positive".to_string(),
-        ));
-    }
-    if !attachment.metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "chat attachment metadata must be a JSON object".to_string(),
         ));
     }
     Ok(())
@@ -187,8 +235,9 @@ impl ChatRepository {
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
         validate_message_for_insert(message)?;
+        let metadata = message.metadata.normalized_for_storage()?;
         let inserted = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             INSERT INTO chat_messages (
                 room_id, user_id, client_message_id, content, message_type,
@@ -206,7 +255,7 @@ impl ChatRepository {
                       version AS "version!",
                       reply_to_message_id,
                       reply_to_message_created_at,
-                      metadata AS "metadata!: serde_json::Value",
+                      metadata AS "metadata!: ChatMetadata",
                       edited_at,
                       deleted_at,
                       deleted_by AS "deleted_by?: UserId",
@@ -222,13 +271,13 @@ impl ChatRepository {
             message.version,
             message.reply_to_message_id,
             message.reply_to_message_created_at,
-            &message.metadata,
+            &metadata as _,
             message.created_at
         )
         .fetch_one(self.pool())
         .await?;
 
-        Ok(inserted)
+        chat_message_from_row(inserted)
     }
 
     pub async fn insert_message_event_idempotent(
@@ -680,7 +729,7 @@ impl ChatRepository {
         validate_required_text(event_id, "chat event_id", CHAT_EVENT_ID_MAX_CHARS)?;
         let mut tx = self.pool().begin().await?;
         let message = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -692,7 +741,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -708,6 +757,7 @@ impl ChatRepository {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
+        let message = chat_message_from_row(message)?;
 
         if message.status == ChatMessageStatus::Deleted {
             return Err(Error::Conflict("Message has been deleted".to_string()));
@@ -1057,7 +1107,7 @@ impl ChatRepository {
             "chat_message_attachment",
             &reference_id,
             None,
-            &attachment.metadata,
+            &crate::models::FileReferenceMetadata::File(crate::models::FileMetadata::default()),
         )
         .await?
         .ok_or_else(|| {
@@ -1094,7 +1144,7 @@ impl ChatRepository {
                        event_id AS "event_id!",
                        room_id AS "room_id?",
                        actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: serde_json::Value",
+                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                        occurred_at AS "occurred_at!"
                 FROM chat_message_events
                 WHERE room_id = $1
@@ -1118,7 +1168,7 @@ impl ChatRepository {
                        event_id AS "event_id!",
                        room_id AS "room_id?",
                        actor_user_id AS "actor_user_id?",
-                       payload AS "event_payload?: serde_json::Value",
+                       payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                        occurred_at AS "occurred_at!"
                 FROM chat_message_events
                 WHERE room_id = $1
@@ -1153,7 +1203,7 @@ impl ChatRepository {
                    event_id AS "event_id!",
                    room_id AS "room_id?",
                    actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
@@ -1237,7 +1287,7 @@ impl ChatRepository {
                    event_id AS "event_id!",
                    room_id AS "room_id?",
                    actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
@@ -1271,7 +1321,7 @@ impl ChatRepository {
                    event_id AS "event_id!",
                    room_id AS "room_id?",
                    actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE event_type = $1
@@ -1783,7 +1833,7 @@ impl ChatRepository {
         let limit = limit.clamp(1, 100);
         let messages = if let Some(cursor) = cursor {
             sqlx::query_as!(
-                ChatMessage,
+                ChatMessageRow,
                 r#"
                 SELECT id AS "id!",
                        room_id AS "room_id!: RoomId",
@@ -1795,7 +1845,7 @@ impl ChatRepository {
                        version AS "version!",
                        reply_to_message_id,
                        reply_to_message_created_at,
-                       metadata AS "metadata!: serde_json::Value",
+                       metadata AS "metadata!: ChatMetadata",
                        edited_at,
                        deleted_at,
                        deleted_by AS "deleted_by?: UserId",
@@ -1819,7 +1869,7 @@ impl ChatRepository {
             .await?
         } else {
             sqlx::query_as!(
-                ChatMessage,
+                ChatMessageRow,
                 r#"
                 SELECT id AS "id!",
                        room_id AS "room_id!: RoomId",
@@ -1831,7 +1881,7 @@ impl ChatRepository {
                        version AS "version!",
                        reply_to_message_id,
                        reply_to_message_created_at,
-                       metadata AS "metadata!: serde_json::Value",
+                       metadata AS "metadata!: ChatMetadata",
                        edited_at,
                        deleted_at,
                        deleted_by AS "deleted_by?: UserId",
@@ -1853,6 +1903,7 @@ impl ChatRepository {
             .await?
         };
 
+        let messages = chat_messages_from_rows(messages)?;
         let next_cursor = if i32::try_from(messages.len()).ok() == Some(limit) {
             messages.last().map(|m| ChatHistoryCursor {
                 created_at: m.created_at,
@@ -1908,9 +1959,9 @@ impl ChatRepository {
         let fetch_limit = i64::from(limit) + 1;
         let user_id = query.user_id.map(|id| id.as_i64());
         let pool = self.pool();
-        let mut messages = if let Some(cursor) = query.cursor {
+        let messages = if let Some(cursor) = query.cursor {
             sqlx::query_as!(
-                ChatMessage,
+                ChatMessageRow,
                 r#"
                 WITH search_terms AS (
                     SELECT websearch_to_tsquery('simple', $2) AS tsquery
@@ -1925,7 +1976,7 @@ impl ChatRepository {
                        m.version AS "version!",
                        m.reply_to_message_id,
                        m.reply_to_message_created_at,
-                       m.metadata AS "metadata!: serde_json::Value",
+                       m.metadata AS "metadata!: ChatMetadata",
                        m.edited_at,
                        m.deleted_at,
                        m.deleted_by AS "deleted_by?: UserId",
@@ -1955,7 +2006,7 @@ impl ChatRepository {
             .await?
         } else {
             sqlx::query_as!(
-                ChatMessage,
+                ChatMessageRow,
                 r#"
                 WITH search_terms AS (
                     SELECT websearch_to_tsquery('simple', $2) AS tsquery
@@ -1970,7 +2021,7 @@ impl ChatRepository {
                        m.version AS "version!",
                        m.reply_to_message_id,
                        m.reply_to_message_created_at,
-                       m.metadata AS "metadata!: serde_json::Value",
+                       m.metadata AS "metadata!: ChatMetadata",
                        m.edited_at,
                        m.deleted_at,
                        m.deleted_by AS "deleted_by?: UserId",
@@ -1997,6 +2048,7 @@ impl ChatRepository {
             .await?
         };
 
+        let mut messages = chat_messages_from_rows(messages)?;
         let page_size = usize::try_from(limit)
             .map_err(|_| Error::Internal("chat search limit overflowed usize".to_string()))?;
         let has_next = messages.len() > page_size;
@@ -2039,11 +2091,14 @@ impl ChatRepository {
         let end_seconds = query.position_seconds + query.after_seconds;
         let media_id = query.media_id.map(|id| id.as_i64().to_string());
         let playlist_id = query.playlist_id.map(|id| id.as_i64().to_string());
-        let target_hex = query.target.as_ref().map(hex::encode);
+        let target_hash = query
+            .target
+            .as_ref()
+            .map(|target| crate::models::try_hash_playback_target(Some(target)))
+            .transpose()?;
         let pool = self.eventually_consistent_pool();
-        let messages = sqlx::query_as!(
-            ChatMessage,
-            r#"
+        let messages = sqlx::query_as::<_, ChatMessage>(
+            r"
             WITH candidates AS (
                 SELECT id,
                        room_id,
@@ -2062,48 +2117,48 @@ impl ChatRepository {
                        delete_reason,
                        created_at,
                        CASE
-                           WHEN jsonb_typeof(metadata #> '{playback,position_seconds}') = 'number'
-                           THEN (metadata #>> '{playback,position_seconds}')::double precision
+                           WHEN jsonb_typeof(metadata #> '{playback,positionSeconds}') = 'number'
+                           THEN (metadata #>> '{playback,positionSeconds}')::double precision
                            ELSE NULL
                        END AS playback_position
                 FROM chat_messages
                 WHERE room_id = $1
                   AND ($2 OR status <> $3)
-                  AND ($4::text IS NULL OR metadata #>> '{playback,media_id}' = $4)
-                  AND ($5::text IS NULL OR metadata #>> '{playback,playlist_id}' = $5)
-                  AND ($6::text IS NULL OR metadata #>> '{playback,target_hex}' = $6)
+                  AND ($4::text IS NULL OR metadata #>> '{playback,mediaId}' = $4)
+                  AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)
+                  AND ($6::text IS NULL OR metadata #>> '{playback,targetHash}' = $6)
             )
-            SELECT id AS "id!",
-                   room_id AS "room_id!: RoomId",
-                   user_id AS "user_id?: UserId",
+            SELECT id,
+                   room_id,
+                   user_id,
                    client_message_id,
-                   content AS "content!",
-                   message_type AS "message_type!: ChatMessageType",
-                   status AS "status!: ChatMessageStatus",
-                   version AS "version!",
+                   content,
+                   message_type,
+                   status,
+                   version,
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata,
                    edited_at,
                    deleted_at,
-                   deleted_by AS "deleted_by?: UserId",
+                   deleted_by,
                    delete_reason,
-                   created_at AS "created_at!"
+                   created_at
             FROM candidates
             WHERE playback_position BETWEEN $7 AND $8
             ORDER BY playback_position ASC, created_at ASC, id ASC
             LIMIT $9
-            "#,
-            query.room_id.as_i64(),
-            query.include_deleted,
-            i16::from(ChatMessageStatus::Deleted),
-            media_id,
-            playlist_id,
-            target_hex.as_deref(),
-            start_seconds,
-            end_seconds,
-            i64::from(limit)
+            ",
         )
+        .bind(query.room_id)
+        .bind(query.include_deleted)
+        .bind(i16::from(ChatMessageStatus::Deleted))
+        .bind(media_id)
+        .bind(playlist_id)
+        .bind(target_hash.as_deref())
+        .bind(start_seconds)
+        .bind(end_seconds)
+        .bind(i64::from(limit))
         .fetch_all(pool)
         .await?;
 
@@ -2150,7 +2205,7 @@ impl ChatRepository {
         let after_limit = after_limit.clamp(0, 50);
         let pool = self.eventually_consistent_pool();
         let mut before = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -2162,7 +2217,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2187,7 +2242,7 @@ impl ChatRepository {
         before.reverse();
 
         let after = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -2199,7 +2254,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2221,6 +2276,8 @@ impl ChatRepository {
         )
         .fetch_all(pool)
         .await?;
+        let before = chat_messages_from_rows(before)?;
+        let after = chat_messages_from_rows(after)?;
 
         let anchor = self
             .attach_attachments_and_reactions_to_messages(vec![anchor], viewer_user_id)
@@ -2242,7 +2299,7 @@ impl ChatRepository {
     pub async fn get_by_id(&self, message_id: i64) -> Result<Option<ChatMessage>> {
         let pool = self.eventually_consistent_pool();
         let msg = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -2254,7 +2311,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2268,7 +2325,7 @@ impl ChatRepository {
         .fetch_optional(pool)
         .await?;
 
-        Ok(msg)
+        optional_chat_message_from_row(msg)
     }
 
     pub async fn get_by_room_and_id(
@@ -2296,7 +2353,7 @@ impl ChatRepository {
         message_id: i64,
     ) -> Result<Option<ChatMessage>> {
         let msg = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -2308,7 +2365,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2323,7 +2380,7 @@ impl ChatRepository {
         .fetch_optional(pool)
         .await?;
 
-        Ok(msg)
+        optional_chat_message_from_row(msg)
     }
 
     pub async fn get_with_attachments_by_room_and_id(
@@ -2410,9 +2467,10 @@ impl ChatRepository {
         room_id: &RoomId,
         message_id: i64,
         content: &str,
-        metadata: &serde_json::Value,
+        metadata: &ChatMetadata,
         expected_version: Option<i64>,
     ) -> Result<Option<ChatMessageWithAttachments>> {
+        let metadata = metadata.normalized_for_storage()?;
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -2420,7 +2478,7 @@ impl ChatRepository {
         );
         builder.push_bind(content);
         builder.push(", metadata = ");
-        builder.push_bind(metadata);
+        builder.push_bind(&metadata);
         builder.push(", status = ");
         builder.push_bind(i16::from(ChatMessageStatus::Edited));
         builder.push(
@@ -2491,6 +2549,7 @@ impl ChatRepository {
                 }));
             }
         }
+        let metadata = request.metadata.normalized_for_storage()?;
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -2498,7 +2557,7 @@ impl ChatRepository {
         );
         builder.push_bind(request.content);
         builder.push(", metadata = ");
-        builder.push_bind(request.metadata);
+        builder.push_bind(&metadata);
         builder.push(", status = ");
         builder.push_bind(i16::from(ChatMessageStatus::Edited));
         builder.push(
@@ -2926,8 +2985,9 @@ impl ChatRepository {
         message: &ChatMessage,
     ) -> Result<ChatMessage> {
         validate_message_for_insert(message)?;
+        let metadata = message.metadata.normalized_for_storage()?;
         let inserted = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             INSERT INTO chat_messages (
                 room_id, user_id, client_message_id, content, message_type,
@@ -2945,7 +3005,7 @@ impl ChatRepository {
                       version AS "version!",
                       reply_to_message_id,
                       reply_to_message_created_at,
-                      metadata AS "metadata!: serde_json::Value",
+                      metadata AS "metadata!: ChatMetadata",
                       edited_at,
                       deleted_at,
                       deleted_by AS "deleted_by?: UserId",
@@ -2961,13 +3021,13 @@ impl ChatRepository {
             message.version,
             message.reply_to_message_id,
             message.reply_to_message_created_at,
-            &message.metadata,
+            &metadata as _,
             message.created_at
         )
         .fetch_one(&mut **tx)
         .await?;
 
-        Ok(inserted)
+        chat_message_from_row(inserted)
     }
 
     async fn insert_attachments_in_tx(
@@ -3004,7 +3064,7 @@ impl ChatRepository {
                           size_bytes,
                           width,
                           height,
-                          metadata AS "metadata!: serde_json::Value",
+                          metadata AS "metadata!: crate::models::FileMetadata",
                           created_at AS "created_at!",
                           NULL::TEXT AS "reuse_token?",
                           NULL::TIMESTAMPTZ AS "reuse_expires_at?"
@@ -3022,7 +3082,7 @@ impl ChatRepository {
                 attachment.size_bytes,
                 attachment.width,
                 attachment.height,
-                &attachment.metadata
+                &attachment.metadata as _
             )
             .fetch_one(&mut **tx)
             .await?;
@@ -3442,7 +3502,7 @@ impl ChatRepository {
         created_at: DateTime<Utc>,
     ) -> Result<Option<ChatMessageWithAttachments>> {
         let message = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -3454,7 +3514,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -3472,6 +3532,7 @@ impl ChatRepository {
         let Some(message) = message else {
             return Ok(None);
         };
+        let message = chat_message_from_row(message)?;
         let attachments = self
             .attachments_for_message_in_tx(tx, message.id, message.created_at)
             .await?;
@@ -3510,7 +3571,7 @@ impl ChatRepository {
                    size_bytes,
                    width,
                    height,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: crate::models::FileMetadata",
                    created_at AS "created_at!",
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
@@ -3561,7 +3622,6 @@ impl ChatRepository {
         tx: &mut Transaction<'_, Postgres>,
         event: &ChatMessageEvent,
     ) -> Result<ChatMessageEventLog> {
-        let payload = serde_json::to_value(event)?;
         let summary = chat_event_summary(event);
         let event_type = chat_event_type(event.kind);
         validate_chat_event_for_insert(event, event_type)?;
@@ -3577,7 +3637,7 @@ impl ChatRepository {
                       event_id AS "event_id!",
                       room_id AS "room_id?",
                       actor_user_id AS "actor_user_id?",
-                      payload AS "event_payload?: serde_json::Value",
+                      payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                       occurred_at AS "occurred_at!"
             "#,
             &event.event_id,
@@ -3587,8 +3647,8 @@ impl ChatRepository {
             event.message.message.created_at,
             event_type,
             event.message.message.version,
-            payload,
-            summary,
+            sqlx::types::Json(event) as _,
+            sqlx::types::Json(summary) as _,
             event.occurred_at
         )
         .fetch_one(&mut **tx)
@@ -3606,7 +3666,6 @@ impl ChatRepository {
             "chat pin event_id",
             CHAT_EVENT_ID_MAX_CHARS,
         )?;
-        let payload = serde_json::to_value(event)?;
         let summary = chat_pin_event_summary(event);
         insert_room_resource_event_with_executor(
             &NewRoomResourceEvent {
@@ -3616,13 +3675,15 @@ impl ChatRepository {
                 user_id: None,
                 aggregate_type: "chat_message".to_string(),
                 aggregate_id: event.message.message.id.to_string(),
-                resource_type: CHAT_PINS_RESOURCE_TYPE.to_string(),
+                resource_type: crate::repository::RoomResourceKind::ChatPins,
                 resource_id: chat_pin_resource_id(&event.message.message),
                 event_type: event.kind.as_str().to_string(),
                 event_version: 1,
                 aggregate_version: Some(event.message.message.version),
                 actor_user_id: Some(event.actor_user_id.as_i64()),
-                payload: Some(payload),
+                payload: Some(crate::repository::RoomResourceEventPayload::ChatPin {
+                    event: event.clone(),
+                }),
                 summary,
                 occurred_at: event.occurred_at,
             },
@@ -3649,7 +3710,7 @@ impl ChatRepository {
                    event_id AS "event_id!",
                    room_id AS "room_id?",
                    actor_user_id AS "actor_user_id?",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<ChatMessageEvent>",
                    occurred_at AS "occurred_at!"
             FROM chat_message_events
             WHERE room_id = $1
@@ -3677,7 +3738,7 @@ impl ChatRepository {
             r#"
             SELECT event_id AS "event_id!",
                    sequence AS "sequence!",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<RoomResourceEventPayload>",
                    occurred_at AS "occurred_at!"
             FROM room_resource_events
             WHERE room_id = $1
@@ -3708,7 +3769,7 @@ impl ChatRepository {
             r#"
             SELECT event_id AS "event_id!",
                    sequence AS "sequence!",
-                   payload AS "event_payload?: serde_json::Value",
+                   payload AS "event_payload?: sqlx::types::Json<RoomResourceEventPayload>",
                    occurred_at AS "occurred_at!"
             FROM room_resource_events
             WHERE room_id = $1
@@ -3764,7 +3825,7 @@ impl ChatRepository {
                    size_bytes,
                    width,
                    height,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: crate::models::FileMetadata",
                    created_at AS "created_at!",
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
@@ -3808,7 +3869,7 @@ impl ChatRepository {
                    a.size_bytes,
                    a.width,
                    a.height,
-                   a.metadata AS "metadata!: serde_json::Value",
+                   a.metadata AS "metadata!: crate::models::FileMetadata",
                    a.created_at AS "created_at!",
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
@@ -3903,7 +3964,7 @@ impl ChatRepository {
             .map(|pin| pin.message_created_at)
             .collect::<Vec<_>>();
         let messages = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT m.id AS "id!",
                    m.room_id AS "room_id!: RoomId",
@@ -3915,7 +3976,7 @@ impl ChatRepository {
                    m.version AS "version!",
                    m.reply_to_message_id,
                    m.reply_to_message_created_at,
-                   m.metadata AS "metadata!: serde_json::Value",
+                   m.metadata AS "metadata!: ChatMetadata",
                    m.edited_at,
                    m.deleted_at,
                    m.deleted_by AS "deleted_by?: UserId",
@@ -3934,6 +3995,7 @@ impl ChatRepository {
         )
         .fetch_all(pool)
         .await?;
+        let messages = chat_messages_from_rows(messages)?;
         let mut grouped = self
             .attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
             .await?
@@ -3998,7 +4060,7 @@ impl ChatRepository {
         message_id: i64,
     ) -> Result<Option<ChatMessage>> {
         let message = sqlx::query_as!(
-            ChatMessage,
+            ChatMessageRow,
             r#"
             SELECT id AS "id!",
                    room_id AS "room_id!: RoomId",
@@ -4010,7 +4072,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: serde_json::Value",
+                   metadata AS "metadata!: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -4025,7 +4087,7 @@ impl ChatRepository {
         )
         .fetch_optional(&mut **tx)
         .await?;
-        Ok(message)
+        optional_chat_message_from_row(message)
     }
 
     fn pin_scope_lock_key(room_id: &RoomId) -> i64 {
@@ -4351,7 +4413,7 @@ pub struct EditChatMessageEventRequest<'a> {
     pub message_id: i64,
     pub message_created_at: DateTime<Utc>,
     pub content: &'a str,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a ChatMetadata,
     pub expected_version: Option<i64>,
     pub event_id: &'a str,
     pub actor_user_id: &'a UserId,
@@ -4420,25 +4482,40 @@ fn chat_event_type(kind: ChatEventKind) -> &'static str {
     }
 }
 
-fn chat_event_summary(event: &ChatMessageEvent) -> serde_json::Value {
-    serde_json::json!({
-        "kind": i16::from(event.kind),
-        "message_id": event.message.message.id,
-        "message_created_at": event.message.message.created_at,
-        "message_version": event.message.message.version,
-        "actor_user_id": event.actor_user_id.as_i64(),
-    })
+#[derive(Debug, Clone, Serialize)]
+struct ChatEventSummary {
+    kind: i16,
+    message_id: i64,
+    message_created_at: DateTime<Utc>,
+    message_version: i64,
+    actor_user_id: i64,
 }
 
-fn chat_pin_event_summary(event: &ChatPinEvent) -> serde_json::Value {
-    serde_json::json!({
-        "kind": i16::from(event.kind),
-        "message_id": event.message.message.id,
-        "message_created_at": event.message.message.created_at,
-        "message_version": event.message.message.version,
-        "actor_user_id": event.actor_user_id.as_i64(),
-        "pinned": event.pin.is_some(),
-    })
+fn chat_event_summary(event: &ChatMessageEvent) -> ChatEventSummary {
+    ChatEventSummary {
+        kind: i16::from(event.kind),
+        message_id: event.message.message.id,
+        message_created_at: event.message.message.created_at,
+        message_version: event.message.message.version,
+        actor_user_id: event.actor_user_id.as_i64(),
+    }
+}
+
+fn chat_pin_event_summary(event: &ChatPinEvent) -> crate::repository::RoomResourceEventSummary {
+    crate::repository::RoomResourceEventSummary {
+        event_type: event.kind.as_str().to_string(),
+        room_id: Some(event.room_id.as_i64()),
+        actor_user_id: Some(event.actor_user_id.as_i64()),
+        resource_type: crate::repository::RoomResourceKind::ChatPins,
+        details: crate::repository::RoomResourceEventSummaryDetails::ChatPin {
+            event_kind: i16::from(event.kind),
+            message_id: event.message.message.id,
+            message_created_at: event.message.message.created_at,
+            message_version: event.message.message.version,
+            actor_user_id: event.actor_user_id.as_i64(),
+            pinned: event.pin.is_some(),
+        },
+    }
 }
 
 #[derive(sqlx::FromRow)]
@@ -4447,7 +4524,7 @@ struct ChatEventRow {
     event_id: String,
     room_id: Option<i64>,
     actor_user_id: Option<i64>,
-    event_payload: Option<serde_json::Value>,
+    event_payload: Option<sqlx::types::Json<ChatMessageEvent>>,
     occurred_at: DateTime<Utc>,
 }
 
@@ -4455,7 +4532,7 @@ struct ChatEventRow {
 struct ChatPinEventRow {
     sequence: i64,
     event_id: String,
-    event_payload: Option<serde_json::Value>,
+    event_payload: Option<sqlx::types::Json<RoomResourceEventPayload>>,
     occurred_at: DateTime<Utc>,
 }
 
@@ -4464,7 +4541,11 @@ impl ChatPinEventRow {
         let payload = self.event_payload.ok_or_else(|| {
             Error::Internal("Chat pin resource event is missing replay payload".to_string())
         })?;
-        let mut event: ChatPinEvent = serde_json::from_value(payload)?;
+        let RoomResourceEventPayload::ChatPin { mut event } = payload.0 else {
+            return Err(Error::Internal(
+                "Chat pin resource event has unexpected payload kind".to_string(),
+            ));
+        };
         if event.event_id != self.event_id || event.occurred_at != self.occurred_at {
             return Err(Error::Internal(
                 "Chat pin resource event payload does not match indexed columns".to_string(),
@@ -4483,7 +4564,7 @@ impl ChatEventRow {
         let payload = self.event_payload.ok_or_else(|| {
             Error::Internal("Chat resource event is missing replay payload".to_string())
         })?;
-        let mut event: ChatMessageEvent = serde_json::from_value(payload)?;
+        let mut event = payload.0;
         if event.event_id != self.event_id
             || Some(event.room_id.as_i64()) != self.room_id
             || Some(event.actor_user_id.as_i64()) != self.actor_user_id
@@ -4534,7 +4615,7 @@ mod tests {
             size_bytes: Some(1),
             width: Some(1),
             height: Some(1),
-            metadata: serde_json::json!({}),
+            metadata: crate::models::FileMetadata::default(),
         }
     }
 

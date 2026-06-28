@@ -12,9 +12,10 @@ use std::sync::Arc;
 use crate::{
     models::{
         normalize_provider_instance_name_owned, CompleteFileUploadSession,
-        CompleteFileUploadSessionResult, FileObjectDownload, FileRangeRequest, FileReferenceTarget,
-        FileUploadManifestPart, FileUploadSessionCreateResult, GetFileObject, Playlist, PlaylistId,
-        RoomId, SourceProvider, SubmittedFileReference, UserId,
+        CompleteFileUploadSessionResult, FileMetadata, FileObjectDownload, FileRangeRequest,
+        FileReferenceTarget, FileUploadManifestPart, FileUploadSessionCreateResult, GetFileObject,
+        Playlist, PlaylistId, PlaylistSourceConfig, RoomId, SourceProvider, SubmittedFileReference,
+        UserId,
     },
     provider::{provider_requires_credential_repo, ProviderContext, SourceConfig},
     repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository},
@@ -29,16 +30,19 @@ use crate::{
     },
     Error, Result,
 };
-use serde_json::Value as JsonValue;
 
 pub type RealtimeOutboxPlaylistEventFactory =
     Arc<dyn Fn(&Playlist) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
 
 fn normalize_dynamic_playlist_fields(
     source_provider: Option<SourceProvider>,
-    source_config: Option<JsonValue>,
+    source_config: Option<PlaylistSourceConfig>,
     provider_instance_name: Option<String>,
-) -> Result<(Option<SourceProvider>, Option<JsonValue>, Option<String>)> {
+) -> Result<(
+    Option<SourceProvider>,
+    Option<PlaylistSourceConfig>,
+    Option<String>,
+)> {
     let normalized_provider = source_provider;
     let normalized_instance = normalize_provider_instance_name_owned(provider_instance_name);
 
@@ -69,7 +73,7 @@ pub struct CreatePlaylistRequest {
 
     // Dynamic folder fields
     pub source_provider: Option<SourceProvider>,
-    pub source_config: Option<JsonValue>,
+    pub source_config: Option<PlaylistSourceConfig>,
     pub provider_instance_name: Option<String>,
 }
 
@@ -91,7 +95,7 @@ pub struct CreatePlaylistCoverUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
 }
 
 fn ensure_playlist_creator_can_edit(playlist: &Playlist, user_id: &UserId) -> Result<()> {
@@ -115,17 +119,21 @@ async fn validate_dynamic_playlist_source_with_dependencies(
     room_id: &RoomId,
     user_id: &UserId,
     source_provider: SourceProvider,
-    source_config: JsonValue,
+    source_config: PlaylistSourceConfig,
     provider_instance_name: Option<String>,
-) -> Result<(SourceProvider, JsonValue, Option<String>)> {
+) -> Result<(SourceProvider, PlaylistSourceConfig, Option<String>)> {
+    let config_provider = source_config.provider();
+    let source_config = source_config
+        .ensure_provider(source_provider)
+        .map_err(Error::InvalidInput)?;
     let trimmed_instance = normalize_provider_instance_name_owned(provider_instance_name);
     validate_source_config_size(&source_config)?;
 
     let provider = deps
         .providers_manager
-        .resolve_provider(source_provider, trimmed_instance.as_deref())
+        .resolve_provider(config_provider, trimmed_instance.as_deref())
         .await?;
-    let provider_name = source_provider.as_str();
+    let provider_name = config_provider.as_str();
 
     if provider.as_dynamic_folder().is_none() {
         return Err(Error::InvalidInput(format!(
@@ -162,7 +170,7 @@ async fn validate_dynamic_playlist_source_with_dependencies(
         provider.as_ref(),
         deps.credential_repo,
         &ctx,
-        &source_config,
+        SourceConfig::dynamic_playlist(&source_config),
         trimmed_instance.as_deref(),
     )
     .await?;
@@ -171,7 +179,7 @@ async fn validate_dynamic_playlist_source_with_dependencies(
     } else {
         let provider = deps
             .providers_manager
-            .resolve_provider(source_provider, bound_instance.as_deref())
+            .resolve_provider(config_provider, bound_instance.as_deref())
             .await?;
         if provider.as_dynamic_folder().is_none() {
             return Err(Error::InvalidInput(format!(
@@ -201,11 +209,13 @@ async fn validate_dynamic_playlist_source_with_dependencies(
         .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
     let prepared_source_config = provider
-        .prepare_source_config(&ctx, source_config)
+        .prepare_source_config(&ctx, SourceConfig::dynamic_playlist(&source_config))
         .await
-        .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?;
+        .map_err(|e| Error::Internal(format!("Failed to prepare source_config: {e}")))?
+        .into_dynamic_playlist()
+        .map_err(|e| Error::InvalidInput(format!("Invalid prepared source_config: {e}")))?;
 
-    Ok((source_provider, prepared_source_config, bound_instance))
+    Ok((config_provider, prepared_source_config, bound_instance))
 }
 
 fn ensure_provider_credential_repo_available(
@@ -370,9 +380,9 @@ impl PlaylistService {
         room_id: &RoomId,
         user_id: &UserId,
         source_provider: SourceProvider,
-        source_config: JsonValue,
+        source_config: PlaylistSourceConfig,
         provider_instance_name: Option<String>,
-    ) -> Result<(SourceProvider, JsonValue, Option<String>)> {
+    ) -> Result<(SourceProvider, PlaylistSourceConfig, Option<String>)> {
         validate_dynamic_playlist_source_with_dependencies(
             DynamicPlaylistValidationDeps {
                 providers_manager: &self.providers_manager,
@@ -936,7 +946,7 @@ impl PlaylistService {
             PLAYLIST_COVER_REFERENCE_KIND,
             &playlist_id.as_i64().to_string(),
             None,
-            &file.metadata,
+            &crate::models::FileReferenceMetadata::File(crate::models::FileMetadata::default()),
         )
         .await?
         .ok_or_else(|| {

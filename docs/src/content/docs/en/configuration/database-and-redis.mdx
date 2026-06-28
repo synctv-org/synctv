@@ -58,7 +58,7 @@ database:
   read_port: 5432
 ```
 
-If split fields are used without `database.url`, SyncTV clears the default URL and builds the connection from the split fields. `user` is accepted as a YAML alias for `username`; `SYNCTV_DATABASE_USER` is accepted as an environment alias for `SYNCTV_DATABASE_USERNAME`.
+If split fields are used without `database.url`, SyncTV clears the default URL and builds the connection from the split fields. The username field is `username`, and the environment variable is `SYNCTV_DATABASE_USERNAME`.
 
 ## Connection Pool
 
@@ -118,7 +118,7 @@ redis:
   database: 0
 ```
 
-`user` is accepted as a YAML alias for `username`; `SYNCTV_REDIS_USER` is accepted as an environment alias for `SYNCTV_REDIS_USERNAME`.
+The username field is `username`, and the environment variable is `SYNCTV_REDIS_USERNAME`.
 
 ## Redis Timeouts and Pipeline Buffer
 

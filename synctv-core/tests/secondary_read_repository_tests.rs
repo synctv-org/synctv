@@ -314,7 +314,7 @@ async fn content_report_list_reads_from_read_pool_while_detail_uses_primary() {
                     },
                     reason_code: "spam".to_string(),
                     reason: "primary report".to_string(),
-                    metadata: serde_json::json!({}),
+                    metadata: synctv_core::models::ContentReportMetadata::default(),
                 },
                 None,
             )
@@ -331,7 +331,7 @@ async fn content_report_list_reads_from_read_pool_while_detail_uses_primary() {
                     },
                     reason_code: "spam".to_string(),
                     reason: "read report".to_string(),
-                    metadata: serde_json::json!({}),
+                    metadata: synctv_core::models::ContentReportMetadata::default(),
                 },
                 None,
             )

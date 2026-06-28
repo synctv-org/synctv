@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct UserMutationCliOutput {
     pub(super) success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -8,6 +9,7 @@ pub(super) struct UserMutationCliOutput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PlaybackPullUrlCliOutput {
     pub(super) mode: String,
     pub(super) format: String,
@@ -22,6 +24,7 @@ pub(super) struct PlaybackPullUrlCliOutput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct GetPlaybackCliOutput {
     pub(super) playback_state: Option<synctv_proto::client::PlaybackState>,
     pub(super) playback: Option<synctv_proto::client::Playback>,
@@ -43,6 +46,7 @@ pub(super) struct GetPlaybackCliOutput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PlaybackStartCliOutput {
     pub(super) success: bool,
     pub(super) room_id: String,
@@ -53,12 +57,14 @@ pub(super) struct PlaybackStartCliOutput {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct PlaybackStopCliOutput {
     pub(super) success: bool,
     pub(super) room_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct KickStreamCliOutput {
     pub(super) success: bool,
     pub(super) room_id: String,

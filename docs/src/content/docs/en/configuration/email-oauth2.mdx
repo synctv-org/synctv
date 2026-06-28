@@ -12,7 +12,7 @@ Login-related configuration has two parts:
 - static email configuration
 - runtime OAuth2 provider configuration
 
-OAuth2 providers are no longer declared in the config file, environment variables, or Helm values. They live in runtime settings under `oauth2.providers`.
+OAuth2 providers live in runtime settings under `oauth2.providers`.
 
 ## Email configuration
 
@@ -43,31 +43,31 @@ Email verification codes, password reset, and email MFA depend on these SMTP set
 
 ## OAuth2 runtime configuration
 
-`oauth2.providers` is a dynamic object. Each key is a provider instance name such as `github`, `logto1`, or `corp_oidc`. Instance names may contain only ASCII letters, digits, `_`, and `-`.
+`oauth2.providers` is an array of `OAuth2ProviderSettings` objects. Each element has an `instanceName` such as `github`, `logto1`, or `corp_oidc`. Instance names may contain only ASCII letters, digits, `_`, and `-`.
 
-Every instance uses the same outer envelope:
+Every instance uses shared fields plus one provider oneof field:
 
 ```json
 {
-  "type": "github",
-  "enable_signup": true,
-  "signup_need_review": false,
-  "config": {
-    "client_id": "github-client-id",
-    "client_secret": "github-client-secret",
-    "redirect_url": "https://app.example.com/oauth2/callback"
+  "instanceName": "github",
+  "enableSignup": true,
+  "signupNeedReview": false,
+  "github": {
+    "clientId": "github-client-id",
+    "clientSecret": "github-client-secret",
+    "redirectUrl": "https://app.example.com/oauth2/callback"
   }
 }
 ```
 
-Outer fields:
+Fields:
 
 | Field | Meaning |
 | --- | --- |
-| `type` | Provider type. Supported values are defined by the built-in provider registry |
-| `enable_signup` | Whether first-time login through this provider can create a local account |
-| `signup_need_review` | Whether first-time signup should enter the review queue |
-| `config` | Provider-private configuration. The outer layer does not enumerate it |
+| `instanceName` | Provider instance name |
+| `enableSignup` | Whether first-time login through this provider can create a local account |
+| `signupNeedReview` | Whether first-time signup should enter the review queue |
+| provider oneof field | For example `github`, `google`, `logto`, `oidc`, or `casdoor`. Provider-private fields live inside that object |
 
 ## Common examples
 
@@ -75,40 +75,40 @@ Outer fields:
 <TabItem label="GitHub" value="github">
 
 ```json
-{
-  "github": {
-    "type": "github",
-    "enable_signup": true,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "github-client-id",
-      "client_secret": "github-client-secret",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+[
+  {
+    "instanceName": "github",
+    "enableSignup": true,
+    "signupNeedReview": false,
+    "github": {
+      "clientId": "github-client-id",
+      "clientSecret": "github-client-secret",
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}
+]
 ```
 
 </TabItem>
 <TabItem label="OIDC" value="oidc">
 
 ```json
-{
-  "corp_oidc": {
-    "type": "oidc",
-    "enable_signup": false,
-    "signup_need_review": false,
-    "config": {
-      "client_id": "synctv",
-      "client_secret": "oidc-client-secret",
+[
+  {
+    "instanceName": "corp_oidc",
+    "enableSignup": false,
+    "signupNeedReview": false,
+    "oidc": {
+      "clientId": "synctv",
+      "clientSecret": "oidc-client-secret",
       "issuer": "https://idp.example.com",
-      "redirect_url": "https://app.example.com/oauth2/callback"
+      "redirectUrl": "https://app.example.com/oauth2/callback"
     }
   }
-}
+]
 ```
 
-By default, SyncTV uses the `issuer` for OIDC discovery. Only configure `auth_url`, `token_url`, and `jwks_url` manually when the IdP does not expose a standard discovery document; `userinfo_url` is optional, and verified ID Token claims are used when it is absent.
+By default, SyncTV uses the `issuer` for OIDC discovery. Only configure `authUrl`, `tokenUrl`, and `jwksUrl` manually when the IdP does not expose a standard discovery document; `userinfoUrl` is optional, and verified ID Token claims are used when it is absent.
 
 </TabItem>
 </Tabs>
@@ -117,15 +117,15 @@ By default, SyncTV uses the `issuer` for OIDC discovery. Only configure `auth_ur
 
 - When runtime settings change, the OAuth2 service rebuilds its provider map from the new value.
 - Missing instance names mean the login entry point is unavailable.
-- `enable_signup=false` only blocks first-time account creation through that provider. Existing linked OAuth2 logins still work.
-- `signup_need_review=true` sends first-time OAuth2 signup into the review flow.
+- `enableSignup=false` only blocks first-time account creation through that provider. Existing linked OAuth2 logins still work.
+- `signupNeedReview=true` sends first-time OAuth2 signup into the review flow.
 
 ## FAQ
 
-### Why is there no `oauth2.redirect_scheme`
+### Redirect URL
 
-The redirect URL is now written directly in each provider's `config.redirect_url`. That keeps the scheme local to each provider instance instead of making it a global knob.
+Each provider instance owns its full callback URL through `redirectUrl`. Different providers can use their own callback path and scheme.
 
-### Where should `client_secret` go
+### Where should `clientSecret` go
 
-Put it in `config.client_secret` and manage it through runtime settings. Do not keep it in the static config file.
+Put it in `clientSecret` and manage it through runtime settings.

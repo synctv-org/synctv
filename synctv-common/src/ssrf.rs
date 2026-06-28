@@ -421,6 +421,11 @@ impl SsrfGuard {
     ///
     /// Callers that already parsed a URL can use this to keep port policy
     /// consistent across HTTP proxying and provider source validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SsrfTargetError`] when the host resolves to a blocked IP
+    /// address, matches a blocked host policy, or uses a blocked port.
     pub fn validate_url_target(&self, host: &str, port: u16) -> Result<(), SsrfTargetError> {
         self.validate_url_target_with_optional_default_port(host, port, None)
     }
@@ -429,6 +434,12 @@ impl SsrfGuard {
     ///
     /// Non-HTTP callers such as RTMP validators can pass their protocol default
     /// port while retaining the same host/IP and custom-port policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SsrfTargetError`] when the host resolves to a blocked IP
+    /// address, matches a blocked host policy, or uses a blocked non-default
+    /// port.
     pub fn validate_url_target_with_default_port(
         &self,
         host: &str,

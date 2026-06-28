@@ -6,21 +6,21 @@ use axum::{
 use super::execute::{execute_room_actor_endpoint, execute_user_endpoint};
 use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
-use crate::impls::{ApiError, EndpointRateLimitCategory, EndpointRateLimitScope};
+use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     CreatePlaylistRequest, CreatePlaylistResponse, DeletePlaylistQuery, DeletePlaylistRequest,
-    DeletePlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse, MovePlaylistResponse,
-    UpdatePlaylistResponse,
+    DeletePlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse, MovePlaylistRequest,
+    MovePlaylistResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
 };
 
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/playlists",
+        path = "/api/rooms/{roomId}/playlists",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = CreatePlaylistRequest,
         responses(
@@ -60,13 +60,13 @@ pub async fn create_playlist(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        path = "/api/rooms/{roomId}/playlists/{playlistId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("playlist_id" = String, Path, description = "Playlist ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("playlistId" = String, Path, description = "Playlist ID")
         ),
-        request_body = synctv_proto::client::UpdatePlaylistRequest,
+        request_body = UpdatePlaylistRequest,
         responses(
             (status = 200, description = "Playlist updated", body = UpdatePlaylistResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -81,7 +81,7 @@ pub async fn update_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
-    Json(mut req): Json<synctv_proto::client::UpdatePlaylistRequest>,
+    Json(mut req): Json<UpdatePlaylistRequest>,
 ) -> AppResult<Json<UpdatePlaylistResponse>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
@@ -108,13 +108,13 @@ pub async fn update_playlist(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/playlists/{playlist_id}/move",
+        path = "/api/rooms/{roomId}/playlists/{playlistId}/move",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("playlist_id" = String, Path, description = "Playlist ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("playlistId" = String, Path, description = "Playlist ID")
         ),
-        request_body = synctv_proto::http_serde::MovePlaylistRequestDef,
+        request_body = MovePlaylistRequest,
         responses(
             (status = 200, description = "Playlist moved", body = MovePlaylistResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -129,14 +129,12 @@ pub async fn move_playlist(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
-    Json(req): Json<synctv_proto::http_serde::MovePlaylistRequestDef>,
+    Json(mut req): Json<MovePlaylistRequest>,
 ) -> AppResult<Json<MovePlaylistResponse>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
     } = path;
-    let mut req =
-        synctv_proto::client::MovePlaylistRequest::try_from(req).map_err(ApiError::InvalidInput)?;
     req.playlist_id = playlist_id;
     let response = execute_user_endpoint(
         &state,
@@ -158,11 +156,11 @@ pub async fn move_playlist(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        path = "/api/rooms/{roomId}/playlists/{playlistId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("playlist_id" = String, Path, description = "Playlist ID"),
+            ("roomId" = String, Path, description = "Room ID"),
+            ("playlistId" = String, Path, description = "Playlist ID"),
             ("force" = Option<bool>, Query, description = "Force delete")
         ),
         responses(
@@ -209,10 +207,10 @@ pub async fn delete_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/playlists",
+        path = "/api/rooms/{roomId}/playlists",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ListPlaylistsRequest
         ),
         responses(

@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
+    models::{AuditDetails, ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
     service::{
         room::RoomCategoryUpdate, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
     },
@@ -378,7 +378,10 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::RoomDeleted,
             synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
-            serde_json::json!({ "room_id": rid.to_string() }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -423,10 +426,11 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::RoomPasswordUpdated,
             synctv_core::models::AuditTargetType::Room,
             Some(room_id.to_string()),
-            serde_json::json!({
-                "room_id": room_id.to_string(),
-                "password_set": new_password.is_some(),
-            }),
+            AuditDetails {
+                room_id: Some(room_id.to_string()),
+                password_set: Some(new_password.is_some()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -566,12 +570,13 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::MemberStatusUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "new_status": "active",
-                "role": role.to_string(),
-                "notify": notify,
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                new_status: Some("active".to_string()),
+                role: Some(role.to_string()),
+                notify: Some(notify),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -630,12 +635,13 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::MemberStatusUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "request_id": request_id,
-                "previous_review_status": "pending",
-                "new_review_status": "approved",
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("approved".to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -692,13 +698,14 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::MemberStatusUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "request_id": request_id,
-                "previous_review_status": "pending",
-                "new_review_status": "rejected",
-                "reason": reason,
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                request_id: Some(request_id.to_string()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("rejected".to_string()),
+                reason: (!reason.trim().is_empty()).then_some(reason.to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -785,16 +792,19 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::MemberPermissionUpdated,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "role": role
-                    .map(crate::impls::client::room_role_to_proto)
-                    .unwrap_or_default(),
-                "added_permissions": added_permissions,
-                "removed_permissions": removed_permissions,
-                "admin_added_permissions": admin_added_permissions,
-                "admin_removed_permissions": admin_removed_permissions,
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                role: Some(
+                    role.map(crate::impls::client::room_role_to_proto)
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                added_permissions: Some(added_permissions),
+                removed_permissions: Some(removed_permissions),
+                admin_added_permissions: Some(admin_added_permissions),
+                admin_removed_permissions: Some(admin_removed_permissions),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -891,10 +901,11 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::MemberKicked,
             synctv_core::models::AuditTargetType::Member,
             Some(target_uid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "mode": "admin_override",
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                mode: Some("admin_override".to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -1032,11 +1043,12 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::RoomBanned,
             synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "room_name": room.name,
-                "reason": req.reason,
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                room_name: Some(room.name.clone()),
+                reason: (!req.reason.trim().is_empty()).then_some(req.reason),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -1085,10 +1097,11 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::RoomUnbanned,
             synctv_core::models::AuditTargetType::Room,
             Some(rid.to_string()),
-            serde_json::json!({
-                "room_id": rid.to_string(),
-                "room_name": room.name,
-            }),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                room_name: Some(room.name.clone()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -1128,11 +1141,12 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::RoomApproved,
             synctv_core::models::AuditTargetType::Room,
             Some(room.id.to_string()),
-            serde_json::json!({
-                "request_id": request_id.to_string(),
-                "room_id": room.id.to_string(),
-                "room_name": room.name,
-            }),
+            AuditDetails {
+                request_id: Some(request_id.to_string()),
+                room_id: Some(room.id.to_string()),
+                room_name: Some(room.name.clone()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;

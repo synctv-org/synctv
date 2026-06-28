@@ -29,7 +29,7 @@ pub struct ProxySigningKey {
 ///
 /// `resource` is the provider-specific semantic resource derived from the
 /// route/request, such as `streams/direct/0` or `dash-manifests/720p/proxy`.
-/// `target_url` is bound into the signature when present so rewritten M3U8
+/// `targetUrl` is bound into the signature when present so rewritten M3U8
 /// segment URLs cannot be retargeted by editing the `url` query parameter.
 #[derive(Debug, Clone)]
 pub struct ProxyUrlClaims {
@@ -55,6 +55,8 @@ pub enum ProxySignatureError {
     MissingParam(&'static str),
     /// A query parameter could not be parsed.
     InvalidParam(&'static str),
+    /// An unknown query parameter was provided.
+    UnknownParam(String),
 }
 
 impl fmt::Display for ProxySignatureError {
@@ -65,6 +67,7 @@ impl fmt::Display for ProxySignatureError {
             Self::Expired => write!(f, "proxy URL expired"),
             Self::MissingParam(name) => write!(f, "missing query param: {name}"),
             Self::InvalidParam(name) => write!(f, "invalid query param: {name}"),
+            Self::UnknownParam(name) => write!(f, "unknown query param: {name}"),
         }
     }
 }
@@ -118,7 +121,7 @@ impl ProxySigningKey {
     /// Build a query string with all claims and signature.
     ///
     /// Returns: `"sig={hex}&uid={uid}&rid={rid}&exp={exp}"`, plus
-    /// `target_url=...` when `claims.target_url` is set.
+    /// `targetUrl=...` when `claims.target_url` is set.
     #[must_use]
     pub fn build_signed_query(&self, claims: &ProxyUrlClaims) -> String {
         let sig = self.sign(claims);
@@ -130,7 +133,7 @@ impl ProxySigningKey {
             claims.expires_at
         );
         if let Some(target_url) = &claims.target_url {
-            query.push_str("&target_url=");
+            query.push_str("&targetUrl=");
             query.push_str(&url_encode(target_url));
         }
         query
@@ -175,8 +178,8 @@ impl ProxySigningKey {
                 "uid" => uid = Some(value.into_owned()),
                 "rid" => rid = Some(value.into_owned()),
                 "exp" => exp_str = Some(value.into_owned()),
-                "target_url" => target_url = Some(value.into_owned()),
-                _ => {} // Ignore unknown params
+                "targetUrl" => target_url = Some(value.into_owned()),
+                _ => return Err(ProxySignatureError::UnknownParam(key.into_owned())),
             }
         }
 
@@ -357,11 +360,11 @@ mod tests {
         claims.target_url = Some("http://example.com/seg.ts".to_string());
         let query = key.build_signed_query(&claims);
         let (prefix, _) = some(
-            query.split_once("&target_url="),
-            "signed target query should include target_url",
+            query.split_once("&targetUrl="),
+            "signed target query should include targetUrl",
         );
         let tampered = format!(
-            "{prefix}&target_url={}",
+            "{prefix}&targetUrl={}",
             urlencoding::encode("http://evil.example/seg.ts")
         );
 
@@ -387,6 +390,18 @@ mod tests {
                 "media-streams/main/0",
             ),
             Err(ProxySignatureError::MissingParam("sig"))
+        ));
+    }
+
+    #[test]
+    fn parse_query_rejects_unknown_query_param() {
+        let key = test_key();
+        let claims = test_claims();
+        let query = format!("{}&extra=1", key.build_signed_query(&claims));
+
+        assert!(matches!(
+            key.parse_and_verify_query(&query, &claims.provider, &claims.version, &claims.resource),
+            Err(ProxySignatureError::UnknownParam(param)) if param == "extra"
         ));
     }
 

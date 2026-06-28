@@ -940,7 +940,8 @@ async fn build_axum_router_with_health(
                                         notification_id: event.notification.id.to_string(),
                                         title: event.notification.title,
                                         content: event.notification.content,
-                                        notification_type: event.notification.notification_type.to_string(),
+                                        notification_type: event.notification.notification_type,
+                                        data: event.notification.data,
                                         timestamp: chrono::Utc::now(),
                                     };
                                     let outcome = event_service.publish_only_outcome(realtime_event);
@@ -2050,7 +2051,7 @@ mod tests {
                 synctv_proto::client::SendChatMessageRequest {
                     client_message_id: "grpc-chat-live-send-1".to_string(),
                     content: "grpc live push".to_string(),
-                    metadata: br"{}".to_vec(),
+                    metadata: None,
                     ..Default::default()
                 },
             )

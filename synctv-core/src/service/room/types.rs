@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     cache::CacheInvalidationRuntime,
     models::{
-        FileUploadManifestPart, MediaId, PlaylistId, ReviewRequestId, Room, RoomId,
+        FileMetadata, FileUploadManifestPart, MediaId, PlaylistId, ReviewRequestId, Room, RoomId,
         RoomPermissionSet, RoomPlaybackState, RoomRole, RoomSettings, UserId, UserRole,
     },
     repository::{
@@ -27,7 +27,7 @@ pub struct CreateRoomCoverUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: serde_json::Value,
+    pub metadata: FileMetadata,
 }
 
 pub type RealtimeOutboxSettingsEventFactory =

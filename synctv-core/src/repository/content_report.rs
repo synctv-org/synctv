@@ -3,8 +3,9 @@ use sqlx::PgPool;
 use crate::repository::{pools::RepoPools, query_builder::ilike_contains_pattern};
 use crate::{
     models::{
-        ContentReport, ContentReportAdminRow, ContentReportId, ContentReportStatus,
-        ContentReportTarget, ContentReportTargetType, CreateContentReport, RoomId, UserId,
+        ContentReport, ContentReportAdminRow, ContentReportId, ContentReportMetadata,
+        ContentReportStatus, ContentReportTarget, ContentReportTargetType, CreateContentReport,
+        RoomId, UserId,
     },
     Error, Result,
 };
@@ -184,7 +185,7 @@ impl ContentReportRepository {
                 target_chat_message_created_at,
                 reason_code,
                 reason,
-                metadata AS "metadata!: serde_json::Value",
+                metadata AS "metadata!: ContentReportMetadata",
                 status AS "status!: ContentReportStatus",
                 reviewed_by AS "reviewed_by?: UserId",
                 reviewed_at,
@@ -203,7 +204,7 @@ impl ContentReportRepository {
             chat_message_created_at,
             request.reason_code,
             request.reason,
-            request.metadata,
+            &request.metadata as _,
             i16::from(ContentReportStatus::Open),
         )
         .fetch_one(self.pools.primary())
@@ -311,7 +312,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code,
                 cr.reason,
-                cr.metadata,
+                cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
@@ -412,7 +413,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code,
                 cr.reason,
-                cr.metadata,
+                cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
@@ -481,7 +482,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code,
                 cr.reason,
-                cr.metadata,
+                cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",

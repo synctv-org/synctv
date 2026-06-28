@@ -16,12 +16,12 @@ For a minimal runnable call chain, see [SDK and API Examples](../sdk-and-api-exa
 | Goal | Implementation order | Key page |
 | --- | --- | --- |
 | Sign in and keep a session | Login, handle MFA, store access/refresh tokens, refresh sessions, handle 401 | This page: “Token Usage” and “Local Login and MFA” |
-| Enter room realtime state | Fetch the room, create a WebSocket ticket, connect `/ws/rooms/{room_id}`, decode protobuf | [Realtime API](../realtime-api/) |
-| Show synchronized playback | Read current playback state, fetch playback, observe `playback_state` and `playback` | [Playback Model](../../concepts/playback-model/) |
+| Enter room realtime state | Fetch the room, create a WebSocket ticket, connect `/ws/rooms/{roomId}`, decode protobuf | [Realtime API](../realtime-api/) |
+| Show synchronized playback | Read current playback state, fetch playback, observe `playbackState` and `playback` | [Playback Model](../../concepts/playback-model/) |
 | Add media | Choose Provider, browse or search media, submit playlist item, handle Provider errors | [Media Sources](../../concepts/media-providers/) |
 | Handle URL expiry | Read `expires_at`, refresh playback before expiry, discard old URLs after media switch | [Playback and Proxy Model](../../use/playback-and-proxy/) |
 | Reconnect | Request a new ticket, reconnect, observe resources with local versions | [Realtime API](../realtime-api/) |
-| Build unified errors | Classify by HTTP status, business code, `request_id`, and `Retry-After` | [Errors](../../reference/errors/) |
+| Build unified errors | Classify by HTTP status, business code, `requestId`, and `Retry-After` | [Errors](../../reference/errors/) |
 
 Implement sign-in, room list, ticket creation, Realtime, and playbacks first. Then add Providers, chat, notifications, and WebRTC.
 
@@ -44,17 +44,17 @@ HTTP endpoints:
 
 | Goal | HTTP |
 | --- | --- |
-| Send message | `POST /api/rooms/{room_id}/chat/messages` |
-| Create attachment upload session | `POST /api/rooms/{room_id}/chat/attachments/upload-session` |
-| Edit message | `PATCH /api/rooms/{room_id}/chat/messages/{message_id}` |
-| Delete message | `DELETE /api/rooms/{room_id}/chat/messages/{message_id}` |
-| Page history | `GET /api/rooms/{room_id}/chat/history` |
-| Fetch playback-scoped chat | `GET /api/rooms/{room_id}/chat/playback-messages` |
-| Fetch one message | `GET /api/rooms/{room_id}/chat/messages/{message_id}` |
-| Fetch message context | `GET /api/rooms/{room_id}/chat/messages/{message_id}/context` |
-| Mark read | `POST /api/rooms/{room_id}/chat/read-state` |
-| Fetch read state | `GET /api/rooms/{room_id}/chat/read-state` |
-| SSE message events | `GET /api/rooms/{room_id}/watch/chat-events` |
+| Send message | `POST /api/rooms/{roomId}/chat/messages` |
+| Create attachment upload session | `POST /api/rooms/{roomId}/chat/attachments/upload-session` |
+| Edit message | `PATCH /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Delete message | `DELETE /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Page history | `GET /api/rooms/{roomId}/chat/history` |
+| Fetch playback-scoped chat | `GET /api/rooms/{roomId}/chat/playback-messages` |
+| Fetch one message | `GET /api/rooms/{roomId}/chat/messages/{messageId}` |
+| Fetch message context | `GET /api/rooms/{roomId}/chat/messages/{messageId}/context` |
+| Mark read | `POST /api/rooms/{roomId}/chat/read-state` |
+| Fetch read state | `GET /api/rooms/{roomId}/chat/read-state` |
+| SSE message events | `GET /api/rooms/{roomId}/watch/chat-events` |
 
 gRPC methods on `synctv.client.RoomService`:
 
@@ -92,10 +92,10 @@ Client rules:
 
 Event subscription:
 
-- In bidirectional `MessageStream`, send `observe_resource.chat_events` to receive later `resource_changed.chat_event` payloads.
+- In bidirectional `MessageStream`, send `observeResource.chatEvents` to receive later `resourceChanged.chatEvent` payloads.
 - `WatchChatEvents` is the gRPC server-streaming version.
-- HTTP SSE uses `/watch/chat-events`; initial recovery can pass `after_event_id`, and browser reconnects use `Last-Event-ID`.
-- The event cursor is `ChatMessageEvent.event_id`, separate from generic resource versions.
+- HTTP SSE uses `/watch/chat-events`; initial recovery can pass `afterEventSequence`, and browser reconnects use `Last-Event-ID`.
+- The event cursor is `ChatMessageEvent.eventId`, separate from generic resource versions.
 
 ## Minimal HTTP Flow
 
@@ -109,11 +109,11 @@ curl -sS http://localhost:8080/api/auth/opaque/login/start \
   -H 'Content-Type: application/json' \
   -d '{
     "username": "root",
-    "credential_request": [/* bytes from your OPAQUE client */]
+    "credentialRequest": [/* bytes from your OPAQUE client */]
   }'
 ```
 
-Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `access_token`, `refresh_token`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
+Finish the OPAQUE exchange with `/api/auth/opaque/login/finish`. A typical finish response contains `accessToken`, `refreshToken`, `user`, and `mfa`. If `mfa.required=true`, complete MFA before treating the user as logged in. Passwordless email-token login uses `/api/auth/email/confirm`.
 
   </TabItem>
   <TabItem label="Create WebSocket ticket" icon="document">
@@ -125,7 +125,7 @@ ROOM_ID='room_1' # Use the room.id returned by create/list room APIs
 curl -sS http://localhost:8080/api/tickets \
   -H "Authorization: Bearer ${ACCESS_TOKEN}" \
   -H 'Content-Type: application/json' \
-  -d "{\"room_id\":\"${ROOM_ID}\"}"
+  -d "{\"roomId\":\"${ROOM_ID}\"}"
 ```
 
 The returned `ticket` is short-lived, one-time-use, and room-bound.
@@ -154,7 +154,7 @@ ws.onmessage = async (event) => {
 Native clients and server-side SDKs can use:
 
 ```http
-Authorization: Bearer <access_token>
+Authorization: Bearer <accessToken>
 ```
 
   </TabItem>
@@ -188,7 +188,7 @@ Client flow:
 <Steps>
 1. Submit the first factor, such as password, OPAQUE, passkey, or email-code login.
 2. Read `LoginResponse.mfa.required`.
-3. If `required=false`, store `access_token` and `refresh_token`.
+3. If `required=false`, store `accessToken` and `refreshToken`.
 4. If `required=true`, store the short-lived `mfa.session_id` and present `available_methods`.
 5. If `MFA_METHOD_EMAIL` is available, call `RequestMfaEmailCode` when the user chooses email.
 6. If `MFA_METHOD_WEBAUTHN` is available, call `StartMfaPasskey` for WebAuthn options, then `FinishMfaPasskey`.
@@ -220,12 +220,12 @@ Then call login with `email` and `email_token`. Do not mix email-login tokens wi
 OAuth2/OIDC is frontend-driven:
 
 <Steps>
-1. Call `GET /api/oauth2/providers` to discover provider instances, `signup_enabled`, and `signup_need_review`.
-2. Call `GET /api/oauth2/{provider}/authorize?redirect_url=<callback>` to get the provider authorization URL and state.
+1. Call `GET /api/oauth2/providers` to discover provider instances, `signupEnabled`, and `signupNeedReview`.
+2. Call `GET /api/oauth2/{provider}/authorize?redirectUrl=<callback>` to get the provider authorization URL and state.
 3. Redirect the user to the provider.
 4. The provider redirects back to the client URL with `code` and `state`.
 5. Call `POST /api/oauth2/{provider}/exchange`.
-6. If the response has `registration_review_required=true`, show pending-review state and keep `registration_review_id`; do not treat it as logged in.
+6. If the response has `registrationReviewRequired=true`, show pending-review state and keep `registrationReviewId`; do not treat it as logged in.
 7. If the response contains tokens, store the SyncTV access and refresh tokens.
 </Steps>
 
@@ -240,7 +240,7 @@ curl -sS http://localhost:8080/api/oauth2/github/exchange \
   }'
 ```
 
-Use `GET /api/oauth2/{provider}/bind?redirect_url=<callback>` when binding a provider to an existing authenticated account. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
+Use `GET /api/oauth2/{provider}/bind?redirectUrl=<callback>` when binding a provider to an existing authenticated account. The bind authorization request and the later `POST /api/oauth2/{provider}/exchange` call must both include the current user's access token; the exchange token user must match the user captured in the OAuth2 state. OAuth2 login is not a local 2FA first or second factor, but users with 2FA enabled can still log in through OAuth2.
 
 ## gRPC Examples
 
@@ -254,7 +254,7 @@ The public AuthService local password flow uses OPAQUE. Generate the credential 
 
 ```bash
 grpcurl -plaintext \
-  -d '{"username":"root","credential_request":"<base64-opaque-request>"}' \
+  -d '{"username":"root","credentialRequest":"<base64-opaque-request>"}' \
   localhost:8080 synctv.client.AuthService/StartOpaqueLogin
 ```
 
@@ -277,7 +277,7 @@ Do not put the room id only in the request body and expect the server to infer i
 WebSocket URL:
 
 ```text
-wss://<host>/ws/rooms/<room_id>
+wss://<host>/ws/rooms/<roomId>
 ```
 
 Authentication options:
@@ -290,9 +290,9 @@ Authentication options:
 Browser-style flow:
 
 <Steps>
-1. Call `POST /api/tickets` with a normal Bearer token and target `room_id`.
+1. Call `POST /api/tickets` with a normal Bearer token and target `roomId`.
 2. Receive `ticket` and its expiration.
-3. Connect to `wss://<host>/ws/rooms/<room_id>?ticket=<ticket>`.
+3. Connect to `wss://<host>/ws/rooms/<roomId>?ticket=<ticket>`.
 4. Do not reuse tickets after success or failure. Request a new one instead.
 </Steps>
 
@@ -300,7 +300,7 @@ WebSocket only handles binary protobuf frames. Clients send `synctv.client.Clien
 
 ## Realtime Resource Observation
 
-Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playbacks, room settings, playlist items, and room members. Clients send `ClientMessage.observe_resource`, and the server returns `resource_observed`, `resource_changed`, or `resource_observe_error`.
+Realtime resource observation lets a room WebSocket subscribe to cacheable resources such as playback state, playbacks, room settings, playlist items, and room members. Clients send `ClientMessage.observeResource`, and the server returns `resourceObserved`, `resourceChanged`, or `resourceObserveError`.
 
 See [Realtime API](../realtime-api/) for the full protocol, delivery modes, version synchronization, examples for every resource type, reconnect behavior, and error handling.
 
@@ -309,7 +309,7 @@ See [Realtime API](../realtime-api/) for the full protocol, delivery modes, vers
 WebRTC clients fetch ICE servers before connecting to Realtime for signaling. Signed-in members and authorized guests both use the standard Bearer token path:
 
 ```http
-GET /api/rooms/<room_id>/webrtc/ice-servers
+GET /api/rooms/<roomId>/webrtc/ice-servers
 Authorization: Bearer <access_token_or_guest_token>
 ```
 
@@ -341,7 +341,7 @@ HTTP error body:
   "error": "Invalid username or password",
   "status": 401,
   "code": null,
-  "request_id": "..."
+  "requestId": "..."
 }
 ```
 
@@ -355,7 +355,7 @@ Handle errors by category, not by exact text:
 | `404` | Resource not found | Refresh local lists or navigate back |
 | `409` | State conflict | Re-fetch the resource before submitting again |
 | `429` | Rate-limited | Back off using `Retry-After` or server guidance |
-| `5xx` | Server or dependency failure | Show retry and collect `request_id`, time, and path |
+| `5xx` | Server or dependency failure | Show retry and collect `requestId`, time, and path |
 
 ## Development Entry Points
 

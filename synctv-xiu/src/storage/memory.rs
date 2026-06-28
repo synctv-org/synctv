@@ -190,11 +190,13 @@ impl MemoryStorage {
     }
 
     /// Get current memory usage in bytes
+    #[must_use]
     pub fn memory_usage(&self) -> usize {
         self.inner.read().total_bytes
     }
 
     /// Get number of stored keys
+    #[must_use]
     pub fn key_count(&self) -> usize {
         self.inner.read().data.len()
     }

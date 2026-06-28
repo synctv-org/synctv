@@ -1,7 +1,7 @@
 //! WebRTC HTTP REST API endpoints
 //!
 //! Provides HTTP/JSON API for WebRTC configuration and control:
-//! - `/api/rooms/{room_id}/webrtc/ice-servers` - Get ICE servers (built-in STUN + dynamic ICE)
+//! - `/api/rooms/{roomId}/webrtc/ice-servers` - Get ICE servers (built-in STUN + dynamic ICE)
 
 use axum::{
     extract::{Path, State},
@@ -19,17 +19,17 @@ use synctv_proto::client::GetIceServersResponse;
 ///
 /// Returns a list of ICE servers configured for this deployment.
 ///
-/// Path: `GET /api/rooms/{room_id}/webrtc/ice-servers`
+/// Path: `GET /api/rooms/{roomId}/webrtc/ice-servers`
 /// Auth: Required (JWT or room-bound guest token)
 /// Permissions: `USE_WEBRTC`
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/webrtc/ice-servers",
+        path = "/api/rooms/{roomId}/webrtc/ice-servers",
         tag = "WebRTC",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
             (status = 200, description = "ICE servers for the authenticated room actor", body = GetIceServersResponse),
@@ -94,10 +94,11 @@ mod tests {
         let json = serde_json::to_value(&server)?;
         assert_eq!(
             json["urls"],
-            serde_json::json!([
+            serde_json::to_value([
                 "stun:stun-auth.example.com:3478",
                 "stun:stun-auth-backup.example.com:3478"
             ])
+            .expect("urls should serialize")
         );
         assert_eq!(json["username"], serde_json::Value::Null);
         assert_eq!(json["credential"], serde_json::Value::Null);
@@ -118,9 +119,9 @@ mod tests {
         };
 
         let json = serde_json::to_value(&response)?;
-        assert_eq!(json["webrtc"]["builtin_stun_state"], "degraded");
+        assert_eq!(json["webrtc"]["builtinStunState"], "degraded");
         assert_eq!(json["webrtc"]["reason"], "external_addr_invalid");
-        assert_eq!(json["webrtc"]["external_addr"], "127.0.0.1:3478");
+        assert_eq!(json["webrtc"]["externalAddr"], "127.0.0.1:3478");
         Ok(())
     }
 

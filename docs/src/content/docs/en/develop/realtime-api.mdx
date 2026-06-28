@@ -14,14 +14,14 @@ Use HTTP/OpenAPI or gRPC for one-shot reads and writes. Use Realtime when a clie
 WebSocket URL:
 
 ```text
-wss://<host>/ws/rooms/<room_id>
+wss://<host>/ws/rooms/<roomId>
 ```
 
 Authentication options:
 
 | Method | Clients | Notes |
 | --- | --- | --- |
-| `Authorization: Bearer <access_token>` | Native clients, CLI, server-side SDKs | Signed-in users |
+| `Authorization: Bearer <accessToken>` | Native clients, CLI, server-side SDKs | Signed-in users |
 | `Authorization: Bearer <guest_token>` | Native clients, CLI, server-side SDKs | Guests; first call `POST /api/auth/guest-token` |
 | `?ticket=<ticket>` | Browsers and clients that cannot set headers | First call `POST /api/tickets` to create a short-lived, one-time, room-bound ticket |
 
@@ -58,16 +58,16 @@ A guest is not a signed-in user. The server does not create a user row, member r
 A guest can enter only when all of these are true:
 
 - Global `user.enable_guest` is enabled.
-- Room `allow_guest_join` is enabled.
+- Room `allowGuestJoin` is enabled.
 - The room has no password and is not closed or banned.
 - The guest token still matches the room guest version. Disabling guests, adding a password, or revoking guest access invalidates older tokens.
 
-Guests receive only basic realtime room state by default. They cannot read or manage media resources or send chat. A room may grant guest-safe capabilities through `guest_added_permissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
+Guests receive only basic realtime room state by default. They cannot read or manage media resources or send chat. A room may grant guest-safe capabilities through `guestAddedPermissions`, such as member list, chat history, or WebRTC signaling; this ceiling is independent from member permissions. Even with extra room permissions, guests cannot use account, media-resource management, member administration, room administration, Provider credential, or management-plane APIs.
 
 ```bash
 curl -sS "$BASE_URL/api/auth/guest-token" \
   -H "Content-Type: application/json" \
-  -d '{"room_id":"room_1"}'
+  -d '{"roomId":"room_1"}'
 ```
 
 Native WebSocket clients use the returned `token`:
@@ -93,7 +93,7 @@ authorization: Bearer <guest_token>
 | Room members | Joins, leaves, and permission changes need UI sync |
 | WebRTC signaling | offer, answer, and ICE candidates need room-scoped forwarding; targets use `public_actor_id:conn_id`, where signed-in users are `usr_*` and guests are `gst_*` |
 
-Before sending signaling messages, WebRTC clients call `GET /api/rooms/<room_id>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>`, and both need `use_webrtc`.
+Before sending signaling messages, WebRTC clients call `GET /api/rooms/<roomId>/webrtc/ice-servers` to fetch ICE servers. That endpoint uses the same room actor permission model as Realtime: signed-in members and guests both authenticate with `Authorization: Bearer <token>`, and both need `use_webrtc`.
 
 ## Message Scope
 
@@ -107,23 +107,23 @@ Common client messages:
 | `playback_update` | Send a playback state update command |
 | `webrtc_offer` / `webrtc_answer` / `webrtc_ice_candidate` | Forward WebRTC signaling |
 | `webrtc_join` / `webrtc_leave` | Join or leave a WebRTC session |
-| `observe_resource` | Subscribe to a realtime resource |
-| `unobserve_resource` | Unsubscribe from a realtime resource |
+| `observeResource` | Subscribe to a realtime resource |
+| `unobserveResource` | Unsubscribe from a realtime resource |
 
 Common server messages:
 
 | `ServerMessage` field | Purpose |
 | --- | --- |
 | `chat` | Chat message received |
-| `heartbeat_ack` | Heartbeat acknowledgement |
+| `heartbeatAck` | Heartbeat acknowledgement |
 | `error` | General business error |
-| `playback_state` / `playing_changed` | Playback state or playback target changed |
-| `room_settings` | Room settings changed |
-| `media_added` / `media_updated` / `media_removed` | Media changed |
-| `playlist_created` / `playlist_updated` / `playlist_deleted` | Playlist changed |
-| `permission_changed` / `user_joined` / `user_left` / `room_members` | Member or permission changed |
-| `chat_event` or `resource_changed.chat_event` | Chat message event after explicit subscription |
-| `resource_observed` / `resource_changed` / `resource_observe_error` | Resource observation result |
+| `playbackState` / `playingChanged` | Playback state or playback target changed |
+| `roomSettings` | Room settings changed |
+| `mediaAdded` / `mediaUpdated` / `mediaRemoved` | Media changed |
+| `playlistCreated` / `playlistUpdated` / `playlistDeleted` | Playlist changed |
+| `permissionChanged` / `userJoined` / `userLeft` / `roomMembers` | Member or permission changed |
+| `chatEvent` or `resourceChanged.chatEvent` | Chat message event after explicit subscription |
+| `resourceObserved` / `resourceChanged` / `resourceObserveError` | Resource observation result |
 
 Use `synctv-proto/proto/client.proto` as the source of truth for complete fields. End-to-end examples are in [SDK and API Examples](../sdk-and-api-examples/).
 
@@ -166,7 +166,7 @@ function handleServerMessage(message) {
 
 After connecting, subscribe to the resources needed by the current view. See [Realtime Resource Observation](../realtime-resource-observation/).
 
-Chat message events use their own cursor: in bidirectional streams, send `observe_resource.chat_events.after_event_id` to replay events after a known event; HTTP SSE `GET /api/rooms/<room_id>/watch/chat-events` accepts the `after_event_id` query parameter and reads the browser's `Last-Event-ID` header on reconnect. The server sets the SSE `id:` field, so clients can persist that value for recovery.
+Chat message events use their own cursor: in bidirectional streams, send `observeResource.chatEvents.afterEventSequence` to replay events after a known event; HTTP SSE `GET /api/rooms/<roomId>/watch/chat-events` accepts the `afterEventSequence` query parameter and reads the browser's `Last-Event-ID` header on reconnect. The server sets the SSE `id:` field, so clients can persist that value for recovery.
 
 ## Reconnect Flow
 
@@ -174,21 +174,21 @@ Observations are not retained across WebSocket connections. After disconnect, cl
 
 <Steps>
 1. Request a new WebSocket ticket, or reconnect with a valid access token.
-2. Re-send `observe_resource` for currently visible views.
+2. Re-send `observeResource` for currently visible views.
 3. Include the locally saved `version` so the server can decide whether to send a snapshot.
-4. For `playback`, also include cached `media_id`, `playlist_id`, `target`, and `playback_client_profile`.
-5. Keep the local cache when `resource_observed.changed=false`; replace it when `resource_changed` arrives.
+4. For `playback`, also include cached `mediaId`, `playlistId`, `target`, and `playbackClientProfile`.
+5. Keep the local cache when `resourceObserved.changed=false`; replace it when `resourceChanged` arrives.
 </Steps>
 
 If the connection has been down for a long time, fetch critical resources through HTTP/gRPC first, then restore observations. This avoids showing stale UI for too long.
 
 ## Observation Errors
 
-Resource observation errors are returned as `ServerMessage.resource_observe_error`:
+Resource observation errors are returned as `ServerMessage.resourceObserveError`:
 
 | Scenario | Client action |
 | --- | --- |
-| Empty `observe_id` or longer than 128 characters | Fix client code. Do not retry the same request |
+| Empty `observeId` or longer than 128 characters | Fix client code. Do not retry the same request |
 | Missing `resource` | Fix client code |
 | More than 64 observations on one connection | Unobserve unused resources or merge list views |
 | Snapshot service unavailable or load failed | Show a temporary error and retry with backoff |

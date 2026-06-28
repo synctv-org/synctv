@@ -1,15 +1,17 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use super::id::{MediaId, PlaylistId, RoomId};
+use super::{
+    id::{MediaId, PlaylistId, RoomId},
+    provider_target::{hash_empty_provider_target, hash_optional_provider_target, ProviderTarget},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
 pub struct RoomPlaybackState {
     pub room_id: RoomId,
     pub playing_media_id: Option<MediaId>,
     pub playing_playlist_id: Option<PlaylistId>,
-    pub target: Vec<u8>,
+    pub target: Option<ProviderTarget>,
     pub current_progress_id: Option<i64>,
     pub position: f64, // playback position in seconds
     pub speed: f64,    // 0.5, 1.0, 1.5, 2.0, etc.
@@ -24,7 +26,7 @@ pub struct RoomPlaybackProgress {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target: Vec<u8>,
+    pub target: Option<ProviderTarget>,
     pub target_hash: String,
     pub position: f64,
     pub created_at: DateTime<Utc>,
@@ -103,18 +105,17 @@ pub struct PlaybackSourceIdentity {
 }
 
 impl PlaybackSourceIdentity {
-    #[must_use]
-    pub fn from_state(state: &RoomPlaybackState) -> Option<Self> {
+    pub fn from_state(state: &RoomPlaybackState) -> crate::Result<Option<Self>> {
         if state.playing_media_id.is_none() && state.playing_playlist_id.is_none() {
-            return None;
+            return Ok(None);
         }
 
-        Some(Self {
+        Ok(Some(Self {
             room_id: state.room_id,
             media_id: state.playing_media_id,
             playlist_id: state.playing_playlist_id,
-            target_hash: state.target_hash(),
-        })
+            target_hash: state.target_hash()?,
+        }))
     }
 
     #[must_use]
@@ -123,18 +124,21 @@ impl PlaybackSourceIdentity {
             room_id,
             media_id: Some(media_id),
             playlist_id: None,
-            target_hash: hash_playback_target(&[]),
+            target_hash: hash_empty_playback_target(),
         }
     }
 
-    #[must_use]
-    pub fn dynamic_playlist(room_id: RoomId, playlist_id: PlaylistId, target: &[u8]) -> Self {
-        Self {
+    pub fn dynamic_playlist(
+        room_id: RoomId,
+        playlist_id: PlaylistId,
+        target: &ProviderTarget,
+    ) -> crate::Result<Self> {
+        Ok(Self {
             room_id,
             media_id: None,
             playlist_id: Some(playlist_id),
-            target_hash: hash_playback_target(target),
-        }
+            target_hash: try_hash_playback_target(Some(target))?,
+        })
     }
 }
 
@@ -145,7 +149,7 @@ impl RoomPlaybackState {
             room_id,
             playing_media_id: None,
             playing_playlist_id: None,
-            target: Vec::new(),
+            target: None,
             current_progress_id: None,
             position: 0.0,
             speed: 1.0,
@@ -169,15 +173,18 @@ impl RoomPlaybackState {
         }
     }
 
-    #[must_use]
-    pub fn target_hash(&self) -> String {
-        hash_playback_target(&self.target)
+    pub fn target_hash(&self) -> crate::Result<String> {
+        try_hash_playback_target(self.target.as_ref())
     }
 }
 
 #[must_use]
-pub fn hash_playback_target(target: &[u8]) -> String {
-    hex::encode(Sha256::digest(target))
+pub fn hash_empty_playback_target() -> String {
+    hash_empty_provider_target()
+}
+
+pub fn try_hash_playback_target(target: Option<&ProviderTarget>) -> crate::Result<String> {
+    hash_optional_provider_target(target)
 }
 
 #[cfg(test)]

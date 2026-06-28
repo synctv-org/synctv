@@ -111,7 +111,7 @@ async fn test_position_reset_on_media_switch() {
         .checked("operation should succeed");
 
     let state = playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("operation should succeed");
 
@@ -166,7 +166,7 @@ async fn test_reset_snapshots_progress_and_switch_restarts_media() {
     assert!((reset_state.position - 0.0).abs() < f64::EPSILON);
 
     let restarted_state = playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("operation should succeed");
     assert_eq!(restarted_state.playing_media_id, Some(media.id));

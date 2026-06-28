@@ -3,7 +3,7 @@ use super::{
     PlaybackStateUpdateCommand,
 };
 use chrono::Utc;
-use synctv_core::models::{Media, MediaId, PlaylistId, RoomId, SourceProvider};
+use synctv_core::models::{Media, MediaId, PlaylistId, ProviderTarget, RoomId, SourceProvider};
 
 const EMPTY_TARGET_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -28,6 +28,16 @@ fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
     result.map_err(test_error)
 }
 
+fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::ProviderTarget> {
+    Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Alist(
+            synctv_proto::client::AlistTarget {
+                relative_path: relative_path.to_string(),
+            },
+        )),
+    })
+}
+
 #[test]
 fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
@@ -35,7 +45,7 @@ fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestR
         synctv_proto::client::StartPlaybackRequest {
             media_id: codec_ok(codec.encode_media_id(MediaId::expect_positive(1)))?,
             playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(2)))?,
-            target: Vec::new(),
+            target: None,
         },
         &codec,
     ))?;
@@ -45,23 +55,23 @@ fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestR
 }
 
 #[test]
-fn test_build_start_playback_request_parses_dynamic_target() -> TestResult {
+fn test_build_start_playback_request_parses_alist_target() -> TestResult {
     let codec = synctv_core::PublicIdCodec::plain();
     let playlist_id = PlaylistId::expect_positive(123);
     let playlist_public_id = codec_ok(codec.encode_playlist_id(playlist_id))?;
-    let target = br#"{"path":"/tv/ep1.mp4"}"#.to_vec();
+    let target = ProviderTarget::alist("/tv/ep1.mp4".to_string());
     let parsed = api_ok(build_start_playback_request(
         synctv_proto::client::StartPlaybackRequest {
             media_id: String::new(),
             playlist_id: playlist_public_id,
-            target: target.clone(),
+            target: proto_alist_target("/tv/ep1.mp4"),
         },
         &codec,
     ))?;
 
     assert!(parsed.media_id.is_none());
     assert_eq!(parsed.playlist_id, Some(playlist_id));
-    assert_eq!(parsed.target, target);
+    assert_eq!(parsed.target, Some(target));
     Ok(())
 }
 
@@ -326,13 +336,13 @@ fn test_build_start_playback_request_converts_proto_validated_ids_without_repars
         synctv_proto::client::StartPlaybackRequest {
             media_id: codec_ok(codec.encode_media_id(media_id))?,
             playlist_id: String::new(),
-            target: Vec::new(),
+            target: None,
         },
         &codec,
     ))?;
 
     assert_eq!(target.media_id, Some(media_id));
     assert!(target.playlist_id.is_none());
-    assert!(target.target.is_empty());
+    assert!(target.target.is_none());
     Ok(())
 }

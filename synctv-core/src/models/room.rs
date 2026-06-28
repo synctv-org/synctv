@@ -1,14 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::fmt::Display;
 use std::str::FromStr;
 
 use super::id::{RoomCategoryId, RoomId, RoomLabelId, UserId};
-use super::permission::{
-    RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
-};
 use super::query::SortDirection;
+use super::RoomSettings;
 use crate::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -354,7 +351,7 @@ pub struct CreateRoomRequest {
     #[serde(default)]
     pub description: String,
     pub password: Option<String>,
-    pub settings: Option<JsonValue>,
+    pub settings: Option<RoomSettings>,
     pub category_id: Option<RoomCategoryId>,
     #[serde(default)]
     pub label_ids: Vec<RoomLabelId>,
@@ -366,16 +363,9 @@ pub struct UpdateRoomRequest {
     /// Room description (max 500 characters)
     pub description: Option<String>,
     pub closed: Option<bool>,
-    pub settings: Option<JsonValue>,
+    pub settings: Option<RoomSettings>,
     pub category_id: Option<RoomCategoryId>,
     pub label_ids: Option<Vec<RoomLabelId>>,
-}
-
-/// Room with settings loaded from `room_settings` table
-#[derive(Debug, Clone)]
-pub struct RoomWithSettings {
-    pub room: Room,
-    pub settings: RoomSettingsJson,
 }
 
 sort_field_enum! {
@@ -429,139 +419,6 @@ impl Default for RoomListQuery {
     }
 }
 
-/// Room settings for JSON serialization/deserialization (stored as JSON in database)
-///
-/// Note: For typed, registry-backed room settings, use `room_settings::RoomSettings` instead.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RoomSettingsJson {
-    /// Auto-play settings
-    #[serde(default)]
-    pub auto_play: AutoPlaySettings,
-    pub allow_guest_join: bool,
-    /// Maximum number of members allowed in the room.
-    /// `None` or `0` means no limit.  Uses `u32` to prevent negative values.
-    pub max_members: Option<u32>,
-    pub chat_enabled: bool,
-
-    // Rooms can override global default permissions from SettingsRegistry
-    // Each role has added/removed permissions that modify the global defaults
-    // Formula: (global_default | added) & ~removed
-    /// Additional permissions for Admin role (on top of global default)
-    #[serde(default)]
-    pub admin_added_permissions: Option<u64>,
-
-    /// Removed permissions for Admin role (overrides global default)
-    #[serde(default)]
-    pub admin_removed_permissions: Option<u64>,
-
-    /// Additional permissions for Member role (on top of global default)
-    #[serde(default)]
-    pub member_added_permissions: Option<u64>,
-
-    /// Removed permissions for Member role (overrides global default)
-    #[serde(default)]
-    pub member_removed_permissions: Option<u64>,
-
-    /// Additional permissions for Guests (on top of global default)
-    #[serde(default)]
-    pub guest_added_permissions: Option<u64>,
-
-    /// Removed permissions for Guests (overrides global default)
-    #[serde(default)]
-    pub guest_removed_permissions: Option<u64>,
-
-    /// Whether room requires approval for new members
-    #[serde(default)]
-    pub require_approval: bool,
-
-    /// Whether members can auto-join (without invitation)
-    #[serde(default = "default_true")]
-    pub allow_auto_join: bool,
-}
-
-impl RoomSettingsJson {
-    /// Calculate effective permissions for a role based on global defaults and room overrides
-    ///
-    /// Formula: (`global_default` | added) & ~removed
-    ///
-    /// Arguments:
-    /// - `global_default`: Default permissions from global settings
-    /// - `added_permissions`: Additional permissions from room settings (Optional)
-    /// - `removed_permissions`: Removed permissions from room settings (Optional)
-    #[must_use]
-    pub const fn effective_permissions_for_role(
-        global_default: RoomPermissionSet,
-        added_permissions: Option<u64>,
-        removed_permissions: Option<u64>,
-    ) -> RoomPermissionSet {
-        let mut result = global_default.0;
-
-        // Add extra permissions
-        if let Some(added) = added_permissions {
-            result |= added;
-        }
-
-        // Remove permissions
-        if let Some(removed) = removed_permissions {
-            result &= !removed;
-        }
-
-        RoomPermissionSet(result)
-    }
-
-    /// Get effective permissions for Admin role
-    ///
-    /// Requires global default admin permissions from `SettingsRegistry`
-    #[must_use]
-    pub const fn admin_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0;
-        if let Some(added) = self.admin_added_permissions {
-            result |= RoomAdminPermissionBits::to_permissions(added);
-        }
-        if let Some(removed) = self.admin_removed_permissions {
-            result &= !RoomAdminPermissionBits::to_permissions(removed);
-        }
-        RoomPermissionSet(result)
-    }
-
-    /// Get effective permissions for Member role
-    ///
-    /// Requires global default member permissions from `SettingsRegistry`
-    #[must_use]
-    pub const fn member_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0;
-        if let Some(added) = self.member_added_permissions {
-            result |= RoomMemberPermissionBits::to_permissions(added);
-        }
-        if let Some(removed) = self.member_removed_permissions {
-            result &= !RoomMemberPermissionBits::to_permissions(removed);
-        }
-        RoomPermissionSet(result)
-    }
-
-    /// Get effective permissions for Guest
-    ///
-    /// Requires global default guest permissions from `SettingsRegistry`
-    #[must_use]
-    pub const fn guest_permissions(&self, global_default: RoomPermissionSet) -> RoomPermissionSet {
-        let mut result = global_default.0 & RoomPermissionSet::guest_assignable().0;
-
-        if let Some(added) = self.guest_added_permissions {
-            result |= RoomGuestPermissionBits::to_permissions(added);
-        }
-
-        if let Some(removed) = self.guest_removed_permissions {
-            result &= !RoomGuestPermissionBits::to_permissions(removed);
-        }
-
-        RoomPermissionSet(result)
-    }
-}
-
-const fn default_true() -> bool {
-    true
-}
-
 /// Room with member count (for efficient queries with JOIN)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomWithCount {
@@ -609,23 +466,6 @@ impl std::str::FromStr for AutoPlaySettings {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         serde_json::from_str(s)
             .map_err(|e| Error::InvalidInput(format!("Invalid AutoPlaySettings: {e}")))
-    }
-}
-
-impl Display for RoomSettingsJson {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Use JSON representation for the entire settings struct
-        let json = serde_json::to_string(self).map_err(|_| std::fmt::Error)?;
-        write!(f, "{json}")
-    }
-}
-
-impl std::str::FromStr for RoomSettingsJson {
-    type Err = crate::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        serde_json::from_str(s)
-            .map_err(|e| Error::InvalidInput(format!("Invalid RoomSettingsJson: {e}")))
     }
 }
 

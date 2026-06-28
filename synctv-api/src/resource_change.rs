@@ -240,7 +240,7 @@ mod tests {
                     version: 1,
                     reply_to_message_id: None,
                     reply_to_message_created_at: None,
-                    metadata: serde_json::Value::Object(Default::default()),
+                    metadata: synctv_core::models::ChatMetadata::default(),
                     edited_at: None,
                     deleted_at: None,
                     deleted_by: None,

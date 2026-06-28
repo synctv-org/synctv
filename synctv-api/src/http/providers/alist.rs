@@ -11,7 +11,7 @@ use axum::{
 use futures::FutureExt;
 
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
-use crate::impls::{ApiError, EndpointRateLimitCategory};
+use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::providers::alist::{
     GetBindsResponse, GetMeRequest, ListRequest, LogoutRequest, SearchRequest,
 };
@@ -19,7 +19,7 @@ use synctv_proto::providers::common::ProviderInstanceQuery;
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
-    provider_instance_name, provider_instance_name_from_body,
+    provider_instance_name, provider_instance_name_from_request_field,
 };
 
 /// Alist endpoints that perform authentication or credential mutation.
@@ -47,7 +47,7 @@ pub(crate) fn alist_read_routes() -> Router<AppState> {
         post,
         path = "/api/providers/alist/login",
         tag = "Provider",
-        request_body = synctv_proto::http_serde::AlistLoginRequestDef,
+        request_body = synctv_proto::providers::alist::LoginRequest,
         responses(
             (status = 200, description = "Alist login succeeded", body = synctv_proto::providers::alist::LoginResponse),
             (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
@@ -67,13 +67,11 @@ pub(crate) fn alist_read_routes() -> Router<AppState> {
 pub(crate) async fn login(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Json(req): Json<synctv_proto::http_serde::AlistLoginRequestDef>,
+    Json(req): Json<synctv_proto::providers::alist::LoginRequest>,
 ) -> AppResult<Json<synctv_proto::providers::alist::LoginResponse>> {
     tracing::info!("Alist login request");
 
-    let req = synctv_proto::providers::alist::LoginRequest::try_from(req)
-        .map_err(ApiError::InvalidInput)?;
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -110,9 +108,6 @@ pub(crate) async fn login(
         path = "/api/providers/alist/list",
         tag = "Provider",
         request_body = ListRequest,
-        params(
-            ("instance_name" = Option<String>, Query, description = "Optional provider instance name")
-        ),
         responses(
             (status = 200, description = "Alist directory listing", body = synctv_proto::providers::alist::ListResponse),
             (status = 400, description = "Invalid list request", body = synctv_proto::client::ApiErrorResponse),
@@ -136,7 +131,7 @@ pub(crate) async fn list(
 ) -> AppResult<Json<synctv_proto::providers::alist::ListResponse>> {
     tracing::info!("Alist list request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -193,7 +188,7 @@ pub(crate) async fn search(
 ) -> AppResult<Json<synctv_proto::providers::alist::SearchResponse>> {
     tracing::info!("Alist search request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -250,7 +245,7 @@ pub(crate) async fn me(
 ) -> AppResult<Json<synctv_proto::providers::alist::GetMeResponse>> {
     tracing::info!("Alist me request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -307,7 +302,7 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<synctv_proto::providers::alist::LogoutResponse>> {
     tracing::info!("Alist logout request");
 
-    provider_instance_name_from_body(&req.instance_name)?;
+    provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.alist_api.clone();
     execute_provider_user_endpoint(
         &state,

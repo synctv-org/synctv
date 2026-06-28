@@ -15,7 +15,9 @@ use synctv_proto::client::{
 };
 
 use super::{ClientApiImpl, RoomActor};
-use crate::impls::client::convert::json_to_vec;
+use crate::impls::client::convert::{
+    content_report_metadata_from_proto, content_report_metadata_to_proto,
+};
 use crate::impls::ApiError;
 
 impl ClientApiImpl {
@@ -33,11 +35,7 @@ impl ClientApiImpl {
                 .await
                 .map_err(Self::map_room_access_error)?;
         }
-        let metadata = if req.metadata.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&req.metadata)?
-        };
+        let metadata = content_report_metadata_from_proto(req.metadata.as_ref())?;
         let report = self
             .content_report_service
             .create_report(CreateContentReport {
@@ -361,7 +359,7 @@ fn content_report_row_to_client_proto(
         target_chat_message_preview: row.target_chat_message_preview.clone(),
         reason_code: row.reason_code.clone(),
         reason: row.reason.clone(),
-        metadata: json_to_vec(&row.metadata, "content report metadata")?,
+        metadata: content_report_metadata_to_proto(&row.metadata)?,
         status: content_report_status_to_client_proto(row.status),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
         reviewed_by_username: row.reviewed_by_username.clone(),

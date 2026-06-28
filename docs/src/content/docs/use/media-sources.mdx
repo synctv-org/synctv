@@ -15,7 +15,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
 | 上游是否要求特殊 header 或 Cookie | 决定客户端能否直连，或必须走 SyncTV proxy |
 | 凭据属于用户还是实例 | 决定是否需要用户绑定、Provider instance 或凭据加密 key |
 
-内置 Provider 类型包括 `alist`、`bilibili`、`emby`、`direct_url`、`rtmp` 和 `live_proxy`。远程 Provider instance 用数据库持久化的连接信息接入另一组 Provider 服务，不是 `media_providers` YAML 对象。
+内置 Provider 类型包括 `alist`、`bilibili`、`emby`、`direct-url`、`rtmp` 和 `live-proxy`。远程 Provider instance 用数据库持久化的连接信息接入另一组 Provider 服务，不是 `media_providers` YAML 对象。
 
 ## 添加前检查
 
@@ -29,7 +29,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
 </Steps>
 
 <Aside type="caution">
-不要把 Provider token、Cookie、密码或 API key 放进客户端日志、URL query 或媒体 `source_config`。凭据应由服务端 Provider 凭据管理层解析。
+不要把 Provider token、Cookie、密码或 API key 放进客户端日志、URL query 或媒体 `sourceConfig`。凭据应由服务端 Provider 凭据管理层解析。
 </Aside>
 
 ## 来源配方
@@ -111,7 +111,7 @@ Provider 是 SyncTV 把外部媒体解析成播放结果的适配层。接入前
 
 - 配置 `security.credential_encryption_key_file`，并把真实 key 放在 Secret Manager 或 Kubernetes Secret。
 - 每个 Provider 凭据明确归属：用户级、实例级或远程 Provider 服务级。
-- 禁止把 Cookie、token、API key 写进 `source_config`、URL query、日志或截图。
+- 禁止把 Cookie、token、API key 写进 `sourceConfig`、URL query、日志或截图。
 - 凭据轮换前先确认旧凭据是否还被播放列表、用户默认 Provider 或远程实例引用。
 
 密钥轮换见 [安全加固与密钥轮换](../../operations/security-hardening-and-rotation/)。

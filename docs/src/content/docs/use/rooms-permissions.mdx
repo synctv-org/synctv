@@ -74,8 +74,8 @@ SyncTV 有两层角色，不能混为一谈。
 
 - `creator` 始终拥有全部房间权限。
 - add 先增加权限，remove 再移除权限；同一个权限同时 add 和 remove 时，remove 生效。
-- `member_added_permissions` 不能超过 admin 级别上限。
-- `guest_added_permissions` 使用独立 guest 上限，不能授予媒体资源、聊天写入或管理权限。
+- `memberAddedPermissions` 不能超过 admin 级别上限。
+- `guestAddedPermissions` 使用独立 guest 上限，不能授予媒体资源、聊天写入或管理权限。
 - `DELETE_ROOM` 不属于房间内可委派权限，房间删除应由创建者或平台管理面处理。
 
 ## 主要权限名称
@@ -113,22 +113,22 @@ SyncTV 有两层角色，不能混为一谈。
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `require_password` | `false` | 是否要求房间密码 |
-| `allow_guest_join` | `false` | 是否允许游客加入 |
-| `max_members` | `100` | 房间最大成员数，上限 `10000` |
-| `require_approval` | `false` | 加入房间是否需要审核 |
-| `allow_auto_join` | `true` | 是否允许符合条件的用户自动加入 |
-| `chat_enabled` | `true` | 是否启用聊天 |
-| `auto_play` | `{}` | 自动播放策略，JSON 结构 |
-| `admin_added_permissions` / `admin_removed_permissions` | 空权限集合 | 房间 admin 默认权限增减 |
-| `member_added_permissions` / `member_removed_permissions` | 空权限集合 | 房间 member 默认权限增减 |
-| `guest_added_permissions` / `guest_removed_permissions` | 空权限集合 | 房间 guest 默认权限增减 |
+| `password` | 空 | 创建房间时设置初始密码；后续通过房间密码接口修改 |
+| `allowGuestJoin` | `false` | 是否允许游客加入 |
+| `maxMembers` | `100` | 房间最大成员数，上限 `10000` |
+| `requireApproval` | `false` | 加入房间是否需要审核 |
+| `allowAutoJoin` | `true` | 是否允许符合条件的用户自动加入 |
+| `chatEnabled` | `true` | 是否启用聊天 |
+| `autoPlay` | `{}` | 自动播放策略，例如 `{"enabled":true,"mode":1,"delay":5}` |
+| `adminAddedPermissions` / `adminRemovedPermissions` | 空权限集合 | 房间 admin 默认权限增减 |
+| `memberAddedPermissions` / `memberRemovedPermissions` | 空权限集合 | 房间 member 默认权限增减 |
+| `guestAddedPermissions` / `guestRemovedPermissions` | 空权限集合 | 房间 guest 默认权限增减 |
 
 示例：
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}'
+synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
 ```
 
 ## 成员权限覆盖
@@ -140,7 +140,7 @@ synctv room settings update <ROOM_ID> --settings-json '{"require_approval":true}
 - 成员基础权限来自房间角色。
 - `added_permissions` 增加该成员的普通权限。
 - `removed_permissions` 移除该成员的普通权限。
-- 管理员还可以有 `admin_added_permissions` 和 `admin_removed_permissions`。
+- 管理员还可以有 `adminAddedPermissions` 和 `adminRemovedPermissions`。
 - 对 `creator` 的权限削弱不生效。
 
 管理规则：

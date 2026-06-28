@@ -87,8 +87,6 @@ pub use playlists::{
 pub(crate) use query::build_get_playback_request;
 #[cfg(test)]
 pub(crate) use query::watch_after_event_sequence;
-#[cfg(test)]
-use query::{parse_optional_query_bool, parse_optional_query_i32};
 pub use query::{GetPlaybackQuery, WatchPlaybackQuery, WatchQuery};
 #[cfg(feature = "openapi")]
 pub(crate) use report::{
@@ -117,7 +115,7 @@ pub(crate) use streams::{
 };
 pub use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
 pub use types::{
-    ChatAttachmentObjectQuery, KickRoomStreamBody, MediaCoverObjectQuery, PlaylistCoverObjectQuery,
+    ChatAttachmentObjectQuery, MediaCoverObjectQuery, PlaylistCoverObjectQuery,
     RoomCoverObjectQuery,
 };
 #[cfg(feature = "openapi")]

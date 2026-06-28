@@ -392,7 +392,9 @@ async fn test_media_can_exist_at_room_root_without_playlist() {
         "root-media.mp4",
         0.0,
         ProviderType::DirectUrl.as_i16(),
-        synctv_core_testing::direct_url_media_source_config("https://example.com/root.mp4"),
+        synctv_core_testing::media_source_config_json(
+            synctv_core_testing::direct_url_media_source_config("https://example.com/root.mp4"),
+        ),
         Option::<String>::None
     )
     .execute(&pool)

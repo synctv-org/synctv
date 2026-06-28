@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    Decode, Encode, Postgres, Type,
+};
 use std::collections::BTreeMap;
 
 use super::UserId;
@@ -13,7 +16,99 @@ pub const FILE_REFERENCE_KIND_MAX_CHARS: usize = 64;
 pub const FILE_REFERENCE_ID_MAX_CHARS: usize = 256;
 pub const FILE_CLEANUP_ORIGIN_MAX_CHARS: usize = 64;
 pub const FILE_SHA256_HEX_CHARS: usize = 64;
-pub const FILE_GENERATED_VARIANTS_METADATA_KEY: &str = "_synctv_file_variants";
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileAudioMetadata {
+    pub duration_seconds: i32,
+    pub bitrate_bps: i32,
+    pub sample_rate_hz: Option<i32>,
+    pub channels: Option<i32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileMetadata {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub blurhash: Option<String>,
+    pub audio: Option<FileAudioMetadata>,
+    pub variants: Vec<FileObjectVariant>,
+    pub upload_token: Option<String>,
+    pub ownership_proof: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileVariantMetadata {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub blurhash: Option<String>,
+}
+
+impl FileMetadata {
+    #[must_use]
+    pub fn public(&self) -> Self {
+        let mut metadata = self.clone();
+        metadata.upload_token = None;
+        metadata.ownership_proof = None;
+        metadata
+    }
+}
+
+impl Type<Postgres> for FileMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for FileMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
+}
+
+impl Type<Postgres> for FileVariantMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileVariantMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileVariantMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for FileVariantMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileVariantMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(i16)]
@@ -94,7 +189,7 @@ pub struct FileBlob {
     pub compression: FileBlobCompression,
     pub range: Option<FileByteRange>,
     pub data: Vec<u8>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
 }
 
@@ -108,7 +203,7 @@ pub struct FileObjectMetadata {
     pub content_manifest_sha256: String,
     pub compression: FileBlobCompression,
     pub range: Option<FileByteRange>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
 }
 
@@ -145,7 +240,7 @@ pub struct FileObject {
     pub mime_type: String,
     pub size_bytes: i64,
     pub content_manifest_sha256: String,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
     pub deleting_at: Option<DateTime<Utc>>,
@@ -157,12 +252,12 @@ pub struct FileObjectGroup {
     pub storage_backend: String,
     pub original_object_key: String,
     pub media_kind: String,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::FromRow)]
 pub struct FileObjectVariant {
     pub storage_backend: String,
     pub object_key: String,
@@ -180,7 +275,7 @@ pub struct FileObjectVariant {
     pub lossy: bool,
     pub quality: Option<i32>,
     pub sort_order: i32,
-    pub metadata: JsonValue,
+    pub metadata: FileVariantMetadata,
     pub created_at: DateTime<Utc>,
 }
 
@@ -270,7 +365,7 @@ pub struct FileUploadSessionRecord {
     pub size_bytes: i64,
     pub content_manifest_sha256: String,
     pub part_size_bytes: i64,
-    pub metadata: JsonValue,
+    pub metadata: FileUploadSessionMetadata,
     pub expires_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -299,7 +394,7 @@ pub struct StoredFileReference {
     pub mime_type: String,
     pub size_bytes: i64,
     pub content_manifest_sha256: String,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub created_at: DateTime<Utc>,
     pub validated_at: Option<DateTime<Utc>>,
 }
@@ -321,11 +416,112 @@ impl StoredFileReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileReferenceTarget {
     pub storage_backend: String,
     pub object_key: String,
     pub reference_kind: String,
     pub reference_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FileReferenceMetadata {
+    File(FileMetadata),
+    UploadSession(FileUploadSessionMetadata),
+}
+
+impl FileReferenceMetadata {
+    #[must_use]
+    pub fn file_metadata(&self) -> FileMetadata {
+        match self {
+            Self::File(metadata) => metadata.clone(),
+            Self::UploadSession(metadata) => metadata.metadata.clone(),
+        }
+    }
+}
+
+impl Default for FileReferenceMetadata {
+    fn default() -> Self {
+        Self::File(FileMetadata::default())
+    }
+}
+
+impl From<FileMetadata> for FileReferenceMetadata {
+    fn from(value: FileMetadata) -> Self {
+        Self::File(value)
+    }
+}
+
+impl From<FileUploadSessionMetadata> for FileReferenceMetadata {
+    fn from(value: FileUploadSessionMetadata) -> Self {
+        Self::UploadSession(value)
+    }
+}
+
+impl Type<Postgres> for FileReferenceMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileReferenceMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileReferenceMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for FileReferenceMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileReferenceMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileCleanupMetadata {
+    pub reason: Option<String>,
+}
+
+impl Type<Postgres> for FileCleanupMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileCleanupMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileCleanupMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for FileCleanupMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileCleanupMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -336,7 +532,7 @@ pub struct FileCleanupJob {
     pub object_key: String,
     pub reference_kind: String,
     pub reference_id: String,
-    pub metadata: JsonValue,
+    pub metadata: FileCleanupMetadata,
     pub attempt_count: i32,
     pub last_error: Option<String>,
     pub next_attempt_at: DateTime<Utc>,
@@ -360,12 +556,14 @@ impl FileCleanupJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileOwnershipProofRange {
     pub offset: i64,
     pub length: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileUploadPolicy {
     pub kind: String,
     pub max_size_bytes: i64,
@@ -392,7 +590,7 @@ pub struct NewStoredFile {
     pub size_bytes: Option<i64>,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,16 +619,68 @@ pub struct CreateFileUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
     pub policy: FileUploadPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileUploadManifestPart {
     pub part_number: i32,
     pub offset_bytes: i64,
     pub size_bytes: i64,
     pub checksum_sha256: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadOwnershipProofMetadata {
+    pub nonce: String,
+    pub ranges: Vec<FileOwnershipProofRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadSessionMetadata {
+    pub public_file_id: String,
+    pub user_id: UserId,
+    pub storage_scope: String,
+    pub client_file_id: Option<String>,
+    pub filename: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub metadata: FileMetadata,
+    pub upload_policy: FileUploadPolicy,
+    pub manifest_parts: Vec<FileUploadManifestPart>,
+    pub ownership_proof: Option<FileUploadOwnershipProofMetadata>,
+    pub ownership_proof_verified: bool,
+}
+
+impl Type<Postgres> for FileUploadSessionMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileUploadSessionMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileUploadSessionMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for FileUploadSessionMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileUploadSessionMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

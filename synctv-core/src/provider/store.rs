@@ -709,7 +709,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: std::collections::HashMap::new(),
+                metadata: crate::models::PlaybackMetadata::default(),
             },
             expires_at: 0, // Already expired
         };

@@ -135,7 +135,7 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         }
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
-            let role = args.resolved_role()?;
+            let role = args.resolved_role();
             let response = management_unary_call!(
                 session,
                 "update user role",

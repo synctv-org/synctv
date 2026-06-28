@@ -1,5 +1,5 @@
 use synctv_core::{
-    models::{ReviewRequestId, RoomId, UserId},
+    models::{AuditDetails, ReviewRequestId, RoomId, UserId},
     service::{
         BanRecordListQuery, BanRecordTargetType, RoomCreationReviewListQuery,
         RoomJoinReviewListQuery, UserRegistrationReviewListQuery,
@@ -362,13 +362,14 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserApproved,
             synctv_core::models::AuditTargetType::User,
             Some(updated.id.to_string()),
-            serde_json::json!({
-                "request_id": request_id.to_string(),
-                "target_user_id": updated.id.to_string(),
-                "target_username": updated.username,
-                "previous_review_status": "pending",
-                "new_review_status": "approved",
-            }),
+            AuditDetails {
+                request_id: Some(request_id.to_string()),
+                target_user_id: Some(updated.id.to_string()),
+                target_username: Some(updated.username.clone()),
+                previous_review_status: Some("pending".to_string()),
+                new_review_status: Some("approved".to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;

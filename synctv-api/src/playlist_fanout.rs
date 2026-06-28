@@ -217,8 +217,7 @@ mod tests {
                 event_type: event.event_type().to_string(),
                 event_version: 1,
                 aggregate_version: None,
-                payload: serde_json::to_value(event)
-                    .map_err(|error| format!("test event serialization failed: {error}"))?,
+                payload: event.clone(),
             })
         }
 
@@ -287,8 +286,7 @@ mod tests {
             "playlist fanout should publish the same prepared event after commit"
         );
 
-        let event: RealtimeEvent = serde_json::from_value(outbox_event.payload)?;
-        match event {
+        match outbox_event.payload {
             RealtimeEvent::PlaylistCreated {
                 room_id,
                 user_id,

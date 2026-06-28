@@ -12,9 +12,8 @@ use crate::{
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
     models::{
-        BilibiliMediaSourceConfig, DirectUrlMediaSourceConfig, MediaId, PlayMode,
-        PlaybackSourceIdentity, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
-        SourceProvider, UserId,
+        BilibiliMediaSourceConfig, MediaId, PlayMode, PlaybackSourceIdentity, PlaylistId,
+        ProviderTarget, RoomId, RoomPlaybackState, RoomSettings, SourceProvider, UserId,
     },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
@@ -101,30 +100,29 @@ struct PlaybackSwitchCommand {
 
 fn live_status_for_media_source(
     provider: SourceProvider,
-    source_config: &serde_json::Value,
+    source_config: &crate::models::MediaSourceConfig,
 ) -> Option<bool> {
-    match provider {
-        SourceProvider::DirectUrl => {
-            serde_json::from_value::<DirectUrlMediaSourceConfig>(source_config.clone())
-                .ok()
-                .and_then(|config| config.inferred_live_status())
+    match (provider, source_config) {
+        (SourceProvider::DirectUrl, crate::models::MediaSourceConfig::DirectUrl(config)) => {
+            config.inferred_live_status()
         }
-        SourceProvider::Bilibili => {
-            serde_json::from_value::<BilibiliMediaSourceConfig>(source_config.clone())
-                .ok()
-                .map(|config| matches!(config, BilibiliMediaSourceConfig::Live(_)))
+        (SourceProvider::Bilibili, crate::models::MediaSourceConfig::Bilibili(config)) => {
+            Some(matches!(config, BilibiliMediaSourceConfig::Live(_)))
         }
-        SourceProvider::Alist | SourceProvider::Emby => Some(false),
-        SourceProvider::Rtmp | SourceProvider::LiveProxy => Some(true),
+        (SourceProvider::Alist | SourceProvider::Emby, _) => Some(false),
+        (SourceProvider::Rtmp | SourceProvider::LiveProxy, _) => Some(true),
+        _ => None,
     }
 }
 
 fn live_status_for_playlist_source(
     provider: SourceProvider,
-    source_config: &serde_json::Value,
+    source_config: &crate::models::PlaylistSourceConfig,
 ) -> Option<bool> {
     match provider {
-        SourceProvider::Alist | SourceProvider::Emby => source_config.is_object().then_some(false),
+        SourceProvider::Alist | SourceProvider::Emby => {
+            (source_config.provider() == provider).then_some(false)
+        }
         SourceProvider::DirectUrl
         | SourceProvider::Bilibili
         | SourceProvider::Rtmp
@@ -283,7 +281,7 @@ impl PlaybackService {
         &self,
         state: &RoomPlaybackState,
     ) -> Result<()> {
-        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
             return Ok(());
         };
         if self
@@ -582,7 +580,7 @@ impl PlaybackService {
         user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
     ) -> Result<RoomPlaybackState> {
         self.switch_with_outbox(room_id, user_id, media_id, playlist_id, target, None)
             .await
@@ -594,7 +592,7 @@ impl PlaybackService {
         user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.switch_internal(PlaybackSwitchCommand {
@@ -620,7 +618,7 @@ impl PlaybackService {
         actor_user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
     ) -> Result<RoomPlaybackState> {
         self.admin_switch_with_outbox(room_id, actor_user_id, media_id, playlist_id, target, None)
             .await
@@ -632,7 +630,7 @@ impl PlaybackService {
         actor_user_id: UserId,
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
-        target: Vec<u8>,
+        target: Option<ProviderTarget>,
         outbox_event_factory: Option<RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.switch_internal(PlaybackSwitchCommand {
@@ -698,8 +696,11 @@ impl PlaybackService {
                         }
                         Err(error) => return Err(error),
                     }
+                    let Some(current_target) = state.target.as_ref() else {
+                        return Ok(None);
+                    };
                     self.media_service
-                        .next_dynamic_playlist_item(room_id, playlist_id, &state.target, mode)
+                        .next_dynamic_playlist_item(room_id, playlist_id, current_target, mode)
                         .await
                         .and_then(|item| {
                             item.map(|item| {
@@ -867,7 +868,7 @@ impl PlaybackService {
                         }
                         updated_state.playing_media_id = Some(next.id);
                         updated_state.playing_playlist_id = None;
-                        updated_state.target = Vec::new();
+                        updated_state.target = None;
                     }
                     NextTarget::Dynamic {
                         playlist_id,
@@ -892,7 +893,7 @@ impl PlaybackService {
                         }
                         updated_state.playing_media_id = None;
                         updated_state.playing_playlist_id = Some(*playlist_id);
-                        updated_state.target = target.clone();
+                        updated_state.target = Some(target.clone());
                     }
                 }
                 let observed_version = updated_state.version;
@@ -954,7 +955,7 @@ impl PlaybackService {
             return Ok(None);
         }
 
-        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
             return Ok(None);
         };
         let Some(metadata) = self.source_metadata_repo.get(&identity).await? else {
@@ -1183,7 +1184,7 @@ impl PlaybackService {
                     let previous_state = state.clone();
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
-                    state.target.clear();
+                    state.target = None;
                     state.position = 0.0;
                     state.speed = 1.0;
                     state.is_playing = false;
@@ -1293,7 +1294,7 @@ impl PlaybackService {
                     |state| {
                         state.playing_media_id = None;
                         state.playing_playlist_id = None;
-                        state.target = Vec::new();
+                        state.target = None;
                         state.position = 0.0;
                         state.speed = 1.0;
                         state.is_playing = false;
@@ -1335,7 +1336,16 @@ impl PlaybackService {
 
             let resolved = self
                 .media_service
-                .resolve_dynamic_playlist_item(room_id, actor_user_id, playlist_id, &target.target)
+                .resolve_dynamic_playlist_item(
+                    room_id,
+                    actor_user_id,
+                    playlist_id,
+                    target.target.as_ref().ok_or_else(|| {
+                        Error::InvalidInput(
+                            "target is required for dynamic playlist playback".to_string(),
+                        )
+                    })?,
+                )
                 .await?;
             if resolved.is_none() {
                 return Err(Error::NotFound(
@@ -1388,7 +1398,7 @@ impl PlaybackService {
                     state.speed = 1.0;
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
-                    state.target = Vec::new();
+                    state.target = None;
                     state.updated_at = chrono::Utc::now();
                 },
                 outbox_event_factory,
@@ -1413,7 +1423,7 @@ impl PlaybackService {
             .update_state(*room_id, |state| {
                 state.playing_media_id = None;
                 state.playing_playlist_id = None;
-                state.target = Vec::new();
+                state.target = None;
                 state.position = 0.0;
                 state.speed = 1.0;
                 state.is_playing = false;
@@ -1529,7 +1539,9 @@ impl PlaybackService {
             }
             if expected_source
                 .as_ref()
-                .is_some_and(|expected| !expected.matches(&state))
+                .map(|expected| expected.matches(&state).map(|matches| !matches))
+                .transpose()?
+                .unwrap_or(false)
             {
                 return Err(Error::OptimisticLockConflict);
             }

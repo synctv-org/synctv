@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageReader};
-use serde_json::json;
-use sha2::{Digest, Sha256};
-
 use crate::{
     models::{
-        FileObjectVariant, FileUploadPolicy, NewStoredFile, FILE_GENERATED_VARIANTS_METADATA_KEY,
+        FileMetadata, FileObjectVariant, FileUploadPolicy, FileVariantMetadata, NewStoredFile,
     },
     repository::{FileStorageRepository, UpsertFileObjectGroup, UpsertFileObjectVariant},
     service::file_storage::{validation::validate_file_dimensions, FileObjectReader},
     Error, Result,
 };
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageReader};
 
 use super::{payload_len_i64, FileStorageService};
 
@@ -93,11 +90,8 @@ pub(crate) async fn process_file_variants_for_object(
             Some(original_width_i32),
             Some(original_height_i32),
         )?;
-        let metadata = object.metadata.as_object_mut().ok_or_else(|| {
-            Error::InvalidInput("file metadata must be a JSON object".to_string())
-        })?;
-        metadata.insert("width".to_string(), json!(original_width_i32));
-        metadata.insert("height".to_string(), json!(original_height_i32));
+        object.metadata.width = Some(original_width_i32);
+        object.metadata.height = Some(original_height_i32);
         repository
             .update_object_metadata(storage_backend, object_key, &object.metadata)
             .await?;
@@ -109,10 +103,7 @@ pub(crate) async fn process_file_variants_for_object(
             storage_backend,
             original_object_key: object_key,
             media_kind,
-            metadata: &json!({
-                "mime_type": object.mime_type,
-                "size_bytes": object.size_bytes,
-            }),
+            metadata: &object.metadata,
         })
         .await?;
     let group_id = group.id;
@@ -131,13 +122,17 @@ pub(crate) async fn process_file_variants_for_object(
             url: original_url.as_deref(),
             mime_type: &object.mime_type,
             size_bytes: object.size_bytes,
-            width: metadata_i32(&object.metadata, "width"),
-            height: metadata_i32(&object.metadata, "height"),
+            width: object.metadata.width,
+            height: object.metadata.height,
             is_original: true,
             lossy: false,
             quality: None,
             sort_order: 1000,
-            metadata: &object.metadata,
+            metadata: &FileVariantMetadata {
+                width: object.metadata.width,
+                height: object.metadata.height,
+                blurhash: object.metadata.blurhash.clone(),
+            },
         })
         .await?;
 
@@ -178,7 +173,7 @@ pub(crate) async fn attach_variants_to_files(
         if let Some(preview) = preferred_preview_variant(&variants) {
             file.url.clone_from(&preview.url);
         }
-        attach_variants_metadata(&mut file.metadata, &variants, "file metadata")?;
+        attach_variants_metadata(&mut file.metadata, &variants);
     }
     Ok(())
 }
@@ -201,11 +196,7 @@ pub(crate) async fn attach_variants_to_chat_attachments(
         if let Some(preview) = preferred_preview_variant(&variants) {
             attachment.url.clone_from(&preview.url);
         }
-        attach_variants_metadata(
-            &mut attachment.metadata,
-            &variants,
-            "chat attachment metadata",
-        )?;
+        attach_variants_metadata(&mut attachment.metadata, &variants);
     }
     Ok(())
 }
@@ -232,19 +223,8 @@ async fn object_variants_with_urls(
     Ok(variants)
 }
 
-fn attach_variants_metadata(
-    metadata: &mut serde_json::Value,
-    variants: &[FileObjectVariant],
-    context: &'static str,
-) -> Result<()> {
-    let object = metadata
-        .as_object_mut()
-        .ok_or_else(|| Error::InvalidInput(format!("{context} must be a JSON object")))?;
-    object.insert(
-        FILE_GENERATED_VARIANTS_METADATA_KEY.to_string(),
-        serde_json::to_value(variants)?,
-    );
-    Ok(())
+fn attach_variants_metadata(metadata: &mut FileMetadata, variants: &[FileObjectVariant]) {
+    metadata.variants = variants.to_vec();
 }
 
 fn preferred_preview_variant(variants: &[FileObjectVariant]) -> Option<&FileObjectVariant> {
@@ -287,8 +267,11 @@ async fn process_image_variants(
         if !compression_is_useful(context.original_size_bytes, size_bytes) {
             continue;
         }
-        let checksum = hex::encode(Sha256::digest(&encoded));
         let variant_object_key = variant_object_key(context.object_key, spec.key);
+        let variant_width = i32::try_from(width)
+            .map_err(|_| Error::Internal("image variant width exceeds i32::MAX".to_string()))?;
+        let variant_height = i32::try_from(height)
+            .map_err(|_| Error::Internal("image variant height exceeds i32::MAX".to_string()))?;
         context
             .storage
             .put_object_by_key(
@@ -296,13 +279,11 @@ async fn process_image_variants(
                 &variant_object_key,
                 IMAGE_VARIANT_MIME_TYPE,
                 encoded,
-                json!({
-                    "width": i32::try_from(width).unwrap_or(i32::MAX),
-                    "height": i32::try_from(height).unwrap_or(i32::MAX),
-                    "source_object_key": context.object_key,
-                    "variant_key": spec.key,
-                    "content_sha256": checksum,
-                }),
+                FileMetadata {
+                    width: Some(variant_width),
+                    height: Some(variant_height),
+                    ..Default::default()
+                },
             )
             .await?;
         let url = context.storage.object_url(
@@ -323,21 +304,17 @@ async fn process_image_variants(
                 url: url.as_deref(),
                 mime_type: IMAGE_VARIANT_MIME_TYPE,
                 size_bytes,
-                width: Some(i32::try_from(width).map_err(|_| {
-                    Error::Internal("image variant width exceeds i32::MAX".to_string())
-                })?),
-                height: Some(i32::try_from(height).map_err(|_| {
-                    Error::Internal("image variant height exceeds i32::MAX".to_string())
-                })?),
+                width: Some(variant_width),
+                height: Some(variant_height),
                 is_original: false,
                 lossy: true,
                 quality: Some(i32::from(IMAGE_VARIANT_QUALITY)),
                 sort_order: spec.sort_order,
-                metadata: &json!({
-                    "max_edge": spec.max_edge,
-                    "original_size_bytes": context.original_size_bytes,
-                    "savings_percent": savings_percent(context.original_size_bytes, size_bytes),
-                }),
+                metadata: &FileVariantMetadata {
+                    width: Some(variant_width),
+                    height: Some(variant_height),
+                    blurhash: None,
+                },
             })
             .await?;
     }
@@ -425,13 +402,6 @@ fn media_kind_from_mime_type(mime_type: &str) -> &'static str {
     } else {
         "file"
     }
-}
-
-fn metadata_i32(metadata: &serde_json::Value, key: &str) -> Option<i32> {
-    metadata
-        .get(key)
-        .and_then(serde_json::Value::as_i64)
-        .and_then(|value| i32::try_from(value).ok())
 }
 
 fn variant_object_key(original_object_key: &str, variant_key: &str) -> String {

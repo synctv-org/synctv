@@ -2,9 +2,10 @@
 
 use super::{
     build_oauth2_http_client, build_provider_http_client, map_provider_http_error,
-    validate_oauth2_redirect_url,
+    validate_oauth2_redirect_url, validate_required_oauth2_field,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
+use crate::service::{OAuth2BasicProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
@@ -267,22 +268,29 @@ impl Provider for GitHubProvider {
     }
 }
 
-/// Factory function for GitHub provider
-pub fn github_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Error> {
-    github_factory_with_ssrf_guard(config, &synctv_common::ssrf::SsrfGuard::strict_policy())
-}
-
-pub fn github_factory_with_ssrf_guard(
-    config: &serde_json::Value,
+pub fn github_factory_from_private_config(
+    config: &OAuth2ProviderPrivateConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
-    let config: GitHubConfig = serde_json::from_value(config.clone())
-        .map_err(|e| Error::InvalidInput(format!("Invalid GitHub config: {e}")))?;
+    let OAuth2ProviderPrivateConfig::GitHub(config) = config else {
+        return Err(Error::InvalidInput(
+            "GitHub provider requires github config".to_string(),
+        ));
+    };
+    github_factory_from_basic_config(config, ssrf_guard)
+}
 
+fn github_factory_from_basic_config(
+    config: &OAuth2BasicProviderConfig,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> Result<Box<dyn Provider>, Error> {
+    validate_required_oauth2_field("GitHub", "client_id", &config.client_id)?;
+    validate_required_oauth2_field("GitHub", "client_secret", &config.client_secret)?;
+    validate_required_oauth2_field("GitHub", "redirect_url", &config.redirect_url)?;
     Ok(Box::new(GitHubProvider::create_with_ssrf_guard(
-        config.client_id,
-        config.client_secret,
-        config.redirect_url,
+        config.client_id.clone(),
+        config.client_secret.clone(),
+        config.redirect_url.clone(),
         ssrf_guard,
     )?))
 }
@@ -291,6 +299,18 @@ pub fn github_factory_with_ssrf_guard(
 mod tests {
     use super::*;
     use crate::test_helpers::TestResultExt;
+
+    fn github_private_config(
+        client_id: &str,
+        client_secret: &str,
+        redirect_url: &str,
+    ) -> OAuth2ProviderPrivateConfig {
+        OAuth2ProviderPrivateConfig::GitHub(OAuth2BasicProviderConfig {
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            redirect_url: redirect_url.to_string(),
+        })
+    }
 
     #[test]
     fn test_create_provider_valid_config() {
@@ -404,12 +424,15 @@ mod tests {
 
     #[test]
     fn test_factory_valid_config() {
-        let config = serde_json::json!({
-            "client_id": "gh_id",
-            "client_secret": "gh_secret",
-            "redirect_url": "https://example.com/oauth/github/callback"
-        });
-        let provider = github_factory(&config);
+        let config = github_private_config(
+            "gh_id",
+            "gh_secret",
+            "https://example.com/oauth/github/callback",
+        );
+        let provider = github_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(provider.is_ok());
         assert_eq!(
             provider.checked("operation should succeed").provider_type(),
@@ -419,51 +442,42 @@ mod tests {
 
     #[test]
     fn test_factory_missing_client_id() {
-        let config = serde_json::json!({
-            "client_secret": "secret",
-            "redirect_url": "https://example.com/cb"
-        });
-        let result = github_factory(&config);
+        let config = github_private_config("", "secret", "https://example.com/cb");
+        let result = github_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
 
     #[test]
     fn test_factory_missing_client_secret() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "redirect_url": "https://example.com/cb"
-        });
-        let result = github_factory(&config);
+        let config = github_private_config("id", "", "https://example.com/cb");
+        let result = github_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(result.is_err());
     }
 
     #[test]
     fn test_factory_missing_redirect_url() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret"
-        });
-        let result = github_factory(&config);
+        let config = github_private_config("id", "secret", "");
+        let result = github_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_factory_empty_json() {
-        let config = serde_json::json!({});
-        let result = github_factory(&config);
-        assert!(result.is_err());
-        assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }
 
     #[test]
     fn test_factory_invalid_redirect_url() {
-        let config = serde_json::json!({
-            "client_id": "id",
-            "client_secret": "secret",
-            "redirect_url": "://invalid"
-        });
-        let result = github_factory(&config);
+        let config = github_private_config("id", "secret", "://invalid");
+        let result = github_factory_from_private_config(
+            &config,
+            &synctv_common::ssrf::SsrfGuard::strict_policy(),
+        );
         assert!(result.is_err());
     }
 

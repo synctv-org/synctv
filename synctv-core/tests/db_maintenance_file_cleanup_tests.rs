@@ -313,7 +313,7 @@ async fn expired_file_reference_cleanup_releases_reference() {
                 mime_type: "image/webp",
                 size_bytes: 7,
                 content_manifest_sha256: &"a".repeat(64),
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &synctv_core::models::FileMetadata::default(),
             })
             .await,
         "object should be registered",
@@ -327,7 +327,9 @@ async fn expired_file_reference_cleanup_releases_reference() {
             "temporary_file",
             "temp:1",
             Some(Utc::now() - Duration::minutes(5)),
-            &serde_json::Value::Object(Default::default()),
+            &synctv_core::models::FileReferenceMetadata::File(
+                synctv_core::models::FileMetadata::default(),
+            ),
         )
         .await,
         "expired reference should insert",
@@ -372,7 +374,7 @@ async fn unreferenced_file_cleanup_accepts_long_object_keys() {
                 mime_type: "image/webp",
                 size_bytes: 7,
                 content_manifest_sha256: &"b".repeat(64),
-                metadata: &serde_json::Value::Object(Default::default()),
+                metadata: &synctv_core::models::FileMetadata::default(),
             })
             .await,
         "long-key object should be registered",

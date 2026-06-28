@@ -58,7 +58,7 @@ impl DigestProcessor {
         Ok(result)
     }
 
-    fn find_digest_offset(&self, version: &SchemaVersion) -> Result<usize, DigestError> {
+    fn find_digest_offset(&self, version: SchemaVersion) -> Result<usize, DigestError> {
         let mut digest_offset: usize = 0;
 
         match version {
@@ -88,7 +88,7 @@ impl DigestProcessor {
         &mut self,
         version: SchemaVersion,
     ) -> Result<HandshakeDigestParts, DigestError> {
-        let digest_offset: usize = self.find_digest_offset(&version)?;
+        let digest_offset: usize = self.find_digest_offset(version)?;
 
         let mut new_reader = BytesReader::new(self.reader.get_remaining_bytes());
 

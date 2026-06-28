@@ -5,8 +5,11 @@ use synctv_core::service::{
     BanRecordRow, RoomCreationReviewRecord, RoomJoinReviewRecord, UserRegistrationReviewRecord,
 };
 
-use super::{json_to_vec, user_status_to_proto, ApiError};
-use crate::impls::client::convert::{room_category_to_proto, room_label_to_proto};
+use super::{user_status_to_proto, ApiError};
+use crate::impls::client::convert::{
+    content_report_metadata_to_proto, room_category_to_proto, room_label_to_proto,
+    room_settings_to_proto,
+};
 
 pub(in crate::impls::admin) fn public_id_encode_error(kind: &str, error: &str) -> ApiError {
     ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
@@ -123,7 +126,7 @@ pub(crate) fn content_report_row_to_proto(
         target_chat_message_preview: row.target_chat_message_preview.clone(),
         reason_code: row.reason_code.clone(),
         reason: row.reason.clone(),
-        metadata: json_to_vec(&row.metadata, "content report metadata")?,
+        metadata: content_report_metadata_to_proto(&row.metadata)?,
         status: content_report_status_to_proto(row.status),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
         reviewed_by_username: row.reviewed_by_username.clone(),
@@ -138,6 +141,41 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
     row: &UserRegistrationReviewRecord,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::admin::UserRegistrationReview, ApiError> {
+    let oauth2_provider = row.oauth2_provider.clone().map(|provider| {
+        (match provider {
+            synctv_core::models::OAuth2Provider::QQ => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeQq
+            }
+            synctv_core::models::OAuth2Provider::GitHub => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub
+            }
+            synctv_core::models::OAuth2Provider::Google => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGoogle
+            }
+            synctv_core::models::OAuth2Provider::Microsoft => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeMicrosoft
+            }
+            synctv_core::models::OAuth2Provider::Discord => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeDiscord
+            }
+            synctv_core::models::OAuth2Provider::Casdoor => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeCasdoor
+            }
+            synctv_core::models::OAuth2Provider::Logto => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeLogto
+            }
+            synctv_core::models::OAuth2Provider::Oidc => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeOidc
+            }
+            synctv_core::models::OAuth2Provider::Feishu => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeFeishu
+            }
+            synctv_core::models::OAuth2Provider::Gitee => {
+                synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGitee
+            }
+        }) as i32
+    });
+
     Ok(synctv_proto::admin::UserRegistrationReview {
         id: public_id_codec
             .encode_user_id(row.id)
@@ -150,7 +188,7 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
         reviewed_at: optional_timestamp(row.reviewed_at),
         reviewed_by: encode_optional_user_id_option(public_id_codec, row.reviewed_by)?,
         rejection_reason: row.rejection_reason.clone(),
-        oauth2_provider: row.oauth2_provider.clone(),
+        oauth2_provider,
         oauth2_provider_instance_name: row.oauth2_provider_instance_name.clone(),
         oauth2_provider_issuer: row.oauth2_provider_issuer.clone(),
         oauth2_provider_user_id: row.oauth2_provider_user_id.clone(),
@@ -284,7 +322,7 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
             })?,
         creator_username: creator_username.to_string(),
         status: synctv_proto::common::RoomStatus::from(room.status) as i32,
-        settings: json_to_vec(room_settings, "admin room settings")?,
+        settings: Some(room_settings_to_proto(room_settings)),
         member_count,
         created_at: room.created_at.timestamp(),
         updated_at: room.updated_at.timestamp(),

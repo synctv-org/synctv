@@ -5,6 +5,20 @@ package synctv.client;
 import "proto/buf/validate/validate.proto";
 import "proto/common.proto";
 
+enum OAuth2ProviderType {
+  OAUTH2_PROVIDER_TYPE_UNSPECIFIED = 0;
+  OAUTH2_PROVIDER_TYPE_QQ = 1;
+  OAUTH2_PROVIDER_TYPE_GITHUB = 2;
+  OAUTH2_PROVIDER_TYPE_GOOGLE = 3;
+  OAUTH2_PROVIDER_TYPE_MICROSOFT = 4;
+  OAUTH2_PROVIDER_TYPE_DISCORD = 5;
+  OAUTH2_PROVIDER_TYPE_CASDOOR = 6;
+  OAUTH2_PROVIDER_TYPE_LOGTO = 7;
+  OAUTH2_PROVIDER_TYPE_OIDC = 8;
+  OAUTH2_PROVIDER_TYPE_FEISHU = 9;
+  OAUTH2_PROVIDER_TYPE_GITEE = 10;
+}
+
 // ==================== OAuth2 Service ====================
 // OAuth2/OIDC authentication service
 //
@@ -199,8 +213,10 @@ message OAuth2ProviderInstance {
   // Instance name (e.g., "github", "google", "logto1")
   string name = 1;
 
-  // Provider type (e.g., "github", "google", "oidc", "logto")
-  string type = 2;
+  OAuth2ProviderType type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 
   // Whether this provider instance allows new local account creation.
   bool signup_enabled = 3;
@@ -212,11 +228,9 @@ message OAuth2ProviderInstance {
 // ==================== Unlink Provider ====================
 
 message UnlinkProviderRequest {
-  // Provider type to unlink (e.g., "github", "google")
-  string provider = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 32
-    pattern: "^(qq|github|google|microsoft|discord|casdoor|logto|oidc|feishu|gitee)$"
+  OAuth2ProviderType provider = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
   }];
 
   // Optional: specific provider user ID to unlink
@@ -269,8 +283,10 @@ message GetLinkedProvidersResponse {
 }
 
 message LinkedProvider {
-  // Provider type (e.g., "github", "google", "oidc")
-  string provider_type = 1;
+  OAuth2ProviderType provider_type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 
   // Username from the OAuth2 provider
   string provider_username = 2;

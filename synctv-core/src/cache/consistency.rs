@@ -148,6 +148,7 @@ fn cache_domain_metric_label(domain: &CacheDomain) -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionedCacheValue<T> {
     pub version: i64,
     pub value: T,
@@ -232,6 +233,7 @@ pub trait VersionFenceStore: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionFenceState {
     pub committed_version: i64,
     pub pending_version: Option<i64>,
@@ -1472,7 +1474,7 @@ pub(crate) fn version_fence_store_from_shared_state_profile(
 async fn db_version_for_repair(pool: &PgPool, domain: &CacheDomain) -> Option<i64> {
     match domain {
         CacheDomain::RoomSettings { room_id } => sqlx::query_scalar!(
-            "SELECT version FROM room_settings WHERE room_id = $1 AND key = '_settings'",
+            "SELECT version FROM room_settings WHERE room_id = $1",
             room_id as &RoomId,
         )
         .fetch_optional(pool)

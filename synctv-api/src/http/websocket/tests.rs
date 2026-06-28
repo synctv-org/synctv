@@ -212,11 +212,10 @@ fn test_ws_query_deserialization_with_ticket() -> TestResult {
 
 #[test]
 fn test_ws_query_deserialization_rejects_extra_fields() -> TestResult {
-    let json = r#"{"ticket":"tix","extra":"ignored"}"#;
-    match serde_json::from_str::<WsQuery>(json) {
-        Ok(_) => Err(test_error("extra fields should be rejected")),
-        Err(_) => Ok(()),
-    }
+    let json = r#"{"ticket":"tix","extra":"rejected"}"#;
+    let error = serde_json::from_str::<WsQuery>(json).expect_err("extra fields should be rejected");
+    assert!(error.to_string().contains("extra"));
+    Ok(())
 }
 
 #[test]
@@ -245,10 +244,11 @@ fn test_notification_requires_state_resync() {
         message: Some(synctv_proto::client::server_message::Message::Notification(
             synctv_proto::client::UserNotification {
                 notification_id: "ntf_test".to_string(),
-                notification_type: "system".to_string(),
+                notification_type: synctv_proto::client::NotificationType::SystemAnnouncement
+                    as i32,
                 title: "Title".to_string(),
                 content: "Content".to_string(),
-                data: String::new(),
+                data: Some(synctv_proto::client::NotificationData::default()),
                 timestamp: 1,
             },
         )),
@@ -1287,10 +1287,10 @@ fn test_state_resync_messages_disconnect_slow_client_immediately() -> TestResult
     let result = sender.send(ServerMessage {
         message: Some(Message::Notification(UserNotification {
             notification_id: "ntf_test".to_string(),
-            notification_type: "system".to_string(),
+            notification_type: synctv_proto::client::NotificationType::SystemAnnouncement as i32,
             title: "Title".to_string(),
             content: "Content".to_string(),
-            data: String::new(),
+            data: Some(synctv_proto::client::NotificationData::default()),
             timestamp: 1,
         })),
     });

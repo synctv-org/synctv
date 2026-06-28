@@ -4,7 +4,6 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::Value;
 use synctv_core::config::absolute_display_path;
 use synctv_management::proto as management_proto;
 
@@ -16,8 +15,8 @@ use super::commands::*;
 use super::completion::execute_completion;
 use super::context::{CliConfigContext, RemoteCliContext};
 use super::output::{
-    mask_connection_url, print_humanized_structured_output, print_json, print_toml, print_yaml,
-    redact_config_for_display, ConfigOutputFormat, RemoteOutputFormat,
+    config_json_for_display, mask_connection_url, print_humanized_structured_output, print_json,
+    print_toml, print_yaml, redact_config_for_display, ConfigOutputFormat, RemoteOutputFormat,
 };
 use super::output_dto::{
     GetPlaybackCliOutput, KickStreamCliOutput, PlaybackPullUrlCliOutput, PlaybackStartCliOutput,
@@ -83,10 +82,11 @@ pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
 #[cfg(test)]
 pub(in crate::cli) use serve::switch_process_working_dir_to_data_dir;
 #[cfg(test)]
+pub(in crate::cli) use settings::parse_management_settings_update;
+#[cfg(test)]
 pub(in crate::cli) use stop::{
-    stop_server_stage_name, stop_stream_disconnect_can_be_treated_as_success,
-    stop_stream_end_can_be_treated_as_success, synthesize_stop_completion_if_needed,
-    StopServerEventOutput, StopServerOutput,
+    stop_stream_disconnect_can_be_treated_as_success, stop_stream_end_can_be_treated_as_success,
+    synthesize_stop_completion_if_needed, StopServerEventOutput, StopServerOutput,
 };
 
 pub async fn execute(cli: Cli) -> Result<()> {
@@ -97,7 +97,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Config(config) => execute_config(config),
         Commands::Db(db) => execute_db(db).await,
         Commands::User(user) => execute_user(user).await,
-        Commands::Room(room) => execute_room(room).await,
+        Commands::Room(room) => Box::pin(execute_room(room)).await,
         Commands::Review(review) => execute_review(review).await,
         Commands::Ban(ban) => execute_ban(ban).await,
         Commands::Playlist(playlist) => execute_playlist(playlist).await,
@@ -724,17 +724,89 @@ fn provider_instance_name_string(raw: Option<&str>) -> String {
     normalized_optional_cli_value(raw).unwrap_or_default()
 }
 
-fn raw_optional_bytes(raw: Option<&str>) -> Vec<u8> {
-    raw.map(str::as_bytes)
-        .map_or_else(Vec::new, ToOwned::to_owned)
+fn parse_optional_room_settings_json(
+    raw: Option<&str>,
+) -> Result<Option<synctv_proto::client::RoomSettings>> {
+    normalized_optional_cli_value(raw)
+        .map(|raw| {
+            let patch = serde_json::from_str(&raw).context("invalid room settings patch JSON")?;
+            Ok(room_settings_patch_to_full_settings(patch))
+        })
+        .transpose()
+}
+
+fn parse_required_room_settings_json(
+    raw: &str,
+) -> Result<Option<synctv_proto::client::RoomSettingsPatch>> {
+    serde_json::from_str(raw)
+        .map(Some)
+        .context("invalid room settings patch JSON")
+}
+
+pub(in crate::cli) fn room_settings_patch_to_full_settings(
+    patch: synctv_proto::client::RoomSettingsPatch,
+) -> synctv_proto::client::RoomSettings {
+    let defaults = synctv_core::models::RoomSettings::default();
+    let default_auto_play = defaults.auto_play.value;
+    let auto_play_patch = patch.auto_play.unwrap_or_default();
+    let auto_play_mode = auto_play_patch
+        .mode
+        .unwrap_or(match default_auto_play.mode {
+            synctv_core::models::PlayMode::Sequential => synctv_proto::client::PlayMode::Sequential,
+            synctv_core::models::PlayMode::RepeatOne => synctv_proto::client::PlayMode::RepeatOne,
+            synctv_core::models::PlayMode::RepeatAll => synctv_proto::client::PlayMode::RepeatAll,
+            synctv_core::models::PlayMode::Shuffle => synctv_proto::client::PlayMode::Shuffle,
+        } as i32);
+
+    synctv_proto::client::RoomSettings {
+        allow_guest_join: patch
+            .allow_guest_join
+            .unwrap_or(defaults.allow_guest_join.0),
+        max_members: patch.max_members.unwrap_or(defaults.max_members.0),
+        require_approval: patch
+            .require_approval
+            .unwrap_or(defaults.require_approval.0),
+        allow_auto_join: patch.allow_auto_join.unwrap_or(defaults.allow_auto_join.0),
+        chat_enabled: patch.chat_enabled.unwrap_or(defaults.chat_enabled.0),
+        auto_play: Some(synctv_proto::client::AutoPlaySettings {
+            enabled: auto_play_patch.enabled.unwrap_or(default_auto_play.enabled),
+            mode: auto_play_mode,
+            delay: auto_play_patch.delay.unwrap_or(default_auto_play.delay),
+        }),
+        admin_added_permissions: patch
+            .admin_added_permissions
+            .unwrap_or(defaults.admin_added_permissions.0),
+        admin_removed_permissions: patch
+            .admin_removed_permissions
+            .unwrap_or(defaults.admin_removed_permissions.0),
+        member_added_permissions: patch
+            .member_added_permissions
+            .unwrap_or(defaults.member_added_permissions.0),
+        member_removed_permissions: patch
+            .member_removed_permissions
+            .unwrap_or(defaults.member_removed_permissions.0),
+        guest_added_permissions: patch
+            .guest_added_permissions
+            .unwrap_or(defaults.guest_added_permissions.0),
+        guest_removed_permissions: patch
+            .guest_removed_permissions
+            .unwrap_or(defaults.guest_removed_permissions.0),
+    }
+}
+
+fn parse_optional_provider_target_json(
+    raw: Option<&str>,
+) -> Result<Option<synctv_proto::client::ProviderTarget>> {
+    normalized_optional_cli_value(raw)
+        .map(|raw| serde_json::from_str(&raw).context("invalid provider target JSON"))
+        .transpose()
 }
 
 fn parse_media_source_config_json(
     provider: CliSourceProvider,
     raw: &str,
 ) -> Result<synctv_proto::source_config::MediaSourceConfig> {
-    let json: Value = parse_cli_json("media source_config", raw)?;
-    media_source_config_json_to_proto(provider, &json)
+    media_source_config_json_to_proto(provider, raw)
 }
 
 fn parse_optional_playlist_source_config_json(
@@ -743,8 +815,7 @@ fn parse_optional_playlist_source_config_json(
 ) -> Result<Option<synctv_proto::source_config::PlaylistSourceConfig>> {
     match (provider, raw) {
         (Some(provider), Some(raw)) => {
-            let json: Value = parse_cli_json("playlist source_config", raw)?;
-            playlist_source_config_json_to_proto(provider, &json).map(Some)
+            playlist_source_config_json_to_proto(provider, raw).map(Some)
         }
         (None, Some(_)) => bail!("--source-provider is required with --source-config-json"),
         (_, None) => Ok(None),
@@ -753,20 +824,83 @@ fn parse_optional_playlist_source_config_json(
 
 fn media_source_config_json_to_proto(
     provider: CliSourceProvider,
-    json: &Value,
+    raw: &str,
 ) -> Result<synctv_proto::source_config::MediaSourceConfig> {
-    let config =
-        synctv_core::models::MediaSourceConfig::from_provider_json(provider.to_core(), json)?;
-    Ok(config.into())
+    use synctv_proto::source_config::{
+        media_source_config, AlistMediaSourceConfig, BilibiliMediaSourceConfig,
+        DirectUrlMediaSourceConfig, EmbyMediaSourceConfig, LiveProxyMediaSourceConfig,
+        RtmpMediaSourceConfig,
+    };
+
+    let provider = match provider {
+        CliSourceProvider::DirectUrl => {
+            media_source_config::Provider::DirectUrl(parse_cli_json::<DirectUrlMediaSourceConfig>(
+                "directUrl media sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Bilibili => {
+            media_source_config::Provider::Bilibili(parse_cli_json::<BilibiliMediaSourceConfig>(
+                "bilibili media sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Alist => {
+            media_source_config::Provider::Alist(parse_cli_json::<AlistMediaSourceConfig>(
+                "alist media sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Emby => {
+            media_source_config::Provider::Emby(parse_cli_json::<EmbyMediaSourceConfig>(
+                "emby media sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Rtmp => {
+            media_source_config::Provider::Rtmp(parse_cli_json::<RtmpMediaSourceConfig>(
+                "rtmp media sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::LiveProxy => {
+            media_source_config::Provider::LiveProxy(parse_cli_json::<LiveProxyMediaSourceConfig>(
+                "liveProxy media sourceConfig",
+                raw,
+            )?)
+        }
+    };
+    Ok(synctv_proto::source_config::MediaSourceConfig {
+        provider: Some(provider),
+    })
 }
 
 fn playlist_source_config_json_to_proto(
     provider: CliSourceProvider,
-    json: &Value,
+    raw: &str,
 ) -> Result<synctv_proto::source_config::PlaylistSourceConfig> {
-    let config =
-        synctv_core::models::PlaylistSourceConfig::from_provider_json(provider.to_core(), json)?;
-    Ok(config.into())
+    use synctv_proto::source_config::{
+        playlist_source_config, AlistPlaylistSourceConfig, EmbyPlaylistSourceConfig,
+    };
+
+    let provider = match provider {
+        CliSourceProvider::Alist => {
+            playlist_source_config::Provider::Alist(parse_cli_json::<AlistPlaylistSourceConfig>(
+                "alist playlist sourceConfig",
+                raw,
+            )?)
+        }
+        CliSourceProvider::Emby => {
+            playlist_source_config::Provider::Emby(parse_cli_json::<EmbyPlaylistSourceConfig>(
+                "emby playlist sourceConfig",
+                raw,
+            )?)
+        }
+        other => bail!("{other:?} does not support playlist source_config"),
+    };
+    Ok(synctv_proto::source_config::PlaylistSourceConfig {
+        provider: Some(provider),
+    })
 }
 
 fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>

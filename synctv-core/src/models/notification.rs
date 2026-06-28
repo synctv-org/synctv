@@ -4,6 +4,10 @@
 
 use crate::models::{id::UserId, query::SortDirection};
 use serde::{Deserialize, Serialize};
+use sqlx::{
+    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    Decode, Encode, Postgres, Type,
+};
 
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,7 +89,7 @@ pub struct Notification {
     pub notification_type: NotificationType,
     pub title: String,
     pub content: String,
-    pub data: serde_json::Value,
+    pub data: NotificationData,
     pub is_read: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -99,11 +103,48 @@ pub struct CreateNotificationRequest {
     pub title: String,
     pub content: String,
     #[serde(default = "default_notification_data")]
-    pub data: serde_json::Value,
+    pub data: NotificationData,
 }
 
-pub(crate) fn default_notification_data() -> serde_json::Value {
-    serde_json::json!({})
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationData {
+    pub room_id: Option<String>,
+    pub room_name: Option<String>,
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub message_id: Option<String>,
+    pub action_url: Option<String>,
+}
+
+impl Type<Postgres> for NotificationData {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<NotificationData> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<NotificationData> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for NotificationData {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for NotificationData {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(data) = <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(data)
+    }
+}
+
+pub(crate) fn default_notification_data() -> NotificationData {
+    NotificationData::default()
 }
 
 /// List notifications query parameters
@@ -206,7 +247,7 @@ mod tests {
         assert_eq!(req.notification_type, NotificationType::RoomInvitation);
         assert_eq!(req.title, "You have been invited");
         assert_eq!(req.content, "Join room ABC");
-        assert_eq!(req.data, serde_json::json!({}));
+        assert_eq!(req.data, NotificationData::default());
     }
 
     #[test]
@@ -216,14 +257,14 @@ mod tests {
             "notification_type": "system_announcement",
             "title": "Maintenance",
             "content": "System will be down",
-            "data": {"severity": "high", "eta_minutes": 30}
+            "data": {"roomId": "room_1", "actionUrl": "/rooms/room_1"}
         });
         let req: CreateNotificationRequest = json_ok(
             serde_json::from_value(json),
             "notification request should deserialize",
         );
-        assert_eq!(req.data["severity"], "high");
-        assert_eq!(req.data["eta_minutes"], 30);
+        assert_eq!(req.data.room_id.as_deref(), Some("room_1"));
+        assert_eq!(req.data.action_url.as_deref(), Some("/rooms/room_1"));
     }
 
     #[test]

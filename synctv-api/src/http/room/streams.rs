@@ -4,7 +4,7 @@ use axum::{
 };
 
 use super::execute::execute_user_endpoint;
-use super::types::{KickRoomStreamBody, RoomStreamPath};
+use super::types::RoomStreamPath;
 use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
@@ -17,10 +17,10 @@ use synctv_proto::client::{
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/streams",
+        path = "/api/rooms/{roomId}/streams",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             ListRoomStreamsRequest
         ),
         responses(
@@ -61,11 +61,11 @@ pub async fn list_room_streams(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/streams/{media_id}",
+        path = "/api/rooms/{roomId}/streams/{mediaId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
         responses(
             (status = 200, description = "Room live stream information", body = GetRoomStreamInfoResponse),
@@ -107,13 +107,13 @@ pub async fn get_room_stream_info(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/streams/{media_id}/kick",
+        path = "/api/rooms/{roomId}/streams/{mediaId}/kick",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
-        request_body = KickRoomStreamBody,
+        request_body = KickRoomStreamRequest,
         responses(
             (status = 200, description = "Room live stream kicked", body = KickRoomStreamResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -130,13 +130,10 @@ pub async fn kick_room_stream(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<RoomStreamPath>,
-    Json(req): Json<KickRoomStreamBody>,
+    Json(mut req): Json<KickRoomStreamRequest>,
 ) -> AppResult<Json<KickRoomStreamResponse>> {
     let room_id = path.room_id;
-    let req = KickRoomStreamRequest {
-        media_id: path.media_id,
-        reason: req.reason,
-    };
+    req.media_id = path.media_id;
     execute_user_endpoint(
         &state,
         request_meta,

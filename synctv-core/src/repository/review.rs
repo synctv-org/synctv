@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgExecutor, PgPool};
 
 use crate::models::{
-    oauth2_provider_type_name_from_code, ReviewRequestId, ReviewStatus, RoomCategory,
-    RoomCategoryId, RoomId, RoomLabel, RoomLabelId, SignupMethod, UserId,
+    OAuth2Provider, ReviewRequestId, ReviewStatus, RoomCategory, RoomCategoryId, RoomId, RoomLabel,
+    RoomLabelId, SignupMethod, UserId,
 };
 use crate::repository::pools::RepoPools;
 use crate::repository::query_builder::ilike_contains_pattern;
@@ -24,7 +24,7 @@ pub struct UserRegistrationReviewRecord {
     pub reviewed_at: Option<DateTime<Utc>>,
     pub reviewed_by: Option<UserId>,
     pub rejection_reason: Option<String>,
-    pub oauth2_provider: Option<String>,
+    pub oauth2_provider: Option<OAuth2Provider>,
     pub oauth2_provider_instance_name: Option<String>,
     pub oauth2_provider_issuer: Option<String>,
     pub oauth2_provider_user_id: Option<String>,
@@ -152,7 +152,7 @@ struct UserRegistrationReviewRow {
     reviewed_at: Option<DateTime<Utc>>,
     reviewed_by: Option<UserId>,
     rejection_reason: Option<String>,
-    oauth2_provider_type: Option<i16>,
+    oauth2_provider_type: Option<OAuth2Provider>,
     oauth2_provider_instance_name: Option<String>,
     oauth2_provider_issuer: Option<String>,
     oauth2_provider_user_id: Option<String>,
@@ -177,11 +177,7 @@ impl TryFrom<UserRegistrationReviewRow> for UserRegistrationReviewRecord {
             reviewed_at: row.reviewed_at,
             reviewed_by: row.reviewed_by,
             rejection_reason: row.rejection_reason,
-            oauth2_provider: row
-                .oauth2_provider_type
-                .map(oauth2_provider_type_name_from_code)
-                .transpose()
-                .map_err(crate::Error::InvalidInput)?,
+            oauth2_provider: row.oauth2_provider_type,
             oauth2_provider_instance_name: row.oauth2_provider_instance_name,
             oauth2_provider_issuer: row.oauth2_provider_issuer,
             oauth2_provider_user_id: row.oauth2_provider_user_id,
@@ -307,7 +303,7 @@ impl ReviewRepository {
                    reviewed_at,
                    reviewed_by AS "reviewed_by: UserId",
                    rejection_reason,
-                   oauth2_provider_type,
+                   oauth2_provider_type AS "oauth2_provider_type: OAuth2Provider",
                    oauth2_provider_instance_name,
                    oauth2_provider_issuer,
                    oauth2_provider_user_id,
@@ -364,7 +360,7 @@ impl ReviewRepository {
                    reviewed_at,
                    reviewed_by AS "reviewed_by: UserId",
                    rejection_reason,
-                   oauth2_provider_type,
+                   oauth2_provider_type AS "oauth2_provider_type: OAuth2Provider",
                    oauth2_provider_instance_name,
                    oauth2_provider_issuer,
                    oauth2_provider_user_id,

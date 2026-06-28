@@ -247,7 +247,7 @@ impl OAuth2Service for OAuth2GrpcService {
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
-        let provider_for_log = req.provider.clone();
+        let provider_for_log = req.provider;
         let oauth2_api = Arc::clone(&self.oauth2_api);
 
         let response = self

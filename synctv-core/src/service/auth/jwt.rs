@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::{
@@ -750,50 +750,18 @@ impl JwtService {
         self.refresh_token_duration_days * 86400
     }
 
-    /// Sign a custom JSON value as JWT
-    ///
-    /// This allows signing arbitrary claims (not just the standard Claims struct).
-    /// Useful for RTMP publish keys and other custom tokens.
-    ///
-    /// # Arguments
-    /// * `claims` - JSON value containing the claims
-    ///
-    /// # Returns
-    /// Signed JWT token string
-    pub fn sign_custom(&self, claims: &serde_json::Value) -> Result<String> {
-        let now = Utc::now();
-
-        // Add standard JWT claims if not present
-        let mut claims_with_standard = claims.clone();
-        if let Some(obj) = claims_with_standard.as_object_mut() {
-            obj.entry("jti".to_string())
-                .or_insert_with(|| serde_json::Value::String(synctv_common::snanoid!(16)));
-
-            obj.entry("iat".to_string())
-                .or_insert_with(|| serde_json::Value::Number(now.timestamp().into()));
-
-            if !obj.contains_key("exp") {
-                obj.entry("exp".to_string())
-                    .or_insert_with(|| serde_json::Value::Number((now.timestamp() + 86400).into()));
-                // Default 24h
-            }
-        }
-
+    pub fn sign_custom<T>(&self, claims: &T) -> Result<String>
+    where
+        T: Serialize,
+    {
         let header = Header::new(self.algorithm);
-        encode(&header, &claims_with_standard, &self.encoding_key)
-            .internal_with_err("Failed to sign custom token")
+        encode(&header, claims, &self.encoding_key).internal_with_err("Failed to sign custom token")
     }
 
-    /// Verify a custom JWT token
-    ///
-    /// This allows verifying tokens with arbitrary claims.
-    ///
-    /// # Arguments
-    /// * `token` - JWT token string
-    ///
-    /// # Returns
-    /// JSON value containing the claims
-    pub fn verify_custom(&self, token: &str) -> Result<serde_json::Value> {
+    pub fn verify_custom<T>(&self, token: &str) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = true;
         validation.validate_nbf = false;

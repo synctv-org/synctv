@@ -1,11 +1,9 @@
-use serde_json::Value as JsonValue;
-
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileObjectDownload, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
-        FileUploadSessionCreateResult, GetFileObject, Media, MediaId, RoomId, StoreFileUpload,
-        StoreFileUploadResult, SubmittedFileReference, UserId,
+        FileBlob, FileMetadata, FileObjectDownload, FileRangeRequest, FileUploadManifestPart,
+        FileUploadRange, FileUploadSessionCreateResult, GetFileObject, Media, MediaId, RoomId,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
         media::{ensure_media_creator_can_edit, MediaService},
@@ -26,7 +24,7 @@ pub struct CreateMediaCoverUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: JsonValue,
+    pub metadata: FileMetadata,
 }
 
 fn media_cover_storage_scope(room_id: RoomId, media_id: MediaId) -> String {
@@ -210,7 +208,7 @@ impl MediaService {
             MEDIA_COVER_REFERENCE_KIND,
             &media_id.as_i64().to_string(),
             None,
-            &file.metadata,
+            &crate::models::FileReferenceMetadata::File(crate::models::FileMetadata::default()),
         )
         .await?
         .ok_or_else(|| {

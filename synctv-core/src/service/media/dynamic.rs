@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{MediaId, Playlist, PlaylistId, RoomId, SourceProvider, UserId},
+    models::{Playlist, PlaylistId, RoomId, SourceProvider, UserId},
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, MediaProvider,
         NextPlayItem, ProviderContext,
@@ -104,7 +104,7 @@ impl MediaService {
         room_id: RoomId,
         admin_user_id: UserId,
         playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
         public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
@@ -128,7 +128,7 @@ impl MediaService {
         room_id: RoomId,
         admin_user_id: UserId,
         playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
         let ctx = self.dynamic_playlist_context(
@@ -150,7 +150,7 @@ impl MediaService {
         room_id: RoomId,
         user_id: UserId,
         playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
         public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
@@ -182,7 +182,7 @@ impl MediaService {
         room_id: RoomId,
         user_id: UserId,
         playlist_id: &PlaylistId,
-        target: Option<&[u8]>,
+        target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
         let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
@@ -199,7 +199,7 @@ impl MediaService {
         room_id: RoomId,
         user_id: UserId,
         playlist_id: &PlaylistId,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
         let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
@@ -215,43 +215,15 @@ impl MediaService {
         &self,
         room_id: &RoomId,
         playlist_id: &PlaylistId,
-        target: &[u8],
+        target: &crate::models::ProviderTarget,
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(room_id, playlist_id).await?;
-        let current_dynamic_media = crate::models::Media {
-            id: MediaId::new(),
-            playlist_id: Some(prepared.playlist.id),
-            room_id: *room_id,
-            creator_id: prepared.playlist.creator_id,
-            name: format!("dynamic:{playlist_id}"),
-            description: String::new(),
-            position: 0.0,
-            source_provider: prepared.playlist.source_provider.ok_or_else(|| {
-                Error::Internal(format!(
-                    "Dynamic playlist {} missing provider",
-                    prepared.playlist.id
-                ))
-            })?,
-            source_config: serde_json::Value::Null,
-            provider_instance_name: prepared.playlist.provider_instance_name.clone(),
-            cover_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            version: 0,
-        };
-
         let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
 
         prepared
             .dynamic_folder()?
-            .next(
-                &ctx,
-                &prepared.playlist,
-                &current_dynamic_media,
-                target,
-                play_mode,
-            )
+            .next(&ctx, &prepared.playlist, target, play_mode)
             .await
             .map_err(Error::from)
     }
@@ -279,7 +251,7 @@ mod tests {
 
     fn dynamic_playlist(
         source_provider: Option<SourceProvider>,
-        source_config: Option<serde_json::Value>,
+        source_config: Option<crate::models::PlaylistSourceConfig>,
     ) -> Playlist {
         Playlist {
             id: PlaylistId::expect_positive(10),
@@ -301,7 +273,16 @@ mod tests {
 
     #[test]
     fn dynamic_playlist_source_provider_returns_valid_provider() {
-        let playlist = dynamic_playlist(Some(SourceProvider::Alist), Some(serde_json::json!({})));
+        let playlist = dynamic_playlist(
+            Some(SourceProvider::Alist),
+            Some(crate::models::PlaylistSourceConfig::Alist(
+                crate::models::AlistPlaylistSourceConfig {
+                    server_id: "srv".to_string(),
+                    path: "/movies".to_string(),
+                    password: None,
+                },
+            )),
+        );
 
         assert_eq!(
             dynamic_playlist_source_provider(&playlist)
@@ -312,7 +293,16 @@ mod tests {
 
     #[test]
     fn dynamic_playlist_source_provider_rejects_missing_provider() {
-        let playlist = dynamic_playlist(None, Some(serde_json::json!({})));
+        let playlist = dynamic_playlist(
+            None,
+            Some(crate::models::PlaylistSourceConfig::Alist(
+                crate::models::AlistPlaylistSourceConfig {
+                    server_id: "srv".to_string(),
+                    path: "/movies".to_string(),
+                    password: None,
+                },
+            )),
+        );
 
         assert!(matches!(
             dynamic_playlist_source_provider(&playlist),

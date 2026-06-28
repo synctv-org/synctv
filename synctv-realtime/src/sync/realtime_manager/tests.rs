@@ -538,7 +538,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() -> TestResult {
         room_id: RoomId::expect_positive(10_000_092),
         user_id: UserId::expect_positive(10_000_093),
         username: "tester".to_string(),
-        settings_json: serde_json::to_vec(&serde_json::json!({"allow_guest_join": true}))?,
+        settings: synctv_core::models::RoomSettings::default(),
         version: 1,
         timestamp: Utc::now(),
     };
@@ -1398,7 +1398,8 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() -> Tes
         notification_id: "notification-1".to_string(),
         title: "title".to_string(),
         content: "content".to_string(),
-        notification_type: "system".to_string(),
+        notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
+        data: synctv_core::models::NotificationData::default(),
         timestamp: Utc::now(),
     };
 

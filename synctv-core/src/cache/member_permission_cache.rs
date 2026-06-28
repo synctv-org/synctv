@@ -15,6 +15,7 @@ use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 use crate::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MemberPermissionKey {
     pub room_id: RoomId,
     pub user_id: UserId,
@@ -60,6 +61,7 @@ impl CacheKey for MemberPermissionKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct CachedMemberPermissionSource {
     pub room_id: RoomId,
     pub user_id: UserId,

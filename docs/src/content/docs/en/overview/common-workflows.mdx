@@ -44,8 +44,8 @@ After the first production deployment, use the launch validation workflow. For s
 <Steps>
 1. Create a room with a clear name and description.
 2. Set a room password if needed.
-3. Enable `require_approval` for semi-public rooms.
-4. Set `max_members` according to service and upstream Provider capacity.
+3. Enable `requireApproval` for semi-public rooms.
+4. Set `maxMembers` according to service and upstream Provider capacity.
 5. Review member and guest default permissions.
 6. Join once with a normal account to validate the path.
 </Steps>
@@ -97,9 +97,9 @@ See [Add Media](../../use/media-sources/).
 2. Start the service with OpenAPI and export `/api-docs/openapi.json`.
 3. Generate an SDK or write minimal requests.
 4. Implement login and refresh token handling.
-5. Create a WebSocket ticket and connect to `/ws/rooms/{room_id}`.
+5. Create a WebSocket ticket and connect to `/ws/rooms/{roomId}`.
 6. Use [Realtime API](../../develop/realtime-api/) to observe playback state, playback info, room settings, and members.
-7. Handle `status`, `code`, `request_id`, and `Retry-After` using [Errors](../../reference/errors/).
+7. Handle `status`, `code`, `requestId`, and `Retry-After` using [Errors](../../reference/errors/).
 </Steps>
 
 ### Add or Change an API

@@ -1,7 +1,6 @@
 //! `RoomSettingsRepository` integration tests
 //!
-//! Tests: `set_settings_with_version` CAS (concurrent insert race, stale version -> `OptimisticLockConflict`),
-//!        batch reads fail closed on invalid room settings JSON.
+//! Tests typed `RoomSettings` JSONB storage and optimistic locking.
 
 use chrono::Utc;
 use sqlx::PgPool;
@@ -10,7 +9,7 @@ use synctv_core::{
     repository::{RoomRepository, RoomSettingsRepository, UserRepository},
     Error,
 };
-use synctv_core_testing::{create_test_pool, err, ok};
+use synctv_core_testing::{create_test_pool, ok};
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -131,13 +130,10 @@ async fn test_set_settings_with_exact_version_updates_existing_zero_version_row(
 
     ok(
         sqlx::query!(
-            "INSERT INTO room_settings (room_id, key, value, version)
-         VALUES ($1, '_settings', $2, 0)",
+            "INSERT INTO room_settings (room_id, settings, version)
+         VALUES ($1, $2, 0)",
             room.id as RoomId,
-            ok(
-                serde_json::to_string(&RoomSettings::default()),
-                "default room settings should serialize",
-            ),
+            &RoomSettings::default() as &RoomSettings,
         )
         .execute(&pool)
         .await,
@@ -214,11 +210,11 @@ async fn test_set_settings_with_version_stale_update() {
     );
 }
 
-// ─── get_batch fail-closed JSON deserialization ──────────────────────
+// ─── get_batch defaults for missing settings rows ────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_batch_rejects_invalid_json() {
+async fn test_get_batch_returns_defaults_for_missing_rows() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
 
@@ -233,40 +229,35 @@ async fn test_get_batch_rejects_invalid_json() {
         "valid settings should be inserted for room1",
     );
 
-    // Insert invalid JSON for room2 directly via SQL
-    ok(
-        sqlx::query!(
-            r"INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, '_settings', 'not valid json!!!', 1)",
-            room2.id.as_i64()
-        )
-        .execute(&pool)
-        .await,
-        "invalid JSON settings fixture should be inserted",
-    );
-
     // Insert valid settings for room3
     ok(
         settings_repo.set_settings(&room3.id, &settings).await,
         "valid settings should be inserted for room3",
     );
 
-    // get_batch must fail instead of silently dropping room2 and letting callers
-    // cache defaults for a corrupted settings row.
     let room_ids = vec![room1.id, room2.id, room3.id];
-    let error = err(
+    let result = ok(
         settings_repo.get_batch(&room_ids).await,
-        "invalid settings JSON should fail batch reads",
+        "batch settings should load",
     );
 
     assert!(
-        error
-            .to_string()
-            .contains("Failed to deserialize room settings"),
-        "unexpected error: {error}"
+        result
+            .get(&room1.id)
+            .is_some_and(|settings| settings.chat_enabled.0),
+        "room1 settings should be present"
     );
     assert!(
-        error.to_string().contains(&room2.id.to_string()),
-        "error should identify the corrupted room: {error}"
+        result
+            .get(&room2.id)
+            .is_some_and(|settings| settings.chat_enabled.0),
+        "room2 default settings should be present"
+    );
+    assert!(
+        result
+            .get(&room3.id)
+            .is_some_and(|settings| settings.chat_enabled.0),
+        "room3 settings should be present"
     );
 }
 

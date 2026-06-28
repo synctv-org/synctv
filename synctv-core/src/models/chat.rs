@@ -1,12 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use sqlx::postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef};
+use sqlx::{Decode, Encode, Postgres, Type};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use super::{
     file_storage::FileUploadManifestPart,
     id::{MediaId, PlaylistId, RoomId, UserId},
+    ProviderTarget,
 };
 
 pub const CHAT_CLIENT_MESSAGE_ID_MAX_CHARS: usize = 128;
@@ -156,7 +158,96 @@ sqlx_i16_enum!(ChatMessageStatus, "Invalid chat message status", {
     Deleted = 3,
 });
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatMetadata {
+    pub presentation: Option<ChatPresentationMetadata>,
+    pub playback: Option<ChatPlaybackMetadata>,
+}
+
+impl ChatMetadata {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.presentation.is_none() && self.playback.is_none()
+    }
+
+    #[must_use]
+    pub fn normalized_for_storage(&self) -> crate::Result<Self> {
+        let mut metadata = self.clone();
+        if let Some(playback) = metadata.playback.as_mut() {
+            playback.normalize_target_hash()?;
+        }
+        Ok(metadata)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatPresentationMetadata {
+    pub display_position: Option<String>,
+    pub display_color: Option<String>,
+}
+
+impl ChatPresentationMetadata {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.display_position.is_none() && self.display_color.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatPlaybackMetadata {
+    pub media_id: Option<MediaId>,
+    pub playlist_id: Option<PlaylistId>,
+    #[serde(default)]
+    pub target: Option<ProviderTarget>,
+    #[serde(default)]
+    pub target_hash: Option<String>,
+    #[serde(default)]
+    pub position_seconds: Option<f64>,
+}
+
+impl ChatPlaybackMetadata {
+    pub fn normalize_target_hash(&mut self) -> crate::Result<()> {
+        self.target_hash = self
+            .target
+            .as_ref()
+            .map(|target| crate::models::try_hash_playback_target(Some(target)))
+            .transpose()?;
+        Ok(())
+    }
+}
+
+impl Type<Postgres> for ChatMetadata {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<ChatMetadata> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<ChatMetadata> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl Encode<'_, Postgres> for ChatMetadata {
+    fn encode_by_ref(
+        &self,
+        buf: &mut PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for ChatMetadata {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(metadata) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(metadata)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: i64,
     pub room_id: RoomId,
@@ -171,7 +262,7 @@ pub struct ChatMessage {
     pub version: i64,
     pub reply_to_message_id: Option<i64>,
     pub reply_to_message_created_at: Option<DateTime<Utc>>,
-    pub metadata: JsonValue,
+    pub metadata: ChatMetadata,
     pub edited_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub deleted_by: Option<UserId>,
@@ -193,7 +284,7 @@ impl ChatMessage {
             version: 1,
             reply_to_message_id: None,
             reply_to_message_created_at: None,
-            metadata: JsonValue::Object(Default::default()),
+            metadata: ChatMetadata::default(),
             edited_at: None,
             deleted_at: None,
             deleted_by: None,
@@ -210,6 +301,7 @@ pub struct SendChatRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatAttachment {
     pub id: String,
     pub kind: ChatAttachmentKind,
@@ -224,7 +316,7 @@ pub struct ChatAttachment {
     pub size_bytes: Option<i64>,
     pub width: Option<i32>,
     pub height: Option<i32>,
-    pub metadata: JsonValue,
+    pub metadata: super::file_storage::FileMetadata,
     pub created_at: DateTime<Utc>,
     #[sqlx(skip)]
     #[serde(default)]
@@ -265,7 +357,7 @@ pub struct CreateChatAttachmentUploadSession {
     pub duration_seconds: Option<i32>,
     pub bitrate_bps: Option<i32>,
     pub parts: Vec<FileUploadManifestPart>,
-    pub metadata: JsonValue,
+    pub metadata: super::file_storage::FileMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +375,7 @@ pub struct ChatAttachmentUploadSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessageWithAttachments {
     pub message: ChatMessage,
     pub attachments: Vec<ChatAttachment>,
@@ -292,6 +385,7 @@ pub struct ChatMessageWithAttachments {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessagePin {
     pub room_id: RoomId,
     pub message_id: i64,
@@ -340,12 +434,13 @@ pub struct SendChatMessage {
     pub content: String,
     pub message_type: ChatMessageType,
     pub reply_to_message_id: Option<i64>,
-    pub metadata: JsonValue,
+    pub metadata: ChatMetadata,
     pub attachments: Vec<super::file_storage::SubmittedFileReference>,
     pub mentions: Vec<ChatMentionInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMentionInput {
     pub user_id: UserId,
     pub start: i32,
@@ -353,6 +448,7 @@ pub struct ChatMentionInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMention {
     pub room_id: RoomId,
     pub message_id: i64,
@@ -371,7 +467,7 @@ pub struct EditChatMessage {
     pub user_id: UserId,
     pub client_operation_id: Option<String>,
     pub content: String,
-    pub metadata: JsonValue,
+    pub metadata: ChatMetadata,
     pub expected_version: Option<i64>,
 }
 
@@ -397,6 +493,7 @@ pub struct ChatReaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatReactionSummary {
     pub key: String,
     pub count: i64,
@@ -449,6 +546,7 @@ sqlx_i16_enum!(ChatEventKind, "Invalid chat event kind", {
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessageEvent {
     pub event_id: String,
     #[serde(default)]
@@ -461,6 +559,7 @@ pub struct ChatMessageEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatMessageEventLog {
     pub sequence: i64,
     pub event: ChatMessageEvent,
@@ -509,6 +608,7 @@ impl From<ChatPinEventKind> for i16 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatPinEvent {
     pub event_id: String,
     #[serde(default)]
@@ -522,12 +622,14 @@ pub struct ChatPinEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatPinEventLog {
     pub sequence: i64,
     pub event: ChatPinEvent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EventCursor {
     pub event_id: Option<String>,
     pub sequence: i64,
@@ -611,7 +713,7 @@ pub struct ChatPlaybackMessagesQuery {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target: Option<Vec<u8>>,
+    pub target: Option<super::ProviderTarget>,
     pub position_seconds: f64,
     pub before_seconds: f64,
     pub after_seconds: f64,
@@ -621,10 +723,7 @@ pub struct ChatPlaybackMessagesQuery {
 
 impl ChatPlaybackMessagesQuery {
     #[must_use]
-    pub fn normalize(mut self) -> Self {
-        if self.target.as_ref().is_some_and(Vec::is_empty) {
-            self.target = None;
-        }
+    pub fn normalize(self) -> Self {
         self
     }
 }
@@ -660,5 +759,33 @@ mod tests {
         );
         assert!(ChatMessageType::try_from(99).is_err());
         assert!("notice".parse::<ChatMessageType>().is_err());
+    }
+
+    #[test]
+    fn chat_metadata_normalized_for_storage_derives_target_hash() {
+        let target = ProviderTarget::alist("/media/episode-1.mp4".to_string());
+        let metadata = ChatMetadata {
+            playback: Some(ChatPlaybackMetadata {
+                media_id: None,
+                playlist_id: None,
+                target: Some(target.clone()),
+                target_hash: None,
+                position_seconds: Some(12.5),
+            }),
+            ..Default::default()
+        };
+
+        let normalized = metadata
+            .normalized_for_storage()
+            .expect("target hash should compute");
+        assert_eq!(
+            normalized
+                .playback
+                .and_then(|playback| playback.target_hash),
+            Some(
+                crate::models::try_hash_playback_target(Some(&target))
+                    .expect("target hash should compute")
+            )
+        );
     }
 }

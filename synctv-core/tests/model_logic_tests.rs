@@ -1,10 +1,13 @@
 //! Unit tests for pure model logic (no Docker/database needed)
 
-use synctv_core::models::room::RoomSettingsJson;
 use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
 use synctv_core::models::{
+    room_settings::{
+        AdminAddedPermissions, AdminRemovedPermissions, MemberAddedPermissions,
+        MemberRemovedPermissions,
+    },
     RoomAdminPermissionBits, RoomMemberPermissionBits, RoomPermission, RoomPermissionSet, RoomRole,
-    RoomStatus,
+    RoomSettings, RoomStatus,
 };
 
 fn ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
@@ -259,7 +262,7 @@ fn test_room_role_from_str_accepts_canonical_values_case_insensitively() {
 #[test]
 fn test_effective_permissions_no_overrides() {
     let global = RoomPermissionSet::default_member();
-    let effective = RoomSettingsJson::effective_permissions_for_role(global, None, None);
+    let effective = RoomSettings::default().admin_permissions(global);
     assert_eq!(effective, global);
 }
 
@@ -267,7 +270,11 @@ fn test_effective_permissions_no_overrides() {
 fn test_effective_permissions_add_only() {
     let global = RoomPermissionSet::default_member();
     let added = RoomAdminPermissionBits::PLAY_CONTROL;
-    let effective = RoomSettingsJson::effective_permissions_for_role(global, Some(added), None);
+    let settings = RoomSettings {
+        admin_added_permissions: AdminAddedPermissions(added),
+        ..RoomSettings::default()
+    };
+    let effective = settings.admin_permissions(global);
     assert!(effective.has(RoomPermission::PLAY_CONTROL));
     assert!(effective.has(RoomPermission::CHAT)); // Original preserved
 }
@@ -276,7 +283,11 @@ fn test_effective_permissions_add_only() {
 fn test_effective_permissions_remove_only() {
     let global = RoomPermissionSet::default_member();
     let removed = RoomAdminPermissionBits::CHAT;
-    let effective = RoomSettingsJson::effective_permissions_for_role(global, None, Some(removed));
+    let settings = RoomSettings {
+        admin_removed_permissions: AdminRemovedPermissions(removed),
+        ..RoomSettings::default()
+    };
+    let effective = settings.admin_permissions(global);
     assert!(!effective.has(RoomPermission::CHAT));
     assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE));
 }
@@ -286,8 +297,12 @@ fn test_effective_permissions_add_and_remove() {
     let global = RoomPermissionSet::default_member();
     let added = RoomAdminPermissionBits::PLAY_CONTROL;
     let removed = RoomAdminPermissionBits::CHAT;
-    let effective =
-        RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
+    let settings = RoomSettings {
+        admin_added_permissions: AdminAddedPermissions(added),
+        admin_removed_permissions: AdminRemovedPermissions(removed),
+        ..RoomSettings::default()
+    };
+    let effective = settings.admin_permissions(global);
     assert!(effective.has(RoomPermission::PLAY_CONTROL));
     assert!(!effective.has(RoomPermission::CHAT));
     assert!(effective.has(RoomPermission::CREATE_MEDIA_RESOURCE));
@@ -297,16 +312,21 @@ fn test_effective_permissions_add_and_remove() {
 fn test_effective_permissions_remove_overrides_add() {
     let global = RoomPermissionSet::empty();
     let bit = RoomAdminPermissionBits::CHAT;
-    let effective = RoomSettingsJson::effective_permissions_for_role(global, Some(bit), Some(bit));
+    let settings = RoomSettings {
+        admin_added_permissions: AdminAddedPermissions(bit),
+        admin_removed_permissions: AdminRemovedPermissions(bit),
+        ..RoomSettings::default()
+    };
+    let effective = settings.admin_permissions(global);
     assert!(!effective.has(RoomPermission::CHAT));
 }
 
 #[test]
 fn test_member_permissions_maps_member_bitspace() {
-    let settings = RoomSettingsJson {
-        member_added_permissions: Some(RoomMemberPermissionBits::USE_WEBRTC),
-        member_removed_permissions: Some(RoomMemberPermissionBits::CHAT),
-        ..RoomSettingsJson::default()
+    let settings = RoomSettings {
+        member_added_permissions: MemberAddedPermissions(RoomMemberPermissionBits::USE_WEBRTC),
+        member_removed_permissions: MemberRemovedPermissions(RoomMemberPermissionBits::CHAT),
+        ..RoomSettings::default()
     };
 
     let effective = settings.member_permissions(RoomPermissionSet::default_member());

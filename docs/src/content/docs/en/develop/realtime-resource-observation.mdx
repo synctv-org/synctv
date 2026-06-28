@@ -11,13 +11,13 @@ Resource observation subscribes to room resources. Versioned resources can carry
 
 | Resource | `ObserveResource.resource` field | Version source | Typical use |
 | --- | --- | --- | --- |
-| Playback state | `playback_state` | `RoomPlaybackState.version` | Player UI and synchronized playback status |
+| Playback state | `playbackState` | `RoomPlaybackState.version` | Player UI and synchronized playback status |
 | Playback | `playback` | Current value on every observe | Current playback URL, headers, proxy policy, subtitles, and expiry |
-| Room settings | `room_settings` | Room settings version | Chat, playback permissions, and UI controls |
-| Playlist items | `playlist_items` | List snapshot version | Root lists, child playlists, provider browsing, and search results |
-| Room members | `room_members` | Member list snapshot version | Member pagination, search, role filtering, and status filtering |
+| Room settings | `roomSettings` | Room settings version | Chat, playback permissions, and UI controls |
+| Playlist items | `playlistItems` | List snapshot version | Root lists, child playlists, provider browsing, and search results |
+| Room members | `roomMembers` | Member list snapshot version | Member pagination, search, role filtering, and status filtering |
 
-Each observation is identified by `observe_id`. It only needs to be unique within the current connection, length 1-128. Prefer stable names such as `playback-state`, `playlist-root:p1:50`, or `members:online`.
+Each observation is identified by `observeId`. It only needs to be unique within the current connection, length 1-128. Prefer stable names such as `playback-state`, `playlist-root:p1:50`, or `members:online`.
 
 Each connection can hold up to 64 observations. Over-limit requests return `ResourceObserveError` and do not close the WebSocket.
 
@@ -25,17 +25,17 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 
 | Value | Behavior |
 | --- | --- |
-| `RESOURCE_DELIVERY_MODE_UNSPECIFIED` | Same as `PUSH_SNAPSHOT` |
-| `RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT` | Push a full `ResourceChanged.payload` when changed; useful for low-latency UI |
-| `RESOURCE_DELIVERY_MODE_NOTIFY_ONLY` | Push only `changed_only`; the client then fetches through HTTP/gRPC |
+| `0` | Same as `PUSH_SNAPSHOT` |
+| `2` | Push a full `ResourceChanged.payload` when changed; useful for low-latency UI |
+| `1` | Push only `changedOnly`; the client then fetches through HTTP/gRPC |
 
 ## Subscribe Flow
 
 <Steps>
 1. The client connects to the room WebSocket.
-2. The client sends `ClientMessage.observe_resource` with `observe_id`, `delivery_mode`, and the target resource. Resources that support recovery can also carry an event sequence.
-3. The server loads the current resource and sends `ServerMessage.resource_observed`.
-4. If the server determines that the resource changed, it sends `ServerMessage.resource_changed` for the same `observe_id`.
+2. The client sends `ClientMessage.observeResource` with `observeId`, `deliveryMode`, and the target resource. Resources that support recovery can also carry an event sequence.
+3. The server loads the current resource and sends `ServerMessage.resourceObserved`.
+4. If the server determines that the resource changed, it sends `ServerMessage.resourceChanged` for the same `observeId`.
 5. Later room events, cache invalidation, Provider credential changes, or playback expiry can trigger re-evaluation.
 </Steps>
 
@@ -43,21 +43,21 @@ Each connection can hold up to 64 observations. Over-limit requests return `Reso
 
 | Field | Meaning |
 | --- | --- |
-| `observe_id` | The submitted subscription ID |
+| `observeId` | The submitted subscription ID |
 | `changed` | Whether the server should send the current resource to the client |
-| `event_cursor` | Recovery cursor for resources with event replay |
+| `eventCursor` | Recovery cursor for resources with event replay |
 
 `ResourceChanged` fields:
 
 | Field | Meaning |
 | --- | --- |
-| `observe_id` | Which subscription changed |
-| `payload` | Full snapshot or `changed_only`, depending on `delivery_mode` |
-| `event_cursor` | Cursor associated with replayed resource events |
+| `observeId` | Which subscription changed |
+| `payload` | Full snapshot or `changedOnly`, depending on `deliveryMode` |
+| `eventCursor` | Cursor associated with replayed resource events |
 
 ## Unsubscribe
 
-When a view, list, or query is no longer needed, send `ClientMessage.unobserve_resource`:
+When a view, list, or query is no longer needed, send `ClientMessage.unobserveResource`:
 
 ```ts
 sendClientMessage({
@@ -80,7 +80,7 @@ The examples below use TypeScript-style pseudocode. Exact field names depend on 
 sendClientMessage({
   observeResource: {
     observeId: 'playback-state',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playbackState: {
       afterEventSequence: cached.playbackStateEventSequence,
     },
@@ -88,7 +88,7 @@ sendClientMessage({
 });
 ```
 
-When changed, the server returns `ResourceChanged.payload.playback_state`.
+When changed, the server returns `ResourceChanged.payload.playbackState`.
 
   </TabItem>
   <TabItem label="Playback" icon="document">
@@ -97,7 +97,7 @@ When changed, the server returns `ResourceChanged.payload.playback_state`.
 sendClientMessage({
   observeResource: {
     observeId: 'playback',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playback: {
       playbackClientProfile: currentPlaybackClientProfile,
     },
@@ -114,23 +114,23 @@ Playback observation immediately returns the current playable URLs, headers, sub
 sendClientMessage({
   observeResource: {
     observeId: 'room-members:online',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_NOTIFY_ONLY,
+    deliveryMode: 1,
     roomMembers: {
       afterEventSequence: cached.membersEventSequence,
       request: {
         page: 1,
         pageSize: 50,
         search: '',
-        status: MemberStatus.MEMBER_STATUS_ONLINE,
-        sortBy: RoomMemberListSortBy.ROOM_MEMBER_LIST_SORT_BY_JOINED_AT,
-        sortDirection: SortDirection.SORT_DIRECTION_ASC,
+        status: 1,
+        sortBy: 1,
+        sortDirection: 1,
       },
     },
   },
 });
 ```
 
-In notify-only mode, the server returns `ResourceChanged.payload.changed_only`, then the client calls the HTTP/gRPC member-list API to refresh its local cache.
+In notify-only mode, the server returns `ResourceChanged.payload.changedOnly`, then the client calls the HTTP/gRPC member-list API to refresh its local cache.
 
   </TabItem>
 </Tabs>
@@ -139,13 +139,13 @@ In notify-only mode, the server returns `ResourceChanged.payload.changed_only`, 
 
 | Event type | Refreshed resources |
 | --- | --- |
-| Playback state changed | `playback_state`, `playback` |
-| Current playback media or playlist-related media updated | `playback`, and sometimes `playlist_items` |
-| Playlist created, updated, deleted, reordered, or media added/removed | `playlist_items` |
-| Room settings changed | `room_settings`, `room_members` |
-| User joined, left, or permissions changed | `room_members` |
+| Playback state changed | `playbackState`, `playback` |
+| Current playback media or playlist-related media updated | `playback`, and sometimes `playlistItems` |
+| Playlist created, updated, deleted, reordered, or media added/removed | `playlistItems` |
+| Room settings changed | `roomSettings`, `roomMembers` |
+| User joined, left, or permissions changed | `roomMembers` |
 | Cache invalidation hits the current room or user | Matching playback, settings, list, or member resources |
 | Provider credential changed | May affect the current user's playback and provider browsing results |
 | Playback expires | Automatically re-evaluates `playback` observations |
 
-The server coalesces identical short-window queries in the same room. Clients do not need to rely on this optimization, but can safely create separate `observe_id` values for separate views.
+The server coalesces identical short-window queries in the same room. Clients do not need to rely on this optimization, but can safely create separate `observeId` values for separate views.

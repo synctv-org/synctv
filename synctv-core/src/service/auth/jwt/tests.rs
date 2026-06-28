@@ -659,24 +659,36 @@ fn test_guest_token_duration() {
 
 #[test]
 fn test_sign_and_verify_custom_token() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct CustomClaims {
+        sub: String,
+        custom_field: String,
+        exp: i64,
+    }
+
     let jwt = create_jwt_service();
-    let claims = serde_json::json!({
-        "sub": "custom_subject",
-        "custom_field": "custom_value",
-    });
+    let claims = CustomClaims {
+        sub: "custom_subject".to_string(),
+        custom_field: "custom_value".to_string(),
+        exp: Utc::now().timestamp() + 3600,
+    };
 
     let token = ok(jwt.sign_custom(&claims), "custom token should sign");
-    let verified: serde_json::Value = ok(jwt.verify_custom(&token), "custom token should verify");
+    let verified: CustomClaims = ok(jwt.verify_custom(&token), "custom token should verify");
 
-    assert_eq!(verified["sub"], "custom_subject");
-    assert_eq!(verified["custom_field"], "custom_value");
-    assert!(verified.get("jti").is_some());
-    assert!(verified.get("iat").is_some());
-    assert!(verified.get("exp").is_some());
+    assert_eq!(verified.sub, "custom_subject");
+    assert_eq!(verified.custom_field, "custom_value");
+    assert_eq!(verified.exp, claims.exp);
 }
 
 #[test]
 fn test_custom_token_wrong_secret_rejected() {
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct CustomClaims {
+        sub: String,
+        exp: i64,
+    }
+
     let jwt1 = ok(
         JwtService::new("custom-SECRET-One-LONG-ENOUGH-1234567890!@#$"),
         "first custom JWT service should build",
@@ -686,9 +698,12 @@ fn test_custom_token_wrong_secret_rejected() {
         "second custom JWT service should build",
     );
 
-    let claims = serde_json::json!({"sub": "test"});
+    let claims = CustomClaims {
+        sub: "test".to_string(),
+        exp: Utc::now().timestamp() + 3600,
+    };
     let token = ok(jwt1.sign_custom(&claims), "custom token should sign");
-    let result = jwt2.verify_custom(&token);
+    let result = jwt2.verify_custom::<CustomClaims>(&token);
     assert!(result.is_err());
 }
 

@@ -3,11 +3,13 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{
     models::{
-        FileBlob, FileBlobCompression, FileBlobPart, FileCleanupJob, FileObject, FileObjectGroup,
-        FileObjectVariant, FileReferenceTarget, FileUploadSessionKind, FileUploadSessionPart,
-        FileUploadSessionRecord, StoredFileReference, UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS,
-        FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
-        FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
+        FileBlob, FileBlobCompression, FileBlobPart, FileCleanupJob, FileCleanupMetadata,
+        FileMetadata, FileObject, FileObjectGroup, FileObjectVariant, FileReferenceMetadata,
+        FileReferenceTarget, FileUploadSessionKind, FileUploadSessionMetadata,
+        FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata, StoredFileReference,
+        UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
+        FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS,
+        FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
@@ -60,7 +62,6 @@ fn validate_file_object_fields(
     object_key: &str,
     size_bytes: i64,
     content_manifest_sha256: &str,
-    metadata: &serde_json::Value,
 ) -> Result<()> {
     validate_required_text(
         storage_backend,
@@ -74,11 +75,6 @@ fn validate_file_object_fields(
         ));
     }
     validate_required_sha256(content_manifest_sha256, "content_manifest_sha256")?;
-    if !metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -86,7 +82,6 @@ fn validate_file_object_identity(
     storage_backend: &str,
     object_key: &str,
     size_bytes: i64,
-    metadata: &serde_json::Value,
 ) -> Result<()> {
     validate_required_text(
         storage_backend,
@@ -99,11 +94,6 @@ fn validate_file_object_identity(
             "file size_bytes must be positive".to_string(),
         ));
     }
-    if !metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -112,7 +102,6 @@ fn validate_file_reference_fields(
     object_key: &str,
     reference_kind: &str,
     reference_id: &str,
-    metadata: &serde_json::Value,
 ) -> Result<()> {
     validate_required_text(
         storage_backend,
@@ -130,12 +119,48 @@ fn validate_file_reference_fields(
         "file reference_id",
         FILE_REFERENCE_ID_MAX_CHARS,
     )?;
-    if !metadata.is_object() {
-        return Err(Error::InvalidInput(
-            "file metadata must be a JSON object".to_string(),
-        ));
-    }
     Ok(())
+}
+
+fn stored_reference_metadata(metadata: &FileReferenceMetadata) -> FileMetadata {
+    metadata.file_metadata()
+}
+
+struct StoredFileReferenceRow {
+    file_reference_id: i64,
+    storage_backend: String,
+    object_key: String,
+    mime_type: String,
+    size_bytes: i64,
+    content_manifest_sha256: String,
+    metadata: FileReferenceMetadata,
+    created_at: DateTime<Utc>,
+    validated_at: Option<DateTime<Utc>>,
+}
+
+pub struct StoredFileReferenceWithMetadata {
+    pub storage_backend: String,
+    pub object_key: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub content_manifest_sha256: String,
+    pub metadata: FileReferenceMetadata,
+}
+
+impl From<StoredFileReferenceRow> for StoredFileReference {
+    fn from(row: StoredFileReferenceRow) -> Self {
+        Self {
+            file_reference_id: row.file_reference_id,
+            storage_backend: row.storage_backend,
+            object_key: row.object_key,
+            mime_type: row.mime_type,
+            size_bytes: row.size_bytes,
+            content_manifest_sha256: row.content_manifest_sha256,
+            metadata: stored_reference_metadata(&row.metadata),
+            created_at: row.created_at,
+            validated_at: row.validated_at,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -151,7 +176,7 @@ pub struct UpsertFileBlob<'a> {
     pub checksum_sha256: &'a str,
     pub compression: FileBlobCompression,
     pub data: Vec<u8>,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a FileMetadata,
 }
 
 pub struct UpsertFileBlobPart<'a> {
@@ -171,7 +196,7 @@ pub struct UpsertFileObject<'a> {
     pub mime_type: &'a str,
     pub size_bytes: i64,
     pub content_manifest_sha256: &'a str,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a FileMetadata,
 }
 
 pub struct UpsertFileObjectGroup<'a> {
@@ -179,7 +204,7 @@ pub struct UpsertFileObjectGroup<'a> {
     pub storage_backend: &'a str,
     pub original_object_key: &'a str,
     pub media_kind: &'a str,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a FileMetadata,
 }
 
 pub struct UpsertFileObjectVariant<'a> {
@@ -199,7 +224,7 @@ pub struct UpsertFileObjectVariant<'a> {
     pub lossy: bool,
     pub quality: Option<i32>,
     pub sort_order: i32,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a FileVariantMetadata,
 }
 
 pub struct UpsertFileUploadSession<'a> {
@@ -214,7 +239,7 @@ pub struct UpsertFileUploadSession<'a> {
     pub size_bytes: i64,
     pub content_manifest_sha256: &'a str,
     pub part_size_bytes: i64,
-    pub metadata: &'a serde_json::Value,
+    pub metadata: &'a FileUploadSessionMetadata,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -284,7 +309,6 @@ impl FileStorageRepository {
             object.object_key,
             object.size_bytes,
             object.content_manifest_sha256,
-            object.metadata,
         )?;
         let object = sqlx::query_as!(
             FileObject,
@@ -304,7 +328,7 @@ impl FileStorageRepository {
                 deleting_at = NULL
             WHERE file_objects.deleting_at IS NULL
             RETURNING storage_backend, object_key, mime_type, size_bytes,
-                      content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
+                      content_manifest_sha256, metadata AS "metadata!: FileMetadata",
                       created_at, validated_at, deleting_at
             "#,
             object.storage_backend,
@@ -312,7 +336,7 @@ impl FileStorageRepository {
             object.mime_type,
             object.size_bytes,
             object.content_manifest_sha256.trim().to_ascii_lowercase(),
-            object.metadata,
+            object.metadata as _,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -327,7 +351,6 @@ impl FileStorageRepository {
             object.object_key,
             object.size_bytes,
             object.content_manifest_sha256,
-            object.metadata,
         )?;
         let object = sqlx::query_as!(
             FileObject,
@@ -347,7 +370,7 @@ impl FileStorageRepository {
                 deleting_at = NULL
             WHERE file_objects.deleting_at IS NULL
             RETURNING storage_backend, object_key, mime_type, size_bytes,
-                      content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
+                      content_manifest_sha256, metadata AS "metadata!: FileMetadata",
                       created_at, validated_at, deleting_at
             "#,
             object.storage_backend,
@@ -355,7 +378,7 @@ impl FileStorageRepository {
             object.mime_type,
             object.size_bytes,
             object.content_manifest_sha256.trim().to_ascii_lowercase(),
-            object.metadata,
+            object.metadata as _,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -373,7 +396,7 @@ impl FileStorageRepository {
             FileObject,
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
-                   content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
+                   content_manifest_sha256, metadata AS "metadata!: FileMetadata",
                    created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
@@ -399,7 +422,7 @@ impl FileStorageRepository {
             FileObject,
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
-                   content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
+                   content_manifest_sha256, metadata AS "metadata!: FileMetadata",
                    created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
@@ -430,7 +453,7 @@ impl FileStorageRepository {
             FileObject,
             r#"
             SELECT storage_backend, object_key, mime_type, size_bytes,
-                   content_manifest_sha256, metadata AS "metadata!: serde_json::Value",
+                   content_manifest_sha256, metadata AS "metadata!: FileMetadata",
                    created_at, validated_at, deleting_at
             FROM file_objects
             WHERE storage_backend = $1
@@ -453,13 +476,8 @@ impl FileStorageRepository {
         &self,
         storage_backend: &str,
         object_key: &str,
-        metadata: &serde_json::Value,
+        metadata: &FileMetadata,
     ) -> Result<()> {
-        if !metadata.is_object() {
-            return Err(Error::InvalidInput(
-                "file metadata must be a JSON object".to_string(),
-            ));
-        }
         sqlx::query!(
             r#"
             UPDATE file_objects
@@ -470,7 +488,7 @@ impl FileStorageRepository {
             "#,
             storage_backend,
             object_key,
-            metadata,
+            metadata as _,
         )
         .execute(&self.pool)
         .await?;
@@ -518,11 +536,6 @@ impl FileStorageRepository {
             FILE_OBJECT_KEY_MAX_CHARS,
         )?;
         validate_required_text(group.media_kind, "file media_kind", 64)?;
-        if !group.metadata.is_object() {
-            return Err(Error::InvalidInput(
-                "file object group metadata must be a JSON object".to_string(),
-            ));
-        }
         let row = sqlx::query_as!(
             FileObjectGroup,
             r#"
@@ -536,14 +549,14 @@ impl FileStorageRepository {
                 metadata = EXCLUDED.metadata,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING id, storage_backend, original_object_key, media_kind,
-                      metadata AS "metadata!: serde_json::Value",
+                      metadata AS "metadata!: FileMetadata",
                       created_at, updated_at
             "#,
             group.id,
             group.storage_backend,
             group.original_object_key,
             group.media_kind,
-            group.metadata,
+            group.metadata as _,
         )
         .fetch_one(&self.pool)
         .await?;
@@ -585,7 +598,6 @@ impl FileStorageRepository {
             variant.storage_backend,
             variant.object_key,
             variant.size_bytes,
-            variant.metadata,
         )?;
         if variant
             .quality
@@ -631,7 +643,7 @@ impl FileStorageRepository {
             RETURNING storage_backend, object_key, original_storage_backend, original_object_key,
                       group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                       is_original, lossy, quality, sort_order,
-                      metadata AS "metadata!: serde_json::Value", created_at
+                      metadata AS "metadata!: FileVariantMetadata", created_at
             "#,
             variant.storage_backend,
             variant.object_key,
@@ -649,7 +661,7 @@ impl FileStorageRepository {
             variant.lossy,
             variant.quality,
             variant.sort_order,
-            variant.metadata,
+            variant.metadata as _,
         )
         .fetch_one(&self.pool)
         .await?;
@@ -667,7 +679,7 @@ impl FileStorageRepository {
             SELECT storage_backend, object_key, original_storage_backend, original_object_key,
                    group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                    is_original, lossy, quality, sort_order,
-                   metadata AS "metadata!: serde_json::Value", created_at
+                   metadata AS "metadata!: FileVariantMetadata", created_at
             FROM file_object_variants
             WHERE original_storage_backend = $1 AND original_object_key = $2
             ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC
@@ -691,7 +703,7 @@ impl FileStorageRepository {
             SELECT storage_backend, object_key, original_storage_backend, original_object_key,
                    group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                    is_original, lossy, quality, sort_order,
-                   metadata AS "metadata!: serde_json::Value", created_at
+                   metadata AS "metadata!: FileVariantMetadata", created_at
             FROM file_object_variants
             WHERE original_storage_backend = $1
               AND original_object_key = $2
@@ -723,7 +735,7 @@ impl FileStorageRepository {
                    session_kind AS "session_kind!: FileUploadSessionKind",
                    upload_id, user_id,
                    storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                   part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                   part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
                    expires_at, completed_at, created_at, updated_at
             FROM file_upload_sessions
             WHERE storage_backend = $1
@@ -759,7 +771,7 @@ impl FileStorageRepository {
                    session_kind AS "session_kind!: FileUploadSessionKind",
                    upload_id, user_id,
                    storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                   part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                   part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
                    expires_at, completed_at, created_at, updated_at
             FROM file_upload_sessions
             WHERE storage_backend = $1
@@ -859,13 +871,7 @@ impl FileStorageRepository {
         reference_id: &str,
         ignore_completed_upload_session_references: bool,
     ) -> Result<bool> {
-        validate_file_reference_fields(
-            storage_backend,
-            object_key,
-            reference_kind,
-            reference_id,
-            &serde_json::Value::Object(Default::default()),
-        )?;
+        validate_file_reference_fields(storage_backend, object_key, reference_kind, reference_id)?;
 
         let mut tx = self.pool.begin().await?;
         let object_locked = sqlx::query!(
@@ -904,8 +910,8 @@ impl FileStorageRepository {
         .execute(&mut *tx)
         .await?;
 
-        let active_reference_count = sqlx::query_scalar!(
-            r#"
+        let active_reference_count = sqlx::query_scalar::<_, i64>(
+            r"
             SELECT COUNT(*)::BIGINT
             FROM file_references
             WHERE storage_backend = $1
@@ -919,18 +925,20 @@ impl FileStorageRepository {
                       FROM file_upload_sessions s
                       WHERE s.storage_backend = file_references.storage_backend
                         AND s.object_key = file_references.object_key
-                        AND (s.metadata->>'public_file_id') = file_references.reference_id
+                        AND file_references.metadata->>'kind' = 'uploadSession'
+                        AND (file_references.metadata->'data'->>'publicFileId') = file_references.reference_id
+                        AND (s.metadata->>'publicFileId') = file_references.reference_id
                         AND s.completed_at IS NOT NULL
                   )
               )
-            "#,
-            storage_backend,
-            object_key,
-            ignore_completed_upload_session_references,
+            ",
         )
+        .bind(storage_backend)
+        .bind(object_key)
+        .bind(ignore_completed_upload_session_references)
         .fetch_one(&mut *tx)
         .await?;
-        if scalar_value(active_reference_count, "file reference COUNT")? > 0 {
+        if active_reference_count > 0 {
             tx.commit().await?;
             return Ok(false);
         }
@@ -958,15 +966,9 @@ impl FileStorageRepository {
         reference_kind: &str,
         reference_id: &str,
         expires_at: Option<DateTime<Utc>>,
-        metadata: &serde_json::Value,
+        metadata: &FileReferenceMetadata,
     ) -> Result<Option<i64>> {
-        validate_file_reference_fields(
-            storage_backend,
-            object_key,
-            reference_kind,
-            reference_id,
-            metadata,
-        )?;
+        validate_file_reference_fields(storage_backend, object_key, reference_kind, reference_id)?;
         let object_locked = sqlx::query!(
             r#"
             SELECT storage_backend
@@ -1003,7 +1005,7 @@ impl FileStorageRepository {
             reference_kind,
             reference_id,
             expires_at,
-            metadata,
+            metadata as _,
         )
         .fetch_one(&mut **tx)
         .await?;
@@ -1017,7 +1019,7 @@ impl FileStorageRepository {
         reference_kind: &str,
         reference_id: &str,
         expires_at: Option<DateTime<Utc>>,
-        metadata: &serde_json::Value,
+        metadata: &FileReferenceMetadata,
     ) -> Result<Option<i64>> {
         let mut tx = self.pool.begin().await?;
         let id = Self::insert_reference_in_tx(
@@ -1027,7 +1029,7 @@ impl FileStorageRepository {
             reference_kind,
             reference_id,
             expires_at,
-            metadata,
+            metadata as _,
         )
         .await?;
         tx.commit().await?;
@@ -1036,7 +1038,7 @@ impl FileStorageRepository {
 
     pub async fn get_reference_by_id(&self, id: i64) -> Result<Option<StoredFileReference>> {
         let reference = sqlx::query_as!(
-            StoredFileReference,
+            StoredFileReferenceRow,
             r#"
             SELECT r.id AS file_reference_id,
                    o.storage_backend,
@@ -1044,7 +1046,7 @@ impl FileStorageRepository {
                    o.mime_type,
                    o.size_bytes,
                    o.content_manifest_sha256,
-                   r.metadata AS "metadata!: serde_json::Value",
+                   r.metadata AS "metadata!: FileReferenceMetadata",
                    o.created_at,
                    o.validated_at
             FROM file_references r
@@ -1059,7 +1061,7 @@ impl FileStorageRepository {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(reference)
+        Ok(reference.map(StoredFileReference::from))
     }
 
     pub async fn get_upload_session_by_reference(
@@ -1067,43 +1069,44 @@ impl FileStorageRepository {
         reference_kind: &str,
         reference_id: &str,
     ) -> Result<Option<FileUploadSessionRecord>> {
-        let session = sqlx::query_as!(
-            FileUploadSessionRecord,
-            r#"
+        let session = sqlx::query_as::<_, FileUploadSessionRecord>(
+            r"
             SELECT r.storage_backend,
-                   COALESCE(s.upload_session_key, r.object_key) AS "upload_session_key!",
-                   r.object_key AS "object_key!",
-                   COALESCE(s.session_kind, 1::SMALLINT) AS "session_kind!: FileUploadSessionKind",
+                   s.upload_session_key,
+                   r.object_key,
+                   s.session_kind,
                    s.upload_id,
-                   COALESCE(s.user_id, (r.metadata->>'user_id')::BIGINT) AS "user_id!",
-                   COALESCE(s.storage_scope, r.metadata->>'storage_scope') AS "storage_scope!",
-                   COALESCE(s.mime_type, o.mime_type) AS "mime_type!",
-                   COALESCE(s.size_bytes, o.size_bytes) AS "size_bytes!",
-                   COALESCE(s.content_manifest_sha256, o.content_manifest_sha256) AS "content_manifest_sha256!",
-                   COALESCE(s.part_size_bytes, o.size_bytes) AS "part_size_bytes!",
-                   r.metadata AS "metadata!: serde_json::Value",
-                   COALESCE(s.expires_at, r.expires_at) AS "expires_at!",
+                   s.user_id,
+                   s.storage_scope,
+                   s.mime_type,
+                   s.size_bytes,
+                   s.content_manifest_sha256,
+                   s.part_size_bytes,
+                   s.metadata,
+                   s.expires_at,
                    s.completed_at,
-                   COALESCE(s.created_at, r.created_at) AS "created_at!",
-                   COALESCE(s.updated_at, r.updated_at) AS "updated_at!"
+                   s.created_at,
+                   s.updated_at
             FROM file_references r
             JOIN file_objects o
               ON o.storage_backend = r.storage_backend
              AND o.object_key = r.object_key
-            LEFT JOIN file_upload_sessions s
+            JOIN file_upload_sessions s
               ON s.storage_backend = r.storage_backend
              AND s.object_key = r.object_key
-             AND (s.metadata->>'public_file_id') = r.reference_id
+             AND r.metadata->>'kind' = 'uploadSession'
+             AND (r.metadata->'data'->>'publicFileId') = r.reference_id
+             AND (s.metadata->>'publicFileId') = r.reference_id
             WHERE r.reference_kind = $1
               AND r.reference_id = $2
               AND r.released_at IS NULL
               AND o.deleting_at IS NULL
             ORDER BY r.updated_at DESC, r.id DESC
             LIMIT 1
-            "#,
-            reference_kind,
-            reference_id,
+            ",
         )
+        .bind(reference_kind)
+        .bind(reference_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(session)
@@ -1115,7 +1118,7 @@ impl FileStorageRepository {
         reference_id: &str,
     ) -> Result<Option<StoredFileReference>> {
         let reference = sqlx::query_as!(
-            StoredFileReference,
+            StoredFileReferenceRow,
             r#"
             SELECT r.id AS file_reference_id,
                    o.storage_backend,
@@ -1123,7 +1126,7 @@ impl FileStorageRepository {
                    o.mime_type,
                    o.size_bytes,
                    o.content_manifest_sha256,
-                   r.metadata AS "metadata!: serde_json::Value",
+                   r.metadata AS "metadata!: FileReferenceMetadata",
                    o.created_at,
                    o.validated_at
             FROM file_references r
@@ -1142,7 +1145,50 @@ impl FileStorageRepository {
         )
         .fetch_optional(&self.pool)
         .await?;
-        Ok(reference)
+        Ok(reference.map(StoredFileReference::from))
+    }
+
+    pub async fn get_active_reference_metadata_by_target(
+        &self,
+        reference_kind: &str,
+        reference_id: &str,
+    ) -> Result<Option<StoredFileReferenceWithMetadata>> {
+        let reference = sqlx::query_as!(
+            StoredFileReferenceRow,
+            r#"
+            SELECT r.id AS file_reference_id,
+                   o.storage_backend,
+                   o.object_key,
+                   o.mime_type,
+                   o.size_bytes,
+                   o.content_manifest_sha256,
+                   r.metadata AS "metadata!: FileReferenceMetadata",
+                   o.created_at,
+                   o.validated_at
+            FROM file_references r
+            JOIN file_objects o
+              ON o.storage_backend = r.storage_backend
+             AND o.object_key = r.object_key
+            WHERE r.reference_kind = $1
+              AND r.reference_id = $2
+              AND r.released_at IS NULL
+              AND o.deleting_at IS NULL
+            ORDER BY r.updated_at DESC, r.id DESC
+            LIMIT 1
+            "#,
+            reference_kind,
+            reference_id,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(reference.map(|row| StoredFileReferenceWithMetadata {
+            storage_backend: row.storage_backend,
+            object_key: row.object_key,
+            mime_type: row.mime_type,
+            size_bytes: row.size_bytes,
+            content_manifest_sha256: row.content_manifest_sha256,
+            metadata: row.metadata,
+        }))
     }
 
     pub async fn release_reference(
@@ -1178,15 +1224,9 @@ impl FileStorageRepository {
         reference_id: &str,
         storage_backend: &str,
         object_key: &str,
-        metadata: &serde_json::Value,
+        metadata: &FileReferenceMetadata,
     ) -> Result<()> {
-        validate_file_reference_fields(
-            storage_backend,
-            object_key,
-            reference_kind,
-            reference_id,
-            metadata,
-        )?;
+        validate_file_reference_fields(storage_backend, object_key, reference_kind, reference_id)?;
         sqlx::query!(
             r#"
             UPDATE file_references
@@ -1202,7 +1242,7 @@ impl FileStorageRepository {
             reference_id,
             storage_backend,
             object_key,
-            metadata,
+            metadata as _,
         )
         .execute(&self.pool)
         .await?;
@@ -1264,7 +1304,6 @@ impl FileStorageRepository {
             part.object_key,
             part.size_bytes,
             part.checksum_sha256,
-            &serde_json::Value::Object(Default::default()),
         )?;
         if part.part_index < 0 || part.offset_bytes < 0 {
             return Err(Error::InvalidInput(
@@ -1506,7 +1545,6 @@ impl FileStorageRepository {
             session.object_key,
             session.size_bytes,
             session.content_manifest_sha256,
-            session.metadata,
         )?;
         validate_required_text(session.storage_scope, "file storage_scope", 512)?;
         if session.part_size_bytes <= 0 {
@@ -1542,7 +1580,7 @@ impl FileStorageRepository {
                       session_kind AS "session_kind!: FileUploadSessionKind",
                       upload_id, user_id,
                       storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                      part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                      part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
                       expires_at, completed_at, created_at, updated_at
             "#,
             session.storage_backend,
@@ -1556,7 +1594,7 @@ impl FileStorageRepository {
             session.size_bytes,
             session.content_manifest_sha256.trim().to_ascii_lowercase(),
             session.part_size_bytes,
-            session.metadata,
+            session.metadata as _,
             session.expires_at,
         )
         .fetch_one(&self.pool)
@@ -1576,7 +1614,7 @@ impl FileStorageRepository {
                    session_kind AS "session_kind!: FileUploadSessionKind",
                    upload_id, user_id,
                    storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                   part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                   part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
                    expires_at, completed_at, created_at, updated_at
             FROM file_upload_sessions
             WHERE storage_backend = $1 AND upload_session_key = $2
@@ -1600,7 +1638,7 @@ impl FileStorageRepository {
                    session_kind AS "session_kind!: FileUploadSessionKind",
                    upload_id, user_id,
                    storage_scope, mime_type, size_bytes, content_manifest_sha256,
-                   part_size_bytes, metadata AS "metadata!: serde_json::Value",
+                   part_size_bytes, metadata AS "metadata!: FileUploadSessionMetadata",
                    expires_at, completed_at, created_at, updated_at
             FROM file_upload_sessions
             WHERE completed_at IS NULL
@@ -1654,13 +1692,8 @@ impl FileStorageRepository {
         &self,
         storage_backend: &str,
         upload_session_key: &str,
-        metadata: &serde_json::Value,
+        metadata: &FileUploadSessionMetadata,
     ) -> Result<()> {
-        if !metadata.is_object() {
-            return Err(Error::InvalidInput(
-                "file upload session metadata must be a JSON object".to_string(),
-            ));
-        }
         sqlx::query!(
             r#"
             UPDATE file_upload_sessions
@@ -1670,7 +1703,7 @@ impl FileStorageRepository {
             "#,
             storage_backend,
             upload_session_key,
-            metadata,
+            metadata as _,
         )
         .execute(&self.pool)
         .await?;
@@ -1789,7 +1822,7 @@ impl FileStorageRepository {
             r#"
             SELECT o.storage_backend, o.object_key, o.mime_type, o.size_bytes,
                    o.content_manifest_sha256,
-                   o.metadata AS "metadata!: serde_json::Value",
+                   o.metadata AS "metadata!: FileMetadata",
                    o.created_at, o.validated_at, o.deleting_at
             FROM file_objects o
             WHERE o.created_at < CURRENT_TIMESTAMP - ($1::BIGINT * INTERVAL '1 second')
@@ -1849,18 +1882,13 @@ impl FileStorageRepository {
         &self,
         origin: &str,
         files: &[FileReferenceTarget],
-        metadata: &serde_json::Value,
+        metadata: &FileCleanupMetadata,
         error: &str,
     ) -> Result<()> {
         if files.is_empty() {
             return Ok(());
         }
         validate_required_text(origin, "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS)?;
-        if !metadata.is_object() {
-            return Err(Error::InvalidInput(
-                "file cleanup metadata must be a JSON object".to_string(),
-            ));
-        }
 
         let mut tx = self.pool.begin().await?;
         for file in files {
@@ -1869,7 +1897,6 @@ impl FileStorageRepository {
                 &file.object_key,
                 &file.reference_kind,
                 &file.reference_id,
-                metadata,
             )?;
             sqlx::query!(
                 r#"
@@ -1894,7 +1921,7 @@ impl FileStorageRepository {
                 &file.object_key,
                 &file.reference_kind,
                 &file.reference_id,
-                metadata,
+                metadata as &FileCleanupMetadata,
                 error,
             )
             .execute(&mut *tx)
@@ -1908,18 +1935,13 @@ impl FileStorageRepository {
         &self,
         origin: &str,
         files: &[FileReferenceTarget],
-        metadata: &serde_json::Value,
+        metadata: &FileCleanupMetadata,
         reason: &str,
     ) -> Result<()> {
         if files.is_empty() {
             return Ok(());
         }
         validate_required_text(origin, "file cleanup origin", FILE_CLEANUP_ORIGIN_MAX_CHARS)?;
-        if !metadata.is_object() {
-            return Err(Error::InvalidInput(
-                "file cleanup metadata must be a JSON object".to_string(),
-            ));
-        }
 
         let mut tx = self.pool.begin().await?;
         for file in files {
@@ -1928,7 +1950,6 @@ impl FileStorageRepository {
                 &file.object_key,
                 &file.reference_kind,
                 &file.reference_id,
-                metadata,
             )?;
             sqlx::query!(
                 r#"
@@ -1970,7 +1991,7 @@ impl FileStorageRepository {
                 &file.object_key,
                 &file.reference_kind,
                 &file.reference_id,
-                metadata,
+                metadata as &FileCleanupMetadata,
                 reason,
             )
             .execute(&mut *tx)
@@ -2008,7 +2029,7 @@ impl FileStorageRepository {
             FROM candidates c
             WHERE j.id = c.id
             RETURNING j.id, j.origin, j.storage_backend, j.object_key,
-                      j.reference_kind, j.reference_id, j.metadata as "metadata: serde_json::Value", j.attempt_count,
+                      j.reference_kind, j.reference_id, j.metadata as "metadata: FileCleanupMetadata", j.attempt_count,
                       j.last_error, j.next_attempt_at, j.locked_at, j.locked_by,
                       j.completed_at, j.created_at, j.updated_at
             "#,
@@ -2086,19 +2107,14 @@ impl FileStorageRepository {
 mod tests {
     use super::*;
 
-    fn object_metadata() -> serde_json::Value {
-        serde_json::json!({})
-    }
-
     fn checksum() -> String {
         "a".repeat(FILE_SHA256_HEX_CHARS)
     }
 
     #[test]
     fn file_object_validation_rejects_business_field_policy_violations() {
-        let metadata = object_metadata();
         assert!(matches!(
-            validate_file_object_fields("", "object", 1, &checksum(), &metadata),
+            validate_file_object_fields("", "object", 1, &checksum()),
             Err(Error::InvalidInput(message)) if message.contains("storage_backend")
         ));
         assert!(matches!(
@@ -2107,38 +2123,24 @@ mod tests {
                 &"k".repeat(FILE_OBJECT_KEY_MAX_CHARS + 1),
                 1,
                 &checksum(),
-                &metadata,
             ),
             Err(Error::InvalidInput(message)) if message.contains("object_key")
         ));
         assert!(matches!(
-            validate_file_object_fields("backend", "object", 0, &checksum(), &metadata),
+            validate_file_object_fields("backend", "object", 0, &checksum()),
             Err(Error::InvalidInput(message)) if message.contains("size_bytes")
         ));
         assert!(matches!(
-            validate_file_object_fields("backend", "object", 1, "bad", &metadata),
+            validate_file_object_fields("backend", "object", 1, "bad"),
             Err(Error::InvalidInput(message)) if message.contains("content_manifest_sha256")
         ));
-        assert!(
-            validate_file_object_fields("backend", "object", 1, &checksum(), &metadata).is_ok()
-        );
-        assert!(matches!(
-            validate_file_object_fields(
-                "backend",
-                "object",
-                1,
-                &checksum(),
-                &serde_json::json!([])
-            ),
-            Err(Error::InvalidInput(message)) if message.contains("metadata")
-        ));
+        assert!(validate_file_object_fields("backend", "object", 1, &checksum()).is_ok());
     }
 
     #[test]
     fn file_reference_validation_rejects_business_field_policy_violations() {
-        let metadata = object_metadata();
         assert!(matches!(
-            validate_file_reference_fields("backend", "object", "", "ref", &metadata),
+            validate_file_reference_fields("backend", "object", "", "ref"),
             Err(Error::InvalidInput(message)) if message.contains("reference_kind")
         ));
         assert!(matches!(
@@ -2147,7 +2149,6 @@ mod tests {
                 "object",
                 "kind",
                 &"r".repeat(FILE_REFERENCE_ID_MAX_CHARS + 1),
-                &metadata,
             ),
             Err(Error::InvalidInput(message)) if message.contains("reference_id")
         ));

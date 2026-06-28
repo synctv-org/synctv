@@ -5,6 +5,7 @@ package synctv.admin;
 import "proto/buf/validate/validate.proto";
 import "proto/client.proto";
 import "proto/common.proto";
+import "proto/oauth2.proto";
 
 // Admin API for SyncTV - Requires admin or root permissions
 //
@@ -138,7 +139,7 @@ message AdminRoom {
   string creator_id = 3;
   string creator_username = 4;
   synctv.common.RoomStatus status = 5; // Room lifecycle status
-  bytes settings = 6;
+  synctv.client.RoomSettings settings = 6;
   int32 member_count = 7;
   int64 created_at = 8;
   int64 updated_at = 9;
@@ -155,7 +156,137 @@ message AdminRoom {
 
 message SettingsGroup {
   string name = 1;
-  bytes settings = 2; // JSON settings
+  oneof settings {
+    ServerSettings server = 2;
+    PermissionSettings permissions = 3;
+    RoomPolicySettings room = 4;
+    UserSettings user = 5;
+    OAuth2Settings oauth2 = 6;
+    ProxySettings proxy = 7;
+    RtmpSettings rtmp = 8;
+    EmailSettings email = 9;
+    WebRtcSettings webrtc = 10;
+    ChatSettings chat = 11;
+    CorsSettings cors = 12;
+  }
+}
+
+message ServerSettings {
+  bool allow_room_creation = 1;
+  int64 max_rooms_per_user = 2;
+  int64 max_members_per_room = 3;
+  uint64 max_chat_messages = 4;
+}
+
+message PermissionSettings {
+  uint64 admin_default_permissions = 1;
+  uint64 member_default_permissions = 2;
+  uint64 guest_default_permissions = 3;
+}
+
+enum RoomPasswordPolicy {
+  ROOM_PASSWORD_POLICY_UNSPECIFIED = 0;
+  ROOM_PASSWORD_POLICY_OPTIONAL = 1;
+  ROOM_PASSWORD_POLICY_REQUIRED = 2;
+  ROOM_PASSWORD_POLICY_FORBIDDEN = 3;
+}
+
+message RoomPolicySettings {
+  bool disable_create_room = 1;
+  bool create_room_need_review = 2;
+  RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+}
+
+message UserSettings {
+  bool enable_password_signup = 1;
+  bool password_signup_need_review = 2;
+  bool enable_email_signup = 3;
+  bool email_signup_need_review = 4;
+  bool enable_webauthn_signup = 5;
+  bool webauthn_signup_need_review = 6;
+  bool enable_guest = 7;
+}
+
+message OAuth2Settings {
+  repeated OAuth2ProviderSettings providers = 1;
+}
+
+message OAuth2ProviderSettings {
+  string instance_name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^[A-Za-z0-9_-]+$"
+  }];
+  bool enable_signup = 2;
+  bool signup_need_review = 3;
+  oneof config {
+    OAuth2BasicProviderConfig github = 4;
+    OAuth2BasicProviderConfig google = 5;
+    OAuth2LogtoProviderConfig logto = 6;
+    OAuth2OidcProviderConfig oidc = 7;
+    OAuth2OidcProviderConfig casdoor = 8;
+  }
+}
+
+message OAuth2BasicProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
+}
+
+message OAuth2LogtoProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
+  string endpoint = 4;
+}
+
+message OAuth2OidcProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
+  string issuer = 4;
+  optional string auth_url = 5;
+  optional string token_url = 6;
+  optional string userinfo_url = 7;
+  optional string jwks_url = 8;
+}
+
+message ProxySettings {
+  bool movie_proxy = 1;
+  bool live_proxy = 2;
+}
+
+message RtmpSettings {
+  string custom_publish_host = 1;
+  bool ts_disguised_as_png = 2;
+}
+
+message EmailSettings {
+  bool enabled = 1;
+  string smtp_host = 2;
+  uint32 smtp_port = 3;
+  string smtp_username = 4;
+  string smtp_password = 5;
+  bool use_tls = 6;
+  string from_email = 7;
+  string from_name = 8;
+  bool whitelist_enabled = 9;
+  repeated string whitelist_domains = 10;
+}
+
+message WebRtcSettings {
+  repeated synctv.client.IceServer external_ice_servers = 1;
+}
+
+message ChatSettings {
+  uint64 max_messages_per_room = 1;
+  uint64 max_pinned_messages_per_room = 2;
+  int64 message_retention_days = 3;
+}
+
+message CorsSettings {
+  repeated string allowed_origins = 1;
 }
 
 enum BanTargetType {
@@ -200,7 +331,7 @@ message UserRegistrationReview {
   int64 reviewed_at = 7;
   optional string reviewed_by = 8;
   optional string rejection_reason = 9;
-  optional string oauth2_provider = 10; // Provider type, e.g. "github" or "oidc".
+  optional synctv.client.OAuth2ProviderType oauth2_provider = 10;
   optional string oauth2_provider_user_id = 11;
   optional string oauth2_provider_username = 12;
   optional string oauth2_avatar_url = 13;
@@ -277,7 +408,7 @@ message ContentReport {
   string target_chat_message_preview = 17;
   string reason_code = 18;
   string reason = 19;
-  bytes metadata = 20;
+  synctv.client.ContentReportMetadata metadata = 20;
   ContentReportStatus status = 21;
   string reviewed_by = 22;
   string reviewed_by_username = 23;
@@ -311,7 +442,19 @@ message GetSettingsGroupResponse {
 
 message UpdateSettingsRequest {
   string group = 1;
-  map<string, string> settings = 2;
+  oneof settings {
+    ServerSettings server = 2;
+    PermissionSettings permissions = 3;
+    RoomPolicySettings room = 4;
+    UserSettings user = 5;
+    OAuth2Settings oauth2 = 6;
+    ProxySettings proxy = 7;
+    RtmpSettings rtmp = 8;
+    EmailSettings email = 9;
+    WebRtcSettings webrtc = 10;
+    ChatSettings chat = 11;
+    CorsSettings cors = 12;
+  }
 }
 
 message UpdateSettingsResponse {
@@ -931,7 +1074,7 @@ message GetRoomSettingsRequest {
 }
 
 message GetRoomSettingsResponse {
-  bytes settings = 1; // JSON settings
+  synctv.client.RoomSettings settings = 1;
   int64 version = 2;
 }
 
@@ -941,7 +1084,7 @@ message UpdateRoomSettingsRequest {
     max_len: 64
     pattern: "^room_[A-Za-z0-9]+$"
   }];
-  bytes settings = 2; // JSON settings
+  synctv.client.RoomSettingsPatch settings = 2 [(buf.validate.field).required = true];
 }
 
 message UpdateRoomSettingsResponse {
@@ -1168,8 +1311,13 @@ message GetSystemStatsResponse {
   int32 banned_rooms = 6;
   int32 total_media = 7;
   int32 provider_instances = 8; // Total media provider instances
-  bytes additional_stats = 9; // JSON for extensibility
+  SystemAdditionalStats additional_stats = 9;
   synctv.common.PresenceOverview presence = 10;
+}
+
+message SystemAdditionalStats {
+  int32 active_streams = 1;
+  int32 open_reports = 2;
 }
 
 // =========================

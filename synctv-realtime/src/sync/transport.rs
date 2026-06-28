@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 use super::dedup::MessageDeduplicator;
-use super::events::RealtimeEvent;
 use super::redis_pubsub::PublishRequest;
 use super::runtime::RoomMessageRuntime;
+use super::RealtimeEvent;
 use crate::error::Result;
 use synctv_core::models::RoomId;
 

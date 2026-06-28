@@ -198,7 +198,7 @@ mod tests {
             CredentialEncryption::new(&test_key()),
             "encryption should build",
         );
-        let original = json!({"api_key": "secret123"});
+        let original = json!({"apiKey": "secret123"});
 
         let encrypted_value = ok(
             enc.encrypt_to_value(&original),

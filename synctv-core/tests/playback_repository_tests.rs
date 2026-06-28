@@ -4,7 +4,8 @@
 
 use chrono::Utc;
 use synctv_core::models::{
-    FromProviderParams, Media, MediaId, Playlist, PlaylistId, RoomMember, RoomRole, SourceProvider,
+    FromProviderParams, Media, MediaId, Playlist, PlaylistId, ProviderTarget, RoomMember, RoomRole,
+    SourceProvider,
 };
 use synctv_core::{
     models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
@@ -90,7 +91,7 @@ async fn attach_test_media(
     );
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     ok(
         playback_repo.update(&state).await,
@@ -454,7 +455,7 @@ async fn test_playback_state_rejects_cross_room_media_and_playlist_references() 
     );
     state.playing_media_id = Some(media_b.id);
     state.playing_playlist_id = None;
-    state.target = Vec::new();
+    state.target = None;
 
     let result = playback_repo.update(&state).await;
     assert!(
@@ -538,7 +539,7 @@ async fn test_deleting_playing_media_is_rejected_while_playback_references_it() 
     );
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target = Vec::new();
+    state.target = None;
     let _updated = ok(
         playback_repo.update(&state).await,
         "playback state should update",
@@ -643,7 +644,7 @@ async fn test_deleting_playing_playlist_is_rejected_while_playback_references_it
     );
     state.playing_media_id = None;
     state.playing_playlist_id = Some(playlist.id);
-    state.target = br#"{"relative_path":"/currently-playing.mp4"}"#.to_vec();
+    state.target = Some(ProviderTarget::alist("/currently-playing.mp4".to_string()));
     let _updated = ok(
         playback_repo.update(&state).await,
         "playback state should update",

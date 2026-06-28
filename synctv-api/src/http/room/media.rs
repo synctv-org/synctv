@@ -10,18 +10,18 @@ use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ClearPlaylistRequest,
     ClearPlaylistResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
-    DeleteMediaRequest, DeleteMediaResponse, EditMediaResponse, ListPlaylistItemsRequest,
-    MoveMediaRequest, MoveMediaResponse,
+    DeleteMediaRequest, DeleteMediaResponse, EditMediaRequest, EditMediaResponse,
+    ListPlaylistItemsRequest, MoveMediaRequest, MoveMediaResponse,
 };
 
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/media",
+        path = "/api/rooms/{roomId}/media",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = AddMediaRequest,
         responses(
@@ -61,11 +61,11 @@ pub async fn add_media(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/media/{media_id}",
+        path = "/api/rooms/{roomId}/media/{mediaId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID"),
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID"),
             ("force" = Option<bool>, Query, description = "Force delete")
         ),
         responses(
@@ -109,10 +109,10 @@ pub async fn delete_media(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/entries",
+        path = "/api/rooms/{roomId}/entries",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = DeleteEntriesRequest,
         responses(
@@ -152,10 +152,10 @@ pub async fn delete_entries(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/media/move",
+        path = "/api/rooms/{roomId}/media/move",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = MoveMediaRequest,
         responses(
@@ -195,10 +195,10 @@ pub async fn move_media(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/media/list",
+        path = "/api/rooms/{roomId}/media/list",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = ListPlaylistItemsRequest,
         responses(
@@ -237,10 +237,10 @@ pub async fn list_playlist_items(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/media/batch",
+        path = "/api/rooms/{roomId}/media/batch",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = AddMediaBatchRequest,
         responses(
@@ -280,13 +280,13 @@ pub async fn push_media_batch(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/media/{media_id}",
+        path = "/api/rooms/{roomId}/media/{mediaId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
-        request_body = synctv_proto::client::EditMediaRequest,
+        request_body = EditMediaRequest,
         responses(
             (status = 200, description = "Media updated", body = EditMediaResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -301,7 +301,7 @@ pub async fn edit_media(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-    Json(mut req): Json<synctv_proto::client::EditMediaRequest>,
+    Json(mut req): Json<EditMediaRequest>,
 ) -> AppResult<Json<EditMediaResponse>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.media_id = media_id;
@@ -325,10 +325,10 @@ pub async fn edit_media(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/rooms/{room_id}/media",
+        path = "/api/rooms/{roomId}/media",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = ClearPlaylistRequest,
         responses(
@@ -367,11 +367,11 @@ pub async fn clear_playlist(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/media/{media_id}",
+        path = "/api/rooms/{roomId}/media/{mediaId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("media_id" = String, Path, description = "Media ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("mediaId" = String, Path, description = "Media ID")
         ),
         responses(
             (status = 200, description = "Media details", body = synctv_proto::client::Media),
@@ -409,11 +409,11 @@ pub async fn get_media(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/playlists/{playlist_id}",
+        path = "/api/rooms/{roomId}/playlists/{playlistId}",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
-            ("playlist_id" = String, Path, description = "Playlist ID")
+            ("roomId" = String, Path, description = "Room ID"),
+            ("playlistId" = String, Path, description = "Playlist ID")
         ),
         responses(
             (status = 200, description = "Playlist details", body = synctv_proto::client::GetPlaylistResponse),

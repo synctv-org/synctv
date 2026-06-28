@@ -104,7 +104,7 @@ impl PlaybackStateCache {
     ///
     /// Updates both L1 and L2 caches.
     pub async fn set(&self, room_id: &RoomId, state: RoomPlaybackState) -> Result<()> {
-        self.inner.set(room_id, state).await
+        self.inner.set_timestamped(room_id, state).await
     }
 
     /// Set playback state in cache only if it's newer than existing data

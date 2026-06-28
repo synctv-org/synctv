@@ -11,7 +11,7 @@ use crate::admin_client::AdminConnectionOptions;
 use super::commands::*;
 use super::completion::CompletionArgs;
 use super::human_output::ToHuman;
-use super::output::{print_structured_output, RemoteOutputFormat};
+use super::output::{print_humanized_structured_output, print_json, RemoteOutputFormat};
 
 pub(in crate::cli) const CLI_NAMED_PERMISSIONS: &[(&str, u64)] = &[
     ("chat", RoomAdminPermissionBits::CHAT),
@@ -237,7 +237,12 @@ impl RemoteAccessArgs {
     where
         T: ?Sized + serde::Serialize + ToHuman,
     {
-        print_structured_output(self.output, value)
+        match self.output {
+            RemoteOutputFormat::Json => print_json(value),
+            RemoteOutputFormat::Human | RemoteOutputFormat::Yaml => {
+                print_humanized_structured_output(self.output, value)
+            }
+        }
     }
 }
 
@@ -650,7 +655,6 @@ impl CliRoomStreamSortField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "snake_case")]
 pub enum CliSourceProvider {
     DirectUrl,
     Bilibili,

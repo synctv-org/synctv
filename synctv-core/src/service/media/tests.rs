@@ -1,5 +1,24 @@
 use super::*;
 
+fn direct_url_media_source_config(url: impl Into<String>) -> crate::models::MediaSourceConfig {
+    crate::models::MediaSourceConfig::DirectUrl(crate::models::DirectUrlMediaSourceConfig {
+        is_live: None,
+        duration_seconds: None,
+        prefer_proxy: None,
+        medias: vec![crate::models::DirectUrlMediaResourceConfig {
+            name: String::new(),
+            url: url.into(),
+            headers: std::collections::HashMap::new(),
+            format: String::new(),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
+    })
+}
+
 #[test]
 fn media_edit_requires_matching_creator() {
     let creator_id = UserId::expect_positive(10);
@@ -13,9 +32,7 @@ fn media_edit_requires_matching_creator() {
         position: 1.0,
         source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
-        source_config: synctv_core_testing::direct_url_media_source_config(
-            "https://example.com/video.mp4",
-        ),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 1,

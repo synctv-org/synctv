@@ -202,7 +202,7 @@ mod tests {
                 size_bytes,
                 checksum_sha256: "a".repeat(64),
             }],
-            metadata: serde_json::json!({}),
+            metadata: crate::models::FileMetadata::default(),
             policy,
         }
     }

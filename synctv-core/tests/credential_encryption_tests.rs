@@ -49,7 +49,7 @@ fn test_nested_json_structure() {
     let nested = json!({
         "provider": "emby",
         "credentials": {
-            "api_key": "abc123",
+            "apiKey": "abc123",
             "server": {
                 "host": "192.168.1.100",
                 "port": 8096,

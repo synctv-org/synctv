@@ -9,8 +9,6 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
-pub mod http_serde;
-
 pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
         prost_reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)
@@ -62,6 +60,10 @@ pub mod common {
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
         "/synctv.common.rs"
     ));
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.common.serde.rs"
+    ));
 }
 
 // Provider source configuration contracts
@@ -72,6 +74,10 @@ pub mod source_config {
     include!(concat!(
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
         "/synctv.source_config.rs"
+    ));
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.source_config.serde.rs"
     ));
 }
 
@@ -84,6 +90,10 @@ pub mod client {
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
         "/synctv.client.rs"
     ));
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.client.serde.rs"
+    ));
 }
 
 // Admin API
@@ -93,6 +103,10 @@ pub mod admin {
     include!(concat!(
         env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
         "/synctv.admin.rs"
+    ));
+    include!(concat!(
+        env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+        "/synctv.admin.serde.rs"
     ));
 }
 
@@ -107,6 +121,10 @@ pub mod providers {
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.common.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.common.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -115,6 +133,10 @@ pub mod providers {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.rtmp.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.rtmp.serde.rs"
         ));
     }
 
@@ -125,6 +147,10 @@ pub mod providers {
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.bilibili.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.bilibili.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -134,6 +160,10 @@ pub mod providers {
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.alist.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.alist.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -142,6 +172,10 @@ pub mod providers {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
             "/synctv.provider.emby.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.emby.serde.rs"
         ));
     }
 }
@@ -157,6 +191,10 @@ pub mod playback_provider {
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.common.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.common.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -165,6 +203,10 @@ pub mod playback_provider {
         include!(concat!(
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.direct_url.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.direct_url.serde.rs"
         ));
     }
 
@@ -175,6 +217,10 @@ pub mod playback_provider {
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.alist.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.alist.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -183,6 +229,10 @@ pub mod playback_provider {
         include!(concat!(
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.emby.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.emby.serde.rs"
         ));
     }
 
@@ -193,6 +243,10 @@ pub mod playback_provider {
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.bilibili.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.bilibili.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -202,6 +256,10 @@ pub mod playback_provider {
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.rtmp.rs"
         ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.rtmp.serde.rs"
+        ));
     }
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
@@ -210,6 +268,10 @@ pub mod playback_provider {
         include!(concat!(
             env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
             "/synctv.playback_provider.live_proxy.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
+            "/synctv.playback_provider.live_proxy.serde.rs"
         ));
     }
 }
@@ -223,17 +285,15 @@ mod tests {
         error.to_string()
     }
 
-    fn direct_url_media_source_config(
-        url: &str,
-    ) -> Option<crate::source_config::MediaSourceConfig> {
-        Some(crate::source_config::MediaSourceConfig {
+    fn direct_url_media_source_config(url: &str) -> crate::source_config::MediaSourceConfig {
+        crate::source_config::MediaSourceConfig {
             provider: Some(
                 crate::source_config::media_source_config::Provider::DirectUrl(
                     crate::source_config::DirectUrlMediaSourceConfig {
                         medias: vec![crate::source_config::DirectUrlMediaResourceConfig {
                             name: String::new(),
                             url: url.to_string(),
-                            headers: Default::default(),
+                            headers: std::collections::HashMap::default(),
                             format: String::new(),
                         }],
                         default_media_index: None,
@@ -247,11 +307,11 @@ mod tests {
                     },
                 ),
             ),
-        })
+        }
     }
 
-    fn alist_media_source_config(path: &str) -> Option<crate::source_config::MediaSourceConfig> {
-        Some(crate::source_config::MediaSourceConfig {
+    fn alist_media_source_config(path: &str) -> crate::source_config::MediaSourceConfig {
+        crate::source_config::MediaSourceConfig {
             provider: Some(crate::source_config::media_source_config::Provider::Alist(
                 crate::source_config::AlistMediaSourceConfig {
                     server_id: "alist-main".to_string(),
@@ -259,13 +319,11 @@ mod tests {
                     password: None,
                 },
             )),
-        })
+        }
     }
 
-    fn alist_playlist_source_config(
-        path: &str,
-    ) -> Option<crate::source_config::PlaylistSourceConfig> {
-        Some(crate::source_config::PlaylistSourceConfig {
+    fn alist_playlist_source_config(path: &str) -> crate::source_config::PlaylistSourceConfig {
+        crate::source_config::PlaylistSourceConfig {
             provider: Some(
                 crate::source_config::playlist_source_config::Provider::Alist(
                     crate::source_config::AlistPlaylistSourceConfig {
@@ -275,7 +333,69 @@ mod tests {
                     },
                 ),
             ),
-        })
+        }
+    }
+
+    fn room_settings() -> crate::client::RoomSettings {
+        crate::client::RoomSettings {
+            allow_guest_join: true,
+            max_members: 8,
+            require_approval: false,
+            allow_auto_join: true,
+            chat_enabled: true,
+            auto_play: Some(crate::client::AutoPlaySettings {
+                enabled: true,
+                mode: crate::client::PlayMode::Sequential as i32,
+                delay: 0,
+            }),
+            admin_added_permissions: 0,
+            admin_removed_permissions: 0,
+            member_added_permissions: 0,
+            member_removed_permissions: 0,
+            guest_added_permissions: 0,
+            guest_removed_permissions: 0,
+        }
+    }
+
+    fn room_settings_patch() -> crate::client::RoomSettingsPatch {
+        crate::client::RoomSettingsPatch {
+            allow_guest_join: Some(true),
+            max_members: Some(8),
+            require_approval: None,
+            allow_auto_join: None,
+            chat_enabled: Some(true),
+            auto_play: Some(crate::client::AutoPlaySettingsPatch {
+                enabled: Some(true),
+                mode: Some(crate::client::PlayMode::Sequential as i32),
+                delay: Some(0),
+            }),
+            admin_added_permissions: None,
+            admin_removed_permissions: None,
+            member_added_permissions: None,
+            member_removed_permissions: None,
+            guest_added_permissions: None,
+            guest_removed_permissions: None,
+        }
+    }
+
+    fn emby_target(item_id: &str) -> crate::client::ProviderTarget {
+        crate::client::ProviderTarget {
+            target: Some(crate::client::provider_target::Target::Emby(
+                crate::client::EmbyTarget {
+                    item_id: item_id.to_string(),
+                },
+            )),
+        }
+    }
+
+    fn alist_target(relative_path: &str) -> crate::client::ProviderTarget {
+        crate::client::ProviderTarget {
+            target: Some(crate::client::provider_target::Target::Alist(
+                crate::client::AlistTarget {
+                    relative_path: relative_path.to_string(),
+                },
+            )),
+        }
     }
 
     // Verifies encode -> decode produces identical messages for critical types.
@@ -320,7 +440,7 @@ mod tests {
             name: "Movie Night".into(),
             created_by: "user-123".into(),
             status: crate::common::RoomStatus::Active.into(),
-            settings: b"{\"theme\":\"dark\"}".to_vec(),
+            settings: Some(room_settings()),
             created_at: 1_700_000_000,
             member_count: 5,
             description: "Synchronized movie room".into(),
@@ -371,7 +491,7 @@ mod tests {
             updated_at: 1_700_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
-            target: br#"{"item_id":"provider-item-42"}"#.to_vec(),
+            target: Some(emby_target("provider-item-42")),
             target_hash: "sample-target-hash".into(),
         };
         let bytes = state.encode_to_vec();
@@ -401,7 +521,7 @@ mod tests {
             delete_reason: String::new(),
             playback_media_id: String::new(),
             playback_playlist_id: String::new(),
-            playback_target: Vec::new(),
+            playback_target: None,
             playback_target_hash: String::new(),
             playback_position_seconds: None,
             reactions: vec![crate::client::ChatReactionSummary {
@@ -410,7 +530,7 @@ mod tests {
                 reacted_by_me: true,
             }],
             reaction_count: 2,
-            metadata: Vec::new(),
+            metadata: None,
             mentions: vec![crate::client::ChatMention {
                 user_id: "usr_1".into(),
                 username: "alice".into(),
@@ -435,7 +555,7 @@ mod tests {
                     client_message_id: "client-1".into(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -461,7 +581,7 @@ mod tests {
                             updated_at: 0,
                             version: 1,
                             playing_playlist_id: String::new(),
-                            target: Vec::new(),
+                            target: None,
                             target_hash: String::new(),
                         },
                     )),
@@ -480,7 +600,7 @@ mod tests {
             observe_id: "room_settings".into(),
             payload: Some(crate::client::resource_event::Payload::RoomSettings(
                 crate::client::GetRoomSettingsResponse {
-                    settings: br#"{"chat_enabled":true}"#.to_vec(),
+                    settings: Some(room_settings()),
                     version: 1,
                 },
             )),
@@ -611,18 +731,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_enum_value_preserved() {
-        // Simulate a future enum value (999) that this version doesn't know about
-        let user = crate::client::User {
-            role: 999,
-            ..Default::default()
-        };
-        let bytes = user.encode_to_vec();
-        let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
-        assert_eq!(decoded.role, 999); // prost preserves unknown enum values as i32
-    }
-
-    #[test]
     fn json_roundtrip_user() {
         let user = crate::client::User {
             id: "user-123".into(),
@@ -651,7 +759,7 @@ mod tests {
             updated_at: 1_700_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
-            target: Vec::new(),
+            target: None,
             target_hash: String::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
@@ -670,7 +778,7 @@ mod tests {
                     client_message_id: String::new(),
                     attachments: Vec::new(),
                     reply_to_message_id: String::new(),
-                    metadata: Vec::new(),
+                    metadata: None,
                     mentions: Vec::new(),
                 },
             )),
@@ -684,10 +792,14 @@ mod tests {
     fn roundtrip_user_notification() {
         let notification = crate::client::UserNotification {
             notification_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            notification_type: "room_invitation".to_string(),
+            notification_type: crate::client::NotificationType::RoomInvitation as i32,
             title: "Room Invitation".to_string(),
             content: "You have been invited to join a room".to_string(),
-            data: r#"{"room_id":"room123","room_name":"Test Room"}"#.to_string(),
+            data: Some(crate::client::NotificationData {
+                room_id: Some("room123".to_string()),
+                room_name: Some("Test Room".to_string()),
+                ..Default::default()
+            }),
             timestamp: 1_704_067_200, // 2024-01-01 00:00:00 UTC (seconds)
         };
         let bytes = notification.encode_to_vec();
@@ -706,10 +818,10 @@ mod tests {
 
         let notification = crate::client::UserNotification {
             notification_id: "notif-123".to_string(),
-            notification_type: "system".to_string(),
+            notification_type: crate::client::NotificationType::SystemAnnouncement as i32,
             title: "System Update".to_string(),
             content: "Server will restart in 10 minutes".to_string(),
-            data: String::new(),
+            data: Some(crate::client::NotificationData::default()),
             timestamp: 1_704_067_200,
         };
 
@@ -744,10 +856,10 @@ mod tests {
         let notification = crate::client::ServerMessage {
             message: Some(Message::Notification(crate::client::UserNotification {
                 notification_id: "notif-123".to_string(),
-                notification_type: "system".to_string(),
+                notification_type: crate::client::NotificationType::SystemAnnouncement as i32,
                 title: "Test".to_string(),
                 content: "Test notification".to_string(),
-                data: String::new(),
+                data: Some(crate::client::NotificationData::default()),
                 timestamp: 0,
             })),
         };
@@ -797,10 +909,10 @@ mod tests {
 
         let notification = crate::client::UserNotification {
             notification_id: "test-id".to_string(),
-            notification_type: "system".to_string(),
+            notification_type: crate::client::NotificationType::SystemAnnouncement as i32,
             title: "Test".to_string(),
             content: "Test".to_string(),
-            data: String::new(),
+            data: Some(crate::client::NotificationData::default()),
             timestamp: timestamp_seconds,
         };
 
@@ -857,24 +969,20 @@ mod tests {
     }
 
     #[test]
-    fn http_json_start_playback_request_accepts_json_target_blob() {
-        let json = r#"{"playlist_id":"playlist-123","target":{"item_id":"provider-item-1"}}"#;
+    fn http_json_start_playback_request_accepts_structured_target() {
+        let json =
+            r#"{"playlistId":"playlist-123","target":{"emby":{"itemId":"provider-item-1"}}}"#;
 
         let decoded: crate::client::StartPlaybackRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
         assert_eq!(decoded.playlist_id, "playlist-123");
-        let target_json: serde_json::Value =
-            serde_json::from_slice(&decoded.target).expect("target bytes should contain JSON");
-        assert_eq!(
-            target_json,
-            serde_json::json!({"item_id":"provider-item-1"})
-        );
+        assert_eq!(decoded.target, Some(emby_target("provider-item-1")));
     }
 
     #[test]
-    fn http_json_create_playlist_request_accepts_object_source_config() {
-        let json = r#"{"name":"Season 1","source_provider":"alist","source_config":{"alist":{"server_id":"alist-main","path":"/tv"}}}"#;
+    fn http_json_create_playlist_request_accepts_proto_json_source_config() {
+        let json = r#"{"name":"Season 1","sourceProvider":3,"sourceConfig":{"alist":{"serverId":"alist-main","path":"/tv"}}}"#;
 
         let decoded: crate::client::CreatePlaylistRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
@@ -884,58 +992,58 @@ mod tests {
             decoded.source_provider,
             crate::source_config::SourceProvider::Alist as i32
         );
-        assert_eq!(decoded.source_config, alist_playlist_source_config("/tv"));
+        assert_eq!(
+            decoded.source_config,
+            Some(alist_playlist_source_config("/tv"))
+        );
 
         let encoded = serde_json::to_value(&decoded).expect("request should serialize");
         assert_eq!(
-            encoded["source_config"],
-            serde_json::json!({
-                "alist": {
-                    "server_id": "alist-main",
-                    "path": "/tv",
-                    "password": null
-                }
-            })
+            encoded["sourceProvider"],
+            crate::source_config::SourceProvider::Alist as i32
+        );
+        assert_eq!(
+            encoded["sourceConfig"],
+            serde_json::to_value(alist_playlist_source_config("/tv"))
+                .expect("source config should serialize")
         );
     }
 
     #[test]
     fn http_json_create_playlist_request_rejects_untyped_source_config() {
-        let json = r#"{"name":"Season 1","source_provider":"alist","source_config":[1,2,3]}"#;
+        let json = r#"{"name":"Season 1","sourceProvider":3,"sourceConfig":[1,2,3]}"#;
 
         serde_json::from_str::<crate::client::CreatePlaylistRequest>(json)
             .expect_err("source_config requires a typed provider object");
     }
 
     #[test]
-    fn http_json_json_bytes_serialization_rejects_invalid_json_bytes() {
+    fn http_json_provider_target_serialization_uses_object() {
         let response = crate::client::PlaylistBrowsePathNode {
             playlist_id: "playlist-1".to_string(),
             name: "Season 1".to_string(),
-            target: vec![0xff, 0x00, b'n'],
+            target: Some(alist_target("/Season 1")),
         };
 
-        let error = serde_json::to_string(&response)
-            .expect_err("invalid JSON bytes must not serialize as lossy byte arrays");
+        let json = serde_json::to_value(&response).expect("target should serialize");
 
-        assert!(
-            error.to_string().contains("invalid JSON"),
-            "unexpected error: {error}"
+        assert_eq!(
+            json["target"],
+            serde_json::to_value(alist_target("/Season 1")).expect("target should serialize")
         );
     }
 
     #[test]
-    fn http_json_json_bytes_empty_value_serializes_as_null() {
+    fn http_json_empty_bytes_field_is_omitted() {
         let response = crate::client::PlaylistBrowsePathNode {
             playlist_id: "playlist-1".to_string(),
             name: "Season 1".to_string(),
-            target: Vec::new(),
+            target: None,
         };
 
-        let json =
-            serde_json::to_value(&response).expect("empty JSON bytes should remain serializable");
+        let json = serde_json::to_value(&response).expect("empty bytes should serialize");
 
-        assert_eq!(json["target"], serde_json::Value::Null);
+        assert!(json.get("target").is_none());
     }
 
     #[test]
@@ -962,7 +1070,7 @@ mod tests {
 
     #[test]
     fn http_json_update_user_username_request_accepts_new_username_field() {
-        let json = r#"{"new_username":"patched-name"}"#;
+        let json = r#"{"newUsername":"patched-name"}"#;
 
         let decoded: crate::admin::UpdateUserUsernameRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
@@ -984,7 +1092,7 @@ mod tests {
 
     #[test]
     fn http_json_update_room_password_request_accepts_new_password_field() {
-        let json = r#"{"new_password":"new-room-password"}"#;
+        let json = r#"{"newPassword":"new-room-password"}"#;
 
         let decoded: crate::admin::UpdateRoomPasswordRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto");
@@ -994,47 +1102,32 @@ mod tests {
     }
 
     #[test]
-    fn http_json_update_room_settings_request_accepts_json_blob_and_path_default() {
-        let json = r#"{"theme":"dark","guest_enabled":true}"#;
+    fn http_json_update_room_settings_request_accepts_structured_settings() {
+        let json = r#"{"settings":{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#;
 
         let decoded: crate::admin::UpdateRoomSettingsRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
         assert_eq!(decoded.room_id, "");
-        let settings_json: serde_json::Value =
-            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
-        assert_eq!(
-            settings_json,
-            serde_json::json!({"theme":"dark","guest_enabled":true})
-        );
+        assert_eq!(decoded.settings, Some(room_settings_patch()));
     }
 
     #[test]
-    fn http_json_client_update_room_settings_request_accepts_raw_json_body() {
-        let json = r#"{"theme":"dark","guest_enabled":true}"#;
+    fn http_json_client_update_room_settings_request_accepts_structured_settings() {
+        let json = r#"{"settings":{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#;
 
         let decoded: crate::client::UpdateRoomSettingsRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
-        let settings_json: serde_json::Value =
-            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
-        assert_eq!(
-            settings_json,
-            serde_json::json!({"theme":"dark","guest_enabled":true})
-        );
+        assert_eq!(decoded.settings, Some(room_settings_patch()));
     }
 
     #[test]
-    fn http_json_client_update_room_settings_request_preserves_array_body() {
-        let json = r"[1,2,3]";
+    fn http_json_client_update_room_settings_request_rejects_array_settings() {
+        let json = r#"{"settings":"WzEsMiwzXQ=="}"#;
 
-        let decoded: crate::client::UpdateRoomSettingsRequest =
-            serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
-
-        assert_eq!(decoded.settings, br"[1,2,3]".to_vec());
-        let settings_json: serde_json::Value =
-            serde_json::from_slice(&decoded.settings).expect("settings bytes should contain JSON");
-        assert_eq!(settings_json, serde_json::json!([1, 2, 3]));
+        serde_json::from_str::<crate::client::UpdateRoomSettingsRequest>(json)
+            .expect_err("room settings must be a structured object");
     }
 
     #[test]
@@ -1060,7 +1153,7 @@ mod tests {
     #[test]
     fn http_json_update_member_permissions_request_accepts_numeric_role() {
         let json = format!(
-            r#"{{"role":{},"added_permissions":7}}"#,
+            r#"{{"role":{},"addedPermissions":7}}"#,
             crate::common::RoomMemberRole::Guest as i32
         );
 
@@ -1075,7 +1168,7 @@ mod tests {
     #[test]
     fn http_json_update_member_permissions_request_defaults_missing_role() {
         let decoded: crate::client::UpdateMemberPermissionsRequest =
-            serde_json::from_str(r#"{"added_permissions":7}"#)
+            serde_json::from_str(r#"{"addedPermissions":7}"#)
                 .expect("missing role should default to unspecified");
 
         assert_eq!(
@@ -1088,7 +1181,7 @@ mod tests {
     #[test]
     fn http_json_update_member_permissions_request_rejects_string_role() {
         let err = serde_json::from_str::<crate::client::UpdateMemberPermissionsRequest>(
-            r#"{"role":"guest","added_permissions":7}"#,
+            r#"{"role":"guest","addedPermissions":7}"#,
         )
         .expect_err("string room role should be rejected");
 
@@ -1098,7 +1191,7 @@ mod tests {
     #[test]
     fn http_json_kick_member_request_defaults_user_id_only() {
         let decoded: crate::client::KickMemberRequest =
-            serde_json::from_str(r#"{"kick_cooldown_seconds":300}"#)
+            serde_json::from_str(r#"{"kickCooldownSeconds":300}"#)
                 .expect("path-populated user_id should default");
 
         assert_eq!(decoded.user_id, "");
@@ -1107,7 +1200,7 @@ mod tests {
 
     #[test]
     fn http_json_admin_kick_stream_request_defaults_reason() {
-        let json = r#"{"room_id":"room-1","media_id":"media-1"}"#;
+        let json = r#"{"roomId":"room-1","mediaId":"media-1"}"#;
 
         let decoded: crate::admin::KickStreamRequest =
             serde_json::from_str(json).expect("optional reason should default");
@@ -1185,7 +1278,7 @@ mod tests {
     #[test]
     fn http_json_move_playlist_request_deserializes_flat_anchor_fields() {
         let decoded: crate::client::MovePlaylistRequest =
-            serde_json::from_str(r#"{"before_playlist_id":"playlist-2"}"#)
+            serde_json::from_str(r#"{"beforePlaylistId":"playlist-2"}"#)
                 .expect("flat oneof fields should deserialize");
 
         assert!(decoded.playlist_id.is_empty());
@@ -1211,7 +1304,7 @@ mod tests {
     #[test]
     fn http_json_move_playlist_request_rejects_multiple_anchors() {
         let err = serde_json::from_str::<crate::client::MovePlaylistRequest>(
-            r#"{"before_playlist_id":"playlist-1","after_playlist_id":"playlist-2"}"#,
+            r#"{"beforePlaylistId":"playlist-1","afterPlaylistId":"playlist-2"}"#,
         )
         .expect_err("multiple anchors must be rejected");
 
@@ -1235,24 +1328,18 @@ mod tests {
                 .expect("missing create-room optional fields should default");
 
         assert_eq!(decoded.name, "Movie Night");
-        assert!(decoded.settings.is_empty());
+        assert!(decoded.settings.is_none());
         assert_eq!(decoded.description, "");
     }
 
     #[test]
-    fn http_json_create_room_request_preserves_json_settings_body() {
+    fn http_json_create_room_request_accepts_structured_settings() {
         let decoded: crate::client::CreateRoomRequest = serde_json::from_str(
-            r#"{"name":"Movie Night","description":"","settings":{"allowGuests":true,"maxUsers":8}}"#,
+            r#"{"name":"Movie Night","description":"","settings":{"allowGuestJoin":true,"maxMembers":8,"allowAutoJoin":true,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#,
         )
-        .expect("room settings JSON should serialize into proto bytes");
+        .expect("room settings object should deserialize");
 
-        let settings_json: serde_json::Value = serde_json::from_slice(&decoded.settings)
-            .expect("settings bytes should contain encoded JSON");
-
-        assert_eq!(
-            settings_json,
-            serde_json::json!({"allowGuests": true, "maxUsers": 8})
-        );
+        assert_eq!(decoded.settings, Some(room_settings()));
     }
 
     #[test]
@@ -1329,7 +1416,7 @@ mod tests {
 
     #[test]
     fn http_json_alist_list_request_defaults_optional_query_like_fields() {
-        let json = r#"{"server_id":"server-1","path":"/tv"}"#;
+        let json = r#"{"serverId":"server-1","path":"/tv"}"#;
 
         let decoded: crate::providers::alist::ListRequest =
             serde_json::from_str(json).expect("missing optional provider fields should default");
@@ -1354,7 +1441,7 @@ mod tests {
     #[test]
     fn http_json_emby_login_request_defaults_instance_name() {
         let json =
-            r#"{"host":"https://emby.example.com","username":"admin","api_key":"secret-api-key"}"#;
+            r#"{"host":"https://emby.example.com","username":"admin","apiKey":"secret-api-key"}"#;
 
         let decoded: crate::providers::emby::LoginRequest =
             serde_json::from_str(json).expect("missing optional instance_name should default");
@@ -1373,13 +1460,13 @@ mod tests {
     #[test]
     fn http_json_provider_login_requests_reject_duplicate_credentials() {
         let alist_err = serde_json::from_str::<crate::providers::alist::LoginRequest>(
-            r#"{"host":"https://alist.example.com","username":"user","password":"pass","hashed_password":"hash"}"#,
+            r#"{"host":"https://alist.example.com","username":"user","password":"pass","hashedPassword":"hash"}"#,
         )
         .expect_err("alist login should reject multiple credentials");
         assert!(alist_err.is_data());
 
         let emby_err = serde_json::from_str::<crate::providers::emby::LoginRequest>(
-            r#"{"host":"https://emby.example.com","username":"admin","password":"pass","api_key":"token"}"#,
+            r#"{"host":"https://emby.example.com","username":"admin","password":"pass","apiKey":"token"}"#,
         )
         .expect_err("emby login should reject multiple credentials");
         assert!(emby_err.is_data());
@@ -1387,17 +1474,24 @@ mod tests {
 
     #[test]
     fn http_json_provider_requests_reject_missing_required_fields() {
-        let emby_err = serde_json::from_str::<crate::providers::emby::GetMeRequest>("{}")
-            .expect_err("missing server_id should fail");
-        assert!(emby_err.is_data());
+        let emby: crate::providers::emby::GetMeRequest =
+            serde_json::from_str("{}").expect("proto3 defaults missing strings");
+        let emby_err =
+            crate::validate(&emby).expect_err("missing server_id should fail validation");
+        assert!(validation_error_text(&emby_err).contains("server_id"));
 
-        let alist_err = serde_json::from_str::<crate::providers::alist::LoginRequest>("{}")
-            .expect_err("missing host and username should fail");
-        assert!(alist_err.is_data());
+        let alist: crate::providers::alist::LoginRequest =
+            serde_json::from_str("{}").expect("proto3 defaults missing strings");
+        let alist_err =
+            crate::validate(&alist).expect_err("missing host and username should fail validation");
+        let alist_error = validation_error_text(&alist_err);
+        assert!(alist_error.contains("host") || alist_error.contains("username"));
 
-        let bilibili_err = serde_json::from_str::<crate::providers::bilibili::CheckQrRequest>("{}")
-            .expect_err("missing QR key should fail");
-        assert!(bilibili_err.is_data());
+        let bilibili: crate::providers::bilibili::CheckQrRequest =
+            serde_json::from_str("{}").expect("proto3 defaults missing strings");
+        let bilibili_err =
+            crate::validate(&bilibili).expect_err("missing QR key should fail validation");
+        assert!(validation_error_text(&bilibili_err).contains("key"));
     }
 
     #[test]
@@ -1438,7 +1532,7 @@ mod tests {
     #[test]
     fn http_json_login_identifier_transports_accept_flat_fields() {
         let opaque: crate::client::StartOpaqueLoginRequest =
-            serde_json::from_str(r#"{"email":"alice@example.com","credential_request":"AQID"}"#)
+            serde_json::from_str(r#"{"email":"alice@example.com","credentialRequest":"AQID"}"#)
                 .expect("OPAQUE login request should deserialize flat email");
         assert!(matches!(
             opaque.identifier,
@@ -1515,7 +1609,7 @@ mod tests {
         crate::validate(&email_registration).expect("email registration request should validate");
 
         let email_confirmation: crate::client::ConfirmEmailRegistrationRequest =
-            serde_json::from_str(r#"{"email_token":"token-123","password":"StrongPass1"}"#)
+            serde_json::from_str(r#"{"emailToken":"token-123","password":"StrongPass1"}"#)
                 .expect("email registration confirmation should deserialize");
         assert_eq!(email_confirmation.email_token, "token-123");
         assert_eq!(email_confirmation.password, "StrongPass1");
@@ -1527,7 +1621,7 @@ mod tests {
     fn http_json_login_identifier_transports_reject_unknown_fields() {
         assert!(
             serde_json::from_str::<crate::client::StartOpaqueLoginRequest>(
-                r#"{"email":"alice@example.com","credential_request":"AQID","extra":true}"#
+                r#"{"email":"alice@example.com","credentialRequest":"AQID","extra":true}"#
             )
             .is_err()
         );
@@ -1548,14 +1642,14 @@ mod tests {
     #[test]
     fn http_json_provider_login_requests_reject_unknown_fields() {
         assert!(
-            serde_json::from_str::<crate::http_serde::AlistLoginRequestDef>(
+            serde_json::from_str::<crate::providers::alist::LoginRequest>(
                 r#"{"host":"https://alist.example.com","username":"alice","password":"password","extra":true}"#
             )
             .is_err()
         );
         assert!(
-            serde_json::from_str::<crate::http_serde::EmbyLoginRequestDef>(
-                r#"{"host":"https://emby.example.com","username":"alice","api_key":"key","extra":true}"#
+            serde_json::from_str::<crate::providers::emby::LoginRequest>(
+                r#"{"host":"https://emby.example.com","username":"alice","apiKey":"key","extra":true}"#
             )
             .is_err()
         );
@@ -1587,7 +1681,7 @@ mod tests {
     fn validate_create_room_request_rejects_html_name_and_long_description() {
         let request = crate::client::CreateRoomRequest {
             name: "<script>alert(1)</script>".into(),
-            settings: Vec::new(),
+            settings: None,
             description: "x".repeat(501),
             password: String::new(),
             category_id: String::new(),
@@ -1755,7 +1849,7 @@ mod tests {
         };
         let items = crate::client::ListPlaylistItemsRequest {
             playlist_id: String::new(),
-            target: Vec::new(),
+            target: None,
             page: -1,
             page_size: 101,
             search: String::new(),
@@ -1794,7 +1888,7 @@ mod tests {
 
         crate::validate(&crate::client::ListPlaylistItemsRequest {
             playlist_id: String::new(),
-            target: Vec::new(),
+            target: None,
             page: 0,
             page_size: 0,
             search: String::new(),
@@ -2045,7 +2139,7 @@ mod tests {
             name: "Dynamic".into(),
             parent_id: String::new(),
             source_provider: crate::source_config::SourceProvider::Alist as i32,
-            source_config: alist_playlist_source_config("/tv"),
+            source_config: Some(alist_playlist_source_config("/tv")),
             provider_instance_name: String::new(),
             description: String::new(),
         })
@@ -2140,7 +2234,7 @@ mod tests {
             playlist_id: None,
             source_provider: crate::source_config::SourceProvider::Alist as i32,
             provider_instance_name: String::new(),
-            source_config: alist_media_source_config("/tv"),
+            source_config: Some(alist_media_source_config("/tv")),
             name: String::new(),
             description: String::new(),
         })
@@ -2154,7 +2248,9 @@ mod tests {
                 playlist_id: None,
                 source_provider: crate::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
-                source_config: direct_url_media_source_config("https://example.com/video.mp4"),
+                source_config: Some(direct_url_media_source_config(
+                    "https://example.com/video.mp4",
+                )),
                 name: "a".repeat(501),
                 description: String::new(),
             })
@@ -2170,7 +2266,9 @@ mod tests {
             playlist_id: None,
             source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
-            source_config: direct_url_media_source_config("https://example.com/video.mp4"),
+            source_config: Some(direct_url_media_source_config(
+                "https://example.com/video.mp4",
+            )),
             name: String::new(),
             description: String::new(),
         };
@@ -2190,7 +2288,7 @@ mod tests {
             &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: "media-1".into(),
                 playlist_id: "playlist-1".into(),
-                target: Vec::new(),
+                target: None,
             })
             .unwrap_err(),
         );
@@ -2207,7 +2305,7 @@ mod tests {
             &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: "media-1".into(),
                 playlist_id: String::new(),
-                target: br#"{"provider":"alist"}"#.to_vec(),
+                target: Some(alist_target("/tv")),
             })
             .unwrap_err(),
         );
@@ -2221,7 +2319,7 @@ mod tests {
             &crate::validate(&crate::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: "playlist-1".into(),
-                target: Vec::new(),
+                target: None,
             })
             .unwrap_err(),
         );
@@ -2268,16 +2366,16 @@ mod tests {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
 
         let decoded: crate::client::StartOpaqueLoginRequest =
-            serde_json::from_str(r#"{"username":"alice","credential_request":"AQID/w=="}"#)
+            serde_json::from_str(r#"{"username":"alice","credentialRequest":"AQID/w=="}"#)
                 .expect("OPAQUE login request should deserialize from base64 bytes");
         assert_eq!(decoded.credential_request, vec![1, 2, 3, 255]);
 
         let decoded: crate::client::StartOpaquePasswordUpdateRequest = serde_json::from_str(
             r#"{
-                "credential_request":"BAUG",
-                "registration_request":"BwgJ",
-                "verification_method":1,
-                "email_token":""
+                "credentialRequest":"BAUG",
+                "registrationRequest":"BwgJ",
+                "verificationMethod":1,
+                "emailToken":""
             }"#,
         )
         .expect("OPAQUE password update request should deserialize from base64 bytes");
@@ -2286,11 +2384,10 @@ mod tests {
 
         let decoded: crate::client::FinishOpaquePasswordUpdateRequest = serde_json::from_str(
             r#"{
-                "session_id":"opaque-session",
-                "credential_finalization":"Cgs=",
-                "registration_upload":"DA0=",
-                "passkey_session_id":"",
-                "passkey_credential":{}
+                "sessionId":"opaque-session",
+                "credentialFinalization":"Cgs=",
+                "registrationUpload":"DA0=",
+                "passkeySessionId":""
             }"#,
         )
         .expect("OPAQUE password update finish should deserialize from base64 bytes");
@@ -2300,42 +2397,52 @@ mod tests {
         let decoded: crate::client::FinishSensitiveOperationVerificationRequest =
             serde_json::from_str(
                 r#"{
-                    "session_id":"sensitive-session",
+                    "sessionId":"sensitive-session",
                     "method":1,
                     "password":"secret",
-                    "email_token":"",
-                    "passkey_session_id":""
+                    "emailToken":"",
+                    "passkeySessionId":""
                 }"#,
             )
             .expect("Sensitive password verification should allow omitted passkey credential");
-        assert_eq!(decoded.passkey_credential, Vec::<u8>::new());
+        assert!(decoded.passkey_credential.is_none());
 
         let decoded: crate::client::FinishSensitiveOperationVerificationRequest =
             serde_json::from_str(
                 r#"{
-                    "session_id":"sensitive-session",
+                    "sessionId":"sensitive-session",
                     "method":2,
                     "password":"",
-                    "email_token":"",
-                    "passkey_session_id":"passkey-session",
-                    "passkey_credential":{"id":"credential"}
+                    "emailToken":"",
+                    "passkeySessionId":"passkey-session",
+                    "passkeyCredential":{
+                        "id":"credential",
+                        "rawId":"cmF3",
+                        "response":{
+                            "authenticatorData":"YXV0aA",
+                            "clientDataJSON":"Y2xpZW50",
+                            "signature":"c2ln"
+                        },
+                        "type":1
+                    }
                 }"#,
             )
-            .expect("Sensitive passkey verification should deserialize JSON credential bytes");
-        assert_eq!(
-            String::from_utf8(decoded.passkey_credential).expect("credential JSON should be UTF-8"),
-            r#"{"id":"credential"}"#
-        );
+            .expect("Sensitive passkey verification should deserialize structured credential");
+        let credential = decoded
+            .passkey_credential
+            .expect("passkey credential should be present");
+        assert_eq!(credential.id, "credential");
+        assert_eq!(credential.raw_id, b"raw");
 
         let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
             r#"{
                 "content":"hello",
-                "client_message_id":"client-message-1"
+                "clientMessageId":"client-message-1"
             }"#,
         )
         .expect("Plain text chat send should allow omitted optional payload fields");
         assert!(decoded.attachments.is_empty());
-        assert!(decoded.metadata.is_empty());
+        assert!(decoded.metadata.is_none());
         assert!(decoded.reply_to_message_id.is_empty());
         assert!(decoded.display_position.is_empty());
         assert!(decoded.display_color.is_empty());
@@ -2343,7 +2450,7 @@ mod tests {
         let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
             r#"{
                 "content":"",
-                "client_message_id":"client-message-2",
+                "clientMessageId":"client-message-2",
                 "attachments":[{
                     "id":"attachment-1"
                 }]
@@ -2360,7 +2467,7 @@ mod tests {
         let decoded: crate::client::SendChatMessageRequest = serde_json::from_str(
             r#"{
                 "content":"",
-                "client_message_id":"client-message-3",
+                "clientMessageId":"client-message-3",
                 "attachments":[{
                     "id":"reuse-token",
                     "kind":2
@@ -2377,14 +2484,14 @@ mod tests {
 
         let decoded: crate::client::EditChatMessageRequest = serde_json::from_str(
             r#"{
-                "message_id":"msg-1",
+                "messageId":"msg-1",
                 "content":"edited",
-                "expected_version":"1",
-                "client_operation_id":"edit-1"
+                "expectedVersion":"1",
+                "clientOperationId":"edit-1"
             }"#,
         )
         .expect("Chat edit should allow omitted metadata");
-        assert!(decoded.metadata.is_empty());
+        assert!(decoded.metadata.is_none());
 
         let decoded: crate::client::ListPinnedChatMessagesRequest =
             serde_json::from_str(r"{}").expect("Pinned chat list should allow omitted limit");
@@ -2404,11 +2511,11 @@ mod tests {
         assert_eq!(decoded.client_operation_id, "");
 
         let decoded: crate::client::GetChatPlaybackMessagesRequest =
-            serde_json::from_str(r#"{"playback_media_id":"med_probe"}"#)
+            serde_json::from_str(r#"{"playbackMediaId":"med_probe"}"#)
                 .expect("Chat playback query should allow omitted optional filters");
         assert_eq!(decoded.playback_media_id, "med_probe");
         assert!(decoded.playback_playlist_id.is_empty());
-        assert!(decoded.playback_target.is_empty());
+        assert!(decoded.playback_target.is_none());
         assert_eq!(decoded.position_seconds, 0.0);
         assert_eq!(decoded.before_seconds, 0.0);
         assert_eq!(decoded.after_seconds, 0.0);
@@ -2421,8 +2528,8 @@ mod tests {
 
         let decoded: crate::admin::AddMemberRequest = serde_json::from_str(
             r#"{
-                "room_id":"room_probe",
-                "user_id":"usr_probe"
+                "roomId":"room_probe",
+                "userId":"usr_probe"
             }"#,
         )
         .expect("Admin add-member should allow omitted role and notify");
@@ -2431,8 +2538,8 @@ mod tests {
 
         let decoded: crate::admin::UpdateMemberPermissionsRequest = serde_json::from_str(
             r#"{
-                "room_id":"room_probe",
-                "user_id":"usr_probe"
+                "roomId":"room_probe",
+                "userId":"usr_probe"
             }"#,
         )
         .expect("Admin member permission update should allow omitted permission overrides");
@@ -2467,7 +2574,7 @@ mod tests {
             r#"{
                 "email":"alice@example.com",
                 "token":"reset-token",
-                "registration_request":"Dg8="
+                "registrationRequest":"Dg8="
             }"#,
         )
         .expect("OPAQUE password reset start should deserialize from base64 bytes");
@@ -2475,8 +2582,8 @@ mod tests {
 
         let decoded: crate::client::FinishOpaquePasswordResetRequest = serde_json::from_str(
             r#"{
-                "session_id":"opaque-reset-session",
-                "registration_upload":"EBE="
+                "sessionId":"opaque-reset-session",
+                "registrationUpload":"EBE="
             }"#,
         )
         .expect("OPAQUE password reset finish should deserialize from base64 bytes");
@@ -2487,13 +2594,13 @@ mod tests {
             credential_response: vec![1, 2, 3],
         };
         let json = serde_json::to_value(response).expect("serialize OPAQUE response");
-        assert_eq!(json["credential_response"], STANDARD.encode([1, 2, 3]));
+        assert_eq!(json["credentialResponse"], STANDARD.encode([1, 2, 3]));
     }
 
     #[test]
     fn opaque_binary_fields_reject_http_byte_arrays() {
         let error = serde_json::from_str::<crate::client::StartOpaqueLoginRequest>(
-            r#"{"username":"alice","credential_request":[1,2,3,255]}"#,
+            r#"{"username":"alice","credentialRequest":[1,2,3,255]}"#,
         )
         .expect_err("OPAQUE binary fields should reject JSON byte arrays");
 

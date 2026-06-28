@@ -4,9 +4,9 @@ use synctv_core::{models::RoomId, service::RoomService};
 
 use crate::impls::ApiError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RoomSettingsSnapshot {
-    pub settings: Vec<u8>,
+    pub settings: synctv_core::models::RoomSettings,
     pub version: i64,
 }
 
@@ -41,7 +41,6 @@ impl RoomSettingsSnapshotService for DefaultRoomSettingsSnapshotService {
             .get_room_settings_with_version(room_id)
             .await
             .map_err(ApiError::from)?;
-        let settings = serde_json::to_vec(&settings).map_err(ApiError::from)?;
         Ok(RoomSettingsSnapshot { settings, version })
     }
 }

@@ -76,6 +76,7 @@ fn upload_response_headers(
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UserAvatarObjectPath {
     pub encoded_object_key: String,
 }
@@ -87,6 +88,7 @@ pub struct UserAvatarObjectQuery {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PasskeyCredentialPath {
     pub credential_id: String,
 }
@@ -916,11 +918,11 @@ pub async fn list_passkeys(
     feature = "openapi",
     utoipa::path(
         delete,
-        path = "/api/user/passkeys/{credential_id}",
+        path = "/api/user/passkeys/{credentialId}",
         tag = "User",
         request_body = DeletePasskeyRequest,
         params(
-            ("credential_id" = String, Path, description = "Passkey credential id")
+            ("credentialId" = String, Path, description = "Passkey credential id")
         ),
         responses(
             (status = 200, description = "Passkey deleted", body = DeletePasskeyResponse),
@@ -1043,13 +1045,14 @@ pub async fn close_account(
 #[cfg(test)]
 mod tests {
     use super::UserAvatarObjectQuery;
+    use synctv_proto::client::{CompleteUserAvatarUploadSessionRequest, DeletePasskeyRequest};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
     #[test]
     fn test_list_my_rooms_request_deserializes_numeric_fields() -> TestResult {
         let query: synctv_proto::client::ListMyRoomsRequest = serde_urlencoded::from_str(
-            "page=2&page_size=25&search=room&status=1&is_banned=false&relation=2&sort_by=5&sort_direction=1",
+            "page=2&pageSize=25&search=room&status=1&isBanned=false&relation=2&sortBy=5&sortDirection=1",
         )?;
 
         assert_eq!(query.page, 2);
@@ -1083,5 +1086,29 @@ mod tests {
         assert!(
             serde_urlencoded::from_str::<UserAvatarObjectQuery>("token=token&extra=true").is_err()
         );
+    }
+
+    #[test]
+    fn test_delete_passkey_request_overrides_path_credential_id() -> TestResult {
+        let mut req: DeletePasskeyRequest =
+            serde_json::from_str(r#"{"credentialId":"body_cred","verificationId":"verify_1"}"#)?;
+        req.credential_id = "cred_1".to_string();
+
+        assert_eq!(req.credential_id, "cred_1");
+        assert_eq!(req.verification_id, "verify_1");
+        Ok(())
+    }
+
+    #[test]
+    fn test_complete_user_avatar_upload_session_request_overrides_path_object_key() -> TestResult {
+        let mut req: CompleteUserAvatarUploadSessionRequest = serde_json::from_str(
+            r#"{"encodedObjectKey":"body-key","token":"upload-token","uploadId":"upload-1"}"#,
+        )?;
+        req.encoded_object_key = "avatar-key".to_string();
+
+        assert_eq!(req.encoded_object_key, "avatar-key");
+        assert_eq!(req.token, "upload-token");
+        assert_eq!(req.upload_id.as_deref(), Some("upload-1"));
+        Ok(())
     }
 }

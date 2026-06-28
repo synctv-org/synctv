@@ -16,6 +16,7 @@ use opaque_ke::{
     ClientRegistrationFinishParameters, CredentialResponse, RegistrationResponse,
 };
 use sqlx::PgPool;
+use std::collections::BTreeMap;
 use synctv_common::ssrf::SsrfGuard;
 use synctv_core::{
     cache::{CacheL2Backend, KeyBuilder, UsernameCache},
@@ -27,7 +28,8 @@ use synctv_core::{
     service::{
         auth::{jwt::JwtService, OpaquePasswordService, TokenCredentialBinding},
         local_oauth_state_store, AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2LinkResult, OAuth2ProviderConfigs,
+        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2BasicProviderConfig,
+        OAuth2LinkResult, OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
         OAuth2Service, OAuth2ServiceRuntime, RateLimiter, SettingsRegistry, SettingsService,
         TokenBlacklistStore, UserService,
     },
@@ -234,21 +236,24 @@ async fn oauth2_service_with_provider_signup(
         pool.clone(),
     ));
     let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
-    let oauth2_configs: OAuth2ProviderConfigs = serde_json::json!({
-        provider_name: {
-            "type": provider_name,
-            "enable_signup": true,
-            "signup_need_review": signup_need_review,
-            "config": {
-                "client_id": format!("{provider_name}-client-id"),
-                "client_secret": format!("{provider_name}-client-secret"),
-                "redirect_url": "https://app.example.com/oauth2/callback"
-            }
-        }
-    })
-    .to_string()
-    .parse()
-    .checked("OAuth2 provider configs should parse");
+    let provider_config = OAuth2BasicProviderConfig {
+        client_id: format!("{provider_name}-client-id"),
+        client_secret: format!("{provider_name}-client-secret"),
+        redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+    };
+    let provider_config = OAuth2ProviderConfig {
+        enable_signup: true,
+        signup_need_review,
+        config: match provider_name {
+            "github" => OAuth2ProviderPrivateConfig::GitHub(provider_config),
+            "google" => OAuth2ProviderPrivateConfig::Google(provider_config),
+            other => panic!("unsupported test OAuth2 provider: {other}"),
+        },
+    };
+    let oauth2_configs = OAuth2ProviderConfigs(BTreeMap::from([(
+        provider_name.to_string(),
+        provider_config,
+    )]));
     settings_registry
         .oauth2_providers
         .set(oauth2_configs)

@@ -4,25 +4,25 @@
 
 use super::{
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
-    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig,
+    MediaProvider, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use serde::Serialize;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::models::media::{
-    PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku,
-    PlaybackDanmakuProvider, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    BilibiliDashManifestSlot, BilibiliPlaybackMetadata, PlaybackBilibiliDanmaku,
+    PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider,
+    PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata,
     PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::{BilibiliMediaSourceConfig as BilibiliSourceConfig, UserId};
+use crate::models::{BilibiliMediaSourceConfig as BilibiliSourceConfig, MediaSourceConfig, UserId};
 use crate::service::RemoteProviderManager;
 
 use synctv_media_providers::grpc::bilibili as bilibili_proto;
@@ -292,6 +292,24 @@ impl BilibiliSourceConfig {
             Self::Live(config) => config.shared,
         }
     }
+
+    fn from_media_config(config: &MediaSourceConfig) -> Result<&Self, ProviderError> {
+        match config {
+            MediaSourceConfig::Bilibili(config) => Ok(config),
+            _ => Err(ProviderError::InvalidConfig(
+                "Bilibili requires Bilibili media source_config".to_string(),
+            )),
+        }
+    }
+
+    fn from_source_config(source_config: SourceConfig<'_>) -> Result<&Self, ProviderError> {
+        match source_config {
+            SourceConfig::Media(config) => Self::from_media_config(config),
+            SourceConfig::DynamicPlaylist(_) => Err(ProviderError::InvalidConfig(
+                "Bilibili supports media source_config".to_string(),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,41 +404,29 @@ fn dash_playback_urls(
 }
 
 fn insert_dash_manifest_metadata(
-    metadata: &mut HashMap<String, Value>,
-    mode_name: &str,
+    metadata: &mut PlaybackMetadata,
+    mode: BilibiliDashManifestSlot,
     dash: &bilibili_proto::DashInfo,
-) -> Result<(), ProviderError> {
-    if !metadata.contains_key(DASH_MANIFEST_METADATA_KEY) {
-        metadata.insert(DASH_MANIFEST_METADATA_KEY.to_string(), json!({}));
-    }
-    let manifests = metadata
-        .get_mut(DASH_MANIFEST_METADATA_KEY)
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| {
-            ProviderError::Internal(format!(
-                "Bilibili metadata key '{DASH_MANIFEST_METADATA_KEY}' is not an object"
-            ))
-        })?;
-    let value = serde_json::to_value(dash).map_err(|error| {
-        ProviderError::Internal(format!("Failed to encode DASH metadata: {error}"))
-    })?;
-    manifests.insert(mode_name.to_string(), value);
-    Ok(())
+) {
+    metadata
+        .bilibili
+        .get_or_insert_with(BilibiliPlaybackMetadata::default)
+        .dash_manifests
+        .set(mode, dash.clone());
 }
 
 fn dash_manifest_from_metadata(
     result: &PlaybackResult,
     mode_name: &str,
 ) -> Result<bilibili_proto::DashInfo, ProviderError> {
-    let value = result
+    let mode = BilibiliDashManifestSlot::parse(mode_name).ok_or(ProviderError::NotFound)?;
+    result
         .metadata
-        .get(DASH_MANIFEST_METADATA_KEY)
-        .and_then(|value| value.get(mode_name))
+        .bilibili
+        .as_ref()
+        .and_then(|metadata| metadata.dash_manifests.get(mode))
         .cloned()
-        .ok_or(ProviderError::NotFound)?;
-    serde_json::from_value(value).map_err(|error| {
-        ProviderError::Internal(format!("Failed to decode DASH metadata: {error}"))
-    })
+        .ok_or(ProviderError::NotFound)
 }
 
 fn has_dash_manifest_metadata(result: &PlaybackResult, mode_name: &str) -> bool {
@@ -794,16 +800,6 @@ async fn resolve_optional_bilibili_cookies(
     Ok((access.cookies, access.credential_cache_partition))
 }
 
-impl TryFrom<&Value> for BilibiliSourceConfig {
-    type Error = ProviderError;
-
-    fn try_from(value: &Value) -> Result<Self, Self::Error> {
-        super::reject_source_config_provider_instance_name(value, "Bilibili")?;
-        super::reject_source_config_credential_ref(value, "Bilibili")?;
-        super::parse_source_config(value, "Bilibili")
-    }
-}
-
 #[async_trait]
 impl MediaProvider for BilibiliProvider {
     #[cfg(test)]
@@ -818,9 +814,9 @@ impl MediaProvider for BilibiliProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let config = BilibiliSourceConfig::from_media_config(source_config)?;
 
         // Resolve cookies from DB. Shared Bilibili media uses the creator's
         // login; non-shared media uses the requesting user's own login. Missing
@@ -839,7 +835,7 @@ impl MediaProvider for BilibiliProvider {
         let (cookies, credential_cache_partition) =
             resolve_optional_bilibili_cookies(_ctx, *credential_owner_id).await?;
 
-        let (cache_key, cache_ttl) = playback_cache_entry(&config, &credential_cache_partition)?;
+        let (cache_key, cache_ttl) = playback_cache_entry(config, &credential_cache_partition)?;
 
         super::cached_versioned_playback_or_fill(
             Self::NAME,
@@ -850,7 +846,7 @@ impl MediaProvider for BilibiliProvider {
             || async {
                 self.resolve_from_api_with_cookies(
                     _ctx,
-                    &config,
+                    config,
                     &cookies,
                     super::bound_provider_instance_name(_ctx),
                     _ctx.request_context(),
@@ -866,8 +862,7 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        // Validate that source_config parses to a known variant
-        let config = BilibiliSourceConfig::try_from(source_config.value())?;
+        let config = BilibiliSourceConfig::from_source_config(source_config)?;
 
         match &config {
             BilibiliSourceConfig::Video(config) => {
@@ -905,9 +900,9 @@ impl MediaProvider for BilibiliProvider {
     fn credential_dependencies(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
-        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let config = BilibiliSourceConfig::from_source_config(source_config)?;
         if config.shared() {
             let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
                 ProviderError::Internal(
@@ -934,11 +929,10 @@ impl MediaProvider for BilibiliProvider {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
-    ) -> Result<Value, ProviderError> {
-        super::reject_source_config_provider_instance_name(&source_config, "Bilibili")?;
-        super::reject_source_config_credential_ref(&source_config, "Bilibili")?;
-        Ok(source_config)
+        source_config: SourceConfig<'_>,
+    ) -> Result<PreparedSourceConfig, ProviderError> {
+        let _config = BilibiliSourceConfig::from_source_config(source_config)?;
+        Ok(source_config.into())
     }
 
     fn as_bilibili_live_danmaku_provider(&self) -> Option<&dyn super::BilibiliLiveDanmakuProvider> {
@@ -991,9 +985,9 @@ impl super::BilibiliLiveDanmakuProvider for BilibiliProvider {
     async fn watch_bilibili_live_danmaku(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &MediaSourceConfig,
     ) -> Result<super::BilibiliLiveDanmakuStream, ProviderError> {
-        let config = BilibiliSourceConfig::try_from(source_config)?;
+        let config = BilibiliSourceConfig::from_media_config(source_config)?;
         let BilibiliSourceConfig::Live(config) = config else {
             return Err(ProviderError::InvalidConfig(
                 "Bilibili live danmaku requires a live source config".to_string(),
@@ -1397,7 +1391,16 @@ impl BilibiliProvider {
                     Err(error) => return Err(error.into()),
                 };
 
-                let mut metadata = HashMap::new();
+                let mut metadata = PlaybackMetadata {
+                    content_type: Some("video".to_string()),
+                    bilibili: Some(BilibiliPlaybackMetadata {
+                        bvid,
+                        aid: Some(aid),
+                        cid: Some(cid),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
                 let mut subtitles = Vec::new();
 
                 let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
@@ -1427,14 +1430,12 @@ impl BilibiliProvider {
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
                 if let Some(d) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
-                    metadata.insert("duration".to_string(), json!(d.duration));
-                    metadata.insert("min_buffer_time".to_string(), json!(d.min_buffer_time));
+                    metadata.duration = Some(d.duration);
+                    metadata
+                        .bilibili
+                        .get_or_insert_with(BilibiliPlaybackMetadata::default)
+                        .min_buffer_time = Some(d.min_buffer_time);
                 }
-
-                metadata.insert("content_type".to_string(), json!("video"));
-                metadata.insert("bvid".to_string(), json!(bvid));
-                metadata.insert("aid".to_string(), json!(aid));
-                metadata.insert("cid".to_string(), json!(cid));
 
                 let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
@@ -1446,14 +1447,22 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
-                    insert_dash_manifest_metadata(&mut metadata, "dash", dash)?;
+                    insert_dash_manifest_metadata(
+                        &mut metadata,
+                        BilibiliDashManifestSlot::Dash,
+                        dash,
+                    );
                     let dash_urls = dash_playback_urls(dash, "video DASH")?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
                         .filter(|dash| !dash.video_streams.is_empty())
                         .map(|dash| {
-                            insert_dash_manifest_metadata(&mut metadata, "hevc", dash)?;
+                            insert_dash_manifest_metadata(
+                                &mut metadata,
+                                BilibiliDashManifestSlot::Hevc,
+                                dash,
+                            );
                             dash_playback_urls(dash, "video HEVC DASH")
                         })
                         .transpose()?;
@@ -1506,8 +1515,11 @@ impl BilibiliProvider {
                         "video durl",
                     )?;
 
-                    metadata.insert("fallback_format".to_string(), json!("durl"));
-                    metadata.insert("quality".to_string(), json!(video_resp.current_quality));
+                    let bilibili = metadata
+                        .bilibili
+                        .get_or_insert_with(BilibiliPlaybackMetadata::default);
+                    bilibili.fallback_format = Some("durl".to_string());
+                    bilibili.quality = Some(video_resp.current_quality);
                     playback_infos.insert(
                         "mp4".to_string(),
                         mode_info(
@@ -1552,7 +1564,15 @@ impl BilibiliProvider {
                     Err(error) => return Err(error.into()),
                 };
 
-                let mut metadata = HashMap::new();
+                let mut metadata = PlaybackMetadata {
+                    content_type: Some("pgc".to_string()),
+                    bilibili: Some(BilibiliPlaybackMetadata {
+                        epid: Some(epid),
+                        cid: Some(cid),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
                 let mut subtitles = Vec::new();
 
                 let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
@@ -1582,12 +1602,8 @@ impl BilibiliProvider {
                     .and_then(|resp| resp.dash.as_ref())
                     .map(|dash| dash.duration);
                 if let Some(d) = dash_resp.as_ref().and_then(|resp| resp.dash.as_ref()) {
-                    metadata.insert("duration".to_string(), json!(d.duration));
+                    metadata.duration = Some(d.duration);
                 }
-
-                metadata.insert("content_type".to_string(), json!("pgc"));
-                metadata.insert("epid".to_string(), json!(epid));
-                metadata.insert("cid".to_string(), json!(cid));
 
                 let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
@@ -1599,14 +1615,22 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
-                    insert_dash_manifest_metadata(&mut metadata, "dash", dash)?;
+                    insert_dash_manifest_metadata(
+                        &mut metadata,
+                        BilibiliDashManifestSlot::Dash,
+                        dash,
+                    );
                     let pgc_urls = dash_playback_urls(dash, "PGC DASH")?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
                         .filter(|dash| !dash.video_streams.is_empty())
                         .map(|dash| {
-                            insert_dash_manifest_metadata(&mut metadata, "hevc", dash)?;
+                            insert_dash_manifest_metadata(
+                                &mut metadata,
+                                BilibiliDashManifestSlot::Hevc,
+                                dash,
+                            );
                             dash_playback_urls(dash, "PGC HEVC DASH")
                         })
                         .transpose()?;
@@ -1655,8 +1679,11 @@ impl BilibiliProvider {
                         "PGC durl",
                     )?;
 
-                    metadata.insert("fallback_format".to_string(), json!("durl"));
-                    metadata.insert("quality".to_string(), json!(pgc_resp.current_quality));
+                    let bilibili = metadata
+                        .bilibili
+                        .get_or_insert_with(BilibiliPlaybackMetadata::default);
+                    bilibili.fallback_format = Some("durl".to_string());
+                    bilibili.quality = Some(pgc_resp.current_quality);
                     playback_infos.insert(
                         "mp4".to_string(),
                         mode_info(
@@ -1696,7 +1723,15 @@ impl BilibiliProvider {
                 let live_resp = client.get_live_streams(request).await?;
 
                 let mut playback_infos = HashMap::new();
-                let mut metadata = HashMap::new();
+                let metadata = PlaybackMetadata {
+                    content_type: Some("live".to_string()),
+                    is_live: Some(true),
+                    bilibili: Some(BilibiliPlaybackMetadata {
+                        room_id: Some(room_id),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
                 let live_expires_at = Some(Utc::now().timestamp() + 120);
 
                 for stream in live_resp.live_streams {
@@ -1720,10 +1755,6 @@ impl BilibiliProvider {
                         ),
                     );
                 }
-
-                metadata.insert("content_type".to_string(), json!("live"));
-                metadata.insert("room_id".to_string(), json!(room_id));
-                metadata.insert("is_live".to_string(), json!(true));
 
                 let default_mode = {
                     let mut keys: Vec<&String> = playback_infos.keys().collect();

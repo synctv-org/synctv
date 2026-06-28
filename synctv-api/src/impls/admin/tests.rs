@@ -62,6 +62,63 @@ fn some_value<T>(value: Option<T>, context: &str) -> TestResult<T> {
     }
 }
 
+fn admin_server_settings(
+    group: synctv_proto::admin::SettingsGroup,
+) -> TestResult<synctv_proto::admin::ServerSettings> {
+    match group.settings {
+        Some(synctv_proto::admin::settings_group::Settings::Server(settings)) => Ok(settings),
+        other => Err(test_error(format!(
+            "expected server settings, got {other:?}"
+        ))),
+    }
+}
+
+fn admin_email_settings(
+    group: synctv_proto::admin::SettingsGroup,
+) -> TestResult<synctv_proto::admin::EmailSettings> {
+    match group.settings {
+        Some(synctv_proto::admin::settings_group::Settings::Email(settings)) => Ok(settings),
+        other => Err(test_error(format!(
+            "expected email settings, got {other:?}"
+        ))),
+    }
+}
+
+fn update_server_settings(
+    max_rooms_per_user: i64,
+) -> synctv_proto::admin::update_settings_request::Settings {
+    synctv_proto::admin::update_settings_request::Settings::Server(
+        synctv_proto::admin::ServerSettings {
+            allow_room_creation: true,
+            max_rooms_per_user,
+            max_members_per_room: 100,
+            max_chat_messages: 500,
+        },
+    )
+}
+
+fn update_email_settings(
+    enabled: bool,
+    smtp_host: &str,
+    smtp_port: u32,
+    from_email: &str,
+) -> synctv_proto::admin::update_settings_request::Settings {
+    synctv_proto::admin::update_settings_request::Settings::Email(
+        synctv_proto::admin::EmailSettings {
+            enabled,
+            smtp_host: smtp_host.to_string(),
+            smtp_port,
+            smtp_username: String::new(),
+            smtp_password: String::new(),
+            use_tls: true,
+            from_email: from_email.to_string(),
+            from_name: "SyncTV".to_string(),
+            whitelist_enabled: false,
+            whitelist_domains: Vec::new(),
+        },
+    )
+}
+
 #[test]
 fn proto_list_filter_enums_reject_unknown_values() {
     assert!(matches!(
@@ -115,7 +172,7 @@ impl MediaProvider for AdminLifecycleTestProvider {
     async fn generate_playback(
         &self,
         _ctx: &synctv_core::provider::ProviderContext<'_>,
-        _source_config: &serde_json::Value,
+        _source_config: &synctv_core::models::MediaSourceConfig,
     ) -> Result<synctv_core::provider::PlaybackResult, synctv_core::provider::ProviderError> {
         Ok(admin_lifecycle_playback_result("admin-session"))
     }
@@ -124,7 +181,7 @@ impl MediaProvider for AdminLifecycleTestProvider {
         &self,
         _ctx: &synctv_core::provider::ProviderContext<'_>,
         session_id: &str,
-        _source_config: &serde_json::Value,
+        _source_config: &synctv_core::models::MediaSourceConfig,
         position: f64,
         is_paused: bool,
     ) -> Result<(), synctv_core::provider::ProviderError> {
@@ -142,9 +199,9 @@ impl MediaProvider for AdminLifecycleTestProvider {
     ) -> Option<String> {
         result
             .metadata
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .map(ToString::to_string)
+            .emby
+            .as_ref()
+            .and_then(|metadata| metadata.play_session_id.clone())
     }
 }
 
@@ -155,12 +212,6 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
         test_provider_playback_info("https://example.com/video.mp4"),
     );
 
-    let mut metadata = std::collections::HashMap::new();
-    metadata.insert(
-        "session_id".to_string(),
-        serde_json::Value::String(session_id.to_string()),
-    );
-
     synctv_core::provider::PlaybackResult {
         playback_infos,
         default_mode: "direct".to_string(),
@@ -168,7 +219,13 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
         provider_instance_name: None,
         duration_seconds: None,
         is_live: Some(false),
-        metadata,
+        metadata: synctv_core::models::PlaybackMetadata {
+            emby: Some(synctv_core::models::EmbyPlaybackMetadata {
+                play_session_id: Some(session_id.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
     }
 }
 
@@ -192,6 +249,27 @@ fn test_provider_playback_info(url: &str) -> synctv_core::provider::PlaybackInfo
         danmakus: Vec::new(),
         default_danmaku_index: None,
     }
+}
+
+#[derive(serde::Serialize)]
+struct TestPlaybackSessions {
+    sessions: Vec<TestPlaybackSession>,
+}
+
+#[derive(serde::Serialize)]
+struct TestPlaybackSession {
+    provider: &'static str,
+    provider_instance_name: Option<String>,
+    actor_user_id: i64,
+    credential_owner_id: i64,
+    source_config: synctv_core::models::MediaSourceConfig,
+    room_target_key: String,
+    provider_session_id: &'static str,
+    started: bool,
+    started_at_millis: i64,
+    last_progress_position: f64,
+    last_progress_at_millis: i64,
+    last_paused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,12 +321,7 @@ fn test_realtime_outbox_event(
         event_type: event.event_type().to_string(),
         event_version: 1,
         aggregate_version: None,
-        payload: match serde_json::to_value(event) {
-            Ok(payload) => payload,
-            Err(error) => {
-                std::panic::panic_any(format!("test realtime event should serialize: {error}"))
-            }
-        },
+        payload: event.clone(),
     }
 }
 
@@ -1239,9 +1312,8 @@ fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
         &public_id_codec,
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
-    let rendered: serde_json::Value = serde_json::from_slice(&proto.settings)?;
-
-    assert_eq!(rendered["allow_auto_join"], false);
+    let rendered = proto.settings.expect("settings should be rendered");
+    assert!(!rendered.allow_auto_join);
     Ok(())
 }
 
@@ -2180,7 +2252,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
                 "abc123def456",
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
-                    target: Vec::new(),
+                    target: None,
                     page: 1,
                     page_size: 20,
                     search: String::new(),
@@ -2439,11 +2511,11 @@ async fn test_get_settings_group_projects_registered_defaults() -> TestResult {
     let group = some_value(response.group, "settings group response")?;
     assert_eq!(group.name, "server");
 
-    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
-    assert_eq!(payload["allow_room_creation"], true);
-    assert_eq!(payload["max_rooms_per_user"], 10);
-    assert_eq!(payload["max_members_per_room"], 100);
-    assert_eq!(payload["max_chat_messages"], 500);
+    let settings = admin_server_settings(group)?;
+    assert!(settings.allow_room_creation);
+    assert_eq!(settings.max_rooms_per_user, 10);
+    assert_eq!(settings.max_members_per_room, 100);
+    assert_eq!(settings.max_chat_messages, 500);
     Ok(())
 }
 
@@ -2473,12 +2545,9 @@ async fn test_get_email_settings_group_does_not_project_smtp_password() -> TestR
     )?;
 
     let group = some_value(response.group, "settings group response")?;
-    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
-    assert_eq!(payload["enabled"], false);
-    assert!(
-        payload.get("smtp_password").is_none(),
-        "smtp password must stay internal to settings projection: {payload}"
-    );
+    let settings = admin_email_settings(group)?;
+    assert!(!settings.enabled);
+    assert_eq!(settings.smtp_password, "");
     Ok(())
 }
 
@@ -2505,11 +2574,8 @@ async fn test_get_settings_ignores_hidden_registered_settings_without_warning_pa
     )?;
 
     let group = some_value(response.group, "settings group response")?;
-    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
-    assert!(
-        payload.get("identity_id").is_none(),
-        "server identity must stay hidden from admin settings projection: {payload}"
-    );
+    let settings = admin_server_settings(group)?;
+    assert_eq!(settings.max_rooms_per_user, 10);
     Ok(())
 }
 
@@ -2525,10 +2591,7 @@ async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missin
             .update_settings(
                 synctv_proto::admin::UpdateSettingsRequest {
                     group: "server".to_string(),
-                    settings: std::collections::HashMap::from([(
-                        "max_rooms_per_user".to_string(),
-                        "42".to_string(),
-                    )]),
+                    settings: Some(update_server_settings(42)),
                 },
                 &UserId::new(),
                 &RequestContext::default(),
@@ -2557,9 +2620,9 @@ async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missin
             .await,
     )?;
     let group = some_value(response.group, "settings group response")?;
-    let payload: serde_json::Value = serde_json::from_slice(&group.settings)?;
-    assert_eq!(payload["max_rooms_per_user"], 42);
-    assert_eq!(payload["allow_room_creation"], true);
+    let settings = admin_server_settings(group)?;
+    assert_eq!(settings.max_rooms_per_user, 42);
+    assert!(settings.allow_room_creation);
     Ok(())
 }
 
@@ -2601,10 +2664,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             .update_settings(
                 synctv_proto::admin::UpdateSettingsRequest {
                     group: "server".to_string(),
-                    settings: std::collections::HashMap::from([(
-                        "max_rooms_per_user".to_string(),
-                        "43".to_string(),
-                    )]),
+                    settings: Some(update_server_settings(43)),
                 },
                 &UserId::new(),
                 &RequestContext::default(),
@@ -2634,10 +2694,7 @@ async fn test_update_email_settings_rejects_enabled_incomplete_config() -> TestR
             .update_settings(
                 synctv_proto::admin::UpdateSettingsRequest {
                     group: "email".to_string(),
-                    settings: std::collections::HashMap::from([(
-                        "enabled".to_string(),
-                        "true".to_string(),
-                    )]),
+                    settings: Some(update_email_settings(true, "", 587, "")),
                 },
                 &UserId::new(),
                 &RequestContext::default(),
@@ -2671,12 +2728,12 @@ async fn test_update_email_settings_accepts_enabled_complete_config() -> TestRes
             .update_settings(
                 synctv_proto::admin::UpdateSettingsRequest {
                     group: "email".to_string(),
-                    settings: std::collections::HashMap::from([
-                        ("enabled".to_string(), "true".to_string()),
-                        ("smtp_host".to_string(), "smtp.example.com".to_string()),
-                        ("smtp_port".to_string(), "587".to_string()),
-                        ("from_email".to_string(), "noreply@example.com".to_string()),
-                    ]),
+                    settings: Some(update_email_settings(
+                        true,
+                        "smtp.example.com",
+                        587,
+                        "noreply@example.com",
+                    )),
                 },
                 &UserId::new(),
                 &RequestContext::default(),
@@ -3046,7 +3103,7 @@ async fn test_ban_user_resets_playback_for_media_created_by_target() -> TestResu
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, room_owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -3247,7 +3304,7 @@ async fn test_batch_ban_users_resets_playback_for_media_created_by_target() -> T
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, room_owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, room_owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -3971,7 +4028,7 @@ async fn test_start_playback_bypasses_room_membership_requirement_for_global_adm
                 synctv_proto::client::StartPlaybackRequest {
                     media_id: public_media_id(&admin_api, media.id),
                     playlist_id: String::new(),
-                    target: Vec::new(),
+                    target: None,
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -4015,7 +4072,7 @@ async fn test_stop_playback_bypasses_room_membership_requirement_for_global_admi
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -4060,7 +4117,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
     );
     core_ok(
         providers_manager
-            .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
+            .create_provider_with_default_config("direct_url", "direct_url")
             .await,
     )?;
     let room_service = Arc::new(fixture_value(
@@ -4166,29 +4223,30 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
     let lifecycle_store = provider_stores.load("playback_lifecycle");
+    let now_millis = chrono::Utc::now().timestamp_millis();
     lifecycle_store
         .set(
             &format!("room:{}:sessions", room.id),
-            &serde_json::json!({
-                "sessions": [{
-                    "provider": "direct_url",
-                    "provider_instance_name": null,
-                    "actor_user_id": owner.id.as_i64(),
-                    "credential_owner_id": owner.id.as_i64(),
-                    "source_config": source_config,
-                    "room_target_key": format!("media:{}", media.id),
-                    "provider_session_id": "admin-session",
-                    "started": true,
-                    "started_at_millis": chrono::Utc::now().timestamp_millis(),
-                    "last_progress_position": 0.0,
-                    "last_progress_at_millis": chrono::Utc::now().timestamp_millis(),
-                    "last_paused": false
-                }]
-            }),
+            &TestPlaybackSessions {
+                sessions: vec![TestPlaybackSession {
+                    provider: "direct_url",
+                    provider_instance_name: None,
+                    actor_user_id: owner.id.as_i64(),
+                    credential_owner_id: owner.id.as_i64(),
+                    source_config,
+                    room_target_key: format!("media:{}", media.id),
+                    provider_session_id: "admin-session",
+                    started: true,
+                    started_at_millis: now_millis,
+                    last_progress_position: 0.0,
+                    last_progress_at_millis: now_millis,
+                    last_paused: false,
+                }],
+            },
             std::time::Duration::from_mins(1),
         )
         .await
@@ -4206,7 +4264,9 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
                     version: Some(state.version),
                     expected_media_id: Some(public_media_id(&admin_api, media.id)),
                     expected_playlist_id: Some(String::new()),
-                    expected_target_hash: Some(state.target_hash()),
+                    expected_target_hash: Some(
+                        state.target_hash().expect("target hash should compute"),
+                    ),
                 },
                 &global_admin.id,
                 &RequestContext::default(),
@@ -4255,7 +4315,7 @@ async fn test_get_playback_bypasses_room_membership_requirement_for_global_admin
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -4321,7 +4381,7 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
         creator_id: Some(owner.id),
         name: "Invalid Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
+        source_config: synctv_core_testing::live_proxy_pull_live_media_source_config("not-a-url"),
         source_provider: synctv_core::models::SourceProvider::LiveProxy,
         provider_instance_name: None,
         position: 0.0,
@@ -4332,7 +4392,7 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -4345,8 +4405,7 @@ async fn test_get_playback_returns_error_for_invalid_provider_config_for_global_
     assert!(matches!(
         error,
         ApiError::InvalidInput(message)
-            if message.contains("Failed to parse LiveProxy source config")
-                && message.contains("missing field `url`")
+            if message.contains("Invalid LiveProxy source URL")
     ));
     Ok(())
 }
@@ -4404,7 +4463,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_global_admin(
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -4492,7 +4551,7 @@ async fn test_get_playback_for_provider_media_signs_proxy_urls_for_local_managem
         admin_api
             .room_service
             .playback_service()
-            .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+            .switch(room.id, owner.id, Some(media.id), None, None)
             .await,
     )?;
 
@@ -5006,7 +5065,7 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
                 &public_room_id(&admin_api, room.id),
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
-                    target: Vec::new(),
+                    target: None,
                     page: 1,
                     page_size: 20,
                     search: String::new(),
@@ -5190,7 +5249,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
                 &public_room_id(&admin_api, room.id),
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
-                    target: Vec::new(),
+                    target: None,
                     page: 1,
                     page_size: 10,
                     search: "alpha".to_string(),

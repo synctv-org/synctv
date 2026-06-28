@@ -63,10 +63,7 @@ impl OAuth2Service {
 
     pub async fn get_user_providers(&self, user_id: &UserId) -> Result<Vec<OAuth2Provider>> {
         let mappings = self.repository()?.find_by_user(user_id).await?;
-        Ok(mappings
-            .into_iter()
-            .filter_map(|m| m.provider_enum())
-            .collect())
+        Ok(mappings.into_iter().map(|m| m.provider).collect())
     }
 
     pub async fn get_user_provider_mappings(

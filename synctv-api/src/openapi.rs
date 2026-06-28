@@ -289,7 +289,7 @@ use synctv_proto::client;
             client::SetUsernameResponse,
             client::RegisterResponse,
             client::RegisterWithDirectPasswordRequest,
-            synctv_proto::http_serde::LoginWithDirectPasswordRequestDef,
+            client::LoginWithDirectPasswordRequest,
             client::ConfirmEmailLoginRequest,
             client::LoginResponse,
             client::CreateGuestTokenRequest,
@@ -297,13 +297,13 @@ use synctv_proto::client;
             client::StartOpaqueRegistrationRequest,
             client::StartOpaqueRegistrationResponse,
             client::FinishOpaqueRegistrationRequest,
-            synctv_proto::http_serde::StartOpaqueLoginRequestDef,
+            client::StartOpaqueLoginRequest,
             client::StartOpaqueLoginResponse,
             client::FinishOpaqueLoginRequest,
             client::StartPasskeyRegistrationRequest,
             client::StartPasskeyRegistrationResponse,
             client::FinishPasskeyRegistrationRequest,
-            synctv_proto::http_serde::StartPasskeyLoginRequestDef,
+            client::StartPasskeyLoginRequest,
             client::StartPasskeyLoginResponse,
             client::FinishPasskeyLoginRequest,
             client::RequestEmailLoginRequest,
@@ -501,7 +501,7 @@ use synctv_proto::client;
             synctv_proto::providers::rtmp::StreamPublisherInfo,
             synctv_proto::client::GetRoomStreamInfoResponse,
             synctv_proto::client::RoomStreamPublisherInfo,
-            crate::http::room::KickRoomStreamBody,
+            synctv_proto::client::KickRoomStreamRequest,
             synctv_proto::client::KickRoomStreamResponse,
             synctv_proto::admin::GetSystemStatsResponse,
             synctv_proto::admin::GetSettingsResponse,
@@ -721,11 +721,11 @@ mod tests {
             "hot rooms should document validation errors"
         );
         assert!(
-            doc["paths"]["/api/rooms/{room_id}/check"]["get"]["responses"]["400"].is_object(),
+            doc["paths"]["/api/rooms/{roomId}/check"]["get"]["responses"]["400"].is_object(),
             "check room should document invalid room IDs"
         );
         assert!(
-            doc["paths"]["/api/rooms/{room_id}/check"]["get"]["responses"]
+            doc["paths"]["/api/rooms/{roomId}/check"]["get"]["responses"]
                 .get("404")
                 .is_none(),
             "check room returns 200 with exists=false for missing rooms"
@@ -773,7 +773,7 @@ mod tests {
     fn openapi_documents_admin_user_preferences_routes() -> TestResult {
         let doc = openapi_json()?;
 
-        let path = &doc["paths"]["/api/admin/users/{user_id}/preferences"];
+        let path = &doc["paths"]["/api/admin/users/{userId}/preferences"];
         assert!(
             path["get"].is_object(),
             "admin get-user-preferences route should be documented"
@@ -797,47 +797,47 @@ mod tests {
 
         for (path, method, responses) in [
             (
-                "/api/rooms/{room_id}/chat/messages",
+                "/api/rooms/{roomId}/chat/messages",
                 "post",
                 &["200", "400", "401", "403", "429"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/attachments/upload-session",
+                "/api/rooms/{roomId}/chat/attachments/upload-session",
                 "post",
                 &["200", "400", "401", "403", "429"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "/api/rooms/{roomId}/chat/messages/{messageId}",
                 "get",
                 &["200", "400", "401", "403", "404"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "/api/rooms/{roomId}/chat/messages/{messageId}",
                 "patch",
                 &["200", "400", "401", "403", "404", "409"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/messages/{message_id}",
+                "/api/rooms/{roomId}/chat/messages/{messageId}",
                 "delete",
                 &["200", "400", "401", "403", "404", "409"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+                "/api/rooms/{roomId}/chat/messages/{messageId}/context",
                 "get",
                 &["200", "400", "401", "403", "404"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/read-state",
+                "/api/rooms/{roomId}/chat/read-state",
                 "post",
                 &["200", "400", "401", "403", "404"][..],
             ),
             (
-                "/api/rooms/{room_id}/chat/read-state",
+                "/api/rooms/{roomId}/chat/read-state",
                 "get",
                 &["200", "401", "403"][..],
             ),
             (
-                "/api/rooms/{room_id}/watch/chat-events",
+                "/api/rooms/{roomId}/watch/chat-events",
                 "get",
                 &["200", "400", "401", "403", "503"][..],
             ),
@@ -847,16 +847,16 @@ mod tests {
 
         assert_parameter_location(
             &doc,
-            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            "/api/rooms/{roomId}/chat/messages/{messageId}",
             "get",
-            "include_deleted",
+            "includeDeleted",
             "query",
         )?;
         assert_parameter_location(
             &doc,
-            "/api/rooms/{room_id}/watch/chat-events",
+            "/api/rooms/{roomId}/watch/chat-events",
             "get",
-            "after_event_sequence",
+            "afterEventSequence",
             "query",
         )?;
         Ok(())
@@ -906,40 +906,73 @@ mod tests {
         Ok(())
     }
 
+    fn assert_parameter_absent(doc: &Value, path: &str, method: &str, name: &str) -> TestResult {
+        let params = doc["paths"][path][method]["parameters"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let locations = params
+            .iter()
+            .filter(|param| param["name"] == name)
+            .map(|param| param["in"].as_str().unwrap_or("<missing>"))
+            .collect::<Vec<_>>();
+
+        assert!(
+            locations.is_empty(),
+            "{method} {path} should document {name} in the request body; got parameter locations {locations:?}"
+        );
+        Ok(())
+    }
+
+    fn assert_request_body_schema_ref(
+        doc: &Value,
+        path: &str,
+        method: &str,
+        expected_schema: &str,
+    ) -> TestResult {
+        let schema_ref = doc["paths"][path][method]["requestBody"]["content"]["application/json"]
+            ["schema"]["$ref"]
+            .as_str()
+            .ok_or_else(|| {
+                test_error(format!(
+                    "{method} {path} should document a JSON request body schema ref"
+                ))
+            })?;
+
+        assert!(
+            schema_ref.ends_with(expected_schema),
+            "{method} {path} should use {expected_schema} request body schema; got {schema_ref}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn openapi_documents_query_struct_params_as_query() -> TestResult {
         let doc = openapi_json()?;
 
         for name in [
             "page",
-            "page_size",
+            "pageSize",
             "search",
             "role",
-            "sort_by",
-            "sort_direction",
+            "sortBy",
+            "sortDirection",
         ] {
-            assert_parameter_location(&doc, "/api/rooms/{room_id}/members", "get", name, "query")?;
+            assert_parameter_location(&doc, "/api/rooms/{roomId}/members", "get", name, "query")?;
         }
-        assert_parameter_location(
-            &doc,
-            "/api/rooms/{room_id}/members",
-            "get",
-            "room_id",
-            "path",
-        )?;
+        assert_parameter_location(&doc, "/api/rooms/{roomId}/members", "get", "roomId", "path")?;
 
         for name in [
             "page",
-            "page_size",
+            "pageSize",
             "status",
             "search",
-            "is_banned",
-            "sort_by",
-            "sort_direction",
+            "isBanned",
+            "sortBy",
+            "sortDirection",
         ] {
             assert_parameter_location(
                 &doc,
-                "/api/admin/users/{user_id}/rooms",
+                "/api/admin/users/{userId}/rooms",
                 "get",
                 name,
                 "query",
@@ -947,23 +980,23 @@ mod tests {
         }
         assert_parameter_location(
             &doc,
-            "/api/admin/users/{user_id}/rooms",
+            "/api/admin/users/{userId}/rooms",
             "get",
-            "user_id",
+            "userId",
             "path",
         )?;
 
         for name in [
             "page",
-            "page_size",
+            "pageSize",
             "search",
             "role",
-            "sort_by",
-            "sort_direction",
+            "sortBy",
+            "sortDirection",
         ] {
             assert_parameter_location(
                 &doc,
-                "/api/admin/rooms/{room_id}/members",
+                "/api/admin/rooms/{roomId}/members",
                 "get",
                 name,
                 "query",
@@ -971,24 +1004,24 @@ mod tests {
         }
         assert_parameter_location(
             &doc,
-            "/api/admin/rooms/{room_id}/members",
+            "/api/admin/rooms/{roomId}/members",
             "get",
-            "room_id",
+            "roomId",
             "path",
         )?;
 
-        assert_parameter_location(
+        assert_parameter_absent(&doc, "/api/providers/alist/list", "post", "instanceName")?;
+        assert_request_body_schema_ref(
             &doc,
             "/api/providers/alist/list",
             "post",
-            "instance_name",
-            "query",
+            "synctv_provider_alist_ListRequest",
         )?;
         assert_parameter_location(
             &doc,
-            "/api/rooms/{room_id}/playback",
+            "/api/rooms/{roomId}/playback",
             "get",
-            "stream_preference",
+            "streamPreference",
             "query",
         )?;
         Ok(())
@@ -1041,7 +1074,7 @@ mod tests {
 
         assert_response_codes(
             &doc,
-            "/api/providers/emby/thumbnail/{item_id}",
+            "/api/providers/emby/thumbnail/{itemId}",
             "get",
             &["400", "401", "403", "404", "408", "429", "503"],
         )?;
@@ -1055,7 +1088,7 @@ mod tests {
             .pointer("/components/schemas/synctv_client_Playlist/properties")
             .ok_or_else(|| test_error("Playlist schema properties should exist"))?;
 
-        for field in ["source_config", "source_provider", "provider_instance_name"] {
+        for field in ["sourceConfig", "sourceProvider", "providerInstanceName"] {
             assert!(
                 playlist.get(field).is_some(),
                 "Playlist schema should document {field}: {playlist:?}"
@@ -1067,7 +1100,7 @@ mod tests {
     #[test]
     fn openapi_documents_websocket_handshake_endpoint() -> TestResult {
         let doc = openapi_json()?;
-        let operation = &doc["paths"]["/ws/rooms/{room_id}"]["get"];
+        let operation = &doc["paths"]["/ws/rooms/{roomId}"]["get"];
 
         assert!(
             operation.is_object(),
@@ -1080,7 +1113,7 @@ mod tests {
             .ok_or_else(|| test_error("WebSocket route should describe handshake parameters"))?;
         assert!(
             params.iter().any(|param| {
-                param["name"] == "room_id" && param["in"] == "path" && param["required"] == true
+                param["name"] == "roomId" && param["in"] == "path" && param["required"] == true
             }),
             "room_id path parameter should be documented"
         );

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
-use super::UserId;
+use super::{RoomSettings, UserId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserNotificationPreferences {
@@ -58,12 +57,12 @@ impl UserAuthFactors {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPreferences {
     pub user_id: UserId,
     pub two_factor_enabled: bool,
     pub notifications: UserNotificationPreferences,
-    pub settings: Value,
+    pub settings: RoomSettings,
 }
 
 impl UserPreferences {
@@ -73,7 +72,7 @@ impl UserPreferences {
             user_id,
             two_factor_enabled: false,
             notifications: UserNotificationPreferences::default(),
-            settings: json!({}),
+            settings: RoomSettings::default(),
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPlaybackState, UserId},
+    models::{MediaId, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState, UserId},
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     Error, Result,
 };
@@ -13,7 +13,7 @@ pub type RealtimeOutboxPlaybackStateEventFactory =
 pub struct SwitchPlaybackTarget {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
-    pub target: Vec<u8>,
+    pub target: Option<ProviderTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,11 +24,10 @@ pub struct PlaybackSourceExpectation {
 }
 
 impl PlaybackSourceExpectation {
-    #[must_use]
-    pub fn matches(&self, state: &RoomPlaybackState) -> bool {
-        self.media_id == state.playing_media_id
+    pub fn matches(&self, state: &RoomPlaybackState) -> Result<bool> {
+        Ok(self.media_id == state.playing_media_id
             && self.playlist_id == state.playing_playlist_id
-            && self.target_hash.eq_ignore_ascii_case(&state.target_hash())
+            && self.target_hash.eq_ignore_ascii_case(&state.target_hash()?))
     }
 }
 
@@ -100,7 +99,7 @@ pub(super) enum NextTarget {
     Static(crate::models::Media),
     Dynamic {
         playlist_id: PlaylistId,
-        target: Vec<u8>,
+        target: ProviderTarget,
     },
 }
 
@@ -183,13 +182,13 @@ pub(super) fn validate_switch_target(target: &SwitchPlaybackTarget) -> Result<()
         (Some(_), Some(_)) => Err(Error::InvalidInput(
             "media_id and playlist_id cannot both be set".to_string(),
         )),
-        (None, None) if !target.target.is_empty() => Err(Error::InvalidInput(
-            "target must be empty when clearing playback".to_string(),
+        (None, None) if target.target.is_some() => Err(Error::InvalidInput(
+            "target must be omitted when clearing playback".to_string(),
         )),
-        (Some(_), None) if !target.target.is_empty() => Err(Error::InvalidInput(
-            "target must be empty when switching to a static media item".to_string(),
+        (Some(_), None) if target.target.is_some() => Err(Error::InvalidInput(
+            "target must be omitted when switching to a static media item".to_string(),
         )),
-        (None, Some(_)) if target.target.is_empty() => Err(Error::InvalidInput(
+        (None, Some(_)) if target.target.is_none() => Err(Error::InvalidInput(
             "target is required when switching to a dynamic playlist item".to_string(),
         )),
         _ => Ok(()),

@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
@@ -30,14 +31,11 @@ impl WebAuthnCredentialRepository {
     }
 
     fn row_to_credential(row: WebAuthnCredentialRow) -> Result<WebAuthnCredential> {
-        let passkey = serde_json::from_value(row.passkey)
-            .internal_with_err("Failed to deserialize stored WebAuthn passkey")?;
-
         Ok(WebAuthnCredential {
             id: row.id,
             user_id: row.user_id,
             credential_id: row.credential_id,
-            passkey,
+            passkey: row.passkey.into_inner(),
             sign_count: row.sign_count,
             name: row.name,
             last_used_at: row.last_used_at,
@@ -81,7 +79,7 @@ impl WebAuthnCredentialRepository {
             RETURNING id,
                       user_id as "user_id: UserId",
                       credential_id,
-                      passkey as "passkey!: serde_json::Value",
+                      passkey as "passkey!: StoredPasskey",
                       sign_count,
                       name,
                       last_used_at,
@@ -113,7 +111,7 @@ impl WebAuthnCredentialRepository {
             SELECT id,
                    user_id as "user_id: UserId",
                    credential_id,
-                   passkey as "passkey!: serde_json::Value",
+                   passkey as "passkey!: StoredPasskey",
                    sign_count,
                    name,
                    last_used_at,
@@ -141,7 +139,7 @@ impl WebAuthnCredentialRepository {
             SELECT id,
                    user_id as "user_id: UserId",
                    credential_id,
-                   passkey as "passkey!: serde_json::Value",
+                   passkey as "passkey!: StoredPasskey",
                    sign_count,
                    name,
                    last_used_at,
@@ -262,10 +260,49 @@ struct WebAuthnCredentialRow {
     id: i64,
     user_id: UserId,
     credential_id: Vec<u8>,
-    passkey: serde_json::Value,
+    passkey: StoredPasskey,
     sign_count: i64,
     name: Option<String>,
     last_used_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct StoredPasskey(Passkey);
+
+impl StoredPasskey {
+    fn into_inner(self) -> Passkey {
+        self.0
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for StoredPasskey {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for StoredPasskey {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> std::result::Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::types::Json(self).encode_by_ref(buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for StoredPasskey {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(value) =
+            <sqlx::types::Json<Self> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(value)
+    }
 }

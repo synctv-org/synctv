@@ -1,0 +1,227 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id AS \"id: UserId\",\n                   username,\n                   COALESCE(email, '') AS \"email!\",\n                   signup_method AS \"signup_method: SignupMethod\",\n                   status AS \"status: ReviewStatus\",\n                   requested_at,\n                   reviewed_at,\n                   reviewed_by AS \"reviewed_by: UserId\",\n                   rejection_reason,\n                   oauth2_provider_type AS \"oauth2_provider_type: OAuth2Provider\",\n                   oauth2_provider_instance_name,\n                   oauth2_provider_issuer,\n                   oauth2_provider_user_id,\n                   oauth2_provider_username,\n                   oauth2_avatar_url,\n                   oauth2_email_trusted,\n                   webauthn_credential_id,\n                   webauthn_credential_name\n            FROM user_registration_requests\n            WHERE id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "email!",
+        "type_info": "Varchar",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "signup_method: SignupMethod",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "signup_method"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status: ReviewStatus",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "requested_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "reviewed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "reviewed_by: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "reviewed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "rejection_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "rejection_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "oauth2_provider_type: OAuth2Provider",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_type"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "oauth2_provider_instance_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_instance_name"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "oauth2_provider_issuer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_issuer"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "oauth2_provider_user_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "oauth2_provider_username",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_provider_username"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "oauth2_avatar_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_avatar_url"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "oauth2_email_trusted",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "oauth2_email_trusted"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "webauthn_credential_id",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "webauthn_credential_id"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "webauthn_credential_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_registration_requests",
+            "name": "webauthn_credential_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "5ccddfe240695fd430b7bbbb143c91e77ca6db2fc2676f2ae3372dfa7227f1cb"
+}

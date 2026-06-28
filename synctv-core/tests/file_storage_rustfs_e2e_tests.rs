@@ -135,7 +135,7 @@ fn upload_request(
         duration_seconds: None,
         bitrate_bps: None,
         parts: manifest_parts_from_payload(payload, part_size_bytes),
-        metadata: serde_json::json!({ "source": "rustfs-e2e" }),
+        metadata: synctv_core::models::FileMetadata::default(),
         policy: pdf_upload_policy(payload_size(payload)),
     }
 }
@@ -302,12 +302,8 @@ async fn rustfs_s3_rejects_part_outside_declared_manifest() {
     )
     .expect("upload session should exist")
     .metadata;
-    let manifest = metadata
-        .get_mut("manifest_parts")
-        .and_then(serde_json::Value::as_array_mut)
-        .expect("upload session manifest should be an array");
-    assert_eq!(manifest.len(), 2);
-    manifest.pop();
+    assert_eq!(metadata.manifest_parts.len(), 2);
+    metadata.manifest_parts.pop();
     ok(
         repository
             .update_upload_session_metadata(STORAGE_BACKEND, &upload_session_key, &metadata)

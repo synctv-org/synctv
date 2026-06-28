@@ -4,7 +4,7 @@ use std::time::Duration;
 use synctv_core::repository::realtime_outbox::{
     RealtimeOutboxEvent, RealtimeOutboxRepository, REALTIME_OUTBOX_CHANNEL,
 };
-use synctv_realtime::sync::{RealtimeEvent, RealtimeManager};
+use synctv_realtime::sync::RealtimeManager;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -190,27 +190,7 @@ async fn dispatch_event(
     realtime_manager: &RealtimeManager,
     event: RealtimeOutboxEvent,
 ) {
-    let realtime_event = match serde_json::from_value::<RealtimeEvent>(event.payload.clone()) {
-        Ok(event) => event,
-        Err(error) => {
-            let message = format!("Failed to deserialize realtime outbox payload: {error}");
-            error!(
-                outbox_id = %event.id,
-                event_type = %event.event_type,
-                error = %error,
-                "Dead-lettering malformed realtime outbox event"
-            );
-            if let Err(mark_error) = outbox.mark_failed(&event.id, i32::MAX - 1, &message).await {
-                error!(
-                    outbox_id = %event.id,
-                    event_type = %event.event_type,
-                    error = %mark_error,
-                    "Failed to dead-letter malformed realtime outbox event"
-                );
-            }
-            return;
-        }
-    };
+    let realtime_event = event.payload.clone();
 
     // The realtime outbox table is shared across cluster nodes, so any replica can
     // claim an event written by another replica. Redis envelopes use the claiming

@@ -54,7 +54,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::{
-    models::{AuditAction, AuditTargetType},
+    models::{AuditAction, AuditDetails, AuditTargetType},
     Result,
 };
 
@@ -74,7 +74,7 @@ pub struct AuditLog {
     pub action: AuditAction,
     pub target_type: AuditTargetType,
     pub target_id: Option<String>,
-    pub details: serde_json::Value,
+    pub details: AuditDetails,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -88,7 +88,7 @@ pub struct AuditEventParams {
     pub action: AuditAction,
     pub target_type: AuditTargetType,
     pub target_id: Option<String>,
-    pub details: serde_json::Value,
+    pub details: AuditDetails,
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
 }
@@ -104,11 +104,11 @@ pub struct StreamKickAuditRequest {
     pub user_agent: Option<String>,
 }
 
-fn optional_reason_json(reason: Option<&str>) -> serde_json::Value {
+fn optional_reason(reason: Option<&str>) -> Option<String> {
     reason
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map_or(serde_json::Value::Null, serde_json::Value::from)
+        .map(ToOwned::to_owned)
 }
 
 /// Internal record sent through the mpsc channel
@@ -119,7 +119,7 @@ struct AuditRecord {
     action: AuditAction,
     target_type: AuditTargetType,
     target_id: Option<String>,
-    details: serde_json::Value,
+    details: AuditDetails,
     ip_address: Option<String>,
     user_agent: Option<String>,
     created_at: DateTime<Utc>,
@@ -287,7 +287,7 @@ impl AuditService {
             record.action.as_i16(),
             record.target_type.as_i16(),
             record.target_id.as_deref(),
-            record.details,
+            &record.details as _,
             record.ip_address.as_deref(),
             record.user_agent.as_deref(),
             record.created_at
@@ -311,7 +311,7 @@ impl AuditService {
             action: AuditAction::UserCreated,
             target_type: AuditTargetType::User,
             target_id: Some(target_user_id),
-            details: serde_json::json!({"reason": "User created via admin panel"}),
+            details: AuditDetails::reason("User created via admin panel"),
             ip_address: None,
             user_agent: None,
         })
@@ -331,7 +331,7 @@ impl AuditService {
             action: AuditAction::UserBanned,
             target_type: AuditTargetType::User,
             target_id: Some(target_user_id),
-            details: serde_json::json!({"reason": "User banned by admin"}),
+            details: AuditDetails::reason("User banned by admin"),
             ip_address: None,
             user_agent: None,
         })
@@ -351,7 +351,7 @@ impl AuditService {
             action: AuditAction::RoomDeleted,
             target_type: AuditTargetType::Room,
             target_id: Some(room_id),
-            details: serde_json::json!({"reason": "Room deleted by admin"}),
+            details: AuditDetails::reason("Room deleted by admin"),
             ip_address: None,
             user_agent: None,
         })
@@ -366,11 +366,12 @@ impl AuditService {
             action: AuditAction::StreamKicked,
             target_type: AuditTargetType::Stream,
             target_id: Some(target_id),
-            details: serde_json::json!({
-                "room_id": request.room_id,
-                "media_id": request.media_id,
-                "reason": optional_reason_json(request.reason.as_deref())
-            }),
+            details: AuditDetails {
+                room_id: Some(request.room_id),
+                media_id: Some(request.media_id),
+                reason: optional_reason(request.reason.as_deref()),
+                ..Default::default()
+            },
             ip_address: request.ip_address,
             user_agent: request.user_agent,
         })
@@ -396,10 +397,11 @@ impl AuditService {
             action: AuditAction::RateLimitResetFailed,
             target_type,
             target_id: Some(target_id),
-            details: serde_json::json!({
-                "error": error_message,
-                "context": "password_verification_succeeded"
-            }),
+            details: AuditDetails {
+                error: Some(error_message),
+                context: Some("password_verification_succeeded".to_string()),
+                ..Default::default()
+            },
             ip_address,
             user_agent: None,
         })
@@ -435,7 +437,7 @@ fn user_logout_event_params(
         action: AuditAction::UserLogout,
         target_type: AuditTargetType::User,
         target_id: Some(user_id),
-        details: serde_json::json!({}),
+        details: AuditDetails::default(),
         ip_address,
         user_agent,
     }
@@ -602,7 +604,17 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
         actions.push(record.action.as_i16());
         target_types.push(record.target_type.as_i16());
         target_ids.push(record.target_id.clone().unwrap_or_default());
-        details_list.push(record.details.clone());
+        match serde_json::to_value(&record.details) {
+            Ok(details) => details_list.push(details),
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    "Failed to serialize audit details for batch insert"
+                );
+                dropped_count.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+        }
         ip_addresses.push(record.ip_address.clone().unwrap_or_default());
         user_agents.push(record.user_agent.clone().unwrap_or_default());
         created_ats.push(record.created_at);
@@ -686,10 +698,10 @@ mod tests {
     }
 
     #[test]
-    fn optional_reason_json_preserves_missing_and_trims_present_reason() {
-        assert!(optional_reason_json(None).is_null());
-        assert!(optional_reason_json(Some("   ")).is_null());
-        assert_eq!(optional_reason_json(Some("  abuse  ")), "abuse");
+    fn optional_reason_preserves_missing_and_trims_present_reason() {
+        assert_eq!(optional_reason(None), None);
+        assert_eq!(optional_reason(Some("   ")), None);
+        assert_eq!(optional_reason(Some("  abuse  ")).as_deref(), Some("abuse"));
     }
 
     #[test]
@@ -700,7 +712,7 @@ mod tests {
             action: AuditAction::RoomDeleted,
             target_type: AuditTargetType::Room,
             target_id: Some("r1".to_string()),
-            details: serde_json::json!({"reason": "test"}),
+            details: AuditDetails::reason("test"),
             ip_address: Some("127.0.0.1".to_string()),
             user_agent: None,
             created_at: Utc::now(),
@@ -726,7 +738,8 @@ mod tests {
         assert_eq!(logout.action, AuditAction::UserLogout);
         assert_eq!(logout.target_type, AuditTargetType::User);
         assert_eq!(logout.target_id.as_deref(), Some("user_123"));
-        assert_eq!(logout.details, serde_json::json!({}));
+        assert!(logout.details.reason.is_none());
+        assert!(logout.details.room_id.is_none());
         assert_eq!(logout.ip_address.as_deref(), Some("192.168.1.1"));
         assert_eq!(logout.user_agent.as_deref(), Some("Mozilla/5.0"));
     }

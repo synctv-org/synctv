@@ -26,12 +26,11 @@ use synctv_core::service::room::{
 };
 use synctv_core::service::MediaService;
 
-#[cfg(test)]
-use super::convert::json_to_vec;
 use super::convert::try_playlist_path_node_to_proto;
 use super::convert::{
-    optional_proto_source_provider_to_core, proto_media_source_config_to_core_json,
-    proto_source_provider_to_core,
+    file_metadata_from_proto, optional_proto_source_provider_to_core,
+    optional_provider_target_to_proto, proto_media_source_config_to_core,
+    proto_source_provider_to_core, provider_target_from_proto,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
@@ -50,20 +49,6 @@ fn optional_trimmed_string(value: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-pub(crate) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, ApiError> {
-    if bytes.is_empty() {
-        return Ok(serde_json::Value::Object(Default::default()));
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|error| ApiError::InvalidInput(format!("Invalid metadata JSON: {error}")))?;
-    if !metadata.is_object() {
-        return Err(ApiError::InvalidInput(
-            "metadata must be a JSON object".to_string(),
-        ));
-    }
-    Ok(metadata)
-}
-
 #[cfg(test)]
 pub(crate) struct RequiredStoredFileFields {
     pub url: String,
@@ -71,7 +56,7 @@ pub(crate) struct RequiredStoredFileFields {
     pub size_bytes: i64,
     pub width: i32,
     pub height: i32,
-    pub metadata: Vec<u8>,
+    pub metadata: Option<synctv_proto::client::FileMetadata>,
 }
 
 #[cfg(test)]
@@ -88,7 +73,9 @@ pub(crate) fn required_stored_file_fields(
         size_bytes,
         width: stored_file_dimension(file.width, "width")?,
         height: stored_file_dimension(file.height, "height")?,
-        metadata: json_to_vec(&file.metadata, metadata_field)?,
+        metadata: super::convert::file_metadata_to_proto(&file.metadata).map_err(|error| {
+            ApiError::Internal(format!("Failed to convert {metadata_field}: {error:?}"))
+        })?,
     })
 }
 
@@ -789,9 +776,17 @@ fn hash_string(hasher: &mut Sha256, value: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn hash_bytes(hasher: &mut Sha256, value: &[u8]) -> Result<(), ApiError> {
-    hasher.update(usize_to_u64_api(value.len(), "byte slice length")?.to_le_bytes());
-    hasher.update(value);
+fn hash_optional_proto_message<M: prost::Message>(
+    hasher: &mut Sha256,
+    value: Option<&M>,
+) -> Result<(), ApiError> {
+    match value {
+        Some(value) => {
+            hasher.update([1]);
+            hash_proto_message(hasher, value)?;
+        }
+        None => hasher.update([0]),
+    }
     Ok(())
 }
 
@@ -823,7 +818,7 @@ pub(crate) fn compute_playlist_items_response_version(
     for item in &response.dynamic_items {
         hash_string(&mut hasher, &item.name)?;
         hasher.update(item.item_type.to_le_bytes());
-        hash_bytes(&mut hasher, &item.target)?;
+        hash_optional_proto_message(&mut hasher, item.target.as_ref())?;
         hash_optional_i64(&mut hasher, item.size);
         match item.thumbnail.as_deref() {
             Some(thumbnail) => {
@@ -1068,7 +1063,7 @@ pub(crate) fn build_add_media_request(
         .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
         .transpose()?;
 
-    let (config_provider, source_config) = proto_media_source_config_to_core_json(source_config)?;
+    let (config_provider, source_config) = proto_media_source_config_to_core(source_config)?;
     let source_provider = proto_source_provider_to_core(source_provider)?;
     if source_provider != config_provider {
         return Err(ApiError::InvalidInput(format!(
@@ -1410,7 +1405,7 @@ impl ClientApiImpl {
                     duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
                     bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
                     parts: proto_upload_manifest_parts(req.parts),
-                    metadata: parse_json_metadata(&req.metadata)?,
+                    metadata: file_metadata_from_proto(req.metadata.as_ref())?,
                 },
             )
             .await
@@ -1790,6 +1785,7 @@ impl ClientApiImpl {
         .await?;
         let rid = actor.room_id();
         let viewer_id = actor.user_id();
+        let target = provider_target_from_proto(req.target.clone())?;
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
             None
         } else {
@@ -1798,9 +1794,9 @@ impl ClientApiImpl {
                 &self.public_id_codec,
             )?)
         }) else {
-            if !req.target.is_empty() {
+            if target.is_some() {
                 return Err(ApiError::InvalidInput(
-                    "target must be empty when browsing the room root".to_string(),
+                    "target must be omitted when browsing the room root".to_string(),
                 ));
             }
             let availability = map_availability_filter(req.availability)?;
@@ -1991,7 +1987,7 @@ impl ClientApiImpl {
                     rid,
                     uid,
                     &playlist_id,
-                    (!req.target.is_empty()).then_some(req.target.as_slice()),
+                    target.as_ref(),
                     DynamicListQuery {
                         page,
                         page_size,
@@ -2042,7 +2038,10 @@ impl ClientApiImpl {
                     Ok(synctv_proto::client::PlaylistItem {
                         name: item.name,
                         item_type,
-                        target: item.target,
+                        target: Some(
+                            optional_provider_target_to_proto(Some(&item.target))
+                                .expect("provider target conversion returns Some"),
+                        ),
                         size: item
                             .size
                             .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
@@ -2057,19 +2056,17 @@ impl ClientApiImpl {
             let browse_path = self
                 .room_service
                 .media_service()
-                .get_dynamic_playlist_browse_path(
-                    rid,
-                    uid,
-                    &playlist_id,
-                    (!req.target.is_empty()).then_some(req.target.as_slice()),
-                )
+                .get_dynamic_playlist_browse_path(rid, uid, &playlist_id, target.as_ref())
                 .await
                 .map_err(ApiError::from)?;
             current_path.extend(browse_path.into_iter().map(|segment| {
                 synctv_proto::client::PlaylistBrowsePathNode {
                     playlist_id: String::new(),
                     name: segment.name,
-                    target: segment.target,
+                    target: Some(
+                        optional_provider_target_to_proto(Some(&segment.target))
+                            .expect("provider target conversion returns Some"),
+                    ),
                 }
             }));
 
@@ -2092,9 +2089,9 @@ impl ClientApiImpl {
             );
         }
 
-        if !req.target.is_empty() {
+        if target.is_some() {
             return Err(ApiError::InvalidInput(
-                "target must be empty when browsing a static playlist".to_string(),
+                "target must be omitted when browsing a static playlist".to_string(),
             ));
         }
 
@@ -2397,7 +2394,18 @@ mod tests {
                         "/tv",
                     )
                 }
-                _ => serde_json::Value::Null,
+                synctv_core::models::SourceProvider::Emby => {
+                    synctv_core::models::PlaylistSourceConfig::Emby(
+                        synctv_core::models::EmbyPlaylistSourceConfig {
+                            server_id: "emby-server".to_string(),
+                            item_id: "library".to_string(),
+                        },
+                    )
+                }
+                _ => synctv_core_testing::alist_directory_playlist_source_config(
+                    "alist-server",
+                    "/tv",
+                ),
             }),
             provider_instance_name: provider_instance_name.map(str::to_string),
             created_at: Utc::now(),
@@ -2418,7 +2426,13 @@ mod tests {
             dynamic_items: vec![synctv_proto::client::PlaylistItem {
                 name: "Episode 1".to_string(),
                 item_type: synctv_proto::client::ItemType::Media as i32,
-                target: br#"{"path":"/tv/episode-1"}"#.to_vec(),
+                target: Some(synctv_proto::client::ProviderTarget {
+                    target: Some(synctv_proto::client::provider_target::Target::Alist(
+                        synctv_proto::client::AlistTarget {
+                            relative_path: "/tv/episode-1".to_string(),
+                        },
+                    )),
+                }),
                 size: Some(123),
                 thumbnail: Some(thumbnail.to_string()),
                 modified_at: Some(456),
@@ -2699,7 +2713,10 @@ mod tests {
             size_bytes: Some(7),
             width: Some(16),
             height: Some(16),
-            metadata: serde_json::json!({"_synctv_upload_token": "v1.payload.signature"}),
+            metadata: synctv_core::models::FileMetadata {
+                upload_token: Some("v1.payload.signature".to_string()),
+                ..Default::default()
+            },
         }
     }
 
@@ -2870,7 +2887,7 @@ mod tests {
             &playlist,
             &synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist.id.to_string(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 20,
                 search: "alpha".to_string(),

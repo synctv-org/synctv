@@ -167,7 +167,7 @@ impl PlaybackDurationProbeService {
             if !state.is_playing {
                 continue;
             }
-            let Some(identity) = PlaybackSourceIdentity::from_state(&state) else {
+            let Some(identity) = PlaybackSourceIdentity::from_state(&state)? else {
                 continue;
             };
             match self
@@ -201,7 +201,7 @@ impl PlaybackDurationProbeService {
             return Ok(false);
         }
 
-        let Some(identity) = PlaybackSourceIdentity::from_state(state) else {
+        let Some(identity) = PlaybackSourceIdentity::from_state(state)? else {
             return Ok(false);
         };
         if self
@@ -227,7 +227,7 @@ impl PlaybackDurationProbeService {
     }
 
     async fn probe_claim(&self, claim: crate::models::ClaimedPlaybackDurationProbe) -> Result<()> {
-        let Some(identity) = PlaybackSourceIdentity::from_state(&claim.state) else {
+        let Some(identity) = PlaybackSourceIdentity::from_state(&claim.state)? else {
             return Ok(());
         };
         if identity != playback_identity_from_metadata(&claim.metadata) {
@@ -240,7 +240,11 @@ impl PlaybackDurationProbeService {
                 room_id: claim.metadata.room_id,
                 media_id: claim.metadata.media_id,
                 playlist_id: claim.metadata.playlist_id,
-                target: &claim.state.target,
+                target: Some(claim.state.target.as_ref().ok_or_else(|| {
+                    Error::InvalidInput(
+                        "target is required for dynamic playlist duration probing".to_string(),
+                    )
+                })?),
             })
             .await?;
         let Some(playback) = playback else {

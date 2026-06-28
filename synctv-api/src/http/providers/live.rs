@@ -1,7 +1,7 @@
 //! Live provider HTTP transport adapter.
 //!
 //! Live playback execution is owned by `impls::playback_provider`. This module
-//! only adapts legacy provider HTTP `PlaybackTransportAction` calls into semantic live
+//! adapts provider HTTP `PlaybackTransportAction` calls into semantic live
 //! playback chunk streams and wraps those chunks as HTTP responses.
 
 use axum::http::Method;

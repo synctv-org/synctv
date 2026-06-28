@@ -1,8 +1,30 @@
 use super::*;
-use crate::models::{FromProviderParams, Media, SourceProvider};
+use crate::models::{
+    DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig, FromProviderParams, Media,
+    MediaSourceConfig, SourceProvider,
+};
 use crate::repository::media::MediaRepository;
 use crate::test_helpers::TestResultExt;
 use synctv_core_testing::create_test_pool;
+
+fn direct_url_media_source_config(url: impl Into<String>) -> MediaSourceConfig {
+    MediaSourceConfig::DirectUrl(DirectUrlMediaSourceConfig {
+        is_live: None,
+        duration_seconds: None,
+        prefer_proxy: None,
+        medias: vec![DirectUrlMediaResourceConfig {
+            name: String::new(),
+            url: url.into(),
+            headers: std::collections::HashMap::new(),
+            format: String::new(),
+        }],
+        default_media_index: None,
+        subtitles: Vec::new(),
+        default_subtitle_index: None,
+        danmakus: Vec::new(),
+        default_danmaku_index: None,
+    })
+}
 
 async fn attach_test_media(
     pool: &PgPool,
@@ -16,9 +38,7 @@ async fn attach_test_media(
         creator_id: Some(owner_id),
         name: "Playback Position Test Video".to_string(),
         description: String::new(),
-        source_config: synctv_core_testing::direct_url_media_source_config(
-            "https://example.com/video.mp4",
-        ),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,
@@ -29,7 +49,7 @@ async fn attach_test_media(
         .checked("test media should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     playback_repo
         .update(&state)
@@ -152,9 +172,7 @@ async fn test_update_playback_state() {
         creator_id: Some(owner.id),
         name: "Test Video".to_string(),
         description: String::new(),
-        source_config: synctv_core_testing::direct_url_media_source_config(
-            "https://example.com/video.mp4",
-        ),
+        source_config: direct_url_media_source_config("https://example.com/video.mp4"),
         source_provider: SourceProvider::DirectUrl,
         provider_instance_name: None,
         position: 0.0,

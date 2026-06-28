@@ -33,10 +33,7 @@ pub(super) async fn execute_stop(args: StopArgs) -> Result<()> {
                     println!("{message}");
                 }
                 events.push(StopServerEventOutput {
-                    stage: stage.map_or_else(
-                        || format!("UNKNOWN_STAGE_{}", event.stage),
-                        stop_server_stage_name,
-                    ),
+                    stage: event.stage,
                     message,
                     terminal: event.terminal,
                 });
@@ -59,7 +56,7 @@ pub(super) async fn execute_stop(args: StopArgs) -> Result<()> {
                         &StopServerOutput {
                             success: true,
                             terminal_received: saw_terminal,
-                            final_stage: last_stage.map(stop_server_stage_name),
+                            final_stage: last_stage.map(i32::from),
                             events,
                         },
                     )?;
@@ -80,7 +77,7 @@ pub(super) async fn execute_stop(args: StopArgs) -> Result<()> {
                         &StopServerOutput {
                             success: true,
                             terminal_received: saw_terminal,
-                            final_stage: last_stage.map(stop_server_stage_name),
+                            final_stage: last_stage.map(i32::from),
                             events,
                         },
                     )?;
@@ -107,7 +104,7 @@ pub(super) async fn execute_stop(args: StopArgs) -> Result<()> {
         &StopServerOutput {
             success: true,
             terminal_received: saw_terminal,
-            final_stage: last_stage.map(stop_server_stage_name),
+            final_stage: last_stage.map(i32::from),
             events,
         },
     )?;
@@ -142,7 +139,7 @@ pub(in crate::cli) fn synthesize_stop_completion_if_needed(
     }
 
     events.push(StopServerEventOutput {
-        stage: stop_server_stage_name(management_proto::StopServerStage::Completed),
+        stage: management_proto::StopServerStage::Completed as i32,
         message: "shutdown complete".to_string(),
         terminal: true,
     });
@@ -166,22 +163,20 @@ pub(in crate::cli) fn stop_stream_disconnect_can_be_treated_as_success(
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct StopServerEventOutput {
-    pub(in crate::cli) stage: String,
+    pub(in crate::cli) stage: i32,
     pub(in crate::cli) message: String,
     pub(in crate::cli) terminal: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct StopServerOutput {
     pub(in crate::cli) success: bool,
     pub(in crate::cli) terminal_received: bool,
-    pub(in crate::cli) final_stage: Option<String>,
+    pub(in crate::cli) final_stage: Option<i32>,
     pub(in crate::cli) events: Vec<StopServerEventOutput>,
-}
-
-pub(in crate::cli) fn stop_server_stage_name(stage: management_proto::StopServerStage) -> String {
-    stage.as_str_name().to_ascii_lowercase()
 }
 
 fn print_stop_output(format: RemoteOutputFormat, output: &StopServerOutput) -> Result<()> {

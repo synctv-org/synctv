@@ -347,7 +347,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["request_id"], "test-req-123");
+        assert_eq!(json["requestId"], "test-req-123");
         assert_eq!(json["error"], "invalid input");
         assert_eq!(json["status"], 400);
         Ok(())
@@ -372,7 +372,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
         assert!(matches!(
-            json["request_id"].as_str(),
+            json["requestId"].as_str(),
             Some(request_id) if !request_id.is_empty()
         ));
         assert_eq!(json["error"], "resource");
@@ -403,7 +403,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["request_id"], "internal-err-456");
+        assert_eq!(json["requestId"], "internal-err-456");
         assert_eq!(json["error"], "Internal server error");
         assert_eq!(json["status"], 500);
         Ok(())
@@ -434,7 +434,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["request_id"], "code-test-789");
+        assert_eq!(json["requestId"], "code-test-789");
         assert_eq!(json["code"], 1001);
         assert_eq!(json["status"], 400);
         Ok(())

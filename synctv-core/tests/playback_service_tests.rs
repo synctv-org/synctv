@@ -11,8 +11,8 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, SourceProvider, User, UserId,
-        UserRole, UserStatus,
+        room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, ProviderTarget, SourceProvider,
+        User, UserId, UserRole, UserStatus,
     },
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
@@ -128,7 +128,7 @@ async fn attach_test_media(
         .checked("playback state should be created");
     state.playing_media_id = Some(media.id);
     state.playing_playlist_id = None;
-    state.target.clear();
+    state.target = None;
     state.position = 0.0;
     playback_repo
         .update(&state)
@@ -201,10 +201,10 @@ async fn test_seek_rejects_live_direct_url_source() {
 
     let mut source_config =
         synctv_core_testing::direct_url_media_source_config("https://example.com/live.m3u8");
-    source_config
-        .as_object_mut()
-        .checked("direct url source_config should be an object")
-        .insert("is_live".to_string(), serde_json::json!(true));
+    let synctv_core::models::MediaSourceConfig::DirectUrl(config) = &mut source_config else {
+        panic!("direct url source_config should be DirectUrl");
+    };
+    config.is_live = Some(true);
 
     let media = Media {
         id: MediaId::new(),
@@ -229,7 +229,7 @@ async fn test_seek_rejects_live_direct_url_source() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("live media should start playback");
 
@@ -390,7 +390,7 @@ async fn test_switch_media_resets_position() {
 
     // Switch media should reset position to 0
     let state = playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -461,7 +461,7 @@ async fn test_switch_media_rejects_target() {
             owner.id,
             Some(media.id),
             None,
-            br#"{"relative_path":"/unexpected"}"#.to_vec(),
+            Some(ProviderTarget::alist("/unexpected".to_string())),
         )
         .await;
 
@@ -531,7 +531,7 @@ async fn test_switch_media_rejects_inactive_creator() {
 
     let result = room_service
         .playback_service()
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await;
 
     match result.failed("media created by banned user must not be playable") {
@@ -594,7 +594,7 @@ async fn test_switch_with_empty_target_clears_playback_state() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
     playback_service
@@ -603,13 +603,13 @@ async fn test_switch_with_empty_target_clears_playback_state() {
         .checked("test operation should succeed");
 
     let state = playback_service
-        .switch(room.id, owner.id, None, None, Vec::new())
+        .switch(room.id, owner.id, None, None, None)
         .await
         .checked("test operation should succeed");
 
     assert!(state.playing_media_id.is_none());
     assert!(state.playing_playlist_id.is_none());
-    assert!(state.target.is_empty());
+    assert!(state.target.is_none());
     assert!((state.position - 0.0).abs() < f64::EPSILON);
     assert!((state.speed - 1.0).abs() < f64::EPSILON);
     assert!(!state.is_playing);
@@ -824,7 +824,7 @@ async fn test_play_next_concurrent_playlist_modification() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(room.id, owner.id, Some(media_ids[0]), None, Vec::new())
+        .switch(room.id, owner.id, Some(media_ids[0]), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -912,7 +912,7 @@ async fn test_play_next_at_end_of_playlist() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
+        .switch(room.id, owner.id, Some(media_ids[2]), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -993,7 +993,7 @@ async fn test_play_next_with_loop_enabled() {
 
     let playback_service = room_service.playback_service();
     playback_service
-        .switch(room.id, owner.id, Some(media_ids[2]), None, Vec::new())
+        .switch(room.id, owner.id, Some(media_ids[2]), None, None)
         .await
         .checked("test operation should succeed");
 
@@ -1198,7 +1198,7 @@ async fn test_state_consistency_after_mixed_operations() {
 
     // Switch to media
     playback_service
-        .switch(room.id, owner.id, Some(media.id), None, Vec::new())
+        .switch(room.id, owner.id, Some(media.id), None, None)
         .await
         .checked("test operation should succeed");
 

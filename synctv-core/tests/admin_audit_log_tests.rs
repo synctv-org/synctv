@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use synctv_core::models::{AuditAction, AuditTargetType};
+use synctv_core::models::{AuditAction, AuditDetails, AuditTargetType};
 use synctv_core::service::{AuditEventParams, AuditService, StreamKickAuditRequest};
 use synctv_core_testing::{create_test_pool, ok, some};
 
@@ -49,10 +49,11 @@ async fn test_audit_log_integrity_all_fields() {
                 action: AuditAction::UserBanned,
                 target_type: AuditTargetType::User,
                 target_id: Some("target_user_002".to_string()),
-                details: serde_json::json!({
-                    "reason": "Policy violation",
-                    "duration": "permanent"
-                }),
+                details: AuditDetails {
+                    reason: Some("Policy violation".to_string()),
+                    duration: Some("permanent".to_string()),
+                    ..Default::default()
+                },
                 ip_address: Some("192.168.1.100".to_string()),
                 user_agent: Some("Mozilla/5.0 TestAgent/1.0".to_string()),
             })
@@ -121,17 +122,11 @@ async fn test_audit_log_details_json_integrity() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    let details = serde_json::json!({
-        "nested": {
-            "deeply": {
-                "value": 42
-            }
-        },
-        "array": [1, 2, 3],
-        "string": "test",
-        "boolean": true,
-        "null": null
-    });
+    let details = AuditDetails {
+        group: Some("security".to_string()),
+        changed_keys: vec!["security.enable_login".to_string()],
+        ..Default::default()
+    };
 
     ok(
         service
@@ -158,11 +153,8 @@ async fn test_audit_log_details_json_integrity() {
         "audit log details should be fetched",
     );
 
-    assert_eq!(details["nested"]["deeply"]["value"], 42);
-    assert_eq!(details["array"], serde_json::json!([1, 2, 3]));
-    assert_eq!(details["string"], "test");
-    assert_eq!(details["boolean"], true);
-    assert!(details["null"].is_null());
+    assert_eq!(details["group"], "security");
+    assert_eq!(details["changedKeys"][0], "security.enable_login");
 }
 
 #[tokio::test]
@@ -182,7 +174,7 @@ async fn test_audit_log_created_at_timestamp() {
                 action: AuditAction::UserCreated,
                 target_type: AuditTargetType::User,
                 target_id: Some("new_user".to_string()),
-                details: serde_json::json!({}),
+                details: AuditDetails::default(),
                 ip_address: None,
                 user_agent: None,
             })
@@ -233,7 +225,7 @@ async fn test_audit_log_multiple_actions_same_actor() {
                         _ => AuditTargetType::Settings,
                     },
                     target_id: Some("target".to_string()),
-                    details: serde_json::json!({}),
+                    details: AuditDetails::default(),
                     ip_address: None,
                     user_agent: None,
                 })
@@ -292,7 +284,10 @@ async fn test_concurrent_audit_logging() {
                 action: AuditAction::UserCreated,
                 target_type: AuditTargetType::User,
                 target_id: Some(format!("concurrent_target_{i}")),
-                details: serde_json::json!({"index": i}),
+                details: AuditDetails {
+                    index: Some(i),
+                    ..Default::default()
+                },
                 ip_address: None,
                 user_agent: None,
             })
@@ -364,7 +359,7 @@ async fn test_all_audit_actions_are_logged() {
                         _ => AuditTargetType::Settings,
                     },
                     target_id: Some(format!("action_target_{i}")),
-                    details: serde_json::json!({}),
+                    details: AuditDetails::default(),
                     ip_address: None,
                     user_agent: None,
                 })
@@ -413,7 +408,7 @@ async fn test_all_target_types_are_logged() {
                     action: AuditAction::UserCreated,
                     target_type: *target_type,
                     target_id: Some(format!("target_{i}")),
-                    details: serde_json::json!({}),
+                    details: AuditDetails::default(),
                     ip_address: None,
                     user_agent: None,
                 })
@@ -457,7 +452,7 @@ async fn test_audit_log_with_all_null_optionals() {
                 action: AuditAction::UserCreated,
                 target_type: AuditTargetType::User,
                 target_id: None,
-                details: serde_json::json!({}),
+                details: AuditDetails::default(),
                 ip_address: None,
                 user_agent: None,
             })
@@ -494,7 +489,10 @@ async fn test_audit_log_with_all_optionals() {
                 action: AuditAction::UserCreated,
                 target_type: AuditTargetType::User,
                 target_id: Some("target_id".to_string()),
-                details: serde_json::json!({"key": "value"}),
+                details: AuditDetails {
+                    key: Some("value".to_string()),
+                    ..Default::default()
+                },
                 ip_address: Some("10.0.0.1".to_string()),
                 user_agent: Some("TestClient/2.0".to_string()),
             })
@@ -560,8 +558,8 @@ async fn test_log_stream_kicked_helper() {
     assert_eq!(audit_target_type(row.target_type), AuditTargetType::Stream);
     assert_eq!(row.target_id, Some("room_123:media_456".to_string()));
     assert_eq!(row.actor_username, "stream_kicker");
-    assert_eq!(row.details["room_id"], "room_123");
-    assert_eq!(row.details["media_id"], "media_456");
+    assert_eq!(row.details["roomId"], "room_123");
+    assert_eq!(row.details["mediaId"], "media_456");
     assert_eq!(row.details["reason"], "Inappropriate content");
 }
 
@@ -596,8 +594,8 @@ async fn test_log_stream_kicked_without_reason() {
         "stream kick audit details should be fetched",
     );
 
-    assert_eq!(details["room_id"], "room_abc");
-    assert_eq!(details["media_id"], "media_xyz");
+    assert_eq!(details["roomId"], "room_abc");
+    assert_eq!(details["mediaId"], "media_xyz");
     assert_eq!(details["reason"], serde_json::Value::Null);
 }
 
@@ -616,10 +614,17 @@ async fn test_settings_viewed_audit_log() {
                 action: AuditAction::SettingsViewed,
                 target_type: AuditTargetType::Settings,
                 target_id: None,
-                details: serde_json::json!({
-                    "group_count": 5,
-                    "groups": ["general", "security", "proxy", "email", "p2p"],
-                }),
+                details: AuditDetails {
+                    group_count: Some(5),
+                    groups: vec![
+                        "general".to_string(),
+                        "security".to_string(),
+                        "proxy".to_string(),
+                        "email".to_string(),
+                        "p2p".to_string(),
+                    ],
+                    ..Default::default()
+                },
                 ip_address: Some("192.168.1.50".to_string()),
                 user_agent: Some("Mozilla/5.0 AdminClient/1.0".to_string()),
             })
@@ -654,7 +659,7 @@ async fn test_settings_viewed_audit_log() {
         row.user_agent,
         Some("Mozilla/5.0 AdminClient/1.0".to_string())
     );
-    assert_eq!(row.details["group_count"], 5);
+    assert_eq!(row.details["groupCount"], 5);
     assert_eq!(
         some(
             row.details["groups"].as_array(),
@@ -680,9 +685,10 @@ async fn test_settings_group_viewed_audit_log() {
                 action: AuditAction::SettingsGroupViewed,
                 target_type: AuditTargetType::Settings,
                 target_id: None,
-                details: serde_json::json!({
-                    "group": "security",
-                }),
+                details: AuditDetails {
+                    group: Some("security".to_string()),
+                    ..Default::default()
+                },
                 ip_address: Some("10.0.0.1".to_string()),
                 user_agent: None,
             })

@@ -1,12 +1,9 @@
 //! Guest token validation tests for synctv-api
 //!
-//! Tests the shared guest-token validation behavior relied on by transports:
-//! 1. JWT signature verification (existing behavior)
+//! Tests the shared guest-token validation behavior used by transports:
+//! 1. JWT signature verification
 //! 2. Token blacklist check (for individually revoked tokens)
 //! 3. Room guest version check (for room-wide revocation)
-//!
-//! These tests document the validation guarantees that replaced the old
-//! transport-specific guest-auth flow.
 
 #![allow(clippy::unwrap_used)]
 

@@ -8,9 +8,10 @@ use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileObjectDownload,
-        FileObjectMetadata, FileRangeRequest, FileReferenceTarget, FileUploadSession,
-        FileUploadSessionCreateResult, FileUploadSessionKind, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult,
+        FileObjectMetadata, FileRangeRequest, FileReferenceTarget,
+        FileUploadOwnershipProofMetadata, FileUploadSession, FileUploadSessionCreateResult,
+        FileUploadSessionKind, GetFileObject, NewStoredFile, StoreFileUpload,
+        StoreFileUploadResult,
     },
     repository::{
         FileStorageRepository, UpsertFileBlobPart, UpsertFileObject, UpsertFileUploadSession,
@@ -22,22 +23,22 @@ use crate::{
         decode_database_file_object_key, encode_database_file_object_key, file_object_key,
         file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
         file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
-        media_processing::attach_variants_to_files, new_public_file_id, optional_payload_bool,
-        ownership_proof_ranges_from_payload, payload_len_i64, process_file_variants_for_object,
-        register_upload_session_reference, strip_internal_file_metadata,
-        upload_manifest_is_single_object, upload_manifest_metadata,
+        media_processing::attach_variants_to_files, new_public_file_id, payload_len_i64,
+        process_file_variants_for_object, register_upload_session_reference,
+        strip_internal_file_metadata, upload_manifest_is_single_object,
         upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
         upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
         upload_session_public_file_id, validate_create_file_upload_session,
         validate_database_file_read_token, validate_database_file_upload_token,
-        validate_file_mime_type, validate_file_reuse_grant, validate_stored_files,
-        validate_upload_range, validated_upload_manifest, CreateFileReuseGrant,
-        DatabaseFileStorageCompressionConfig, DatabaseFileStorageService, FileObjectReader,
-        FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
-        UploadSessionMetadataInput, ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
-        FILE_UPLOAD_TOKEN_HEADER, FILE_UPLOAD_TOKEN_KEY, MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
+        validate_file_mime_type, validate_file_reuse_grant, validate_file_upload_token_context,
+        validate_session_file_for_storage, validate_stored_files, validate_upload_range,
+        validated_upload_manifest, CreateFileReuseGrant, DatabaseFileStorageCompressionConfig,
+        DatabaseFileStorageService, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
+        FileStorageContext, FileStorageService, UploadSessionMetadataInput,
+        ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
+        MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
     },
     Error, Result,
 };
@@ -226,8 +227,8 @@ impl DatabaseFileStorageService {
                 parts.len(),
             )
             .await?;
-        let upload_policy = upload_session_policy(&session.metadata)?;
-        let metadata = upload_session_object_metadata(&session.metadata)?;
+        let upload_policy = upload_session_policy(&session.metadata);
+        let metadata = upload_session_object_metadata(&session.metadata);
         self.repository
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.storage_backend,
@@ -292,8 +293,8 @@ impl DatabaseFileStorageService {
         session: &crate::models::FileUploadSessionRecord,
         data: Vec<u8>,
     ) -> Result<FileBlob> {
-        let metadata = upload_session_object_metadata(&session.metadata)?;
-        let upload_policy = upload_session_policy(&session.metadata)?;
+        let metadata = upload_session_object_metadata(&session.metadata);
+        let upload_policy = upload_session_policy(&session.metadata);
         let mut blob = super::session_record_blob(session, data, metadata);
         if let Err(error) = super::complete_uploaded_file_object(
             self,
@@ -588,23 +589,12 @@ impl FileStorageService for DatabaseFileStorageService {
                 &content_manifest_sha256,
                 request.size_bytes,
             )?;
-            validate_stored_files(std::slice::from_ref(&file))?;
+            validate_session_file_for_storage(&file)?;
             let mut reference_metadata = session_metadata.clone();
-            let object = reference_metadata.as_object_mut().ok_or_else(|| {
-                Error::InvalidInput("file upload session metadata is invalid".to_string())
-            })?;
-            object.insert(
-                "ownership_proof_required".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            object.insert(
-                "ownership_proof_nonce".to_string(),
-                serde_json::Value::String(nonce.clone()),
-            );
-            object.insert(
-                "ownership_proof_ranges".to_string(),
-                serde_json::to_value(&ranges)?,
-            );
+            reference_metadata.ownership_proof = Some(FileUploadOwnershipProofMetadata {
+                nonce: nonce.clone(),
+                ranges: ranges.clone(),
+            });
             register_upload_session_reference(
                 &self.repository,
                 &self.storage_backend,
@@ -678,7 +668,7 @@ impl FileStorageService for DatabaseFileStorageService {
             upload_policy: &request.policy,
         });
         let session_metadata =
-            upload_session_metadata_with_manifest(&session_metadata, &request.parts)?;
+            upload_session_metadata_with_manifest(&session_metadata, &request.parts);
         let single_object_upload =
             upload_manifest_is_single_object(request.size_bytes, &request.parts);
         let session_kind = if single_object_upload {
@@ -708,20 +698,14 @@ impl FileStorageService for DatabaseFileStorageService {
             &self.upload_token_secret,
             Some(&content_manifest_sha256),
         )?;
-        file.metadata
-            .as_object_mut()
-            .ok_or_else(|| Error::InvalidInput("file metadata must be a JSON object".to_string()))?
-            .insert(
-                FILE_UPLOAD_TOKEN_KEY.to_string(),
-                serde_json::Value::String(upload_token),
-            );
+        file.metadata.upload_token = Some(upload_token);
         file.url = Some(database_file_object_url(
             &request.policy.database_object_route_prefix,
             &self.storage_backend,
             &file.object_key,
             &self.upload_token_secret,
         )?);
-        validate_stored_files(std::slice::from_ref(&file))?;
+        validate_session_file_for_storage(&file)?;
         self.repository
             .upsert_pending_object(UpsertFileObject {
                 storage_backend: &self.storage_backend,
@@ -732,7 +716,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?,
                 size_bytes: request.size_bytes,
                 content_manifest_sha256: &content_manifest_sha256,
-                metadata: &upload_manifest_metadata(&request.parts)?,
+                metadata: &file.metadata,
             })
             .await?;
         if !single_object_upload {
@@ -745,7 +729,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     })?,
                     size_bytes: request.size_bytes,
                     content_manifest_sha256: &content_manifest_sha256,
-                    metadata: &session_metadata,
+                    metadata: &file.metadata,
                 })
                 .await?;
         }
@@ -789,11 +773,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 .ok_or_else(|| Error::InvalidInput("file mime_type is required".to_string()))?
                 .to_string(),
         );
-        if let Some(token) = file
-            .metadata
-            .get(FILE_UPLOAD_TOKEN_KEY)
-            .and_then(serde_json::Value::as_str)
-        {
+        if let Some(token) = file.metadata.upload_token.as_deref() {
             upload_headers.insert(FILE_UPLOAD_TOKEN_HEADER.to_string(), token.to_string());
         }
         let object_url = database_file_object_url(
@@ -828,6 +808,29 @@ impl FileStorageService for DatabaseFileStorageService {
         context: FileStorageContext<'_>,
         mut files: Vec<NewStoredFile>,
     ) -> Result<Vec<NewStoredFile>> {
+        for file in &files {
+            if let Some(token) = file
+                .metadata
+                .upload_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+            {
+                let payload = validate_file_upload_token_context(
+                    token,
+                    Utc::now(),
+                    &self.upload_token_secret,
+                )?;
+                if payload.user_id != context.user_id.as_i64()
+                    || payload.storage_scope != context.storage_scope
+                {
+                    return Err(Error::InvalidInput(
+                        "file upload token does not belong to this request".to_string(),
+                    ));
+                }
+            }
+        }
+        strip_internal_file_metadata(&mut files);
         validate_stored_files(&files)?;
         for file in &files {
             if file.storage_backend != self.storage_backend {
@@ -854,7 +857,6 @@ impl FileStorageService for DatabaseFileStorageService {
             context.database_object_route_prefix,
         )
         .await?;
-        strip_internal_file_metadata(&mut files);
         Ok(files)
     }
 
@@ -957,13 +959,8 @@ impl FileStorageService for DatabaseFileStorageService {
         self.repository
             .delete_object(&self.storage_backend, &session.upload_session_key)
             .await?;
-        let (_, reference_id) = super::upload_session_reference_target(
-            session
-                .metadata
-                .get(super::FILE_SESSION_METADATA_PUBLIC_ID_KEY)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default(),
-        );
+        let (_, reference_id) =
+            super::upload_session_reference_target(session.metadata.public_file_id.as_str());
         if !reference_id.is_empty() {
             self.repository
                 .release_reference(
@@ -1027,8 +1024,8 @@ impl FileStorageService for DatabaseFileStorageService {
             .ok_or_else(|| Error::InvalidInput("file upload session was not found".to_string()))?;
         ensure_session_open(&session)?;
         let mime_type = payload
-            .get("mime_type")
-            .and_then(serde_json::Value::as_str)
+            .mime_type
+            .as_deref()
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
         if let Some(content_type) = content_type.as_deref() {
             if upload_media_type(content_type)? != mime_type {
@@ -1038,8 +1035,7 @@ impl FileStorageService for DatabaseFileStorageService {
             }
         }
         let expected_size = payload
-            .get("size_bytes")
-            .and_then(serde_json::Value::as_i64)
+            .size_bytes
             .ok_or_else(|| Error::InvalidInput("invalid file upload token".to_string()))?;
         let actual_part_checksum = hex::encode(Sha256::digest(&data));
         let range = range.unwrap_or(crate::models::FileUploadRange {
@@ -1094,7 +1090,7 @@ impl FileStorageService for DatabaseFileStorageService {
                     "file manifest does not match uploaded object".to_string(),
                 ));
             }
-            let metadata = upload_session_object_metadata(&session.metadata)?;
+            let metadata = upload_session_object_metadata(&session.metadata);
             self.repository
                 .upsert_pending_object(UpsertFileObject {
                     storage_backend: &self.storage_backend,
@@ -1226,95 +1222,125 @@ impl FileStorageService for DatabaseFileStorageService {
             let reference_session = self
                 .repository
                 .get_upload_session_by_reference(reference_kind, &reference_id)
-                .await?
-                .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
-            if reference_session.storage_backend != self.storage_backend
-                || (reference_session.object_key != decoded_object_key
-                    && reference_session.upload_session_key != decoded_object_key)
-            {
-                return Err(Error::InvalidInput(
-                    "file reference does not match upload session".to_string(),
-                ));
-            }
-            if optional_payload_bool(
-                &reference_session.metadata,
-                "ownership_proof_required",
-                "file upload session metadata",
-            )? {
+                .await?;
+            let reference_file = if let Some(reference_session) = reference_session {
+                if reference_session.storage_backend != self.storage_backend
+                    || (reference_session.object_key != decoded_object_key
+                        && reference_session.upload_session_key != decoded_object_key)
+                {
+                    return Err(Error::InvalidInput(
+                        "file reference does not match upload session".to_string(),
+                    ));
+                }
                 if reference_session.expires_at <= Utc::now() {
                     return Err(Error::InvalidInput(
                         "file upload session is not active".to_string(),
                     ));
                 }
-                let proof = request
-                    .ownership_proof
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|proof| !proof.is_empty())
-                    .ok_or_else(|| {
-                        Error::InvalidInput("file ownership proof is required".to_string())
-                    })?;
-                let nonce = reference_session
-                    .metadata
-                    .get("ownership_proof_nonce")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        Error::InvalidInput("invalid file upload session metadata".to_string())
-                    })?;
-                let ranges = ownership_proof_ranges_from_payload(&reference_session.metadata)?;
-                let mut chunks = Vec::with_capacity(ranges.len());
-                for range in &ranges {
-                    let data = self
-                        .load_range_data(
-                            &reference_session.object_key,
-                            Some(FileRangeRequest::Exact(FileByteRange {
-                                start: range.offset,
-                                end_inclusive: range.offset + i64::from(range.length) - 1,
-                            })),
-                        )
-                        .await?;
-                    chunks.push(data);
-                }
-                let expected = file_ownership_proof_digest(
-                    nonce,
-                    &ranges,
-                    &reference_session.content_manifest_sha256,
+                Some((
+                    reference_session.object_key,
+                    reference_session.mime_type,
                     reference_session.size_bytes,
-                    chunks.iter().map(Vec::as_slice),
-                );
-                if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
+                    reference_session.content_manifest_sha256,
+                    reference_session.metadata,
+                ))
+            } else {
+                let reference = self
+                    .repository
+                    .get_active_reference_metadata_by_target(reference_kind, &reference_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::InvalidInput("file reference was not found".to_string())
+                    })?;
+                if reference.storage_backend != self.storage_backend
+                    || reference.object_key != decoded_object_key
+                {
                     return Err(Error::InvalidInput(
-                        "file ownership proof does not match object".to_string(),
+                        "file reference does not match upload session".to_string(),
                     ));
                 }
-                let metadata =
-                    mark_upload_session_ownership_proof_verified(&reference_session.metadata)?;
-                self.repository
-                    .update_reference_metadata(
-                        reference_kind,
-                        &reference_id,
-                        &self.storage_backend,
-                        &reference_session.object_key,
-                        &metadata,
-                    )
-                    .await?;
-                return Ok(CompleteFileUploadSessionResult {
-                    object: Some(FileBlob {
-                        storage_backend: self.storage_backend.clone(),
-                        object_key: reference_session.object_key,
-                        mime_type: reference_session.mime_type,
-                        size_bytes: reference_session.size_bytes,
-                        total_size_bytes: reference_session.size_bytes,
-                        content_manifest_sha256: reference_session.content_manifest_sha256,
-                        compression: FileBlobCompression::None,
-                        range: None,
-                        data: Vec::new(),
-                        metadata: serde_json::Value::Object(Default::default()),
-                        created_at: Utc::now(),
-                    }),
-                    uploaded_size_bytes: reference_session.size_bytes,
-                    uploaded_parts: Vec::new(),
-                });
+                let crate::models::FileReferenceMetadata::UploadSession(metadata) =
+                    reference.metadata
+                else {
+                    return Err(Error::InvalidInput(
+                        "file reference was not found".to_string(),
+                    ));
+                };
+                Some((
+                    reference.object_key,
+                    reference.mime_type,
+                    reference.size_bytes,
+                    reference.content_manifest_sha256,
+                    metadata,
+                ))
+            };
+            if let Some((object_key, mime_type, size_bytes, content_manifest_sha256, metadata)) =
+                reference_file
+            {
+                if let Some(ownership_proof) = metadata.ownership_proof.as_ref() {
+                    let proof = request
+                        .ownership_proof
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|proof| !proof.is_empty())
+                        .ok_or_else(|| {
+                            Error::InvalidInput("file ownership proof is required".to_string())
+                        })?;
+                    let nonce = ownership_proof.nonce.as_str();
+                    let ranges = ownership_proof.ranges.clone();
+                    let mut chunks = Vec::with_capacity(ranges.len());
+                    for range in &ranges {
+                        let data = self
+                            .load_range_data(
+                                &object_key,
+                                Some(FileRangeRequest::Exact(FileByteRange {
+                                    start: range.offset,
+                                    end_inclusive: range.offset + i64::from(range.length) - 1,
+                                })),
+                            )
+                            .await?;
+                        chunks.push(data);
+                    }
+                    let expected = file_ownership_proof_digest(
+                        nonce,
+                        &ranges,
+                        &content_manifest_sha256,
+                        size_bytes,
+                        chunks.iter().map(Vec::as_slice),
+                    );
+                    if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
+                        return Err(Error::InvalidInput(
+                            "file ownership proof does not match object".to_string(),
+                        ));
+                    }
+                    let metadata = mark_upload_session_ownership_proof_verified(&metadata);
+                    self.repository
+                        .update_reference_metadata(
+                            reference_kind,
+                            &reference_id,
+                            &self.storage_backend,
+                            &object_key,
+                            &crate::models::FileReferenceMetadata::UploadSession(metadata),
+                        )
+                        .await?;
+                    return Ok(CompleteFileUploadSessionResult {
+                        object: Some(FileBlob {
+                            storage_backend: self.storage_backend.clone(),
+                            object_key,
+                            mime_type,
+                            size_bytes,
+                            total_size_bytes: size_bytes,
+                            content_manifest_sha256,
+                            compression: FileBlobCompression::None,
+                            range: None,
+                            data: Vec::new(),
+                            metadata: Default::default(),
+                            created_at: Utc::now(),
+                        }),
+                        uploaded_size_bytes: size_bytes,
+                        uploaded_parts: Vec::new(),
+                    });
+                }
             }
         }
         let session = self
@@ -1327,7 +1353,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 object: Some(super::session_record_blob(
                     &session,
                     Vec::new(),
-                    upload_session_object_metadata(&session.metadata)?,
+                    upload_session_object_metadata(&session.metadata),
                 )),
                 uploaded_size_bytes: session.size_bytes,
                 uploaded_parts: vec![1],
@@ -1466,7 +1492,7 @@ impl FileStorageService for DatabaseFileStorageService {
         object_key: &str,
         mime_type: &str,
         data: Vec<u8>,
-        metadata: serde_json::Value,
+        metadata: crate::models::FileMetadata,
     ) -> Result<FileBlob> {
         if storage_backend != self.storage_backend {
             return Err(Error::InvalidInput(format!(

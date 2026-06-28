@@ -6,14 +6,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::Utc;
 use synctv_api::impls::ClientApiImpl;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        FromProviderParams, Media, PlayMode, Playlist, PlaylistId, ProviderInstance, RoomId,
-        SignupMethod, User, UserId, UserRole, UserStatus,
+        AlistMediaSourceConfig, FromProviderParams, Media, MediaSourceConfig, PlayMode, Playlist,
+        PlaylistId, ProviderInstance, ProviderTarget, RoomId, SignupMethod, User, UserId, UserRole,
+        UserStatus,
     },
     provider::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
@@ -32,18 +32,38 @@ use synctv_core::{
 use synctv_core_testing::create_test_pool;
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
-fn dynamic_target(cursor: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({ "relative_path": cursor }))
-        .expect("dynamic target should serialize")
+fn alist_target(cursor: &str) -> ProviderTarget {
+    ProviderTarget::alist(cursor.to_string())
 }
 
-fn decode_dynamic_target(target: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(target)
-        .expect("dynamic target should deserialize")
-        .get("relative_path")
-        .and_then(serde_json::Value::as_str)
-        .expect("dynamic target should contain provider cursor")
-        .to_string()
+fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::ProviderTarget> {
+    Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Alist(
+            synctv_proto::client::AlistTarget {
+                relative_path: relative_path.to_string(),
+            },
+        )),
+    })
+}
+
+fn assert_proto_alist_target(
+    target: Option<&synctv_proto::client::ProviderTarget>,
+    expected_path: &str,
+) {
+    let Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Alist(target)),
+    }) = target
+    else {
+        panic!("expected alist provider target");
+    };
+    assert_eq!(target.relative_path, expected_path);
+}
+
+fn decode_alist_target(target: &ProviderTarget) -> String {
+    match target {
+        ProviderTarget::Alist(target) => target.relative_path.clone(),
+        ProviderTarget::Emby(_) => panic!("expected alist provider target"),
+    }
 }
 
 const NEXT_ITEM_SOURCE_CONFIG_SECRET: &str = "dynamic-next-item-secret";
@@ -147,7 +167,7 @@ impl MediaProvider for TransientPlaybackFailureProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        _source_config: &serde_json::Value,
+        _source_config: &MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
         Err(ProviderError::NetworkError(
             "test provider temporarily unavailable".to_string(),
@@ -195,13 +215,12 @@ impl StubDynamicProvider {
         NextPlayItem {
             name,
             item_type: ItemType::Media,
-            source_config: serde_json::json!({
-                "path": path,
-                "secret_token": NEXT_ITEM_SOURCE_CONFIG_SECRET,
+            source_config: MediaSourceConfig::Alist(AlistMediaSourceConfig {
+                server_id: NEXT_ITEM_SOURCE_CONFIG_SECRET.to_string(),
+                path: path.to_string(),
+                password: None,
             }),
-            metadata: serde_json::json!({}),
-            provider_data: serde_json::json!({}),
-            target: dynamic_target(path),
+            target: alist_target(path),
         }
     }
 }
@@ -215,12 +234,19 @@ impl MediaProvider for StubDynamicProvider {
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: &serde_json::Value,
+        source_config: &MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        let path = source_config
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ProviderError::InvalidConfig("Missing path".to_string()))?;
+        let MediaSourceConfig::Alist(source_config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "Missing Alist source_config".to_string(),
+            ));
+        };
+        if source_config.server_id != NEXT_ITEM_SOURCE_CONFIG_SECRET {
+            return Err(ProviderError::InvalidConfig(
+                "Unexpected dynamic item server_id".to_string(),
+            ));
+        }
+        let path = source_config.path.as_str();
 
         let direct_url = format!("https://{}.example.com{path}", self.instance_id);
         let mut infos = std::collections::HashMap::new();
@@ -237,7 +263,7 @@ impl MediaProvider for StubDynamicProvider {
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             is_live: Some(false),
-            metadata: std::collections::HashMap::new(),
+            metadata: synctv_core::models::PlaybackMetadata::default(),
         })
     }
 
@@ -274,19 +300,19 @@ impl DynamicFolder for StubDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        target: Option<&[u8]>,
+        target: Option<&ProviderTarget>,
         _query: DynamicListQuery,
     ) -> Result<Vec<DirectoryItem>, ProviderError> {
         Ok(
             match target
-                .map(decode_dynamic_target)
+                .map(decode_alist_target)
                 .as_deref()
                 .unwrap_or_default()
             {
                 "" => vec![DirectoryItem {
                     name: self.folder_cursor().to_string(),
                     item_type: ItemType::Playlist,
-                    target: dynamic_target(self.folder_cursor()),
+                    target: alist_target(self.folder_cursor()),
                     size: None,
                     thumbnail: None,
                     description: None,
@@ -300,7 +326,7 @@ impl DynamicFolder for StubDynamicProvider {
                         .unwrap_or(self.first_item_path())
                         .to_string(),
                     item_type: ItemType::Media,
-                    target: dynamic_target(self.first_item_path()),
+                    target: alist_target(self.first_item_path()),
                     size: None,
                     thumbnail: None,
                     description: None,
@@ -315,9 +341,9 @@ impl DynamicFolder for StubDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        target: &[u8],
+        target: &ProviderTarget,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let cursor = decode_dynamic_target(target);
+        let cursor = decode_alist_target(target);
         Ok(match cursor.as_str() {
             path if path == self.playback_target_path() || path == self.first_item_path() => {
                 Some(Self::item(&cursor))
@@ -330,11 +356,10 @@ impl DynamicFolder for StubDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        _playing_media: &synctv_core::models::Media,
-        target: &[u8],
+        target: &ProviderTarget,
         play_mode: PlayMode,
     ) -> Result<Option<NextPlayItem>, ProviderError> {
-        let cursor = decode_dynamic_target(target);
+        let cursor = decode_alist_target(target);
         Ok(match (cursor.as_str(), play_mode) {
             (path, PlayMode::Sequential | PlayMode::RepeatAll | PlayMode::Shuffle)
                 if path == self.playback_target_path() =>
@@ -374,9 +399,9 @@ impl DynamicFolder for StubDynamicProvider {
         &self,
         _ctx: &ProviderContext<'_>,
         _playlist: &Playlist,
-        target: Option<&[u8]>,
+        target: Option<&ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>, ProviderError> {
-        let Some(cursor) = target.map(decode_dynamic_target) else {
+        let Some(cursor) = target.map(decode_alist_target) else {
             return Ok(Vec::new());
         };
 
@@ -384,7 +409,7 @@ impl DynamicFolder for StubDynamicProvider {
             path if path == self.folder_cursor() || path == self.first_item_path() => {
                 vec![DynamicBrowsePathSegment {
                     name: self.folder_cursor().to_string(),
-                    target: dynamic_target(self.folder_cursor()),
+                    target: alist_target(self.folder_cursor()),
                 }]
             }
             _ => Vec::new(),
@@ -460,7 +485,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider("alist", "alist_default", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_default")
         .await
         .unwrap();
 
@@ -512,7 +537,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
             synctv_proto::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: playlist_public_id.clone(),
-                target: br#"{"relative_path":"/episode-1.mp4"}"#.to_vec(),
+                target: proto_alist_target("/episode-1.mp4"),
             },
         )
         .await
@@ -538,18 +563,12 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     let state = response.playback_state.unwrap();
     assert_eq!(state.playing_media_id, "");
     assert_eq!(state.playing_playlist_id, playlist_public_id);
-    let state_target: serde_json::Value = serde_json::from_slice(&state.target).unwrap();
-    assert_eq!(
-        state_target,
-        serde_json::json!({"relative_path":"/episode-1.mp4"})
-    );
+    assert_proto_alist_target(state.target.as_ref(), "/episode-1.mp4");
 
     let playback = response.playback.unwrap();
     assert_eq!(playback.playlist_id, playlist_public_id);
     assert_eq!(playback.name, "episode-1.mp4");
-    let playback_target_meta = playback.metadata.get("target").unwrap();
-    let expected_target_meta = BASE64_STANDARD.encode(br#"{"relative_path":"/episode-1.mp4"}"#);
-    assert_eq!(playback_target_meta, &expected_target_meta);
+    assert_proto_alist_target(playback.target.as_ref(), "/episode-1.mp4");
     let direct = playback.playback_infos.get("proxy_direct").unwrap();
     assert_eq!(direct.medias.len(), 1);
     assert_eq!(
@@ -604,7 +623,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider("alist", "alist_default", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_default")
         .await
         .unwrap();
 
@@ -656,7 +675,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id.clone(),
-                target: br#"{"relative_path":"season-1"}"#.to_vec(),
+                target: proto_alist_target("season-1"),
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -673,22 +692,18 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
 
     assert_eq!(response.dynamic_items.len(), 1);
     assert_eq!(response.dynamic_items[0].name, "episode-1.mp4");
-    let item_target: serde_json::Value =
-        serde_json::from_slice(&response.dynamic_items[0].target).unwrap();
-    assert_eq!(
-        item_target,
-        serde_json::json!({"relative_path":"season-1/episode-1.mp4"})
+    assert_proto_alist_target(
+        response.dynamic_items[0].target.as_ref(),
+        "season-1/episode-1.mp4",
     );
 
     assert_eq!(response.current_path.len(), 2);
     assert_eq!(response.current_path[0].playlist_id, playlist_public_id);
     assert_eq!(response.current_path[0].name, "Dynamic Playlist");
-    assert!(response.current_path[0].target.is_empty());
+    assert!(response.current_path[0].target.is_none());
     assert_eq!(response.current_path[1].playlist_id, "");
     assert_eq!(response.current_path[1].name, "season-1");
-    let target: serde_json::Value =
-        serde_json::from_slice(&response.current_path[1].target).unwrap();
-    assert_eq!(target, serde_json::json!({"relative_path":"season-1"}));
+    assert_proto_alist_target(response.current_path[1].target.as_ref(), "season-1");
 }
 
 #[tokio::test]
@@ -707,11 +722,11 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider("alist", "alist_default", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_default")
         .await
         .unwrap();
     providers_manager
-        .create_provider("alist", "alist_alt", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_alt")
         .await
         .unwrap();
 
@@ -764,7 +779,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
             synctv_proto::client::StartPlaybackRequest {
                 media_id: String::new(),
                 playlist_id: playlist_public_id,
-                target: br#"{"relative_path":"/bound-episode-1.mp4"}"#.to_vec(),
+                target: proto_alist_target("/bound-episode-1.mp4"),
             },
         )
         .await
@@ -804,7 +819,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         ProvidersManager::new(provider_instance_manager).expect("providers manager should build"),
     );
     providers_manager
-        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .create_provider_with_default_config("direct_url", "direct_url")
         .await
         .unwrap();
 
@@ -889,7 +904,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
             synctv_proto::client::StartPlaybackRequest {
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
             },
         )
         .await
@@ -1018,7 +1033,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
         }),
     );
     providers_manager
-        .create_provider("direct_url", "direct_url", &serde_json::Value::Null)
+        .create_provider_with_default_config("direct_url", "direct_url")
         .await
         .unwrap();
 
@@ -1092,7 +1107,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
             synctv_proto::client::StartPlaybackRequest {
                 media_id: media_public_id.clone(),
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
             },
         )
         .await
@@ -1159,7 +1174,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
         creator_id: Some(owner.id),
         name: "Invalid Live Proxy Playback Provider".to_string(),
         description: String::new(),
-        source_config: serde_json::json!({}),
+        source_config: synctv_core_testing::live_proxy_pull_live_media_source_config("not-a-url"),
         source_provider: synctv_core::models::SourceProvider::LiveProxy,
         provider_instance_name: None,
         position: 0.0,
@@ -1198,7 +1213,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
             synctv_proto::client::StartPlaybackRequest {
                 media_id: media_public_id,
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
             },
         )
         .await
@@ -1218,8 +1233,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
     assert!(matches!(
         error,
         synctv_api::impls::ApiError::InvalidInput(message)
-            if message.contains("Failed to parse LiveProxy source config")
-                && message.contains("missing field `url`")
+            if message.contains("Invalid LiveProxy source URL")
     ));
 }
 
@@ -1239,11 +1253,11 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     let room_service = Arc::new(room_service);
 
     providers_manager
-        .create_provider("alist", "alist_default", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_default")
         .await
         .unwrap();
     providers_manager
-        .create_provider("alist", "alist_alt", &serde_json::json!({}))
+        .create_provider_with_default_config("alist", "alist_alt")
         .await
         .unwrap();
 
@@ -1295,7 +1309,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id,
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),
@@ -1312,12 +1326,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
 
     assert_eq!(response.dynamic_items.len(), 1);
     assert_eq!(response.dynamic_items[0].name, "bound-season-1");
-    let item_target: serde_json::Value =
-        serde_json::from_slice(&response.dynamic_items[0].target).unwrap();
-    assert_eq!(
-        item_target,
-        serde_json::json!({"relative_path":"bound-season-1"})
-    );
+    assert_proto_alist_target(response.dynamic_items[0].target.as_ref(), "bound-season-1");
 }
 
 #[tokio::test]
@@ -1419,7 +1428,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
             &room_public_id,
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                target: Vec::new(),
+                target: None,
                 page: 1,
                 page_size: 50,
                 search: String::new(),

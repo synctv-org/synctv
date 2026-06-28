@@ -13,7 +13,7 @@ use futures::FutureExt;
 
 use super::common::{
     execute_provider_user_endpoint, execute_provider_user_endpoint_with_control,
-    provider_instance_name, provider_instance_name_from_body,
+    provider_instance_name, provider_instance_name_from_request_field,
 };
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
@@ -75,7 +75,7 @@ pub(crate) async fn parse(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::ParseResponse>> {
     tracing::info!("Bilibili parse request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -132,7 +132,7 @@ pub(crate) async fn login_qr(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::QrCodeResponse>> {
     tracing::info!("Bilibili login QR request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -184,7 +184,7 @@ pub(crate) async fn qr_check(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::QrStatusResponse>> {
     tracing::info!("Bilibili QR check");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -241,7 +241,7 @@ pub(crate) async fn sms_start(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::StartSmsLoginResponse>> {
     tracing::info!("Bilibili SMS login start request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -391,7 +391,7 @@ pub(crate) async fn user_info(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::UserInfoResponse>> {
     tracing::info!("Bilibili user info request");
 
-    let instance_name = provider_instance_name_from_body(&req.instance_name)?;
+    let instance_name = provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint_with_control(
         &state,
@@ -492,7 +492,7 @@ pub(crate) async fn logout(
 ) -> AppResult<Json<synctv_proto::providers::bilibili::LogoutResponse>> {
     tracing::info!("Bilibili logout request");
 
-    provider_instance_name_from_body(&req.instance_name)?;
+    provider_instance_name_from_request_field(&req.instance_name)?;
     let api = state.shared_api_runtime.bilibili_api.clone();
     execute_provider_user_endpoint(
         &state,

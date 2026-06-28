@@ -1,0 +1,126 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id,\n                   user_id AS \"user_id: UserId\",\n                   type AS \"notification_type: NotificationType\",\n                   title,\n                   content,\n                   data AS \"data!: NotificationData\",\n                   is_read,\n                   created_at,\n                   updated_at\n            FROM notifications\n            WHERE id = $1\n              AND created_at >= $2\n              AND created_at <= $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "notification_type: NotificationType",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "title",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "content",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "content"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "data!: NotificationData",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "data"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "is_read",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "is_read"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "notifications",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "24f81221f00570d0fe3a7cb2fcebbf410de2fe36bf72559cf8da4e005495121c"
+}

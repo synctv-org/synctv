@@ -9,11 +9,13 @@ syntax = "proto3";
 
 package synctv.provider.alist;
 
+import "proto/buf/validate/validate.proto";
+
 // Login request
 // SECURITY: Prefer hashed_password over password when possible to reduce plaintext exposure.
 message LoginRequest {
-  string host = 1;
-  string username = 2;
+  string host = 1 [(buf.validate.field).string.min_len = 1];
+  string username = 2 [(buf.validate.field).string.min_len = 1];
   oneof credential {
     string password = 3; // SECURITY: Plaintext credential - requires TLS in transit. Prefer hashed_password.
     string hashed_password = 4; // Hashed password preferred when available.
@@ -31,7 +33,7 @@ message LoginResponse {
 
 // List directory request
 message ListRequest {
-  string server_id = 1; // Stored credential identifier
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
   string path = 2;
   string password = 3; // Directory password (optional)
   uint64 page = 4;
@@ -48,7 +50,7 @@ message ListResponse {
 
 // Search files and directories under a stored Alist credential.
 message SearchRequest {
-  string server_id = 1; // Stored credential identifier
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
   string parent = 2; // Directory path to search under
   string keywords = 3;
   uint64 scope = 4; // 0: all, 1: directories, 2: files
@@ -84,7 +86,7 @@ message FileItem {
 
 // Get user info request
 message GetMeRequest {
-  string server_id = 1; // Stored credential identifier
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Stored credential identifier
   string instance_name = 2; // Optional provider instance name
 }
 
@@ -96,7 +98,7 @@ message GetMeResponse {
 
 // Logout request
 message LogoutRequest {
-  string server_id = 1; // Which credential to unbind
+  string server_id = 1 [(buf.validate.field).string.min_len = 1]; // Which credential to unbind
   string instance_name = 2; // Optional provider instance name
 }
 

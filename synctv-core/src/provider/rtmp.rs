@@ -8,27 +8,10 @@ use super::{
     ProviderError, SourceConfig,
 };
 use crate::models::media::{PlaybackMediaProvider, PlaybackRtmpMedia};
-use crate::models::{MediaId, RoomId, RtmpMediaSourceConfig};
+use crate::models::{MediaId, RoomId};
 use crate::PublicIdCodec;
 use async_trait::async_trait;
-use serde_json::Value;
 use std::time::Duration;
-
-/// Fields that should not be allowed in `source_config`.
-/// `RtmpProvider` only serves the current SyncTV media from runtime context.
-/// Any external URL field could be abused.
-const FORBIDDEN_URL_FIELDS: &[&str] = &[
-    "url",
-    "rtmp_url",
-    "rtmps_url",
-    "source_url",
-    "stream_url",
-    "external_url",
-];
-
-fn parse_rtmp_source_config(source_config: &Value) -> Result<RtmpMediaSourceConfig, ProviderError> {
-    super::parse_source_config(source_config, "RTMP")
-}
 
 /// RTMP `MediaProvider`
 pub struct RtmpProvider {}
@@ -56,34 +39,6 @@ impl RtmpProvider {
         })?;
 
         Ok((room_id, media_id))
-    }
-
-    fn validate_config_fields(source_config: &Value) -> Result<(), ProviderError> {
-        // SSRF protection: reject any URL fields in source_config.
-        // RtmpProvider only accepts synctv-managed live stream bindings.
-        for field in FORBIDDEN_URL_FIELDS {
-            if source_config.get(field).is_some() {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Field '{field}' is not supported. RtmpProvider does not accept external URLs."
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_config_shape(
-        source_config: &Value,
-    ) -> Result<RtmpMediaSourceConfig, ProviderError> {
-        for field in ["room_id", "media_id"] {
-            if source_config.get(field).is_some() {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Field '{field}' is not supported. Internal RTMP media identity comes from runtime context."
-                )));
-            }
-        }
-
-        parse_rtmp_source_config(source_config)
     }
 }
 
@@ -141,10 +96,14 @@ impl MediaProvider for RtmpProvider {
     async fn generate_playback(
         &self,
         ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        source_config: &crate::models::MediaSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        Self::validate_config_fields(source_config)?;
-        let _config = Self::validate_config_shape(source_config)?;
+        let crate::models::MediaSourceConfig::Rtmp(config) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "RTMP requires RTMP media source_config".to_string(),
+            ));
+        };
+        let _config = config;
         let (room_id, media_id) = Self::resolve_live_binding(ctx)?;
 
         let result = super::build_live_playback(*media_id, *room_id);
@@ -167,9 +126,11 @@ impl MediaProvider for RtmpProvider {
         _ctx: &ProviderContext<'_>,
         source_config: SourceConfig<'_>,
     ) -> Result<(), ProviderError> {
-        let source_config = source_config.value();
-        Self::validate_config_fields(source_config)?;
-        let _config = Self::validate_config_shape(source_config)?;
+        let SourceConfig::Media(crate::models::MediaSourceConfig::Rtmp(_)) = source_config else {
+            return Err(ProviderError::InvalidConfig(
+                "RTMP requires RTMP media source_config".to_string(),
+            ));
+        };
         Ok(())
     }
 }

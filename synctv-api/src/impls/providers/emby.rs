@@ -18,7 +18,7 @@ use super::{get_provider_binds, publish_provider_credential_changed, resolve_bou
 
 fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &str) -> String {
     format!(
-        "/api/providers/emby/thumbnail/{item_id}?server_id={server_id}&credential_owner_id={credential_owner_id}&max_height=300",
+        "/api/providers/emby/thumbnail/{item_id}?serverId={server_id}&credentialOwnerId={credential_owner_id}&maxHeight=300",
         item_id = utf8_percent_encode(item_id, NON_ALPHANUMERIC),
         server_id = utf8_percent_encode(server_id, NON_ALPHANUMERIC),
         credential_owner_id = utf8_percent_encode(&credential_owner_id.to_string(), NON_ALPHANUMERIC),
@@ -118,11 +118,7 @@ impl EmbyApiImpl {
             provider: synctv_core::provider::EmbyProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
-            credential_data: serde_json::to_value(&credential_data).map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to serialize credential: {e}"
-                ))
-            })?,
+            credential_data,
             expires_at: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

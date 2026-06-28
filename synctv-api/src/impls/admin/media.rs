@@ -6,8 +6,9 @@ use synctv_core::{
 };
 
 use crate::impls::client::convert::{
-    try_media_to_proto, try_media_to_proto_with_availability, try_playlist_path_node_to_proto,
-    try_playlist_to_proto, try_playlist_to_proto_with_availability,
+    optional_provider_target_to_proto, provider_target_from_proto, try_media_to_proto,
+    try_media_to_proto_with_availability, try_playlist_path_node_to_proto, try_playlist_to_proto,
+    try_playlist_to_proto_with_availability,
 };
 use crate::impls::client::media::{
     build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
@@ -341,6 +342,7 @@ impl AdminApiImpl {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
 
         self.require_admin_actor(admin_user_id).await?;
+        let target = provider_target_from_proto(req.target.clone())?;
 
         let Some(playlist_id) = (if req.playlist_id.is_empty() {
             None
@@ -350,9 +352,9 @@ impl AdminApiImpl {
                 &self.public_id_codec,
             )?)
         }) else {
-            if !req.target.is_empty() {
+            if target.is_some() {
                 return Err(ApiError::InvalidInput(
-                    "target must be empty when browsing the room root".to_string(),
+                    "target must be omitted when browsing the room root".to_string(),
                 ));
             }
             let playlist_query = CorePlaylistListQuery {
@@ -534,7 +536,7 @@ impl AdminApiImpl {
                     rid,
                     *admin_user_id,
                     &playlist_id,
-                    (!req.target.is_empty()).then_some(req.target.as_slice()),
+                    target.as_ref(),
                     DynamicListQuery {
                         page,
                         page_size,
@@ -589,7 +591,7 @@ impl AdminApiImpl {
                     Ok(synctv_proto::client::PlaylistItem {
                         name: item.name,
                         item_type,
-                        target: item.target,
+                        target: optional_provider_target_to_proto(Some(&item.target)),
                         size: item
                             .size
                             .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
@@ -608,7 +610,7 @@ impl AdminApiImpl {
                     rid,
                     *admin_user_id,
                     &playlist_id,
-                    (!req.target.is_empty()).then_some(req.target.as_slice()),
+                    target.as_ref(),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -616,7 +618,7 @@ impl AdminApiImpl {
                 synctv_proto::client::PlaylistBrowsePathNode {
                     playlist_id: String::new(),
                     name: segment.name,
-                    target: segment.target,
+                    target: optional_provider_target_to_proto(Some(&segment.target)),
                 }
             }));
 
@@ -635,9 +637,9 @@ impl AdminApiImpl {
             return Ok(response);
         }
 
-        if !req.target.is_empty() {
+        if target.is_some() {
             return Err(ApiError::InvalidInput(
-                "target must be empty when browsing a static playlist".to_string(),
+                "target must be omitted when browsing a static playlist".to_string(),
             ));
         }
 

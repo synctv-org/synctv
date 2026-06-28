@@ -225,13 +225,13 @@ fn test_oauth2_username_candidates_fallback_to_provider_id() {
 
 #[test]
 fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
-    use crate::models::oauth2_client::UserOAuthProviderMapping;
+    use crate::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
 
     let now = chrono::Utc::now();
     let mappings = vec![
         UserOAuthProviderMapping {
             id: 1,
-            provider: "github".to_string(),
+            provider: OAuth2Provider::GitHub,
             provider_instance_name: "github-main".to_string(),
             provider_issuer: None,
             provider_user_id: "github-a".to_string(),
@@ -244,7 +244,7 @@ fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
         },
         UserOAuthProviderMapping {
             id: 2,
-            provider: "google".to_string(),
+            provider: OAuth2Provider::Google,
             provider_instance_name: "removed-google".to_string(),
             provider_issuer: None,
             provider_user_id: "google-a".to_string(),
@@ -256,7 +256,7 @@ fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
             updated_at: now,
         },
     ];
-    let active = HashSet::from([("github-main".to_string(), "github".to_string())]);
+    let active = HashSet::from([("github-main".to_string(), OAuth2Provider::GitHub)]);
 
     assert_eq!(
         UserService::count_active_oauth2_identities(&mappings, &active),

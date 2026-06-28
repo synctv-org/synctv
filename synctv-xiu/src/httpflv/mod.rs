@@ -131,7 +131,7 @@ impl HttpFlvSession {
                             cached_frames.push(data);
                         }
                         FrameData::MetaData { .. } => cached_frames.push(data),
-                        _ => {}
+                        FrameData::MediaInfo { .. } => {}
                     }
 
                     // Send header after detecting A/V or after 10 frames
@@ -183,7 +183,7 @@ impl HttpFlvSession {
                 let right = &data[amf_writer.len()..];
                 (right, *timestamp, 18) // SCRIPT_DATA_AMF
             }
-            _ => return Ok(()),
+            FrameData::MediaInfo { .. } => return Ok(()),
         };
 
         let data_len =

@@ -48,8 +48,8 @@ pub struct MetadataCache {
 /// Split cache structure with independent locks for video/audio/metadata/gops.
 ///
 /// This design reduces lock contention under high concurrency:
-/// - Video frames only need `video_seq` + `gops` locks
-/// - Audio frames only need `audio_seq` + `gops` locks
+/// - Video frames only need video_seq + `gops` locks
+/// - Audio frames only need audio_seq + `gops` locks
 /// - Metadata only needs `metadata` lock
 /// - Readers can access different components concurrently
 ///

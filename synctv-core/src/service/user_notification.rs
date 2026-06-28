@@ -8,7 +8,8 @@ use crate::{
         id::UserId,
         notification::{
             default_notification_data, CreateNotificationRequest, MarkAllAsReadRequest,
-            MarkAsReadRequest, Notification, NotificationListQuery, NotificationType,
+            MarkAsReadRequest, Notification, NotificationData, NotificationListQuery,
+            NotificationType,
         },
     },
     repository::NotificationRepository,
@@ -109,18 +110,17 @@ impl UserNotificationService {
         room_name: String,
         inviter_name: String,
     ) -> Result<Notification> {
-        let data = serde_json::json!({
-            "room_id": room_id,
-            "room_name": room_name,
-            "inviter_name": inviter_name,
-        });
-
         let req = CreateNotificationRequest {
             user_id,
             notification_type: NotificationType::RoomInvitation,
             title: format!("Room Invitation: {room_name}"),
             content: format!("{inviter_name} invited you to join the room \"{room_name}\""),
-            data,
+            data: NotificationData {
+                room_id: Some(room_id),
+                room_name: Some(room_name),
+                username: Some(inviter_name),
+                ..Default::default()
+            },
         };
 
         self.create(req).await
@@ -130,7 +130,7 @@ impl UserNotificationService {
         user_id: UserId,
         title: String,
         content: String,
-        data: Option<serde_json::Value>,
+        data: Option<NotificationData>,
     ) -> CreateNotificationRequest {
         CreateNotificationRequest {
             user_id,
@@ -147,7 +147,7 @@ impl UserNotificationService {
         user_id: UserId,
         title: String,
         content: String,
-        data: Option<serde_json::Value>,
+        data: Option<NotificationData>,
     ) -> Result<Notification> {
         let req = Self::system_announcement_request(user_id, title, content, data);
 
@@ -162,18 +162,16 @@ impl UserNotificationService {
         room_name: String,
         event: String,
     ) -> Result<Notification> {
-        let data = serde_json::json!({
-            "room_id": room_id,
-            "room_name": room_name,
-            "event": event,
-        });
-
         let req = CreateNotificationRequest {
             user_id,
             notification_type: NotificationType::RoomEvent,
             title: format!("Room Event: {room_name}"),
             content: event,
-            data,
+            data: NotificationData {
+                room_id: Some(room_id),
+                room_name: Some(room_name),
+                ..Default::default()
+            },
         };
 
         self.create(req).await
@@ -271,7 +269,7 @@ mod tests {
                 notification_type: NotificationType::SystemAnnouncement,
                 title: "title".to_string(),
                 content: "content".to_string(),
-                data: serde_json::Value::Null,
+                data: NotificationData::default(),
                 is_read: false,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
@@ -300,6 +298,6 @@ mod tests {
         );
 
         assert_eq!(req.notification_type, NotificationType::SystemAnnouncement);
-        assert_eq!(req.data, serde_json::json!({}));
+        assert_eq!(req.data, NotificationData::default());
     }
 }

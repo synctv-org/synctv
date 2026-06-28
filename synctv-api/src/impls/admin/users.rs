@@ -1,4 +1,7 @@
-use synctv_core::models::{SortDirection as CoreSortDirection, UserId, UserRole, UserStatus};
+use synctv_core::models::{
+    AuditDetails, AuditUpdatedFields, SortDirection as CoreSortDirection, UserId, UserRole,
+    UserStatus,
+};
 
 use super::{
     auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, list_owned_room_ids,
@@ -78,7 +81,7 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserCreated,
             synctv_core::models::AuditTargetType::User,
             Some(user.id.to_string()),
-            serde_json::json!({"reason": "User created via admin panel"}),
+            AuditDetails::reason("User created via admin panel"),
             ctx,
         )
         .await;
@@ -123,7 +126,10 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserDeleted,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({ "target_user_id": uid.to_string() }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -160,11 +166,12 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserUsernameUpdated,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "old_username": old_username,
-                "new_username": updated.username,
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                old_username: Some(old_username),
+                new_username: Some(updated.username.clone()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -196,12 +203,13 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserBanned,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": updated.username,
-                "reason": reason,
-                "caller_role": format!("{caller_role:?}"),
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(updated.username.clone()),
+                reason,
+                caller_role: Some(format!("{caller_role:?}")),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -241,10 +249,11 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserUnbanned,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": updated.username,
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(updated.username.clone()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -379,14 +388,15 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserPreferencesUpdated,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": user.username.clone(),
-                "updated_fields": {
-                    "two_factor_enabled": update.two_factor_enabled.is_some(),
-                    "notifications": update.notifications.is_some(),
-                },
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(user.username.clone()),
+                updated_fields: Some(AuditUpdatedFields {
+                    two_factor_enabled: update.two_factor_enabled.is_some(),
+                    notifications: update.notifications.is_some(),
+                }),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -452,12 +462,13 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserRoleUpdated,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": updated_user.username,
-                "new_role": format!("{new_role:?}"),
-                "caller_role": format!("{caller_role:?}"),
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(updated_user.username.clone()),
+                new_role: Some(format!("{new_role:?}")),
+                caller_role: Some(format!("{caller_role:?}")),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -503,28 +514,18 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
 
         {
-            let mut details_map = serde_json::Map::new();
-            details_map.insert(
-                "target_user_id".to_string(),
-                serde_json::Value::String(uid.to_string()),
-            );
-            details_map.insert(
-                "target_username".to_string(),
-                serde_json::Value::String(target_user.username.clone()),
-            );
-            if !req.reason.is_empty() {
-                details_map.insert("reason".to_string(), serde_json::Value::String(req.reason));
-            }
-            details_map.insert(
-                "credential_updated".to_string(),
-                serde_json::Value::Bool(true),
-            );
             self.log_admin_action(
                 &caller_user_id,
                 synctv_core::models::AuditAction::UserPasswordResetRequired,
                 synctv_core::models::AuditTargetType::User,
                 Some(uid.to_string()),
-                serde_json::Value::Object(details_map),
+                AuditDetails {
+                    target_user_id: Some(uid.to_string()),
+                    target_username: Some(target_user.username.clone()),
+                    reason: (!req.reason.is_empty()).then_some(req.reason),
+                    credential_updated: Some(true),
+                    ..Default::default()
+                },
                 ctx,
             )
             .await;
@@ -572,11 +573,12 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserRoleUpdated,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": updated.username,
-                "new_role": "Admin",
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(updated.username.clone()),
+                new_role: Some("Admin".to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;
@@ -620,11 +622,12 @@ impl AdminApiImpl {
             synctv_core::models::AuditAction::UserRoleUpdated,
             synctv_core::models::AuditTargetType::User,
             Some(uid.to_string()),
-            serde_json::json!({
-                "target_user_id": uid.to_string(),
-                "target_username": target_username,
-                "new_role": "User",
-            }),
+            AuditDetails {
+                target_user_id: Some(uid.to_string()),
+                target_username: Some(target_username),
+                new_role: Some("User".to_string()),
+                ..Default::default()
+            },
             ctx,
         )
         .await;

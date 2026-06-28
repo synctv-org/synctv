@@ -5,6 +5,7 @@ use synctv_core::models::{
     FileUploadSession, NewStoredFile, UserId,
 };
 
+use super::super::convert::chat_metadata_from_proto;
 #[cfg(test)]
 use super::super::media::required_stored_file_fields;
 use super::super::media::upload_session_fields;
@@ -420,20 +421,6 @@ pub(super) fn parse_chat_message_id(raw: &str) -> Result<i64, ApiError> {
         .map_err(|_| ApiError::InvalidInput("Invalid chat message id".to_string()))
 }
 
-pub(super) fn parse_json_metadata(bytes: &[u8]) -> Result<serde_json::Value, ApiError> {
-    if bytes.is_empty() {
-        return Ok(serde_json::Value::Object(Default::default()));
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|error| ApiError::InvalidInput(format!("Invalid metadata JSON: {error}")))?;
-    if !metadata.is_object() {
-        return Err(ApiError::InvalidInput(
-            "metadata must be a JSON object".to_string(),
-        ));
-    }
-    Ok(metadata)
-}
-
 pub(crate) fn parse_proto_chat_attachments(
     attachments: &[synctv_proto::client::ChatAttachmentReference],
 ) -> Result<Vec<synctv_core::models::SubmittedFileReference>, ApiError> {
@@ -553,7 +540,7 @@ pub(super) fn edit_chat_message_request_to_core(
         user_id,
         client_operation_id: optional_trimmed_string(&req.client_operation_id),
         content: req.content,
-        metadata: parse_json_metadata(&req.metadata)?,
+        metadata: chat_metadata_from_proto(req.metadata.as_ref())?,
         expected_version: optional_chat_expected_version(req.expected_version)?,
     })
 }

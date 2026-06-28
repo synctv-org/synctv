@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS room_playback_progress (
     room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
     media_id BIGINT NULL,
     playlist_id BIGINT NULL,
-    target BYTEA NOT NULL DEFAULT ''::bytea,
+    target JSONB NULL,
     target_hash TEXT NOT NULL,
     "position" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -13,11 +13,13 @@ CREATE TABLE IF NOT EXISTS room_playback_progress (
         CHECK ("position" >= 0),
     CONSTRAINT room_playback_progress_has_supported_source
         CHECK (
-            (media_id IS NOT NULL AND playlist_id IS NULL AND target = ''::bytea)
-            OR (media_id IS NULL AND playlist_id IS NOT NULL AND octet_length(target) > 0)
+            (media_id IS NOT NULL AND playlist_id IS NULL AND target IS NULL)
+            OR (media_id IS NULL AND playlist_id IS NOT NULL AND target IS NOT NULL)
         ),
     CONSTRAINT room_playback_progress_target_hash_sha256
         CHECK (target_hash ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT room_playback_progress_target_object
+        CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
     CONSTRAINT room_playback_progress_media_same_room_fk
         FOREIGN KEY (media_id, room_id)
         REFERENCES media(id, room_id)
@@ -48,12 +50,14 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     room_id BIGINT PRIMARY KEY REFERENCES rooms(id) ON DELETE RESTRICT,
     playing_media_id BIGINT NULL,
     playing_playlist_id BIGINT NULL,
-    target BYTEA NOT NULL DEFAULT ''::bytea,
+    target JSONB NULL,
     current_progress_id BIGINT NULL REFERENCES room_playback_progress(id) ON DELETE SET NULL,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     version BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT room_playback_state_target_object
+        CHECK (target IS NULL OR jsonb_typeof(target) = 'object'),
     CONSTRAINT playback_media_same_room_fk
         FOREIGN KEY (playing_media_id, room_id)
         REFERENCES media(id, room_id)

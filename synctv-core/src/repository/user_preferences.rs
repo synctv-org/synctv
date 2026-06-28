@@ -2,7 +2,7 @@ use sqlx::PgPool;
 
 use crate::{
     models::{
-        UserAuthFactors, UserId, UserNotificationPreferences, UserPreferences,
+        RoomSettings, UserAuthFactors, UserId, UserNotificationPreferences, UserPreferences,
         UserPreferencesUpdate,
     },
     Error, Result,
@@ -22,7 +22,7 @@ struct UserPreferencesRow {
     notify_room_invitation_email: bool,
     notify_room_event_email: bool,
     notify_system_announcement_email: bool,
-    settings: serde_json::Value,
+    settings: RoomSettings,
 }
 
 impl UserPreferencesRepository {
@@ -59,7 +59,7 @@ impl UserPreferencesRepository {
                    notify_room_invitation_email,
                    notify_room_event_email,
                    notify_system_announcement_email,
-                   settings
+                   settings AS "settings: RoomSettings"
             FROM user_preferences
             WHERE user_id = $1
             "#,
@@ -155,7 +155,7 @@ impl UserPreferencesRepository {
                       notify_room_invitation_email,
                       notify_room_event_email,
                       notify_system_announcement_email,
-                      settings
+                      settings AS "settings: RoomSettings"
             "#,
             user_id.as_i64(),
             update.two_factor_enabled,

@@ -14,7 +14,7 @@ pub struct MediaCommand {
 pub enum MediaSubcommand {
     /// List media and child playlists under the room root or a playlist
     List(MediaListArgs),
-    /// Add media as a specific real user using any configured provider instance or direct_url source config
+    /// Add media as a specific real user using any configured provider instance or direct-url source config
     Add(MediaAddArgs),
     /// Add a direct HTTP(S) media URL
     AddUrl(MediaAddUrlArgs),

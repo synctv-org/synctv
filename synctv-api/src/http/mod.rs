@@ -886,46 +886,46 @@ fn register_extracted_auth_routes() -> Router<AppState> {
 /// Moderate rate limiting: 20 req/min. Body limit: 512 KB.
 fn register_media_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/rooms/{room_id}/media", post(room::add_media))
+        .route("/api/rooms/{roomId}/media", post(room::add_media))
         .route(
-            "/api/rooms/{room_id}/media",
+            "/api/rooms/{roomId}/media",
             axum::routing::delete(room::clear_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/media/batch",
+            "/api/rooms/{roomId}/media/batch",
             post(room::push_media_batch),
         )
-        .route("/api/rooms/{room_id}/media/move", post(room::move_media))
+        .route("/api/rooms/{roomId}/media/move", post(room::move_media))
         .route(
-            "/api/rooms/{room_id}/media/{media_id}",
+            "/api/rooms/{roomId}/media/{mediaId}",
             axum::routing::delete(room::delete_media),
         )
         .route(
-            "/api/rooms/{room_id}/media/{media_id}",
+            "/api/rooms/{roomId}/media/{mediaId}",
             axum::routing::patch(room::edit_media),
         )
         .route(
-            "/api/rooms/{room_id}/media/{media_id}/cover/upload-session",
+            "/api/rooms/{roomId}/media/{mediaId}/cover/upload-session",
             post(room::create_media_cover_upload_session),
         )
         .route(
-            "/api/rooms/{room_id}/media/{media_id}/cover",
+            "/api/rooms/{roomId}/media/{mediaId}/cover",
             axum::routing::put(room::update_media_cover).delete(room::clear_media_cover),
         )
         .route(
-            "/api/rooms/{room_id}/cover/upload-session",
+            "/api/rooms/{roomId}/cover/upload-session",
             post(room::create_room_cover_upload_session),
         )
         .route(
-            "/api/rooms/{room_id}/cover",
+            "/api/rooms/{roomId}/cover",
             axum::routing::put(room::update_room_cover).delete(room::clear_room_cover),
         )
         .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}/cover/upload-session",
+            "/api/rooms/{roomId}/playlists/{playlistId}/cover/upload-session",
             post(room::create_playlist_cover_upload_session),
         )
         .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}/cover",
+            "/api/rooms/{roomId}/playlists/{playlistId}/cover",
             axum::routing::put(room::update_playlist_cover).delete(room::clear_playlist_cover),
         )
         // Media metadata bodies are small (URLs, titles, subtitles)
@@ -938,111 +938,108 @@ fn register_write_routes() -> Router<AppState> {
     let router = Router::new()
         .route("/api/rooms", post(room::create_room))
         .route(
-            "/api/rooms/{room_id}",
+            "/api/rooms/{roomId}",
             axum::routing::delete(room::delete_room),
         )
         .route(
-            "/api/rooms/{room_id}/members/@me",
+            "/api/rooms/{roomId}/members/@me",
             axum::routing::put(room::join_room),
         )
         .route(
-            "/api/rooms/{room_id}/password/opaque/login/start",
+            "/api/rooms/{roomId}/password/opaque/login/start",
             post(room::start_room_password_login),
         )
         .route(
-            "/api/rooms/{room_id}/password/opaque/login/finish",
+            "/api/rooms/{roomId}/password/opaque/login/finish",
             post(room::finish_room_password_login),
         )
         .route(
-            "/api/rooms/{room_id}/members/@me",
+            "/api/rooms/{roomId}/members/@me",
             axum::routing::delete(room::leave_room),
         )
         .route(
-            "/api/rooms/{room_id}/settings",
+            "/api/rooms/{roomId}/settings",
             axum::routing::patch(room::update_room_settings),
         )
         .route(
-            "/api/rooms/{room_id}/owner",
+            "/api/rooms/{roomId}/owner",
             post(room::transfer_room_ownership),
         )
         .route(
-            "/api/rooms/{room_id}/password/opaque/registration/start",
+            "/api/rooms/{roomId}/password/opaque/registration/start",
             axum::routing::patch(room::start_room_password_registration),
         )
         .route(
-            "/api/rooms/{room_id}/password/opaque/registration/finish",
+            "/api/rooms/{roomId}/password/opaque/registration/finish",
             axum::routing::patch(room::finish_room_password_registration),
         )
         .route(
-            "/api/rooms/{room_id}/password",
+            "/api/rooms/{roomId}/password",
             axum::routing::delete(room::clear_room_password),
         )
         .route(
-            "/api/rooms/{room_id}/playback/start",
+            "/api/rooms/{roomId}/playback/start",
             post(room::start_playback),
         )
         .route(
-            "/api/rooms/{room_id}/playback/stop",
+            "/api/rooms/{roomId}/playback/stop",
             post(room::stop_playback),
         )
         .route(
-            "/api/rooms/{room_id}/playback",
+            "/api/rooms/{roomId}/playback",
             axum::routing::patch(room::update_playback_state),
         )
+        .route("/api/rooms/{roomId}/playlists", post(room::create_playlist))
         .route(
-            "/api/rooms/{room_id}/playlists",
-            post(room::create_playlist),
-        )
-        .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            "/api/rooms/{roomId}/playlists/{playlistId}",
             axum::routing::patch(room::update_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}/move",
+            "/api/rooms/{roomId}/playlists/{playlistId}/move",
             post(room::move_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            "/api/rooms/{roomId}/playlists/{playlistId}",
             axum::routing::delete(room::delete_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/entries",
+            "/api/rooms/{roomId}/entries",
             axum::routing::delete(room::delete_entries),
         )
         .route(
-            "/api/rooms/{room_id}/streams/{media_id}/kick",
+            "/api/rooms/{roomId}/streams/{mediaId}/kick",
             post(room::kick_room_stream),
         )
         .route(
-            "/api/rooms/{room_id}/settings/reset",
+            "/api/rooms/{roomId}/settings/reset",
             post(room::reset_room_settings),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages",
+            "/api/rooms/{roomId}/chat/messages",
             post(room::send_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/attachments/upload-session",
+            "/api/rooms/{roomId}/chat/attachments/upload-session",
             post(room::create_chat_attachment_upload_session),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            "/api/rooms/{roomId}/chat/messages/{messageId}",
             axum::routing::patch(room::edit_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            "/api/rooms/{roomId}/chat/messages/{messageId}",
             axum::routing::delete(room::delete_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}/pin",
+            "/api/rooms/{roomId}/chat/messages/{messageId}/pin",
             axum::routing::put(room::pin_chat_message).delete(room::unpin_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}",
+            "/api/rooms/{roomId}/chat/messages/{messageId}/reactions/{reactionKey}",
             axum::routing::put(room::set_chat_reaction).delete(room::clear_chat_reaction),
         )
         .route(
-            "/api/rooms/{room_id}/chat/read-state",
+            "/api/rooms/{roomId}/chat/read-state",
             post(room::mark_chat_read),
         );
 
@@ -1059,99 +1056,93 @@ fn register_read_routes() -> Router<AppState> {
         .route("/api/rooms/hot", get(room::get_hot_rooms))
         .route("/api/rooms/categories", get(room::list_room_categories))
         .route("/api/rooms/labels", get(room::list_room_labels))
-        .route("/api/rooms/{room_id}/check", get(room::check_room))
-        .route("/api/rooms/{room_id}", get(room::get_room))
+        .route("/api/rooms/{roomId}/check", get(room::check_room))
+        .route("/api/rooms/{roomId}", get(room::get_room))
+        .route("/api/rooms/{roomId}/settings", get(room::get_room_settings))
+        .route("/api/rooms/{roomId}/members", get(room::get_room_members))
+        .route("/api/rooms/{roomId}/streams", get(room::list_room_streams))
         .route(
-            "/api/rooms/{room_id}/settings",
-            get(room::get_room_settings),
-        )
-        .route("/api/rooms/{room_id}/members", get(room::get_room_members))
-        .route("/api/rooms/{room_id}/streams", get(room::list_room_streams))
-        .route(
-            "/api/rooms/{room_id}/streams/{media_id}",
+            "/api/rooms/{roomId}/streams/{mediaId}",
             get(room::get_room_stream_info),
         )
         .route(
-            "/api/rooms/{room_id}/chat/history",
+            "/api/rooms/{roomId}/chat/history",
             get(room::get_chat_history),
         )
         .route(
-            "/api/rooms/{room_id}/chat/search",
+            "/api/rooms/{roomId}/chat/search",
             get(room::search_chat_messages),
         )
         .route(
-            "/api/rooms/{room_id}/chat/playback-messages",
+            "/api/rooms/{roomId}/chat/playback-messages",
             get(room::get_chat_playback_messages),
         )
         .route(
-            "/api/rooms/{room_id}/chat/pinned-messages",
+            "/api/rooms/{roomId}/chat/pinned-messages",
             get(room::list_pinned_chat_messages),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}",
+            "/api/rooms/{roomId}/chat/messages/{messageId}",
             get(room::get_chat_message),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}/context",
+            "/api/rooms/{roomId}/chat/messages/{messageId}/context",
             get(room::get_chat_message_context),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}/reactions/{reaction_key}/users",
+            "/api/rooms/{roomId}/chat/messages/{messageId}/reactions/{reactionKey}/users",
             get(room::list_chat_reaction_users),
         )
         .route(
-            "/api/rooms/{room_id}/chat/messages/{message_id}/read-receipts",
+            "/api/rooms/{roomId}/chat/messages/{messageId}/read-receipts",
             get(room::get_chat_message_read_receipts),
         )
         .route(
-            "/api/rooms/{room_id}/chat/read-state",
+            "/api/rooms/{roomId}/chat/read-state",
             get(room::get_chat_read_state),
         )
         // Playlist and Media APIs
-        .route("/api/rooms/{room_id}/playlists", get(room::list_playlists))
+        .route("/api/rooms/{roomId}/playlists", get(room::list_playlists))
         .route(
-            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            "/api/rooms/{roomId}/playlists/{playlistId}",
             get(room::get_playlist),
         )
         .route(
-            "/api/rooms/{room_id}/media/list",
+            "/api/rooms/{roomId}/media/list",
             post(room::list_playlist_items),
         )
+        .route("/api/rooms/{roomId}/media/{mediaId}", get(room::get_media))
+        .route("/api/rooms/{roomId}/playback", get(room::get_playback))
         .route(
-            "/api/rooms/{room_id}/media/{media_id}",
-            get(room::get_media),
-        )
-        .route("/api/rooms/{room_id}/playback", get(room::get_playback))
-        .route(
-            "/api/rooms/{room_id}/watch/playback-state",
+            "/api/rooms/{roomId}/watch/playback-state",
             get(room::watch_playback_state),
         )
         .route(
-            "/api/rooms/{room_id}/watch/playback",
+            "/api/rooms/{roomId}/watch/playback",
             get(room::watch_playback),
         )
         .route(
-            "/api/rooms/{room_id}/media/{media_id}/danmaku/bilibili-live",
+            "/api/rooms/{roomId}/media/{mediaId}/danmaku/bilibili-live",
             get(room::watch_bilibili_live_danmaku),
         )
         .route(
-            "/api/rooms/{room_id}/watch/room-settings",
+            "/api/rooms/{roomId}/watch/room-settings",
             get(room::watch_room_settings),
         )
         .route(
-            "/api/rooms/{room_id}/watch/playlist-items",
+            "/api/rooms/{roomId}/watch/playlist-items",
             get(room::watch_playlist_items),
         )
         .route(
-            "/api/rooms/{room_id}/watch/room-members",
+            "/api/rooms/{roomId}/watch/room-members",
             get(room::watch_room_members),
         )
         .route(
-            "/api/rooms/{room_id}/watch/chat-events",
+            "/api/rooms/{roomId}/watch/chat-events",
             get(room::watch_chat_events),
         )
         .route(
-            "/api/rooms/{room_id}/watch/chat-pin-events",
+            "/api/rooms/{roomId}/watch/chat-pin-events",
             get(room::watch_chat_pin_events),
         )
 }
@@ -1159,11 +1150,11 @@ fn register_read_routes() -> Router<AppState> {
 fn register_chat_attachment_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/chat/attachment-objects/{encoded_object_key}/complete",
+            "/api/chat/attachment-objects/{encodedObjectKey}/complete",
             post(room::complete_chat_attachment_upload_session),
         )
         .route(
-            "/api/chat/attachment-objects/{encoded_object_key}",
+            "/api/chat/attachment-objects/{encodedObjectKey}",
             axum::routing::put(room::upload_chat_attachment_object)
                 .get(room::get_chat_attachment_object),
         )
@@ -1175,11 +1166,11 @@ fn register_chat_attachment_object_routes() -> Router<AppState> {
 fn register_media_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/media/cover-objects/{encoded_object_key}/complete",
+            "/api/media/cover-objects/{encodedObjectKey}/complete",
             post(room::complete_media_cover_upload_session),
         )
         .route(
-            "/api/media/cover-objects/{encoded_object_key}",
+            "/api/media/cover-objects/{encodedObjectKey}",
             axum::routing::put(room::upload_media_cover_object).get(room::get_media_cover_object),
         )
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
@@ -1188,11 +1179,11 @@ fn register_media_cover_object_routes() -> Router<AppState> {
 fn register_room_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/room/cover-objects/{encoded_object_key}/complete",
+            "/api/room/cover-objects/{encodedObjectKey}/complete",
             post(room::complete_room_cover_upload_session),
         )
         .route(
-            "/api/room/cover-objects/{encoded_object_key}",
+            "/api/room/cover-objects/{encodedObjectKey}",
             axum::routing::put(room::upload_room_cover_object).get(room::get_room_cover_object),
         )
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
@@ -1201,11 +1192,11 @@ fn register_room_cover_object_routes() -> Router<AppState> {
 fn register_playlist_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/playlist/cover-objects/{encoded_object_key}/complete",
+            "/api/playlist/cover-objects/{encodedObjectKey}/complete",
             post(room::complete_playlist_cover_upload_session),
         )
         .route(
-            "/api/playlist/cover-objects/{encoded_object_key}",
+            "/api/playlist/cover-objects/{encodedObjectKey}",
             axum::routing::put(room::upload_playlist_cover_object)
                 .get(room::get_playlist_cover_object),
         )
@@ -1269,7 +1260,7 @@ fn register_extracted_user_routes() -> Router<AppState> {
             post(user::finish_opaque_password_update),
         )
         .route(
-            "/api/user/passkeys/{credential_id}",
+            "/api/user/passkeys/{credentialId}",
             axum::routing::delete(user::delete_passkey),
         )
         .route("/api/user/account-closure", post(user::close_account))
@@ -1279,11 +1270,11 @@ fn register_extracted_user_routes() -> Router<AppState> {
 fn register_user_avatar_object_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/user/avatar-objects/{encoded_object_key}/complete",
+            "/api/user/avatar-objects/{encodedObjectKey}/complete",
             post(user::complete_user_avatar_upload_session),
         )
         .route(
-            "/api/user/avatar-objects/{encoded_object_key}",
+            "/api/user/avatar-objects/{encodedObjectKey}",
             axum::routing::put(user::upload_user_avatar_object).get(user::get_user_avatar_object),
         )
         .layer(axum::extract::DefaultBodyLimit::max(
@@ -1294,7 +1285,7 @@ fn register_user_avatar_object_routes() -> Router<AppState> {
 /// Assemble all route groups into a single router.
 fn register_websocket_routes() -> Router<AppState> {
     Router::new().route(
-        "/ws/rooms/{room_id}",
+        "/ws/rooms/{roomId}",
         axum::routing::get(websocket::websocket_handler),
     )
 }
@@ -1310,37 +1301,37 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_user_avatar_object_routes())
         .merge(
             Router::new()
-                .route("/api/rooms/{room_id}/members", post(room_extra::add_member))
+                .route("/api/rooms/{roomId}/members", post(room_extra::add_member))
                 .route(
-                    "/api/rooms/{room_id}/reviews/joins",
+                    "/api/rooms/{roomId}/reviews/joins",
                     get(room_extra::list_room_join_reviews),
                 )
                 .route(
-                    "/api/rooms/{room_id}/reviews/joins/{request_id}/approve",
+                    "/api/rooms/{roomId}/reviews/joins/{requestId}/approve",
                     post(room_extra::approve_room_join_review),
                 )
                 .route(
-                    "/api/rooms/{room_id}/reviews/joins/{request_id}/reject",
+                    "/api/rooms/{roomId}/reviews/joins/{requestId}/reject",
                     post(room_extra::reject_room_join_review),
                 )
                 .route(
-                    "/api/rooms/{room_id}/members/{user_id}",
+                    "/api/rooms/{roomId}/members/{userId}",
                     axum::routing::delete(room_extra::kick_member),
                 )
                 .route(
-                    "/api/rooms/{room_id}/members/{user_id}",
+                    "/api/rooms/{roomId}/members/{userId}",
                     axum::routing::patch(room_extra::set_member_permissions),
                 )
                 .route(
-                    "/api/rooms/{room_id}/reports",
+                    "/api/rooms/{roomId}/reports",
                     get(room::list_room_content_reports).post(room::report_content),
                 )
                 .route(
-                    "/api/rooms/{room_id}/reports/{report_id}",
+                    "/api/rooms/{roomId}/reports/{reportId}",
                     get(room::get_room_content_report),
                 )
                 .route(
-                    "/api/rooms/{room_id}/reports/{report_id}/status",
+                    "/api/rooms/{roomId}/reports/{reportId}/status",
                     post(room::update_room_content_report_status),
                 ),
         )
@@ -1366,7 +1357,7 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_playlist_cover_object_routes())
         // WebRTC configuration endpoints
         .merge(Router::new().route(
-            "/api/rooms/{room_id}/webrtc/ice-servers",
+            "/api/rooms/{roomId}/webrtc/ice-servers",
             get(webrtc::get_ice_servers),
         ))
         // Admin routes
@@ -1381,18 +1372,18 @@ fn register_all_routes() -> Router<AppState> {
                 )),
         )
         .route(
-            "/api/playback-providers/bilibili/live-danmaku/{media_id}",
+            "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
             get(providers::playback_provider::bilibili::watch_bilibili_live_danmaku)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/media-streams/{mode_name}/{url_index}",
+            "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_media_stream)
                 .head(providers::playback_provider::bilibili::head_bilibili_media_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/hls-manifests/{mode_name}/{url_index}",
+            "/api/playback-providers/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1403,34 +1394,34 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-manifests/{mode_name}",
+            "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}",
             get(providers::playback_provider::bilibili::get_bilibili_dash_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/dash-segments/{mode_name}/{url_index}",
+            "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_dash_segment)
                 .head(providers::playback_provider::bilibili::head_bilibili_dash_segment)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/subtitles/{mode_name}/{subtitle_index}",
+            "/api/playback-providers/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/bilibili/{version}/danmaku-files/{danmaku_index}",
+            "/api/playback-providers/bilibili/{version}/danmaku-files/{danmakuIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_danmaku_file)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/streams/{mode_name}/{url_index}",
+            "/api/playback-providers/direct-url/{version}/streams/{modeName}/{urlIndex}",
             get(providers::playback_provider::direct_url::get_direct_url_stream)
                 .head(providers::playback_provider::direct_url::head_direct_url_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/hls-manifests/{mode_name}/{url_index}",
+            "/api/playback-providers/direct-url/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(providers::playback_provider::direct_url::get_direct_url_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1441,18 +1432,18 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/direct-url/{version}/subtitles/{mode_name}/{subtitle_index}",
+            "/api/playback-providers/direct-url/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(providers::playback_provider::direct_url::get_direct_url_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/files/{mode_name}/{url_index}",
+            "/api/playback-providers/alist/{version}/files/{modeName}/{urlIndex}",
             get(providers::playback_provider::alist::get_alist_file_stream)
                 .head(providers::playback_provider::alist::head_alist_file_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{mode_name}/{url_index}",
+            "/api/playback-providers/alist/{version}/transcoded-hls-manifests/{modeName}/{urlIndex}",
             get(providers::playback_provider::alist::get_alist_transcoded_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1463,7 +1454,7 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/alist/{version}/subtitles/{mode_name}/{subtitle_index}",
+            "/api/playback-providers/alist/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(providers::playback_provider::alist::get_alist_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1473,13 +1464,13 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/media-streams/{mode_name}/{url_index}",
+            "/api/playback-providers/emby/{version}/media-streams/{modeName}/{urlIndex}",
             get(providers::playback_provider::emby::get_emby_media_stream)
                 .head(providers::playback_provider::emby::head_emby_media_stream)
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/hls-manifests/{mode_name}/{url_index}",
+            "/api/playback-providers/emby/{version}/hls-manifests/{modeName}/{urlIndex}",
             get(providers::playback_provider::emby::get_emby_hls_manifest)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1490,7 +1481,7 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/emby/{version}/subtitles/{mode_name}/{subtitle_index}",
+            "/api/playback-providers/emby/{version}/subtitles/{modeName}/{subtitleIndex}",
             get(providers::playback_provider::emby::get_emby_subtitle)
                 .options(providers::playback_provider_options_preflight),
         )
@@ -1506,7 +1497,7 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/rtmp/{version}/hls-segments/{segment_name}",
+            "/api/playback-providers/rtmp/{version}/hls-segments/{segmentName}",
             get(providers::playback_provider::rtmp::get_rtmp_hls_segment)
                 .head(providers::playback_provider::rtmp::head_rtmp_hls_segment)
                 .options(providers::playback_provider_options_preflight),
@@ -1523,7 +1514,7 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
-            "/api/playback-providers/live-proxy/{version}/hls-segments/{segment_name}",
+            "/api/playback-providers/live-proxy/{version}/hls-segments/{segmentName}",
             get(providers::playback_provider::live_proxy::get_live_proxy_hls_segment)
                 .head(providers::playback_provider::live_proxy::head_live_proxy_hls_segment)
                 .options(providers::playback_provider_options_preflight),

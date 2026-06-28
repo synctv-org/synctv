@@ -7,8 +7,8 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        ChatMessage, ChatPlaybackMessagesQuery, MediaId, PlaylistId, Room, RoomId, RoomStatus,
-        User, UserId, UserRole, UserStatus,
+        try_hash_playback_target, ChatMessage, ChatPlaybackMessagesQuery, MediaId, PlaylistId,
+        ProviderTarget, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
@@ -154,8 +154,11 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
     let (user, room) = setup_room(&pool, "chat_playback_user", "chat_playback_room").await;
     let media_id = MediaId::expect_positive(300_001);
     let playlist_id = PlaylistId::expect_positive(300_002);
-    let target = b"playback-target-1".to_vec();
-    let target_hex = hex::encode(&target);
+    let target = ProviderTarget::alist("/playback-target-1".to_string());
+    let _target_hash = ok(
+        try_hash_playback_target(Some(&target)),
+        "target hash should compute",
+    );
 
     for (content, position_seconds, status) in [
         (
@@ -186,15 +189,18 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
     ] {
         let mut msg = make_chat_message(&room.id, &user.id, content);
         msg.status = status;
-        msg.metadata = serde_json::json!({
-            "playback": {
-                "media_id": media_id.as_i64().to_string(),
-                "playlist_id": playlist_id.as_i64().to_string(),
-                "target_hex": target_hex.clone(),
-                "target_hash": "stale-denormalized-hash",
-                "position_seconds": position_seconds
-            }
-        });
+        msg.metadata = synctv_core::models::ChatMetadata {
+            playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target: Some(synctv_core::models::ProviderTarget::alist(
+                    "/playback-target-1".to_string(),
+                )),
+                target_hash: None,
+                position_seconds: Some(position_seconds),
+            }),
+            ..Default::default()
+        };
         ok(
             chat_repo.create(&msg).await,
             "playback chat message should be created",

@@ -7,11 +7,11 @@
 //!
 //! | HTTP endpoint | gRPC RPC | Auth required |
 //! |--------------------------------------------------------|----------------------------------|---------------|
-//! | `GET /api/oauth2/:provider/authorize?redirect_url=` | `GetAuthorizationUrl` | No |
-//! | `GET /api/oauth2/:provider/bind?redirect_url=` | `GetAuthorizationUrlForBind` | Yes |
+//! | `GET /api/oauth2/:provider/authorize?redirectUrl=` | `GetAuthorizationUrl` | No |
+//! | `GET /api/oauth2/:provider/bind?redirectUrl=` | `GetAuthorizationUrlForBind` | Yes |
 //! | `POST /api/oauth2/:provider/exchange` (JSON body) | `ExchangeAuthorizationCode` | No |
 //! | `GET /api/oauth2/providers` | `ListAvailableProviders` | No |
-//! | `DELETE /api/oauth2/type/:provider/unlink?provider_user_id=`| `UnlinkProvider` | Yes |
+//! | `DELETE /api/oauth2/type/:provider/unlink?providerUserId=`| `UnlinkProvider` | Yes |
 //! | `GET /api/oauth2/linked` | `GetLinkedProviders` | Yes |
 //!
 //! Both transports share the same `OAuth2ApiImpl` backend. HTTP extracts the
@@ -32,12 +32,72 @@ use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
     GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
-    ListAvailableProvidersResponse, OAuth2ProviderInstancePathRequest,
+    ListAvailableProvidersResponse, OAuth2ProviderInstancePathRequest, OAuth2ProviderType,
     OAuth2ProviderTypePathRequest, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
 use super::{error::map_api_error, middleware::RequestMetadata, AppError, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct AuthorizationUrlQuery {
+    #[serde(default)]
+    redirect_url: String,
+}
+
+impl AuthorizationUrlQuery {
+    fn into_request(self, provider: String) -> GetAuthorizationUrlRequest {
+        GetAuthorizationUrlRequest {
+            provider,
+            redirect_url: self.redirect_url,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct BindAuthorizationUrlQuery {
+    #[serde(default)]
+    redirect_url: String,
+    #[serde(default)]
+    verification_id: String,
+}
+
+impl BindAuthorizationUrlQuery {
+    fn into_request(self, provider: String) -> GetAuthorizationUrlForBindRequest {
+        GetAuthorizationUrlForBindRequest {
+            provider,
+            redirect_url: self.redirect_url,
+            verification_id: self.verification_id,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+pub struct UnlinkProviderQuery {
+    #[serde(default)]
+    provider_user_id: String,
+    #[serde(default)]
+    verification_id: String,
+    #[serde(default)]
+    provider_instance_name: String,
+}
+
+impl UnlinkProviderQuery {
+    fn into_request(self, provider: i32) -> UnlinkProviderRequest {
+        UnlinkProviderRequest {
+            provider,
+            provider_user_id: self.provider_user_id,
+            verification_id: self.verification_id,
+            provider_instance_name: self.provider_instance_name,
+        }
+    }
+}
 
 fn oauth2_unavailable_error() -> AppError {
     AppError::new(
@@ -54,9 +114,37 @@ fn require_oauth2_api(state: &AppState) -> Result<Arc<crate::impls::OAuth2ApiImp
         .ok_or_else(oauth2_unavailable_error)
 }
 
+fn oauth2_provider_type_path_to_proto(provider: &str) -> Result<i32, AppError> {
+    crate::impls::validate_proto_request(&OAuth2ProviderTypePathRequest {
+        provider: provider.to_string(),
+    })
+    .map_err(map_api_error)?;
+    let provider = synctv_core::models::OAuth2Provider::from_str_name(provider)
+        .ok_or_else(|| AppError::bad_request("Invalid OAuth2 provider type"))?;
+    let proto = match provider {
+        synctv_core::models::OAuth2Provider::QQ => OAuth2ProviderType::Oauth2ProviderTypeQq,
+        synctv_core::models::OAuth2Provider::GitHub => OAuth2ProviderType::Oauth2ProviderTypeGithub,
+        synctv_core::models::OAuth2Provider::Google => OAuth2ProviderType::Oauth2ProviderTypeGoogle,
+        synctv_core::models::OAuth2Provider::Microsoft => {
+            OAuth2ProviderType::Oauth2ProviderTypeMicrosoft
+        }
+        synctv_core::models::OAuth2Provider::Discord => {
+            OAuth2ProviderType::Oauth2ProviderTypeDiscord
+        }
+        synctv_core::models::OAuth2Provider::Casdoor => {
+            OAuth2ProviderType::Oauth2ProviderTypeCasdoor
+        }
+        synctv_core::models::OAuth2Provider::Logto => OAuth2ProviderType::Oauth2ProviderTypeLogto,
+        synctv_core::models::OAuth2Provider::Oidc => OAuth2ProviderType::Oauth2ProviderTypeOidc,
+        synctv_core::models::OAuth2Provider::Feishu => OAuth2ProviderType::Oauth2ProviderTypeFeishu,
+        synctv_core::models::OAuth2Provider::Gitee => OAuth2ProviderType::Oauth2ProviderTypeGitee,
+    };
+    Ok(proto as i32)
+}
+
 /// Get `OAuth2` authorization URL for login flow
 ///
-/// GET /`api/oauth2/:provider/authorize?redirect_url`=<url>
+/// GET /`api/oauth2/:provider/authorize?redirectUrl`=<url>
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -65,7 +153,7 @@ fn require_oauth2_api(state: &AppState) -> Result<Arc<crate::impls::OAuth2ApiImp
         tag = "OAuth2",
         params(
             ("provider" = String, Path, description = "OAuth2 provider instance name"),
-            ("redirect_url" = Option<String>, Query, description = "Optional redirect URL after OAuth2 flow completes")
+            AuthorizationUrlQuery
         ),
         responses(
             (status = 200, description = "OAuth2 authorization URL", body = GetAuthorizationUrlResponse),
@@ -77,10 +165,10 @@ pub async fn get_authorize_url(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
-    Query(mut req): Query<GetAuthorizationUrlRequest>,
+    Query(query): Query<AuthorizationUrlQuery>,
 ) -> AppResult<Json<GetAuthorizationUrlResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    req.provider = path.provider;
+    let req = query.into_request(path.provider);
     let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0;
@@ -188,7 +276,7 @@ pub async fn exchange_authorization_code(
 
 /// Get authorization URL for binding `OAuth2` provider to authenticated user
 ///
-/// GET /`api/oauth2/:provider/bind?redirect_url`=<url>
+/// GET /`api/oauth2/:provider/bind?redirectUrl`=<url>
 ///
 /// Requires authentication. The frontend then redirects to the `OAuth2` provider,
 /// receives code/state, and calls exchange endpoint which will bind the provider.
@@ -200,7 +288,7 @@ pub async fn exchange_authorization_code(
         tag = "OAuth2",
         params(
             ("provider" = String, Path, description = "OAuth2 provider instance name"),
-            ("redirect_url" = Option<String>, Query, description = "Optional redirect URL after OAuth2 bind flow completes")
+            BindAuthorizationUrlQuery
         ),
         responses(
             (status = 200, description = "OAuth2 bind authorization URL", body = GetAuthorizationUrlForBindResponse),
@@ -216,10 +304,10 @@ pub async fn get_bind_authorize_url(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderInstancePathRequest>,
-    Query(mut req): Query<GetAuthorizationUrlForBindRequest>,
+    Query(query): Query<BindAuthorizationUrlQuery>,
 ) -> AppResult<Json<GetAuthorizationUrlForBindResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    req.provider = path.provider;
+    let req = query.into_request(path.provider);
     let provider_for_log = req.provider.clone();
 
     let request_meta = request_meta.0;
@@ -255,7 +343,7 @@ pub async fn get_bind_authorize_url(
 
 /// Unlink `OAuth2` provider from authenticated user
 ///
-/// DELETE /`api/oauth2/type/:provider/unlink?provider_instance_name`=<optional>&`provider_user_id`=<optional>
+/// DELETE /`api/oauth2/type/:provider/unlink?providerInstanceName`=<optional>&`providerUserId`=<optional>
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
@@ -264,8 +352,7 @@ pub async fn get_bind_authorize_url(
         tag = "OAuth2",
         params(
             ("provider" = String, Path, description = "OAuth2 provider type"),
-            ("provider_instance_name" = Option<String>, Query, description = "Required when provider_user_id is set; OAuth2 provider instance namespace"),
-            ("provider_user_id" = Option<String>, Query, description = "Optional provider user ID to unlink")
+            UnlinkProviderQuery
         ),
         responses(
             (status = 200, description = "OAuth2 provider unlinked", body = UnlinkProviderResponse),
@@ -281,11 +368,11 @@ pub async fn unlink_provider(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<OAuth2ProviderTypePathRequest>,
-    Query(mut req): Query<UnlinkProviderRequest>,
+    Query(query): Query<UnlinkProviderQuery>,
 ) -> AppResult<Json<UnlinkProviderResponse>> {
+    let req = query.into_request(oauth2_provider_type_path_to_proto(&path.provider)?);
     let oauth2_api = require_oauth2_api(&state)?;
-    req.provider = path.provider;
-    let provider_for_log = req.provider.clone();
+    let provider_for_log = req.provider;
 
     let request_meta = request_meta.0;
     let response = state
@@ -409,12 +496,10 @@ mod tests {
     type TestResult<T = ()> = anyhow::Result<T>;
 
     #[test]
-    fn test_exchange_authorization_code_request_deserializes_without_provider() -> TestResult {
+    fn test_exchange_authorization_code_request_deserializes_proto_body() -> TestResult {
         let mut req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
-            r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
+            r#"{"provider":"body-provider","code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
         )?;
-
-        assert!(req.provider.is_empty());
         req.provider = "github-main".to_string();
         assert_eq!(req.provider, "github-main");
         assert_eq!(req.code, "abc123._+-");
@@ -423,27 +508,46 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth2_path_injected_query_requests_deserialize_without_provider() -> TestResult {
-        let authorize: GetAuthorizationUrlRequest =
-            serde_urlencoded::from_str("redirect_url=http%3A%2F%2Flocalhost%2Fcallback")?;
-        assert!(authorize.provider.is_empty());
+    fn test_oauth2_route_queries_deserialize_strict_public_fields() -> TestResult {
+        let authorize: AuthorizationUrlQuery =
+            serde_urlencoded::from_str("redirectUrl=http%3A%2F%2Flocalhost%2Fcallback")?;
+        let authorize = authorize.into_request("github-main".to_string());
+        assert_eq!(authorize.provider, "github-main");
         assert_eq!(authorize.redirect_url, "http://localhost/callback");
 
-        let bind: GetAuthorizationUrlForBindRequest = serde_urlencoded::from_str(
-            "redirect_url=http%3A%2F%2Flocalhost%2Fbind&verification_id=verification-id",
+        let bind: BindAuthorizationUrlQuery = serde_urlencoded::from_str(
+            "redirectUrl=http%3A%2F%2Flocalhost%2Fbind&verificationId=verification-id",
         )?;
-        assert!(bind.provider.is_empty());
+        let bind = bind.into_request("github-main".to_string());
+        assert_eq!(bind.provider, "github-main");
         assert_eq!(bind.redirect_url, "http://localhost/bind");
         assert_eq!(bind.verification_id, "verification-id");
 
-        let unlink: UnlinkProviderRequest = serde_urlencoded::from_str(
-            "provider_user_id=remote-user-1&verification_id=verification-id",
+        let unlink: UnlinkProviderQuery = serde_urlencoded::from_str(
+            "providerUserId=remote-user-1&verificationId=verification-id&providerInstanceName=github-main",
         )?;
-        assert!(unlink.provider.is_empty());
+        let unlink = unlink.into_request(OAuth2ProviderType::Oauth2ProviderTypeGithub as i32);
+        assert_eq!(
+            unlink.provider,
+            OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
+        );
         assert_eq!(unlink.verification_id, "verification-id");
         assert_eq!(unlink.provider_user_id, "remote-user-1");
-        assert!(unlink.provider_instance_name.is_empty());
+        assert_eq!(unlink.provider_instance_name, "github-main");
         Ok(())
+    }
+
+    #[test]
+    fn test_oauth2_route_queries_reject_path_fields() {
+        let authorize = serde_urlencoded::from_str::<AuthorizationUrlQuery>(
+            "provider=github-main&redirectUrl=http%3A%2F%2Flocalhost%2Fcallback",
+        );
+        assert!(authorize.is_err());
+
+        let unlink = serde_urlencoded::from_str::<UnlinkProviderQuery>(
+            "provider=1&providerUserId=remote-user-1",
+        );
+        assert!(unlink.is_err());
     }
 
     #[test]

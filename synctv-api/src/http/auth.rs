@@ -10,13 +10,14 @@ use synctv_proto::client::{
     ConfirmEmailLoginRequest, ConfirmEmailRegistrationRequest, CreateGuestTokenRequest,
     CreateGuestTokenResponse, FinishMfaPasskeyRequest, FinishOpaqueLoginRequest,
     FinishOpaqueRegistrationRequest, FinishPasskeyLoginRequest, FinishPasskeyRegistrationRequest,
-    LoginResponse, LogoutResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterResponse,
-    RegisterWithDirectPasswordRequest, RequestEmailLoginRequest, RequestEmailLoginResponse,
-    RequestEmailRegistrationRequest, RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest,
-    RequestMfaEmailCodeResponse, StartMfaPasskeyRequest, StartMfaPasskeyResponse,
+    LoginResponse, LoginWithDirectPasswordRequest, LogoutResponse, RefreshTokenRequest,
+    RefreshTokenResponse, RegisterResponse, RegisterWithDirectPasswordRequest,
+    RequestEmailLoginRequest, RequestEmailLoginResponse, RequestEmailRegistrationRequest,
+    RequestEmailRegistrationResponse, RequestMfaEmailCodeRequest, RequestMfaEmailCodeResponse,
+    StartMfaPasskeyRequest, StartMfaPasskeyResponse, StartOpaqueLoginRequest,
     StartOpaqueLoginResponse, StartOpaqueRegistrationRequest, StartOpaqueRegistrationResponse,
-    StartPasskeyLoginResponse, StartPasskeyRegistrationRequest, StartPasskeyRegistrationResponse,
-    VerifyMfaEmailCodeRequest,
+    StartPasskeyLoginRequest, StartPasskeyLoginResponse, StartPasskeyRegistrationRequest,
+    StartPasskeyRegistrationResponse, VerifyMfaEmailCodeRequest,
 };
 
 /// Extract the real client IP from a request.
@@ -187,7 +188,7 @@ pub async fn register_with_direct_password(
         post,
         path = "/api/auth/direct-password/login",
         tag = "Auth",
-        request_body = synctv_proto::http_serde::LoginWithDirectPasswordRequestDef,
+        request_body = LoginWithDirectPasswordRequest,
         responses(
             (status = 200, description = "Direct password login succeeded", body = LoginResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -209,13 +210,7 @@ pub async fn login_with_direct_password(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = synctv_proto::client::LoginWithDirectPasswordRequest::try_from(
-                    parse_auth_json::<synctv_proto::http_serde::LoginWithDirectPasswordRequestDef>(
-                        request,
-                    )
-                    .await?,
-                )
-                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let req = parse_auth_json::<LoginWithDirectPasswordRequest>(request).await?;
                 client_api
                     .login_with_direct_password_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -323,7 +318,7 @@ pub async fn create_guest_token(
         post,
         path = "/api/auth/opaque/login/start",
         tag = "Auth",
-        request_body = synctv_proto::http_serde::StartOpaqueLoginRequestDef,
+        request_body = StartOpaqueLoginRequest,
         responses(
             (status = 200, description = "OPAQUE login challenge created", body = StartOpaqueLoginResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -344,13 +339,7 @@ pub async fn start_opaque_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = synctv_proto::client::StartOpaqueLoginRequest::try_from(
-                    parse_auth_json::<synctv_proto::http_serde::StartOpaqueLoginRequestDef>(
-                        request,
-                    )
-                    .await?,
-                )
-                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let req = parse_auth_json::<StartOpaqueLoginRequest>(request).await?;
                 client_api
                     .start_opaque_login_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -495,7 +484,7 @@ pub async fn finish_passkey_registration(
         post,
         path = "/api/auth/passkeys/login/start",
         tag = "Auth",
-        request_body = synctv_proto::http_serde::StartPasskeyLoginRequestDef,
+        request_body = StartPasskeyLoginRequest,
         responses(
             (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginResponse),
             (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
@@ -517,13 +506,7 @@ pub async fn start_passkey_login(
             &request_meta,
             EndpointRateLimitCategory::Auth,
             move |request_control| async move {
-                let req = synctv_proto::client::StartPasskeyLoginRequest::try_from(
-                    parse_auth_json::<synctv_proto::http_serde::StartPasskeyLoginRequestDef>(
-                        request,
-                    )
-                    .await?,
-                )
-                .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
+                let req = parse_auth_json::<StartPasskeyLoginRequest>(request).await?;
                 client_api
                     .start_passkey_login_with_control(req, client_ip, Some(&request_control))
                     .await
@@ -990,31 +973,49 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
     #[test]
-    fn test_passkey_http_response_serializes_proto_options_as_json_object() -> TestResult {
+    fn test_passkey_http_response_serializes_options_object() -> TestResult {
         let response = StartPasskeyLoginResponse {
             session_id: "session".to_string(),
-            options: br#"{"challenge":"abc","rpId":"app.example.com","allowCredentials":[]}"#
-                .to_vec(),
+            options: Some(synctv_proto::client::PasskeyRequestChallenge {
+                public_key: Some(
+                    synctv_proto::client::PasskeyPublicKeyCredentialRequestOptions {
+                        challenge: b"abc".to_vec(),
+                        timeout: None,
+                        rp_id: "app.example.com".to_string(),
+                        allow_credentials: Vec::new(),
+                        user_verification:
+                            synctv_proto::client::PasskeyUserVerificationRequirement::Required
+                                as i32,
+                        hints: Vec::new(),
+                        extensions: None,
+                    },
+                ),
+                mediation: synctv_proto::client::PasskeyMediationRequirement::Unspecified as i32,
+            }),
         };
 
         let value = serde_json::to_value(response)?;
-        assert_eq!(value["session_id"], "session");
+        assert_eq!(value["sessionId"], "session");
         assert!(value["options"].is_object());
-        assert_eq!(value["options"]["challenge"], "abc");
-        assert_eq!(value["options"]["rpId"], "app.example.com");
+        assert_eq!(value["options"]["publicKey"]["challenge"], "YWJj");
+        assert_eq!(value["options"]["publicKey"]["rpId"], "app.example.com");
         Ok(())
     }
 
     #[test]
-    fn test_passkey_http_finish_request_deserializes_credential_json_object() -> TestResult {
+    fn test_passkey_http_finish_request_deserializes_credential_object() -> TestResult {
         let request: FinishPasskeyLoginRequest = serde_json::from_str(
-            r#"{"session_id":"session","credential":{"id":"cred","type":"public-key"}}"#,
+            r#"{"sessionId":"session","credential":{"id":"cred","rawId":"cmF3","response":{"authenticatorData":"YXV0aA","clientDataJSON":"Y2xpZW50","signature":"c2ln"},"type":1}}"#,
         )?;
 
         assert_eq!(request.session_id, "session");
-        let credential: serde_json::Value = serde_json::from_slice(&request.credential)?;
-        assert_eq!(credential["id"], "cred");
-        assert_eq!(credential["type"], "public-key");
+        let credential = request.credential.expect("credential should deserialize");
+        assert_eq!(credential.id, "cred");
+        assert_eq!(
+            credential.r#type,
+            synctv_proto::client::PasskeyPublicKeyCredentialType::PublicKey as i32
+        );
+        assert_eq!(credential.raw_id, b"raw");
         Ok(())
     }
 }

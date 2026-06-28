@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use serde_json::Value as JsonValue;
-
 use crate::{
     models::{resolve_provider_instance_binding, CredentialProviderInstanceName, UserId},
-    provider::{MediaProvider, ProviderContext},
+    provider::{MediaProvider, ProviderContext, SourceConfig},
     repository::UserProviderCredentialRepository,
     Error, Result,
 };
@@ -20,7 +18,7 @@ pub(crate) async fn resolve_credential_provider_instance_binding(
     provider: &dyn MediaProvider,
     credential_repo: Option<&Arc<UserProviderCredentialRepository>>,
     ctx: &ProviderContext<'_>,
-    source_config: &JsonValue,
+    source_config: SourceConfig<'_>,
     explicit_provider_instance_name: Option<&str>,
 ) -> Result<Option<String>> {
     let Some(credential_repo) = credential_repo else {

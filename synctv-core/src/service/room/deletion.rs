@@ -281,8 +281,7 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
     impact: &mut EntryDeletionImpact,
 ) -> Result<()> {
     if impact.playback_reset {
-        let state = sqlx::query_as!(
-            RoomPlaybackState,
+        let state = sqlx::query_as::<_, RoomPlaybackState>(
             r#"WITH current_state AS (
                 SELECT room_id, current_progress_id
                 FROM room_playback_state
@@ -301,7 +300,7 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
                 UPDATE room_playback_state state
                 SET playing_media_id = NULL,
                     playing_playlist_id = NULL,
-                    target = ''::bytea,
+                    target = NULL,
                     current_progress_id = NULL,
                     speed = 1.0,
                     is_playing = false,
@@ -319,19 +318,19 @@ pub(super) async fn apply_delete_entries_impact_in_tx(
                           state.updated_at,
                           state.version
             )
-            SELECT room_id AS "room_id: RoomId",
-                   playing_media_id AS "playing_media_id: MediaId",
-                   playing_playlist_id AS "playing_playlist_id: PlaylistId",
+            SELECT room_id,
+                   playing_media_id,
+                   playing_playlist_id,
                    target,
                    current_progress_id,
-                   0.0::DOUBLE PRECISION AS "position!",
-                   speed AS "speed!",
+                   0.0::DOUBLE PRECISION AS position,
+                   speed,
                    is_playing,
                    updated_at,
                    version
             FROM updated"#,
-            room_id.as_i64(),
         )
+        .bind(room_id)
         .fetch_one(&mut **tx)
         .await?;
         impact.playback_state = Some(state);

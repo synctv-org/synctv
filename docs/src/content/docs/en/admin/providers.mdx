@@ -5,7 +5,7 @@ description: Create, enable, disable, update, reconnect, and delete remote Provi
 
 A Provider instance is SyncTV's connection configuration for a remote Provider gRPC service. It stores only the `endpoint`, TLS settings, JWT secret, custom CA, timeout, and the Provider types declared by that remote service. Upstream media-source accounts, tokens, cookies, user agents, and backend-specific settings belong to user Provider credentials or the remote Provider deployment, not this instance configuration.
 
-Remote Provider instances can currently declare `alist`, `bilibili`, and `emby`. Media sources also include local types such as `direct_url`, `rtmp`, and `live_proxy`; those are not valid `--provider` values for remote Provider instances.
+Remote Provider instances can currently declare `alist`, `bilibili`, and `emby`. Media sources also include local types such as `direct-url`, `rtmp`, and `live-proxy`; those are not valid `--provider` values for remote Provider instances.
 
 ## Common Commands
 

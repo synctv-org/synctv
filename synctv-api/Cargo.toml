@@ -79,6 +79,8 @@ synctv-media-providers = { workspace = true, default-features = false }
 synctv-livestream = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
+webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
 
 # Async
 tokio.workspace = true

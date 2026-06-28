@@ -13,7 +13,7 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     room_id: args.room.room_id,
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
-                    target_json: raw_optional_bytes(args.target_json.as_deref()),
+                    target: parse_optional_provider_target_json(args.target_json.as_deref())?,
                     page: args.page,
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),

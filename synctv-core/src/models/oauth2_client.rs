@@ -157,29 +157,27 @@ pub fn oauth2_provider_type_name_from_code(code: i16) -> Result<String, String> 
     OAuth2Provider::try_from(code).map(|provider| provider.to_string())
 }
 
-#[derive(Debug, Clone)]
-pub struct OAuth2ProviderTypeName(pub String);
-
-impl TryFrom<i16> for OAuth2ProviderTypeName {
-    type Error = String;
-
-    fn try_from(value: i16) -> Result<Self, Self::Error> {
-        oauth2_provider_type_name_from_code(value).map(Self)
-    }
-}
-
-impl sqlx::Type<sqlx::Postgres> for OAuth2ProviderTypeName {
+impl sqlx::Type<sqlx::Postgres> for OAuth2Provider {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
     }
 }
 
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for OAuth2ProviderTypeName {
+impl sqlx::Encode<'_, sqlx::Postgres> for OAuth2Provider {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_i16(), buf)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for OAuth2Provider {
     fn decode(
         value: sqlx::postgres::PgValueRef<'r>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(oauth2_provider_type_name_from_code(value)?))
+        Ok(Self::try_from(value)?)
     }
 }
 
@@ -195,7 +193,7 @@ impl std::fmt::Display for OAuth2Provider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOAuthProviderMapping {
     pub id: i64,
-    pub provider: String,
+    pub provider: OAuth2Provider,
     pub provider_instance_name: String,
     pub provider_issuer: Option<String>,
     pub provider_user_id: String,
@@ -205,14 +203,6 @@ pub struct UserOAuthProviderMapping {
     pub avatar_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-impl UserOAuthProviderMapping {
-    /// Get the provider as `OAuth2Provider` enum
-    #[must_use]
-    pub fn provider_enum(&self) -> Option<OAuth2Provider> {
-        OAuth2Provider::from_str_name(&self.provider)
-    }
 }
 
 /// `OAuth2` user info from provider
@@ -335,10 +325,10 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_provider_enum() {
+    fn mapping_provider_is_typed() {
         let mapping = UserOAuthProviderMapping {
             id: 1,
-            provider: "github".to_string(),
+            provider: OAuth2Provider::GitHub,
             provider_instance_name: "github-main".to_string(),
             provider_issuer: Some("https://github.com".to_string()),
             provider_user_id: "gh_123".to_string(),
@@ -349,24 +339,6 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        assert_eq!(mapping.provider_enum(), Some(OAuth2Provider::GitHub));
-    }
-
-    #[test]
-    fn test_mapping_provider_enum_unknown() {
-        let mapping = UserOAuthProviderMapping {
-            id: 1,
-            provider: "unknown_provider".to_string(),
-            provider_instance_name: "custom".to_string(),
-            provider_issuer: None,
-            provider_user_id: "xyz".to_string(),
-            user_id: UserId::expect_positive(1),
-            username: "testuser".to_string(),
-            email: None,
-            avatar_url: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-        assert_eq!(mapping.provider_enum(), None);
+        assert_eq!(mapping.provider, OAuth2Provider::GitHub);
     }
 }

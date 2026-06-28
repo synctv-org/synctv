@@ -161,7 +161,7 @@ mod tests {
                     start: 2,
                     end_inclusive: 5,
                 }),
-                metadata: serde_json::Value::Object(Default::default()),
+                metadata: synctv_core::models::FileMetadata::default(),
                 created_at: chrono::Utc::now(),
             },
             stream: futures::stream::iter([

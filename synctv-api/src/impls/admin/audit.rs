@@ -1,4 +1,4 @@
-use synctv_core::models::{AuditAction, AuditTargetType, UserId};
+use synctv_core::models::{AuditAction, AuditDetails, AuditTargetType, UserId};
 use synctv_core::service::AuditEventParams;
 
 use super::{AdminApiImpl, RequestContext};
@@ -11,7 +11,7 @@ impl AdminApiImpl {
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
-        details: serde_json::Value,
+        details: AuditDetails,
         ctx: &RequestContext,
     ) {
         let admin_username = match self.load_admin_actor(admin_user_id).await {

@@ -11,13 +11,13 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 | 资源 | `ObserveResource.resource` 字段 | 版本来源 | 典型用途 |
 | --- | --- | --- | --- |
-| 播放状态 | `playback_state` | `RoomPlaybackState.version` | 播放器 UI、同步当前播放时间和状态 |
+| 播放状态 | `playbackState` | `RoomPlaybackState.version` | 播放器 UI、同步当前播放时间和状态 |
 | 播放信息 | `playback` | 每次观察返回当前值 | 获取当前播放源 URL、header、代理策略和过期时间 |
-| 房间设置 | `room_settings` | 房间设置版本 | 控制聊天、播放权限等 UI |
-| 播放列表项 | `playlist_items` | 列表快照版本 | 根列表、子播放列表、provider 浏览和搜索结果 |
-| 房间成员 | `room_members` | 成员列表快照版本 | 成员列表、分页、搜索、角色和状态过滤 |
+| 房间设置 | `roomSettings` | 房间设置版本 | 控制聊天、播放权限等 UI |
+| 播放列表项 | `playlistItems` | 列表快照版本 | 根列表、子播放列表、provider 浏览和搜索结果 |
+| 房间成员 | `roomMembers` | 成员列表快照版本 | 成员列表、分页、搜索、角色和状态过滤 |
 
-每个观察由 `observe_id` 标识。`observe_id` 只需要在当前连接内唯一，长度 1-128。使用稳定命名，例如 `playback-state`、`playlist-root:p1:50`、`members:online`。
+每个观察由 `observeId` 标识。`observeId` 只需要在当前连接内唯一，长度 1-128。使用稳定命名，例如 `playback-state`、`playlist-root:p1:50`、`members:online`。
 
 每条连接最多保留 64 个观察。超过限制时服务端返回 `ResourceObserveError`，不会关闭 WebSocket。
 
@@ -25,17 +25,17 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 | 值 | 行为 |
 | --- | --- |
-| `RESOURCE_DELIVERY_MODE_UNSPECIFIED` | 等同于 `PUSH_SNAPSHOT` |
-| `RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT` | 变化时推送完整 `ResourceChanged.payload`，适合低延迟 UI |
-| `RESOURCE_DELIVERY_MODE_NOTIFY_ONLY` | 变化时只推送 `changed_only`，客户端随后通过 HTTP/gRPC 拉取 |
+| `0` | 等同于 `PUSH_SNAPSHOT` |
+| `2` | 变化时推送完整 `ResourceChanged.payload`，适合低延迟 UI |
+| `1` | 变化时只推送 `changedOnly`，客户端随后通过 HTTP/gRPC 拉取 |
 
 ## 订阅流程
 
 <Steps>
 1. 客户端连接房间 WebSocket。
-2. 客户端发送 `ClientMessage.observe_resource`，包含 `observe_id`、`delivery_mode` 和目标资源。支持恢复游标的资源还可以带事件序列。
-3. 服务端加载当前资源，返回 `ServerMessage.resource_observed`。
-4. 如果服务端判断资源已变化，随后返回同一 `observe_id` 的 `ServerMessage.resource_changed`。
+2. 客户端发送 `ClientMessage.observeResource`，包含 `observeId`、`deliveryMode` 和目标资源。支持恢复游标的资源还可以带事件序列。
+3. 服务端加载当前资源，返回 `ServerMessage.resourceObserved`。
+4. 如果服务端判断资源已变化，随后返回同一 `observeId` 的 `ServerMessage.resourceChanged`。
 5. 连接期间，房间事件、缓存失效、Provider credential 变更或播放信息过期会触发重新评估。
 </Steps>
 
@@ -43,21 +43,21 @@ import { Steps, TabItem, Tabs } from '@astrojs/starlight/components';
 
 | 字段 | 说明 |
 | --- | --- |
-| `observe_id` | 对应客户端提交的订阅 ID |
+| `observeId` | 对应客户端提交的订阅 ID |
 | `changed` | 服务端当前资源是否需要发送给客户端 |
-| `event_cursor` | 支持事件回放资源的恢复游标 |
+| `eventCursor` | 支持事件回放资源的恢复游标 |
 
 `ResourceChanged` 字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `observe_id` | 哪个订阅发生变化 |
-| `payload` | 完整快照或 `changed_only`，取决于 `delivery_mode` |
-| `event_cursor` | 已回放资源事件对应的游标 |
+| `observeId` | 哪个订阅发生变化 |
+| `payload` | 完整快照或 `changedOnly`，取决于 `deliveryMode` |
+| `eventCursor` | 已回放资源事件对应的游标 |
 
 ## 取消订阅
 
-不再需要某个视图、列表或查询时，发送 `ClientMessage.unobserve_resource`：
+不再需要某个视图、列表或查询时，发送 `ClientMessage.unobserveResource`：
 
 ```ts
 sendClientMessage({
@@ -80,7 +80,7 @@ sendClientMessage({
 sendClientMessage({
   observeResource: {
     observeId: 'playback-state',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playbackState: {
       afterEventSequence: cached.playbackStateEventSequence,
     },
@@ -88,7 +88,7 @@ sendClientMessage({
 });
 ```
 
-服务端变化时返回 `ResourceChanged.payload.playback_state`。
+服务端变化时返回 `ResourceChanged.payload.playbackState`。
 
   </TabItem>
   <TabItem label="播放信息" icon="document">
@@ -97,7 +97,7 @@ sendClientMessage({
 sendClientMessage({
   observeResource: {
     observeId: 'playback',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_PUSH_SNAPSHOT,
+    deliveryMode: 2,
     playback: {
       playbackClientProfile: currentPlaybackClientProfile,
     },
@@ -114,23 +114,23 @@ sendClientMessage({
 sendClientMessage({
   observeResource: {
     observeId: 'room-members:online',
-    deliveryMode: ResourceDeliveryMode.RESOURCE_DELIVERY_MODE_NOTIFY_ONLY,
+    deliveryMode: 1,
     roomMembers: {
       afterEventSequence: cached.membersEventSequence,
       request: {
         page: 1,
         pageSize: 50,
         search: '',
-        status: MemberStatus.MEMBER_STATUS_ONLINE,
-        sortBy: RoomMemberListSortBy.ROOM_MEMBER_LIST_SORT_BY_JOINED_AT,
-        sortDirection: SortDirection.SORT_DIRECTION_ASC,
+        status: 1,
+        sortBy: 1,
+        sortDirection: 1,
       },
     },
   },
 });
 ```
 
-notify-only 模式下服务端变化时返回 `ResourceChanged.payload.changed_only`，客户端随后调用 HTTP/gRPC 成员列表接口刷新本地缓存。
+notify-only 模式下服务端变化时返回 `ResourceChanged.payload.changedOnly`，客户端随后调用 HTTP/gRPC 成员列表接口刷新本地缓存。
 
   </TabItem>
 </Tabs>
@@ -139,13 +139,13 @@ notify-only 模式下服务端变化时返回 `ResourceChanged.payload.changed_o
 
 | 事件类型 | 刷新资源 |
 | --- | --- |
-| 播放状态变化 | `playback_state`、`playback` |
-| 当前播放媒体或播放列表相关媒体更新 | `playback`，必要时 `playlist_items` |
-| 播放列表创建、更新、删除、重排或媒体增删 | `playlist_items` |
-| 房间设置变化 | `room_settings`、`room_members` |
-| 用户加入、离开或权限变化 | `room_members` |
+| 播放状态变化 | `playbackState`、`playback` |
+| 当前播放媒体或播放列表相关媒体更新 | `playback`，必要时 `playlistItems` |
+| 播放列表创建、更新、删除、重排或媒体增删 | `playlistItems` |
+| 房间设置变化 | `roomSettings`、`roomMembers` |
+| 用户加入、离开或权限变化 | `roomMembers` |
 | 缓存失效命中当前房间或用户 | 对应的播放、设置、列表或成员资源 |
 | Provider credential 变更 | 可能影响当前用户播放信息和 provider 浏览结果 |
 | 播放信息过期 | 到期后自动重新评估 `playback` 观察 |
 
-服务端会对同一房间内相同查询做短窗口合并，减少多个连接同时订阅同一资源时的重复快照加载。客户端不需要依赖这个优化，但可以为多个视图建立独立 `observe_id`。
+服务端会对同一房间内相同查询做短窗口合并，减少多个连接同时订阅同一资源时的重复快照加载。客户端不需要依赖这个优化，但可以为多个视图建立独立 `observeId`。

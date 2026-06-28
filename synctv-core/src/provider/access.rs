@@ -496,12 +496,7 @@ impl CachedProviderAccessService {
             )));
         }
 
-        let credential = record.get_credential().map_err(|error| {
-            ProviderError::Internal(format!(
-                "Failed to parse {} credential data: {error}",
-                record.provider
-            ))
-        })?;
+        let credential = record.credential_data.clone();
 
         Ok(ResolvedProviderCredential {
             credential,
@@ -920,7 +915,7 @@ mod tests {
             provider: provider.to_string(),
             server_id: server_id.to_string(),
             provider_instance_name: provider_instance_name.map(std::string::ToString::to_string),
-            credential_data: serde_json::to_value(credential).checked("credential serializes"),
+            credential_data: credential,
             expires_at: None,
             created_at: now,
             updated_at: now,

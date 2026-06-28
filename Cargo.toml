@@ -99,6 +99,9 @@ prost-types = "0.14.3"
 prost-reflect = "0.16.4"
 prost-reflect-build = "0.16.0"
 prost-protovalidate = "0.4.2"
+pbjson = "0.9.0"
+pbjson-build = "0.9.0"
+pbjson-types = "0.9.0"
 
 # HTTP Framework
 axum = { version = "0.8.9", features = ["macros", "ws"] }
@@ -154,6 +157,7 @@ opaque-ke = { version = "4.0.1", features = ["argon2"] }
 jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
 oauth2 = { version = "5.0.0", default-features = false }
 webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui", "danger-allow-state-serialisation"] }
+webauthn-rs-proto = "0.6.1-dev"
 aes-gcm = "0.10.3"
 ammonia = "4.1.2"
 http-acl = "0.11.0"

@@ -39,7 +39,7 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
         )
         .route("/instances/{name}/enable", post(enable_provider_instance))
         .route("/instances/{name}/disable", post(disable_provider_instance))
-        .route("/backends/{provider_type}", get(list_backends))
+        .route("/backends/{providerType}", get(list_backends))
 }
 
 #[cfg_attr(
@@ -49,7 +49,7 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
         path = "/api/providers/instances/available",
         tag = "Provider",
         params(
-            ("provider_type" = Option<String>, Query, description = "Provider type filter")
+            ("providerType" = Option<String>, Query, description = "Provider type filter")
         ),
         responses(
             (status = 200, description = "Available provider instances", body = ProviderInstancesResponse),
@@ -90,13 +90,13 @@ pub(crate) async fn list_instances(
         tag = "Provider",
         params(
             ("page" = Option<i32>, Query, description = "Page number"),
-            ("page_size" = Option<i32>, Query, description = "Page size"),
-            ("provider_type" = Option<String>, Query, description = "Provider type filter"),
+            ("pageSize" = Option<i32>, Query, description = "Page size"),
+            ("providerType" = Option<String>, Query, description = "Provider type filter"),
             ("search" = Option<String>, Query, description = "Search by name or endpoint"),
             ("enabled" = Option<bool>, Query, description = "Enabled filter"),
             ("tls" = Option<bool>, Query, description = "TLS filter"),
-            ("sort_by" = Option<i32>, Query, description = "Sort field enum value"),
-            ("sort_direction" = Option<i32>, Query, description = "Sort direction enum value")
+            ("sortBy" = Option<i32>, Query, description = "Sort field enum value"),
+            ("sortDirection" = Option<i32>, Query, description = "Sort direction enum value")
         ),
         responses(
             (status = 200, description = "Provider instances", body = ListProviderInstancesResponse),
@@ -365,10 +365,10 @@ pub(crate) async fn disable_provider_instance(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/providers/backends/{provider_type}",
+        path = "/api/providers/backends/{providerType}",
         tag = "Provider",
         params(
-            ("provider_type" = String, Path, description = "Provider type, such as bilibili, alist, or emby")
+            ("providerType" = String, Path, description = "Provider type, such as bilibili, alist, or emby")
         ),
         responses(
             (status = 200, description = "Enabled backends for the provider type", body = ProviderBackendsResponse),
@@ -409,7 +409,7 @@ pub(crate) fn provider_instance_name(
         .map_err(super::super::error::map_api_error)
 }
 
-pub(crate) fn provider_instance_name_from_body(
+pub(crate) fn provider_instance_name_from_request_field(
     body_instance_name: &str,
 ) -> Result<Option<String>, super::super::AppError> {
     crate::impls::providers::common::provider_instance_name_from_value(body_instance_name)
@@ -484,7 +484,9 @@ mod tests {
         ProvidersManager, RemoteProviderManager, UserService,
     };
     use synctv_core_testing::create_test_pool;
-    use synctv_proto::providers::common::ListProviderBackendsRequest;
+    use synctv_proto::providers::common::{
+        ListProviderBackendsRequest, UpdateProviderInstanceRequest,
+    };
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -494,6 +496,22 @@ mod tests {
 
     fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
         result.map_err(|error| test_error(error.to_string()))
+    }
+
+    #[test]
+    fn update_provider_instance_request_overrides_path_name() -> TestResult {
+        let mut req: UpdateProviderInstanceRequest = serde_json::from_str(
+            r#"{"name":"body-name","endpoint":"https://provider.internal","providers":[3]}"#,
+        )?;
+        req.name = "alist-main".to_string();
+
+        assert_eq!(req.name, "alist-main");
+        assert_eq!(req.endpoint.as_deref(), Some("https://provider.internal"));
+        assert_eq!(
+            req.providers,
+            vec![synctv_proto::source_config::SourceProvider::Alist as i32]
+        );
+        Ok(())
     }
 
     fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {

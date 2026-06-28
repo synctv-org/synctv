@@ -29,10 +29,10 @@ use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/playback/start",
+        path = "/api/rooms/{roomId}/playback/start",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = StartPlaybackRequest,
         responses(
@@ -72,10 +72,10 @@ pub async fn start_playback(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/playback/stop",
+        path = "/api/rooms/{roomId}/playback/stop",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = StopPlaybackRequest,
         responses(
@@ -115,10 +115,10 @@ pub async fn stop_playback(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/rooms/{room_id}/playback",
+        path = "/api/rooms/{roomId}/playback",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID"),
+            ("roomId" = String, Path, description = "Room ID"),
             GetPlaybackQuery
         ),
         responses(
@@ -167,7 +167,7 @@ pub async fn watch_playback_state(
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let request = WatchPlaybackStateRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playback_state: Some(synctv_proto::client::ObservePlaybackState {
             after_event_sequence,
         }),
@@ -189,7 +189,7 @@ pub async fn watch_playback(
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackRequest {
-        delivery_mode: parse_watch_delivery_mode(query.delivery_mode.as_deref())?,
+        delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playback: Some(synctv_proto::client::ObservePlayback {
             playback_client_profile,
             after_event_sequence,
@@ -231,10 +231,10 @@ pub async fn watch_bilibili_live_danmaku(
     feature = "openapi",
     utoipa::path(
         patch,
-        path = "/api/rooms/{room_id}/playback",
+        path = "/api/rooms/{roomId}/playback",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = UpdatePlaybackStateRequest,
         responses(

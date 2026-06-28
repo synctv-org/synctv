@@ -299,10 +299,10 @@ pub async fn clear_playlist_cover(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/rooms/{room_id}/chat/attachments/upload-session",
+        path = "/api/rooms/{roomId}/chat/attachments/upload-session",
         tag = "Room",
         params(
-            ("room_id" = String, Path, description = "Room ID")
+            ("roomId" = String, Path, description = "Room ID")
         ),
         request_body = CreateChatAttachmentUploadSessionRequest,
         responses(

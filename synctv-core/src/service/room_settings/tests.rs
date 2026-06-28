@@ -572,10 +572,6 @@ async fn test_delete_writes_versioned_default_settings() {
         service.set(&room.id, &changed).await,
         "custom settings should be written",
     );
-    ok(
-        repo.set(&room.id, "password", "stale-password-hash").await,
-        "password row should be written",
-    );
     let before_delete = ok(
         service.get_refresh_with_version(&room.id).await,
         "settings should be readable before delete",
@@ -682,7 +678,7 @@ fn test_room_settings_invalidation_message_serialization() {
         serde_json::to_string(&msg),
         "room settings invalidation message should serialize",
     );
-    assert!(json.contains("room_settings"));
+    assert!(json.contains("roomSettings"));
     assert!(json.contains("room123"));
 
     let decoded: InvalidationMessage = ok(

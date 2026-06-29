@@ -1399,6 +1399,11 @@ fn register_all_routes() -> Router<AppState> {
                 .options(providers::playback_provider_options_preflight),
         )
         .route(
+            "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
+            get(providers::playback_provider::bilibili::get_bilibili_dash_manifest)
+                .options(providers::playback_provider_options_preflight),
+        )
+        .route(
             "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
             get(providers::playback_provider::bilibili::get_bilibili_dash_segment)
                 .head(providers::playback_provider::bilibili::head_bilibili_dash_segment)

@@ -2255,7 +2255,7 @@ fn dash_manifest_resource(
         "bilibili",
         version.to_string(),
         expires_at,
-        format!("dash-manifests/{mode_name}?mode={manifest_mode}"),
+        format!("dash-manifests/{mode_name}/{manifest_mode}"),
         format!("dash-manifests/{mode_name}/{manifest_mode}"),
     )
 }
@@ -2474,7 +2474,7 @@ mod playback_conversion_tests {
         let media = &proto.playback_infos["dash"].medias[0];
         assert!(
             media.url.starts_with(
-                "/api/playback-providers/bilibili/v1/dash-manifests/dash?mode=direct&"
+                "/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"
             ),
             "unexpected direct DASH URL: {}",
             media.url

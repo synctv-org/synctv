@@ -37,6 +37,8 @@ pub struct BilibiliIndexedPath {
 pub struct BilibiliDashManifestPath {
     pub version: String,
     pub mode_name: String,
+    #[serde(default)]
+    pub manifest_mode: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -343,9 +345,9 @@ async fn bilibili_hls_segment(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}",
+        path = "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
         tag = "Bilibili Playback Provider",
-        params(("version" = String, Path), ("modeName" = String, Path), ("mode" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
+        params(("version" = String, Path), ("modeName" = String, Path), ("manifestMode" = String, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
         responses((status = 200, description = "Bilibili DASH manifest"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
     )
 )]
@@ -361,7 +363,8 @@ pub async fn get_bilibili_dash_manifest(
     let req = GetBilibiliDashManifestRequest {
         version: path.version,
         mode_name: path.mode_name,
-        mode: dash_manifest_mode(&query_string).map_err(crate::http::error::map_api_error)?,
+        mode: dash_manifest_mode(path.manifest_mode.as_deref(), &query_string)
+            .map_err(crate::http::error::map_api_error)?,
         sig,
         uid,
         rid,
@@ -628,8 +631,12 @@ pub async fn watch_bilibili_live_danmaku(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn dash_manifest_mode(query: &str) -> Result<i32, crate::impls::ApiError> {
-    unsigned_query_field(query, "mode")?.map_or(
+fn dash_manifest_mode(
+    path_mode: Option<&str>,
+    query: &str,
+) -> Result<i32, crate::impls::ApiError> {
+    let query_mode = unsigned_query_field(query, "mode")?;
+    path_mode.map(str::to_string).or(query_mode).map_or(
         Ok(BilibiliDashManifestMode::Direct as i32),
         |value| match value.as_str() {
             "" | "direct" => Ok(BilibiliDashManifestMode::Direct as i32),

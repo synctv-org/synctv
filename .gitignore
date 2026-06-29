@@ -2,7 +2,6 @@ target/
 **/target/
 **/**.local
 **/**.local.*
-**/**.local-*
 .DS_Store
 .idea/
 .vscode/
@@ -12,10 +11,6 @@ logs/
 .data-dev/
 .dev-data/
 .local-data/
-.e2e-data/
-.e2e-logs/
-.e2e-media/
-.e2e-tools/
 
 # Secrets and configuration
 *.pem

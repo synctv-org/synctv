@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18.1-bookworm
+    image: postgres:18
     container_name: synctv-postgres
     env_file:
       - path: .env.postgres
@@ -9,7 +9,7 @@ services:
       # Keep database access local to the host; the app uses the internal Docker network.
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres18_data:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U synctv"]
       interval: 5s
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8.4.0-bookworm
+    image: redis:8
     container_name: synctv-redis
     env_file:
       - path: .env.redis
@@ -69,7 +69,7 @@ services:
       retries: 3
 
 volumes:
-  postgres18_data:
+  postgres_data:
     driver: local
   redis_data:
     driver: local

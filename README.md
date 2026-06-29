@@ -37,8 +37,18 @@ SyncTV is a Rust implementation of a real-time synchronized video watching platf
 Development environment from a full repository checkout:
 
 ```bash
-# Uses built-in local-only development settings.
-docker compose -f docker-compose.dev.yml up -d
+# Starts PostgreSQL and Redis, then runs SyncTV locally with development settings.
+make dev-serve
+
+# Starts SyncTV in the background with the same development settings.
+make dev-start
+make dev-stop
+
+# Starts optional media/auth/storage dependencies too.
+make dev-stack
+
+# Runs real CLI/curl provider smoke tests through the Makefile dev startup path.
+make dev-smoke
 ```
 
 Production Compose can run from the repository root or from a directory containing `docker-compose.yml`, `.env.postgres.example`, `.env.redis.example`, `.env.synctv.example`, and `scripts/init-compose-env.sh`. It requires explicit secrets for PostgreSQL, Redis, and application auth/encryption:

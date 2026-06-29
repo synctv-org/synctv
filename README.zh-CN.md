@@ -37,8 +37,18 @@ SyncTV 是使用 Rust 实现的实时同步观影平台，支持媒体 Provider 
 开发环境需要完整源码仓库：
 
 ```bash
-# 使用内置的本地开发配置。
-docker compose -f docker-compose.dev.yml up -d
+# 启动 PostgreSQL 和 Redis，然后用开发配置在本机运行 SyncTV。
+make dev-serve
+
+# 使用同一套开发配置在后台启动 SyncTV。
+make dev-start
+make dev-stop
+
+# 同时启动媒体、认证和对象存储等可选依赖。
+make dev-stack
+
+# 通过 Makefile dev 启动路径执行真实 CLI/curl provider smoke 测试。
+make dev-smoke
 ```
 
 生产 Compose 可以在仓库根目录执行，也可以在只包含 `docker-compose.yml`、`.env.postgres.example`、`.env.redis.example`、`.env.synctv.example` 和 `scripts/init-compose-env.sh` 的部署目录执行。它需要显式配置 PostgreSQL、Redis 和应用鉴权/加密 secret：

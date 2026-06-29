@@ -46,27 +46,74 @@ npm --version
 
 ## Start Development Dependencies
 
-Start PostgreSQL and Redis:
+Use the Makefile entrypoints. `make help` lists all development targets.
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d postgres redis
+make dev-up
 ```
 
-Start the whole development stack:
+`make dev-up` starts PostgreSQL and Redis, then waits until they are ready. For the full media and auth dependency stack:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+make dev-stack
 ```
 
-Development Compose builds from the local Dockerfile and includes local-only development settings. It is not for production.
+`make dev-stack` starts PostgreSQL, Redis, OpenList, Emby, Jellyfin, RustFS, and Casdoor, then initializes the Casdoor database, RustFS bucket, OpenList local media directory, Emby/Jellyfin admin accounts, and local media libraries. Common endpoints:
+
+| Service | URL | Default credentials |
+| --- | --- | --- |
+| SyncTV | `http://127.0.0.1:8080` | `root` / `LocalDevRootPass2026!` |
+| PostgreSQL | `127.0.0.1:5432` | `synctv` / `synctv` |
+| Redis | `127.0.0.1:6379` | no password |
+| OpenList | `http://127.0.0.1:5244` | `admin` / `synctv-openlist` |
+| Emby | `http://127.0.0.1:8096` | `MyEmbyUser` / `synctv-emby` |
+| Jellyfin | `http://127.0.0.1:8097` | `root` / `synctv-jellyfin` |
+| RustFS | `http://127.0.0.1:9000` | `rustfsadmin` / `rustfsadmin` |
+| RustFS Console | `http://127.0.0.1:9001` | `rustfsadmin` / `rustfsadmin` |
+| Casdoor | `http://127.0.0.1:8000` | `admin` / `123` |
+
+Stop containers and keep volumes:
+
+```bash
+make dev-down
+```
+
+Remove containers and volumes:
+
+```bash
+make dev-clean
+```
+
+Development Compose only starts local dependency services. The SyncTV backend runs on the host with `cargo run`.
+
+Casdoor/OAuth2 providers are configured through runtime settings. After Casdoor starts, create an application in the Casdoor console, then write `oauth2.providers` with `synctv settings update oauth2`.
 
 ## Run Locally
+
+The Makefile exports the local runtime environment:
+
+```bash
+make dev-serve
+```
+
+This starts PostgreSQL and Redis first, then runs SyncTV with local `cargo run`. Start `make dev-stack` first when the full dependency set is needed.
+
+For a background process with the same development settings:
+
+```bash
+make dev-start
+make dev-stop
+```
+
+`make dev-start` builds `target/debug/synctv`, writes `.dev-data/run/synctv.pid`, then waits for the management socket and HTTP readiness. `make dev-smoke` uses this same startup path.
+
+Manual flow:
 
 <Steps>
 1. Start dependencies:
 
    ```bash
-   docker compose -f docker-compose.dev.yml up -d postgres redis
+   make dev-up
    ```
 
 2. Export local settings for this shell:
@@ -254,8 +301,8 @@ Playback background queries must also keep room-scoped filtering and the join to
 Refresh flow:
 
 ```bash
-docker compose -f docker-compose.dev.yml down -v
-docker compose -f docker-compose.dev.yml up -d postgres redis
+make dev-clean
+make dev-up
 
 local_database_url="postgresql://synctv:synctv@localhost:5432/synctv"
 

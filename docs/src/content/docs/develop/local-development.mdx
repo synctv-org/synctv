@@ -46,30 +46,75 @@ npm --version
 
 ## 启动开发依赖
 
-最简单方式是使用开发 Compose：
+推荐使用 Makefile 入口。`make help` 会列出所有开发目标。
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d postgres redis
+make dev-up
 ```
 
-如果你希望连 SyncTV 服务也一起用容器启动：
+`make dev-up` 启动 PostgreSQL 和 Redis，并等待服务就绪。需要完整媒体和认证依赖时：
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d
+make dev-stack
 ```
 
-开发 Compose 使用仓库内 Dockerfile 构建镜像，并内置仅供本地使用的开发配置。它只适合本地开发，不适合生产。
+`make dev-stack` 会启动 PostgreSQL、Redis、OpenList、Emby、Jellyfin、RustFS 和 Casdoor，并初始化 Casdoor database、RustFS bucket、OpenList 本地媒体目录、Emby/Jellyfin 管理账号和本地媒体库。常用端口：
+
+| 服务 | 地址 | 默认账号 |
+| --- | --- | --- |
+| SyncTV | `http://127.0.0.1:8080` | `root` / `LocalDevRootPass2026!` |
+| PostgreSQL | `127.0.0.1:5432` | `synctv` / `synctv` |
+| Redis | `127.0.0.1:6379` | 无密码 |
+| OpenList | `http://127.0.0.1:5244` | `admin` / `synctv-openlist` |
+| Emby | `http://127.0.0.1:8096` | `MyEmbyUser` / `synctv-emby` |
+| Jellyfin | `http://127.0.0.1:8097` | `root` / `synctv-jellyfin` |
+| RustFS | `http://127.0.0.1:9000` | `rustfsadmin` / `rustfsadmin` |
+| RustFS Console | `http://127.0.0.1:9001` | `rustfsadmin` / `rustfsadmin` |
+| Casdoor | `http://127.0.0.1:8000` | `admin` / `123` |
+
+停止容器但保留 volume：
+
+```bash
+make dev-down
+```
+
+清理容器和 volume：
+
+```bash
+make dev-clean
+```
+
+开发 Compose 只启动本地依赖服务，SyncTV 后端由宿主机 `cargo run` 启动。
+
+Casdoor/OAuth2 provider 仍然通过 runtime settings 配置。启动 Casdoor 后，在 Casdoor 控制台创建应用，再用 `synctv settings update oauth2` 写入 `oauth2.providers`。
 
 ## 本机运行服务
 
-本机直接运行：
+Makefile 已经内置本机运行需要的环境变量：
+
+```bash
+make dev-serve
+```
+
+这个目标会先启动 PostgreSQL 和 Redis，然后用本机 `cargo run` 启动 SyncTV。需要完整依赖时，先运行 `make dev-stack`。
+
+后台运行使用同一套开发配置：
+
+```bash
+make dev-start
+make dev-stop
+```
+
+`make dev-start` 会构建 `target/debug/synctv`、写入 `.dev-data/run/synctv.pid`，并等待 management socket 和 HTTP readiness。`make dev-smoke` 也通过这个入口启动 SyncTV。
+
+手动流程：
 
 <Steps>
 
 1. 确认依赖服务已启动：
 
    ```bash
-   docker compose -f docker-compose.dev.yml up -d postgres redis
+   make dev-up
    ```
 
 2. 为当前 shell 导出本机开发配置：
@@ -261,8 +306,8 @@ CI 可以使用 `SQLX_OFFLINE=true` 编译，不需要连接真实数据库；�
 刷新流程：
 
 ```bash
-docker compose -f docker-compose.dev.yml down -v
-docker compose -f docker-compose.dev.yml up -d postgres redis
+make dev-clean
+make dev-up
 
 local_database_url="postgresql://synctv:synctv@localhost:5432/synctv"
 

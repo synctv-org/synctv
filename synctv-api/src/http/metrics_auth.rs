@@ -271,7 +271,7 @@ impl KubernetesMetricsAuthorizer {
                     spec: TokenReviewSpec {
                         audiences: (!metrics.auth.kubernetes.audience.trim().is_empty())
                             .then(|| vec![metrics.auth.kubernetes.audience.clone()]),
-                        token: Some(token.to_string()),
+                        token: token.to_string(),
                     },
                     status: None,
                 },

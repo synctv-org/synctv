@@ -7,7 +7,7 @@
 //! designed for the credential storage layer.
 
 use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
+    aead::{Aead, AeadCore, Generate, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use std::sync::Arc;
@@ -72,8 +72,9 @@ impl FieldEncryption {
         if key_bytes.len() != 32 {
             return Err(EncryptionError::InvalidKeyLength(key_bytes.len()));
         }
-        let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-        let cipher = Aes256Gcm::new(key);
+        let key = Key::<Aes256Gcm>::try_from(key_bytes)
+            .map_err(|_| EncryptionError::InvalidKeyLength(key_bytes.len()))?;
+        let cipher = Aes256Gcm::new(&key);
         Ok(Self {
             cipher: Arc::new(cipher),
         })
@@ -93,19 +94,16 @@ impl FieldEncryption {
     ///
     /// Returns a string in the format "enc:<base64(nonce + ciphertext)>"
     pub fn encrypt(&self, plaintext: &str) -> EncryptionResult<String> {
-        // Generate random nonce
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::generate();
 
         // Encrypt
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext.as_bytes())
+            .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
         let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&nonce);
         combined.extend_from_slice(&ciphertext);
 
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &combined);
@@ -136,11 +134,12 @@ impl FieldEncryption {
         }
 
         let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce_bytes)
+            .map_err(|_| EncryptionError::InvalidFormat("Invalid nonce length".to_string()))?;
 
         let plaintext = self
             .cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
 
         String::from_utf8(plaintext)

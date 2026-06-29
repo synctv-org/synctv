@@ -3,13 +3,12 @@
 //! Unified implementation for all Bilibili API operations.
 //! Used by both HTTP and gRPC handlers.
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
-    aead::{Aead, KeyInit as AeadKeyInit, OsRng},
+    aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -94,9 +93,13 @@ impl BilibiliSmsLoginTokenCodec {
         })?;
         derivation_mac.update(SMS_LOGIN_DOMAIN_SEPARATOR);
         let derived = derivation_mac.finalize().into_bytes();
-        let key = Key::<Aes256Gcm>::from_slice(&derived);
+        let key = Key::<Aes256Gcm>::try_from(derived.as_slice()).map_err(|error| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to derive Bilibili SMS login token key: {error}"
+            ))
+        })?;
         Ok(Self {
-            cipher: Aes256Gcm::new(key),
+            cipher: Aes256Gcm::new(&key),
         })
     }
 
@@ -109,16 +112,14 @@ impl BilibiliSmsLoginTokenCodec {
                 "Failed to serialize Bilibili SMS login session: {e}"
             ))
         })?;
-        let mut nonce_bytes = [0_u8; SMS_LOGIN_TOKEN_NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = self.cipher.encrypt(nonce, payload.as_ref()).map_err(|_| {
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::generate();
+        let ciphertext = self.cipher.encrypt(&nonce, payload.as_ref()).map_err(|_| {
             synctv_core::provider::ProviderError::Internal(
                 "Failed to encrypt Bilibili SMS login session".to_string(),
             )
         })?;
         let mut token = Vec::with_capacity(SMS_LOGIN_TOKEN_NONCE_SIZE + ciphertext.len());
-        token.extend_from_slice(&nonce_bytes);
+        token.extend_from_slice(&nonce);
         token.extend_from_slice(&ciphertext);
 
         Ok(format!(
@@ -148,10 +149,11 @@ impl BilibiliSmsLoginTokenCodec {
             return Err(invalid());
         }
         let (nonce_bytes, ciphertext) = token.split_at(SMS_LOGIN_TOKEN_NONCE_SIZE);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce_bytes)
+            .map_err(|_| invalid())?;
         let payload = self
             .cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| invalid())?;
         let session: BilibiliSmsLoginSession =
             serde_json::from_slice(&payload).map_err(|_| invalid())?;

@@ -2473,9 +2473,9 @@ mod playback_conversion_tests {
             .expect("playback should convert");
         let media = &proto.playback_infos["dash"].medias[0];
         assert!(
-            media.url.starts_with(
-                "/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"
-            ),
+            media
+                .url
+                .starts_with("/api/playback-providers/bilibili/v1/dash-manifests/dash/direct?"),
             "unexpected direct DASH URL: {}",
             media.url
         );

@@ -57,11 +57,12 @@ fn filter_provider_binds(
                 (ProviderCredential::Emby { host, api_key, .. }, "api_key") => {
                     (host.clone(), api_key.clone())
                 }
-                (ProviderCredential::Emby {
-                    host,
-                    emby_user_id,
-                    ..
-                }, "emby_user_id") => (host.clone(), emby_user_id.clone()),
+                (
+                    ProviderCredential::Emby {
+                        host, emby_user_id, ..
+                    },
+                    "emby_user_id",
+                ) => (host.clone(), emby_user_id.clone()),
                 _ => {
                     return Err(ApiError::Internal(format!(
                         "Provider credential {} for {} has unexpected credential shape",

@@ -266,12 +266,7 @@ impl MaxMembers {
 room_setting!(AdminAddedPermissions, u64, "adminAddedPermissions", 0);
 room_setting!(AdminRemovedPermissions, u64, "adminRemovedPermissions", 0);
 room_setting!(MemberAddedPermissions, u64, "memberAddedPermissions", 0);
-room_setting!(
-    MemberRemovedPermissions,
-    u64,
-    "memberRemovedPermissions",
-    0
-);
+room_setting!(MemberRemovedPermissions, u64, "memberRemovedPermissions", 0);
 room_setting!(GuestAddedPermissions, u64, "guestAddedPermissions", 0);
 room_setting!(GuestRemovedPermissions, u64, "guestRemovedPermissions", 0);
 
@@ -619,11 +614,10 @@ mod tests {
     #[test]
     fn max_members_validation_accepts_zero_and_limit() {
         assert!(RoomSettingsRegistry::validate_setting("maxMembers", "0").is_ok());
-        assert!(RoomSettingsRegistry::validate_setting(
-            "maxMembers",
-            &MaxMembers::MAX.to_string()
-        )
-        .is_ok());
+        assert!(
+            RoomSettingsRegistry::validate_setting("maxMembers", &MaxMembers::MAX.to_string())
+                .is_ok()
+        );
         assert!(RoomSettingsRegistry::validate_setting(
             "maxMembers",
             &(MaxMembers::MAX + 1).to_string()

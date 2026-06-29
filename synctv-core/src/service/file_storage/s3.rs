@@ -1737,7 +1737,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 {
                     return Ok(CompleteFileUploadSessionResult {
                         object: Some(super::session_record_blob(
-                            &session,
+                            session,
                             Vec::new(),
                             upload_session_object_metadata(&session.metadata),
                         )),
@@ -1773,11 +1773,14 @@ impl FileStorageService for S3CompatibleFileStorageService {
             }
             let crate::models::FileReferenceMetadata::UploadSession(metadata) = reference.metadata
             else {
-                return Err(Error::InvalidInput("file reference was not found".to_string()));
+                return Err(Error::InvalidInput(
+                    "file reference was not found".to_string(),
+                ));
             };
-            let ownership_proof = metadata.ownership_proof.clone().ok_or_else(|| {
-                Error::InvalidInput("file reference was not found".to_string())
-            })?;
+            let ownership_proof = metadata
+                .ownership_proof
+                .clone()
+                .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
             Some((
                 reference.object_key,
                 reference.mime_type,
@@ -1808,7 +1811,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .filter(|proof| !proof.is_empty())
                 .ok_or_else(|| {
                     Error::InvalidInput("file ownership proof is required".to_string())
-            })?;
+                })?;
             let nonce = ownership_proof.nonce.as_str();
             let ranges = ownership_proof.ranges.clone();
             let mut chunks = Vec::with_capacity(ranges.len());

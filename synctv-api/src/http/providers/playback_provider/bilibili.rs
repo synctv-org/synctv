@@ -631,10 +631,7 @@ pub async fn watch_bilibili_live_danmaku(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn dash_manifest_mode(
-    path_mode: Option<&str>,
-    query: &str,
-) -> Result<i32, crate::impls::ApiError> {
+fn dash_manifest_mode(path_mode: Option<&str>, query: &str) -> Result<i32, crate::impls::ApiError> {
     let query_mode = unsigned_query_field(query, "mode")?;
     path_mode.map(str::to_string).or(query_mode).map_or(
         Ok(BilibiliDashManifestMode::Direct as i32),

@@ -1,12 +1,11 @@
 use std::sync::Mutex;
 
 use symphonia::core::{
-    codecs::CODEC_TYPE_NULL,
     errors::Error as SymphoniaError,
-    formats::{FormatOptions, FormatReader},
+    formats::{probe::Hint, FormatOptions, FormatReader, TrackType},
     io::{MediaSource, MediaSourceStream},
     meta::MetadataOptions,
-    probe::Hint,
+    units::{Duration as SymphoniaDuration, TimeBase, Timestamp},
 };
 
 use crate::{
@@ -75,30 +74,34 @@ where
         hint.with_extension(extension);
     }
     let probed = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             media_source,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .map_err(|error| {
             Error::InvalidInput(format!("unsupported or invalid audio data: {error}"))
         })?;
-    let mut format = probed.format;
-    let (track_id, sample_rate, time_base, duration_frames, channels) = {
+    let mut format = probed;
+    let (track_id, sample_rate, time_base, duration, duration_frames, channels) = {
         let track = format
-            .tracks()
-            .iter()
-            .find(|track| track.codec_params.codec != CODEC_TYPE_NULL)
+            .first_track_known_codec(TrackType::Audio)
             .ok_or_else(|| Error::InvalidInput("audio track was not found".to_string()))?;
-        let params = &track.codec_params;
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(symphonia::core::codecs::CodecParameters::audio)
+            .ok_or_else(|| Error::InvalidInput("audio track was not found".to_string()))?;
         (
             track.id,
             params.sample_rate,
-            params.time_base,
-            params.n_frames,
+            track.time_base,
+            track.duration,
+            track.num_frames,
             params
                 .channels
+                .as_ref()
                 .map(|channels| i32::try_from(channels.count()).unwrap_or(i32::MAX)),
         )
     };
@@ -109,6 +112,7 @@ where
         duration_frames,
         sample_rate,
         time_base,
+        duration,
         track_id,
         &mut format,
     )?;
@@ -172,7 +176,8 @@ where
 fn duration_seconds(
     duration_frames: Option<u64>,
     sample_rate: u32,
-    time_base: Option<symphonia::core::units::TimeBase>,
+    time_base: Option<TimeBase>,
+    duration: Option<SymphoniaDuration>,
     track_id: u32,
     format: &mut Box<dyn FormatReader>,
 ) -> Result<i32> {
@@ -181,15 +186,19 @@ fn duration_seconds(
     }
     let time_base = time_base
         .ok_or_else(|| Error::InvalidInput("audio duration could not be determined".to_string()))?;
-    let mut last_tick = None::<u64>;
+    if let Some(duration) = duration {
+        return duration_from_timebase(time_base, duration);
+    }
+    let mut last_tick = None::<Timestamp>;
     loop {
         match format.next_packet() {
-            Ok(packet) => {
-                if packet.track_id() != track_id {
+            Ok(Some(packet)) => {
+                if packet.track_id != track_id {
                     continue;
                 }
-                last_tick = packet.ts().checked_add(packet.dur()).or(Some(packet.ts()));
+                last_tick = packet.pts.checked_add(packet.dur).or(Some(packet.pts));
             }
+            Ok(None) => break,
             Err(SymphoniaError::IoError(error))
                 if error.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
@@ -205,11 +214,25 @@ fn duration_seconds(
     }
     let ticks = last_tick
         .ok_or_else(|| Error::InvalidInput("audio duration could not be determined".to_string()))?;
-    let time = time_base.calc_time(ticks);
-    let has_fraction = time.frac > 0.0;
-    let seconds = time
-        .seconds
-        .checked_add(u64::from(has_fraction))
+    let duration = ticks
+        .checked_delta(Timestamp::ZERO)
+        .and_then(|delta| u64::try_from(delta.get()).ok())
+        .map(SymphoniaDuration::new)
+        .ok_or_else(|| Error::InvalidInput("audio duration could not be determined".to_string()))?;
+    duration_from_timebase(time_base, duration)
+}
+
+fn duration_from_timebase(time_base: TimeBase, duration: SymphoniaDuration) -> Result<i32> {
+    let time = time_base
+        .calc_time(Timestamp::ZERO.checked_add(duration).ok_or_else(|| {
+            Error::InvalidInput("audio duration exceeds supported limit".to_string())
+        })?)
+        .ok_or_else(|| Error::InvalidInput("audio duration exceeds supported limit".to_string()))?;
+    let (seconds, nanos) = time.parts();
+    let seconds = u64::try_from(seconds)
+        .map_err(|_| Error::InvalidInput("audio duration could not be determined".to_string()))?;
+    let seconds = seconds
+        .checked_add(u64::from(nanos > 0))
         .ok_or_else(|| Error::InvalidInput("audio duration exceeds supported limit".to_string()))?;
     positive_duration_seconds(seconds)
 }

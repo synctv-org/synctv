@@ -3,9 +3,8 @@
 //! Provides encryption and decryption for user provider credentials stored in the database.
 //! Uses AES-256-GCM authenticated encryption to protect sensitive credential data at rest.
 
-use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, AeadCore, Generate, KeyInit},
     Aes256Gcm, Key, Nonce,
 };
 use std::sync::Arc;
@@ -53,8 +52,8 @@ impl CredentialEncryption {
                 key_bytes.len()
             )));
         }
-        let key = Key::<Aes256Gcm>::from_slice(key_bytes);
-        let cipher = Aes256Gcm::new(key);
+        let key = Key::<Aes256Gcm>::try_from(key_bytes).expect("key length already validated");
+        let cipher = Aes256Gcm::new(&key);
         Ok(Self {
             cipher: Arc::new(cipher),
         })
@@ -76,19 +75,16 @@ impl CredentialEncryption {
         let plaintext_bytes = serde_json::to_vec(plaintext)
             .internal_with_err("Failed to serialize credential data")?;
 
-        // Generate random nonce
-        let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::generate();
 
         // Encrypt
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext_bytes.as_ref())
+            .encrypt(&nonce, plaintext_bytes.as_ref())
             .internal_with_err("Credential encryption failed")?;
 
         let mut combined = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
-        combined.extend_from_slice(&nonce_bytes);
+        combined.extend_from_slice(&nonce);
         combined.extend_from_slice(&ciphertext);
 
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &combined);
@@ -112,9 +108,10 @@ impl CredentialEncryption {
         }
 
         let (nonce_bytes, ciphertext) = combined.split_at(NONCE_SIZE);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce_bytes)
+            .internal_with_err("Invalid nonce length in encrypted credential")?;
 
-        let plaintext = self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        let plaintext = self.cipher.decrypt(&nonce, ciphertext).map_err(|_| {
             Error::Internal(
                 "Credential decryption failed (wrong key or corrupted data)".to_string(),
             )

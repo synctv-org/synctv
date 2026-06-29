@@ -45,5 +45,8 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - name: Validate chart
         run: ./scripts/validate-helm.sh

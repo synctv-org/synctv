@@ -7,7 +7,6 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste remains required by direct macros and transitive cel usage with no maintained drop-in replacement available" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is still required for PEM parsing and the advisory has no replacement release to upgrade to" },
     { id = "RUSTSEC-2025-0141", reason = "bincode 2 is still required by the on-disk cache format and the advisory is maintenance-only with no fixed successor release" },
-    { id = "RUSTSEC-2026-0097", reason = "rand 0.8.5 is only present transitively and upstream dependencies have not all migrated yet" },
 ]
 
 [licenses]
@@ -26,6 +25,7 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "OpenSSL",
+    "NCSA",
     "Unicode-3.0",
 ]
 

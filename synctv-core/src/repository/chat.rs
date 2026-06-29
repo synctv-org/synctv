@@ -4546,11 +4546,14 @@ impl ChatPinEventRow {
                 "Chat pin resource event has unexpected payload kind".to_string(),
             ));
         };
-        if event.event_id != self.event_id || event.occurred_at != self.occurred_at {
+        if event.event_id != self.event_id
+            || !datetime_matches_database_precision(event.occurred_at, self.occurred_at)
+        {
             return Err(Error::Internal(
                 "Chat pin resource event payload does not match indexed columns".to_string(),
             ));
         }
+        event.occurred_at = self.occurred_at;
         event.sequence = self.sequence;
         Ok(ChatPinEventLog {
             sequence: self.sequence,
@@ -4568,18 +4571,25 @@ impl ChatEventRow {
         if event.event_id != self.event_id
             || Some(event.room_id.as_i64()) != self.room_id
             || Some(event.actor_user_id.as_i64()) != self.actor_user_id
-            || event.occurred_at != self.occurred_at
+            || !datetime_matches_database_precision(event.occurred_at, self.occurred_at)
         {
             return Err(Error::Internal(
                 "Chat event outbox payload does not match indexed columns".to_string(),
             ));
         }
+        event.occurred_at = self.occurred_at;
         event.sequence = self.sequence;
         Ok(ChatMessageEventLog {
             sequence: self.sequence,
             event,
         })
     }
+}
+
+fn datetime_matches_database_precision(left: DateTime<Utc>, right: DateTime<Utc>) -> bool {
+    left.signed_duration_since(right)
+        .num_nanoseconds()
+        .is_some_and(|diff| diff.abs() <= 1_000)
 }
 
 fn file_reference_id_for_chat_attachment(attachment: &ChatAttachment) -> String {

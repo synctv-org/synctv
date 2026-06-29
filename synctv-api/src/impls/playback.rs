@@ -82,7 +82,7 @@ struct ProviderSourceMetadataObservation {
     duration_seconds: Option<f64>,
 }
 
-const SOURCE_METADATA_WRITE_GATE_TTL: Duration = Duration::from_secs(60);
+const SOURCE_METADATA_WRITE_GATE_TTL: Duration = Duration::from_mins(1);
 static SOURCE_METADATA_WRITE_L1_GATE: LazyLock<moka::future::Cache<String, ()>> =
     LazyLock::new(|| {
         moka::future::Cache::builder()

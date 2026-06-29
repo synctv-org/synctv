@@ -156,13 +156,13 @@ async fn coordination_lock_error_short_circuits_room_creation_operation() {
 fn test_known_setting_keys_are_valid_via_registry() {
     use crate::models::room_settings::RoomSettingsRegistry;
     let known_keys = [
-        ("chat_enabled", "true"),
+        ("chatEnabled", "true"),
         (
-            "auto_play",
+            "autoPlay",
             r#"{"enabled":true,"mode":"sequential","delay":3}"#,
         ),
-        ("allow_guest_join", "true"),
-        ("max_members", "100"),
+        ("allowGuestJoin", "true"),
+        ("maxMembers", "100"),
     ];
     for (key, val) in &known_keys {
         assert!(
@@ -184,8 +184,8 @@ fn test_set_by_key_applies_value() {
     let mut settings = RoomSettings::default();
     assert!(settings.chat_enabled.0);
     ok(
-        settings.set_by_key("chat_enabled", "false"),
-        "chat_enabled setting should update",
+        settings.set_by_key("chatEnabled", "false"),
+        "chatEnabled setting should update",
     );
     assert!(!settings.chat_enabled.0);
 }
@@ -193,7 +193,7 @@ fn test_set_by_key_applies_value() {
 #[test]
 fn test_set_by_key_invalid_type_returns_error() {
     let mut settings = RoomSettings::default();
-    let result = settings.set_by_key("chat_enabled", "not_a_bool");
+    let result = settings.set_by_key("chatEnabled", "not_a_bool");
     assert!(result.is_err());
 }
 
@@ -208,8 +208,8 @@ fn test_set_by_key_unknown_key_returns_error() {
 fn test_set_by_key_max_members() {
     let mut settings = RoomSettings::default();
     ok(
-        settings.set_by_key("max_members", "42"),
-        "max_members setting should update",
+        settings.set_by_key("maxMembers", "42"),
+        "maxMembers setting should update",
     );
     assert_eq!(settings.max_members.0, 42);
 }
@@ -217,7 +217,7 @@ fn test_set_by_key_max_members() {
 #[test]
 fn test_set_by_key_max_members_invalid_string() {
     let mut settings = RoomSettings::default();
-    let result = settings.set_by_key("max_members", "not_a_number");
+    let result = settings.set_by_key("maxMembers", "not_a_number");
     assert!(result.is_err());
 }
 

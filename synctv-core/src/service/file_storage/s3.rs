@@ -1706,19 +1706,97 @@ impl FileStorageService for S3CompatibleFileStorageService {
         };
         let (reference_kind, reference_id) =
             crate::service::file_storage::upload_session_reference_target(file_id);
-        let session = repository
+        let mut reference_session = repository
             .get_upload_session_by_reference(reference_kind, &reference_id)
-            .await?
-            .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
-        if session.storage_backend != self.config.storage_backend
-            || (session.object_key != object_key && session.upload_session_key != object_key)
+            .await?;
+        let reference_file = if let Some(session) = reference_session.as_ref() {
+            if session.storage_backend != self.config.storage_backend
+                || (session.object_key != object_key && session.upload_session_key != object_key)
+            {
+                return Err(Error::InvalidInput(
+                    "file reference does not match upload session".to_string(),
+                ));
+            }
+            if let Some(ownership_proof) = session.metadata.ownership_proof.as_ref() {
+                if session.expires_at <= Utc::now() {
+                    return Err(Error::InvalidInput(
+                        "file upload session is not active".to_string(),
+                    ));
+                }
+                Some((
+                    session.object_key.clone(),
+                    session.mime_type.clone(),
+                    session.size_bytes,
+                    session.content_manifest_sha256.clone(),
+                    session.metadata.clone(),
+                    ownership_proof.clone(),
+                ))
+            } else {
+                if upload_session_is_single_object(session.session_kind)
+                    && session.completed_at.is_some()
+                {
+                    return Ok(CompleteFileUploadSessionResult {
+                        object: Some(super::session_record_blob(
+                            &session,
+                            Vec::new(),
+                            upload_session_object_metadata(&session.metadata),
+                        )),
+                        uploaded_size_bytes: session.size_bytes,
+                        uploaded_parts: vec![1],
+                    });
+                }
+                if session.completed_at.is_some() || session.expires_at <= Utc::now() {
+                    return Err(Error::InvalidInput(
+                        "file upload session is not active".to_string(),
+                    ));
+                }
+                if upload_session_is_single_object(session.session_kind) {
+                    return Ok(CompleteFileUploadSessionResult {
+                        object: None,
+                        uploaded_size_bytes: 0,
+                        uploaded_parts: Vec::new(),
+                    });
+                }
+                None
+            }
+        } else {
+            let reference = repository
+                .get_active_reference_metadata_by_target(reference_kind, &reference_id)
+                .await?
+                .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
+            if reference.storage_backend != self.config.storage_backend
+                || reference.object_key != object_key
+            {
+                return Err(Error::InvalidInput(
+                    "file reference does not match upload session".to_string(),
+                ));
+            }
+            let crate::models::FileReferenceMetadata::UploadSession(metadata) = reference.metadata
+            else {
+                return Err(Error::InvalidInput("file reference was not found".to_string()));
+            };
+            let ownership_proof = metadata.ownership_proof.clone().ok_or_else(|| {
+                Error::InvalidInput("file reference was not found".to_string())
+            })?;
+            Some((
+                reference.object_key,
+                reference.mime_type,
+                reference.size_bytes,
+                reference.content_manifest_sha256,
+                metadata,
+                ownership_proof,
+            ))
+        };
+        if let Some((
+            reference_object_key,
+            mime_type,
+            size_bytes,
+            content_manifest_sha256,
+            metadata,
+            ownership_proof,
+        )) = reference_file
         {
-            return Err(Error::InvalidInput(
-                "file reference does not match upload session".to_string(),
-            ));
-        }
-        if let Some(ownership_proof) = session.metadata.ownership_proof.as_ref() {
-            if session.expires_at <= Utc::now() {
+            if metadata.ownership_proof_verified {
                 return Err(Error::InvalidInput(
                     "file upload session is not active".to_string(),
                 ));
@@ -1730,18 +1808,18 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .filter(|proof| !proof.is_empty())
                 .ok_or_else(|| {
                     Error::InvalidInput("file ownership proof is required".to_string())
-                })?;
+            })?;
             let nonce = ownership_proof.nonce.as_str();
             let ranges = ownership_proof.ranges.clone();
             let mut chunks = Vec::with_capacity(ranges.len());
             for range in &ranges {
-                chunks.push(self.read_object_range(&object_key, range).await?);
+                chunks.push(self.read_object_range(&reference_object_key, range).await?);
             }
             let expected = file_ownership_proof_digest(
                 nonce,
                 &ranges,
-                &session.content_manifest_sha256,
-                session.size_bytes,
+                &content_manifest_sha256,
+                size_bytes,
                 chunks.iter().map(Vec::as_slice),
             );
             if !constant_time_eq(proof.as_bytes(), expected.as_bytes()) {
@@ -1749,57 +1827,37 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     "file ownership proof does not match object".to_string(),
                 ));
             }
-            let metadata = mark_upload_session_ownership_proof_verified(&session.metadata);
+            let metadata = mark_upload_session_ownership_proof_verified(&metadata);
             repository
                 .update_reference_metadata(
                     reference_kind,
                     &reference_id,
                     &self.config.storage_backend,
-                    &object_key,
+                    &reference_object_key,
                     &crate::models::FileReferenceMetadata::UploadSession(metadata),
                 )
                 .await?;
             return Ok(CompleteFileUploadSessionResult {
                 object: Some(FileBlob {
                     storage_backend: self.config.storage_backend.clone(),
-                    object_key,
-                    mime_type: session.mime_type,
-                    size_bytes: session.size_bytes,
-                    total_size_bytes: session.size_bytes,
-                    content_manifest_sha256: session.content_manifest_sha256,
+                    object_key: reference_object_key,
+                    mime_type,
+                    size_bytes,
+                    total_size_bytes: size_bytes,
+                    content_manifest_sha256,
                     compression: FileBlobCompression::None,
                     range: None,
                     data: Vec::new(),
                     metadata: Default::default(),
                     created_at: Utc::now(),
                 }),
-                uploaded_size_bytes: session.size_bytes,
+                uploaded_size_bytes: size_bytes,
                 uploaded_parts: Vec::new(),
             });
         }
-        if upload_session_is_single_object(session.session_kind) && session.completed_at.is_some() {
-            return Ok(CompleteFileUploadSessionResult {
-                object: Some(super::session_record_blob(
-                    &session,
-                    Vec::new(),
-                    upload_session_object_metadata(&session.metadata),
-                )),
-                uploaded_size_bytes: session.size_bytes,
-                uploaded_parts: vec![1],
-            });
-        }
-        if session.completed_at.is_some() || session.expires_at <= Utc::now() {
-            return Err(Error::InvalidInput(
-                "file upload session is not active".to_string(),
-            ));
-        }
-        if upload_session_is_single_object(session.session_kind) {
-            return Ok(CompleteFileUploadSessionResult {
-                object: None,
-                uploaded_size_bytes: 0,
-                uploaded_parts: Vec::new(),
-            });
-        }
+        let session = reference_session
+            .take()
+            .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
         if !upload_session_is_multipart(session.session_kind) {
             return Err(Error::InvalidInput(
                 "file upload session kind is invalid".to_string(),

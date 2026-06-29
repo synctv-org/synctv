@@ -1814,7 +1814,9 @@ impl ClientApiImpl {
         req: synctv_proto::client::CompleteChatAttachmentUploadSessionRequest,
     ) -> Result<synctv_proto::client::CompleteChatAttachmentUploadSessionResponse, ApiError> {
         let room_id = req.room_id.clone();
-        let _room_id = self.parse_room_id(&room_id)?;
+        if !room_id.trim().is_empty() {
+            let _room_id = self.parse_room_id(&room_id)?;
+        }
         let chat_service = self
             .chat_service
             .as_ref()

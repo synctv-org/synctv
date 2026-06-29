@@ -240,15 +240,15 @@ macro_rules! room_setting {
     };
 }
 
-room_setting!(ChatEnabled, bool, "chat_enabled", true);
-room_setting!(AllowGuestJoin, bool, "allow_guest_join", false);
-room_setting!(RequireApproval, bool, "require_approval", false);
-room_setting!(AllowAutoJoin, bool, "allow_auto_join", true);
+room_setting!(ChatEnabled, bool, "chatEnabled", true);
+room_setting!(AllowGuestJoin, bool, "allowGuestJoin", false);
+room_setting!(RequireApproval, bool, "requireApproval", false);
+room_setting!(AllowAutoJoin, bool, "allowAutoJoin", true);
 
 /// Maximum allowed value for `max_members` setting (used in validator below)
 const MAX_MEMBERS_LIMIT: u64 = 10_000;
 
-room_setting!(MaxMembers, u64, "max_members", 100, |v: &u64| {
+room_setting!(MaxMembers, u64, "maxMembers", 100, |v: &u64| {
     if *v > MAX_MEMBERS_LIMIT {
         Err(crate::Error::InvalidInput(format!(
             "max_members cannot exceed {MAX_MEMBERS_LIMIT}"
@@ -263,17 +263,17 @@ impl MaxMembers {
     pub const MAX: u64 = MAX_MEMBERS_LIMIT;
 }
 
-room_setting!(AdminAddedPermissions, u64, "admin_added_permissions", 0);
-room_setting!(AdminRemovedPermissions, u64, "admin_removed_permissions", 0);
-room_setting!(MemberAddedPermissions, u64, "member_added_permissions", 0);
+room_setting!(AdminAddedPermissions, u64, "adminAddedPermissions", 0);
+room_setting!(AdminRemovedPermissions, u64, "adminRemovedPermissions", 0);
+room_setting!(MemberAddedPermissions, u64, "memberAddedPermissions", 0);
 room_setting!(
     MemberRemovedPermissions,
     u64,
-    "member_removed_permissions",
+    "memberRemovedPermissions",
     0
 );
-room_setting!(GuestAddedPermissions, u64, "guest_added_permissions", 0);
-room_setting!(GuestRemovedPermissions, u64, "guest_removed_permissions", 0);
+room_setting!(GuestAddedPermissions, u64, "guestAddedPermissions", 0);
+room_setting!(GuestRemovedPermissions, u64, "guestRemovedPermissions", 0);
 
 use crate::models::room::AutoPlaySettings;
 
@@ -293,7 +293,7 @@ impl AutoPlay {
 }
 
 impl RoomSetting for AutoPlay {
-    const KEY: &'static str = "auto_play";
+    const KEY: &'static str = "autoPlay";
     const TYPE_NAME: &'static str = "AutoPlay";
     type Value = AutoPlaySettings;
 
@@ -307,7 +307,7 @@ impl RoomSetting for AutoPlay {
 
     fn parse_from_str(value: &str) -> Result<AutoPlaySettings> {
         serde_json::from_str(value)
-            .map_err(|_| crate::Error::InvalidInput(format!("Invalid JSON for auto_play: {value}")))
+            .map_err(|_| crate::Error::InvalidInput(format!("Invalid JSON for autoPlay: {value}")))
     }
 
     fn format_value(value: &AutoPlaySettings) -> Result<String> {
@@ -357,7 +357,7 @@ use sqlx::{
 
 /// Room settings composed of individual type-safe settings
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct RoomSettings {
     pub allow_guest_join: AllowGuestJoin,
     pub max_members: MaxMembers,
@@ -516,18 +516,18 @@ mod tests {
 
     #[test]
     fn test_dynamic_validation() {
-        assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "true").is_ok());
-        assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "false").is_ok());
-        assert!(RoomSettingsRegistry::validate_setting("chat_enabled", "invalid").is_err());
+        assert!(RoomSettingsRegistry::validate_setting("chatEnabled", "true").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("chatEnabled", "false").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("chatEnabled", "invalid").is_err());
 
-        assert!(RoomSettingsRegistry::validate_setting("admin_added_permissions", "123").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("adminAddedPermissions", "123").is_ok());
         assert!(
-            RoomSettingsRegistry::validate_setting("admin_added_permissions", "invalid").is_err()
+            RoomSettingsRegistry::validate_setting("adminAddedPermissions", "invalid").is_err()
         );
 
-        assert!(RoomSettingsRegistry::validate_setting("max_members", "100").is_ok());
-        assert!(RoomSettingsRegistry::validate_setting("max_members", "0").is_ok());
-        assert!(RoomSettingsRegistry::validate_setting("max_members", "invalid").is_err());
+        assert!(RoomSettingsRegistry::validate_setting("maxMembers", "100").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("maxMembers", "0").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("maxMembers", "invalid").is_err());
     }
 
     #[test]
@@ -536,13 +536,13 @@ mod tests {
         assert!(settings.chat_enabled.0);
 
         ok(
-            RoomSettingsRegistry::apply_setting(&mut settings, "chat_enabled", "false"),
+            RoomSettingsRegistry::apply_setting(&mut settings, "chatEnabled", "false"),
             "chat_enabled setting should apply",
         );
         assert!(!settings.chat_enabled.0);
 
         ok(
-            RoomSettingsRegistry::apply_setting(&mut settings, "max_members", "42"),
+            RoomSettingsRegistry::apply_setting(&mut settings, "maxMembers", "42"),
             "max_members setting should apply",
         );
         assert_eq!(settings.max_members.0, 42);
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn test_apply_to_invalid_value_returns_error() {
         let mut settings = RoomSettings::default();
-        let result = RoomSettingsRegistry::apply_setting(&mut settings, "chat_enabled", "not_bool");
+        let result = RoomSettingsRegistry::apply_setting(&mut settings, "chatEnabled", "not_bool");
         assert!(result.is_err());
     }
 
@@ -566,8 +566,8 @@ mod tests {
     fn test_set_by_key_delegates_to_registry() {
         let mut settings = RoomSettings::default();
         ok(
-            settings.set_by_key("chat_enabled", "false"),
-            "set_by_key should apply chat_enabled",
+            settings.set_by_key("chatEnabled", "false"),
+            "set_by_key should apply chatEnabled",
         );
         assert!(!settings.chat_enabled.0);
     }
@@ -618,14 +618,14 @@ mod tests {
 
     #[test]
     fn max_members_validation_accepts_zero_and_limit() {
-        assert!(RoomSettingsRegistry::validate_setting("max_members", "0").is_ok());
+        assert!(RoomSettingsRegistry::validate_setting("maxMembers", "0").is_ok());
         assert!(RoomSettingsRegistry::validate_setting(
-            "max_members",
+            "maxMembers",
             &MaxMembers::MAX.to_string()
         )
         .is_ok());
         assert!(RoomSettingsRegistry::validate_setting(
-            "max_members",
+            "maxMembers",
             &(MaxMembers::MAX + 1).to_string()
         )
         .is_err());
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn apply_to_max_members_rejects_over_limit() {
         let mut settings = RoomSettings::default();
-        let result = settings.set_by_key("max_members", "99999");
+        let result = settings.set_by_key("maxMembers", "99999");
         assert!(result.is_err());
         assert_eq!(settings.max_members.0, 100);
     }

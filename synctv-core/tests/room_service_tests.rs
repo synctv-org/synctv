@@ -2259,7 +2259,7 @@ async fn test_single_setting_update_with_retry() {
         .checked("test operation should succeed");
 
     let result = room_service
-        .update_room_setting(&room.id, &owner.id, "allow_guest_join", "true")
+        .update_room_setting(&room.id, &owner.id, "allowGuestJoin", "true")
         .await;
 
     assert!(
@@ -2560,10 +2560,10 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
 async fn test_max_members_cannot_exceed_10000() {
     use synctv_core::models::room_settings::RoomSettingsRegistry;
 
-    let result = RoomSettingsRegistry::validate_setting("max_members", "10001");
+    let result = RoomSettingsRegistry::validate_setting("maxMembers", "10001");
     assert!(result.is_err(), "max_members > 10000 should be rejected");
 
-    let result = RoomSettingsRegistry::validate_setting("max_members", "10000");
+    let result = RoomSettingsRegistry::validate_setting("maxMembers", "10000");
     assert!(result.is_ok(), "max_members = 10000 should be accepted");
 }
 
@@ -2666,7 +2666,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
 
     // Disable guest join - this should kick the guest
     let result = room_service
-        .update_room_setting(&room.id, &owner.id, "allow_guest_join", "false")
+        .update_room_setting(&room.id, &owner.id, "allowGuestJoin", "false")
         .await;
     assert!(
         result.is_ok(),

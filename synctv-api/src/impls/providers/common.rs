@@ -57,6 +57,11 @@ fn filter_provider_binds(
                 (ProviderCredential::Emby { host, api_key, .. }, "api_key") => {
                     (host.clone(), api_key.clone())
                 }
+                (ProviderCredential::Emby {
+                    host,
+                    emby_user_id,
+                    ..
+                }, "emby_user_id") => (host.clone(), emby_user_id.clone()),
                 _ => {
                     return Err(ApiError::Internal(format!(
                         "Provider credential {} for {} has unexpected credential shape",
@@ -1021,14 +1026,36 @@ mod tests {
     }
 
     #[test]
+    fn filter_provider_binds_uses_emby_user_id() -> TestResult {
+        let credential = provider_credential_with_data(
+            8,
+            ProviderCredential::emby(
+                " http://127.0.0.1:8096 ".to_string(),
+                "api-key-secret".to_string(),
+                " emby-user-1 ".to_string(),
+            ),
+        );
+
+        let binds = api_ok(filter_provider_binds(vec![credential], "emby_user_id"))?;
+
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].id, "8");
+        assert_eq!(binds[0].host, "http://127.0.0.1:8096");
+        assert_eq!(binds[0].label_key, "emby_user_id");
+        assert_eq!(binds[0].label_value, "emby-user-1");
+        assert_eq!(binds[0].provider_instance_name, "alist-main");
+        Ok(())
+    }
+
+    #[test]
     fn filter_provider_binds_rejects_unexpected_credential_shape() {
         let credential =
-            provider_credential_with_data(8, ProviderCredential::bilibili(Default::default()));
+            provider_credential_with_data(9, ProviderCredential::bilibili(Default::default()));
 
         assert!(matches!(
             filter_provider_binds(vec![credential], "username"),
             Err(ApiError::Internal(message))
-                if message.contains("credential 8")
+                if message.contains("credential 9")
                     && message.contains("alist")
                     && message.contains("unexpected credential shape")
         ));
@@ -1037,7 +1064,7 @@ mod tests {
     #[test]
     fn filter_provider_binds_rejects_empty_label_value() {
         let credential = provider_credential_with_data(
-            9,
+            10,
             ProviderCredential::alist(
                 "https://alist.example".to_string(),
                 "   ".to_string(),
@@ -1049,7 +1076,7 @@ mod tests {
         assert!(matches!(
             filter_provider_binds(vec![credential], "username"),
             Err(ApiError::Internal(message))
-                if message.contains("credential 9")
+                if message.contains("credential 10")
                     && message.contains("alist")
                     && message.contains("empty bind fields")
         ));

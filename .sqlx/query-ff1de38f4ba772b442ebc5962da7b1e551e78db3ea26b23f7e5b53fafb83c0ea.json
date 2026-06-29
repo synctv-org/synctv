@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE room_playback_progress\n            SET \"position\" = $3,\n                version = version + 1\n            WHERE id = $1\n              AND room_id = $2\n            RETURNING id,\n                      room_id AS \"room_id: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target AS \"target?: crate::models::ProviderTarget\",\n                      target_hash,\n                      \"position\",\n                      created_at,\n                      updated_at,\n                      version\n            ",
+  "query": "\n            SELECT id AS \"id!\",\n                   room_id AS \"room_id!: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target AS \"target?: crate::models::ProviderTarget\",\n                   target_hash AS \"target_hash!\",\n                   \"position\" AS \"position!\",\n                   created_at AS \"created_at!\",\n                   updated_at AS \"updated_at!\",\n                   version AS \"version!\"\n            FROM room_playback_progress\n            WHERE id = $1\n              AND room_id = $2\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "id!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "room_id: RoomId",
+        "name": "room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -60,7 +60,7 @@
       },
       {
         "ordinal": 5,
-        "name": "target_hash",
+        "name": "target_hash!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +71,7 @@
       },
       {
         "ordinal": 6,
-        "name": "position",
+        "name": "position!",
         "type_info": "Float8",
         "origin": {
           "Table": {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -93,7 +93,7 @@
       },
       {
         "ordinal": 8,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -104,7 +104,7 @@
       },
       {
         "ordinal": 9,
-        "name": "version",
+        "name": "version!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -117,8 +117,7 @@
     "parameters": {
       "Left": [
         "Int8",
-        "Int8",
-        "Float8"
+        "Int8"
       ]
     },
     "nullable": [
@@ -134,5 +133,5 @@
       false
     ]
   },
-  "hash": "047f31463359b327f93c21590e5c880fc01ca033df8def46754b9cbe69c607f2"
+  "hash": "ff1de38f4ba772b442ebc5962da7b1e551e78db3ea26b23f7e5b53fafb83c0ea"
 }

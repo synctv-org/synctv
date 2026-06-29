@@ -166,8 +166,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)
@@ -1500,16 +1500,15 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let top_room_id_refs: Vec<&synctv_core::models::RoomId> =
-            top_rooms.iter().map(|(r, _)| &r.id).collect();
+        let room_ids: Vec<synctv_core::models::RoomId> =
+            top_rooms.iter().map(|(room, _)| room.id).collect();
+        let top_room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&top_room_id_refs)
             .await
             .map_err(ApiError::from)?;
 
-        let room_ids: Vec<synctv_core::models::RoomId> =
-            top_rooms.iter().map(|(room, _)| room.id).collect();
         let settings_map = self
             .room_service
             .get_room_settings_batch(&room_ids)

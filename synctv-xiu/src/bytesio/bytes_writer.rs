@@ -203,17 +203,13 @@ impl AsyncBytesWriter {
 
     pub async fn flush_timeout(&mut self, duration: Duration) -> Result<(), BytesWriteError> {
         let data = std::mem::take(&mut self.bytes_writer.bytes);
-        let message = timeout(duration, self.io.lock().await.write(data.into())).await;
-
-        match message {
-            Ok(_) => {}
-            Err(_) => {
-                return Err(BytesWriteError {
-                    value: BytesWriteErrorValue::Timeout,
-                })
-            }
-        }
-
+        timeout(duration, async {
+            self.io.lock().await.write(data.into()).await
+        })
+        .await
+        .map_err(|_| BytesWriteError {
+            value: BytesWriteErrorValue::Timeout,
+        })??;
         Ok(())
     }
 }

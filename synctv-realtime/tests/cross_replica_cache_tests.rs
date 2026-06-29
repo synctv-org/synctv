@@ -204,7 +204,7 @@ async fn test_cross_replica_permission_changed() {
         new_permissions,
         changed_by_username,
         ..
-    } = &received
+    } = received.as_ref()
     {
         assert_eq!(*target_user_id, UserId::expect_positive(10_000_038));
         assert!(

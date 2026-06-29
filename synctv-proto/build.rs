@@ -64,6 +64,14 @@ fn build_out_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     })
 }
 
+fn feature_enabled(feature: &str) -> bool {
+    let env_name = format!(
+        "CARGO_FEATURE_{}",
+        feature.replace('-', "_").to_ascii_uppercase()
+    );
+    env::var_os(env_name).is_some()
+}
+
 fn emit_proto_rerun_if_changed(path: &Path) -> io::Result<()> {
     if path.is_dir() {
         for entry in fs::read_dir(path)? {
@@ -590,30 +598,41 @@ fn build_playback_provider_protos(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let out_dir = build_out_dir()?;
-    let main_out_dir = out_dir.join("main");
-    let provider_out_dir = out_dir.join("providers");
-    let playback_provider_out_dir = out_dir.join("playback_provider");
-    fs::create_dir_all(&main_out_dir)?;
-    fs::create_dir_all(&provider_out_dir)?;
-    fs::create_dir_all(&playback_provider_out_dir)?;
+    let build_main = feature_enabled("main") || feature_enabled("providers");
+    let build_providers = feature_enabled("providers");
+    let build_playback_provider = feature_enabled("playback-provider");
 
-    println!(
-        "cargo:rustc-env=SYNCTV_PROTO_MAIN_OUT_DIR={}",
-        main_out_dir.display()
-    );
-    println!(
-        "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
-        provider_out_dir.display()
-    );
-    println!(
-        "cargo:rustc-env=SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR={}",
-        playback_provider_out_dir.display()
-    );
     emit_proto_rerun_if_changed(Path::new("proto"))?;
 
-    build_main_protos(protoc.clone(), &main_out_dir)?;
-    build_provider_protos(protoc.clone(), &provider_out_dir)?;
-    build_playback_provider_protos(protoc, &playback_provider_out_dir)?;
+    if build_main {
+        let main_out_dir = out_dir.join("main");
+        fs::create_dir_all(&main_out_dir)?;
+        println!(
+            "cargo:rustc-env=SYNCTV_PROTO_MAIN_OUT_DIR={}",
+            main_out_dir.display()
+        );
+        build_main_protos(protoc.clone(), &main_out_dir)?;
+    }
+
+    if build_providers {
+        let provider_out_dir = out_dir.join("providers");
+        fs::create_dir_all(&provider_out_dir)?;
+        println!(
+            "cargo:rustc-env=SYNCTV_PROTO_PROVIDERS_OUT_DIR={}",
+            provider_out_dir.display()
+        );
+        build_provider_protos(protoc.clone(), &provider_out_dir)?;
+    }
+
+    if build_playback_provider {
+        let playback_provider_out_dir = out_dir.join("playback_provider");
+        fs::create_dir_all(&playback_provider_out_dir)?;
+        println!(
+            "cargo:rustc-env=SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR={}",
+            playback_provider_out_dir.display()
+        );
+        build_playback_provider_protos(protoc, &playback_provider_out_dir)?;
+    }
 
     Ok(())
 }

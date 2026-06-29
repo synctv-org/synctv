@@ -637,9 +637,50 @@ async fn test_room_directory_key_uses_crash_safety_ttl() {
     let mut conn = redis_connection_manager(&client).await;
 
     let directory_key = format!("{prefix}room_hub:room_index");
+    let room_key = format!("{prefix}room_hub:room:{room_id}");
+    let conn_key = format!("{prefix}room_hub:conn:conn_ttl");
+
+    let room_member: Option<i64> = conn
+        .hget(&room_key, "conn_ttl")
+        .await
+        .expect("room subscriber hash entry");
+    assert_eq!(
+        room_member,
+        Some(user_id.get()),
+        "room subscriber hash should contain the connection -> user mapping"
+    );
+
+    let mapped_room_id: Option<i64> = conn.get(&conn_key).await.expect("connection room mapping");
+    assert_eq!(
+        mapped_room_id,
+        Some(room_id.get()),
+        "connection key should point back to the subscribed room"
+    );
+
+    let directory_contains_room: bool = conn
+        .sismember(&directory_key, &room_key)
+        .await
+        .expect("room directory membership");
+    assert!(
+        directory_contains_room,
+        "room directory should contain the subscribed room key"
+    );
+
     let ttl: i64 = conn.ttl(&directory_key).await.expect("room directory TTL");
     assert!(
         (175..=180).contains(&ttl),
         "room directory key should use the short crash-safety TTL, got {ttl}s"
+    );
+
+    let room_ttl: i64 = conn.ttl(&room_key).await.expect("room hash TTL");
+    assert!(
+        (175..=180).contains(&room_ttl),
+        "room hash should use the short crash-safety TTL, got {room_ttl}s"
+    );
+
+    let conn_ttl: i64 = conn.ttl(&conn_key).await.expect("connection mapping TTL");
+    assert!(
+        (175..=180).contains(&conn_ttl),
+        "connection mapping should use the short crash-safety TTL, got {conn_ttl}s"
     );
 }

@@ -207,9 +207,8 @@ where
 
         // Check L1 (in-memory) cache first
         if let Some(value) = self.l1_cache.get(key).await {
-            let l1 = String::from("l1");
             crate::metrics::cache::CACHE_HITS
-                .with_label_values(&[&self.cache_type, &l1])
+                .with_label_values(&[self.cache_type.as_str(), "l1"])
                 .inc();
             crate::metrics::cache::CACHE_OPERATION_DURATION
                 .with_label_values(&["get"])
@@ -224,10 +223,11 @@ where
 
         // Check L2 cache via SingleFlight to prevent stampede
         if self.l2.is_active() {
-            let sf_key = key.cache_key();
+            let key_id = key.cache_key();
+            let sf_key = key_id.clone();
             let l2 = self.l2.clone();
             let l2_prefix = self.key_prefix.clone();
-            let redis_key = format!("{}{}", self.key_prefix, key.cache_key());
+            let redis_key = format!("{}{}", self.key_prefix, key_id);
             let cache_type = self.cache_type.clone();
 
             // Snapshot per-key epoch + global epoch before the async
@@ -270,9 +270,8 @@ where
                 })?;
 
             if let Some(ref value) = result {
-                let l2 = String::from("l2");
                 crate::metrics::cache::CACHE_HITS
-                    .with_label_values(&[&self.cache_type, &l2])
+                    .with_label_values(&[self.cache_type.as_str(), "l2"])
                     .inc();
                 tracing::debug!(
                     key = %key,
@@ -296,9 +295,8 @@ where
             }
         }
 
-        let l1_l2 = String::from("l1_l2");
         crate::metrics::cache::CACHE_MISSES
-            .with_label_values(&[&self.cache_type, &l1_l2])
+            .with_label_values(&[self.cache_type.as_str(), "l1_l2"])
             .inc();
         crate::metrics::cache::CACHE_OPERATION_DURATION
             .with_label_values(&["get"])
@@ -538,8 +536,8 @@ where
     /// requests have the same set of L2 misses, only one proceeds to query L2
     /// while the others wait for its result.
     pub async fn get_batch(&self, keys: &[K]) -> Result<std::collections::HashMap<K, V>> {
-        let mut result = std::collections::HashMap::new();
-        let mut missing_keys = Vec::new();
+        let mut result = std::collections::HashMap::with_capacity(keys.len());
+        let mut missing_keys = Vec::with_capacity(keys.len());
 
         // Check L1 cache first (sequential is optimal for in-memory operations)
         for key in keys {

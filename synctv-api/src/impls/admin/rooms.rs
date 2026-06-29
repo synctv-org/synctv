@@ -122,8 +122,8 @@ impl AdminApiImpl {
             .collect();
         let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
 
-        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)
@@ -949,9 +949,8 @@ impl AdminApiImpl {
             .collect();
         let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
 
-        let room_id_refs: Vec<&synctv_core::models::RoomId> =
-            rooms.iter().map(|room| &room.id).collect();
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
         let member_counts = self
             .room_service
             .get_member_count_batch(&room_id_refs)

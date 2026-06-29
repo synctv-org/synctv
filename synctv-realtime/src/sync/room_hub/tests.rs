@@ -242,7 +242,10 @@ async fn test_broadcast_reliably_waits_for_critical_event_queue_space() -> TestR
     );
 
     let drained = rx.recv().await.ok_or("filler message should be present")?;
-    assert!(matches!(drained, RealtimeEvent::ChatMessage { .. }));
+    assert!(matches!(
+        drained.as_ref(),
+        RealtimeEvent::ChatMessage { .. }
+    ));
 
     let sent = tokio::time::timeout(Duration::from_secs(1), broadcast_task).await??;
     assert_eq!(
@@ -255,7 +258,7 @@ async fn test_broadcast_reliably_waits_for_critical_event_queue_space() -> TestR
         let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await?
             .ok_or("queued message should arrive")?;
-        if matches!(msg, RealtimeEvent::RoomDeleted { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::RoomDeleted { .. }) {
             saw_room_deleted = true;
             break;
         }

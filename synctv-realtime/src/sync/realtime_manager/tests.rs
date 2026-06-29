@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager};
+use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager, SharedRealtimeEvent};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::atomic::AtomicUsize;
@@ -92,7 +92,7 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
         _room_id: RoomId,
         _user_id: UserId,
         _connection_id: ConnectionId,
-    ) -> RealtimeResult<mpsc::Receiver<RealtimeEvent>> {
+    ) -> RealtimeResult<mpsc::Receiver<SharedRealtimeEvent>> {
         let (_tx, rx) = mpsc::channel(1);
         Ok(rx)
     }
@@ -276,7 +276,7 @@ async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime(
     assert_eq!(manager.broadcast_local(event), 1);
     assert!(matches!(
         rx.recv().await,
-        Some(RealtimeEvent::UserLeft { .. })
+        Some(event) if matches!(event.as_ref(), RealtimeEvent::UserLeft { .. })
     ));
 
     manager.shutdown().await;
@@ -1195,7 +1195,7 @@ async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() -> Tes
     assert!(
         matches!(
             tokio::time::timeout(Duration::from_secs(1), rx.recv()).await,
-            Ok(Some(RealtimeEvent::ChatMessage { .. }))
+            Ok(Some(event)) if matches!(event.as_ref(), RealtimeEvent::ChatMessage { .. })
         ),
         "event should be delivered after quarantine is lifted"
     );

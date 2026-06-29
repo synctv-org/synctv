@@ -131,7 +131,7 @@ async fn test_broadcast_to_connection_reliably_delivers_webrtc_when_channel_full
             .await
             .expect("message should arrive after draining one slot")
             .expect("channel should remain open");
-        if matches!(msg, RealtimeEvent::WebRTCSignaling { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::WebRTCSignaling { .. }) {
             delivered_webrtc = true;
             break;
         }
@@ -212,7 +212,10 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
     );
 
     let drained = rx.recv().await.expect("prefill message should exist");
-    assert!(matches!(drained, RealtimeEvent::ChatMessage { .. }));
+    assert!(matches!(
+        drained.as_ref(),
+        RealtimeEvent::ChatMessage { .. }
+    ));
 
     let sent = tokio::time::timeout(std::time::Duration::from_secs(1), notify)
         .await
@@ -229,7 +232,7 @@ async fn test_broadcast_to_connection_keeps_current_thread_target_registered_whe
             .await
             .expect("reliable targeted retry should eventually enqueue once capacity is available")
             .expect("channel should remain open");
-        if matches!(msg, RealtimeEvent::WebRTCSignaling { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::WebRTCSignaling { .. }) {
             delivered_webrtc = true;
             break;
         }

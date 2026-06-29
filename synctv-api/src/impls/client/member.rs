@@ -287,7 +287,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?
             .into_iter()
             .collect();
-        let mut member_connection_counts = std::collections::HashMap::new();
+        let mut member_connection_counts =
+            std::collections::HashMap::with_capacity(member_user_ids.len());
         for user_id in &member_user_ids {
             let stats = self
                 .presence_service

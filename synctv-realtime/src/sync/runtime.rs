@@ -10,7 +10,7 @@ use super::connection_manager::{
     ShutdownReport,
 };
 use super::room_hub::{ConnectionId, RoomLifecycleEvent, RoomMessageHub};
-use super::RealtimeEvent;
+use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::{Error, Result};
 use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::{service::OnlinePresenceService, SharedStateMode, SharedStateProfile};
@@ -94,7 +94,7 @@ pub trait RoomMessageRuntime: Send + Sync {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> Result<mpsc::Receiver<RealtimeEvent>>;
+    ) -> Result<mpsc::Receiver<SharedRealtimeEvent>>;
 
     fn unsubscribe(&self, connection_id: &str);
 

@@ -77,7 +77,7 @@ synctv-cluster = { workspace = true, default-features = false }
 synctv-realtime = { workspace = true, default-features = false }
 synctv-media-providers = { workspace = true, default-features = false }
 synctv-livestream = { workspace = true, default-features = false }
-synctv-proto = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main", "providers", "playback-provider"] }
 synctv-common = { workspace = true, default-features = false }
 webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
@@ -173,7 +173,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 futures.workspace = true
-synctv-proto = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main", "providers", "playback-provider"] }
 synctv-core = { workspace = true, default-features = false, features = ["test-support"] }
 synctv-core-testing.workspace = true
 synctv-cluster = { workspace = true, default-features = false }

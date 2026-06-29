@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id,\n                   room_id AS \"room_id: RoomId\",\n                   media_id AS \"media_id?: MediaId\",\n                   playlist_id AS \"playlist_id?: PlaylistId\",\n                   target AS \"target?: crate::models::ProviderTarget\",\n                   target_hash,\n                   \"position\",\n                   created_at,\n                   updated_at,\n                   version\n            FROM room_playback_progress\n            WHERE room_id = $1\n              AND media_id IS NOT DISTINCT FROM $2\n              AND playlist_id IS NOT DISTINCT FROM $3\n              AND target_hash = $4\n            ",
+  "query": "\n            INSERT INTO room_playback_progress (\n                room_id,\n                media_id,\n                playlist_id,\n                target,\n                target_hash,\n                \"position\",\n                version\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, 0)\n            ON CONFLICT (\n                room_id,\n                COALESCE(media_id, 0),\n                COALESCE(playlist_id, 0),\n                target_hash\n            )\n            DO UPDATE SET target = EXCLUDED.target,\n                          \"position\" = EXCLUDED.\"position\",\n                          version = room_playback_progress.version + 1\n            RETURNING id AS \"id!\",\n                      room_id AS \"room_id!: RoomId\",\n                      media_id AS \"media_id?: MediaId\",\n                      playlist_id AS \"playlist_id?: PlaylistId\",\n                      target AS \"target?: crate::models::ProviderTarget\",\n                      target_hash AS \"target_hash!\",\n                      \"position\" AS \"position!\",\n                      created_at AS \"created_at!\",\n                      updated_at AS \"updated_at!\",\n                      version AS \"version!\"\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id",
+        "name": "id!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "room_id: RoomId",
+        "name": "room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -60,7 +60,7 @@
       },
       {
         "ordinal": 5,
-        "name": "target_hash",
+        "name": "target_hash!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +71,7 @@
       },
       {
         "ordinal": 6,
-        "name": "position",
+        "name": "position!",
         "type_info": "Float8",
         "origin": {
           "Table": {
@@ -82,7 +82,7 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -93,7 +93,7 @@
       },
       {
         "ordinal": 8,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -104,7 +104,7 @@
       },
       {
         "ordinal": 9,
-        "name": "version",
+        "name": "version!",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -119,7 +119,9 @@
         "Int8",
         "Int8",
         "Int8",
-        "Text"
+        "Jsonb",
+        "Text",
+        "Float8"
       ]
     },
     "nullable": [
@@ -135,5 +137,5 @@
       false
     ]
   },
-  "hash": "d16c13dfc205bc767278d0985e254ff380389c390acfeab993a9497daec01148"
+  "hash": "3f20d8ed19ac51eb2dd3bd702bd4e4e7a92fab0ad622954a8999d6f779e9203f"
 }

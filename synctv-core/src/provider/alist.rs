@@ -1168,7 +1168,7 @@ impl MediaProvider for AlistProvider {
         );
         let cache_ttl = Duration::from_mins(15);
 
-        super::cached_versioned_playback_or_fill(
+        Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
@@ -1179,7 +1179,7 @@ impl MediaProvider for AlistProvider {
                 self.resolve_from_api(&resolved, _ctx.request_context(), playback_client_profile)
                     .await
             },
-        )
+        ))
         .await
     }
 

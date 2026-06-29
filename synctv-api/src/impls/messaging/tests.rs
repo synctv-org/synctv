@@ -32,6 +32,7 @@ use synctv_core_testing::{
 use synctv_proto::client::server_message::Message;
 use synctv_realtime::sync::{
     ConnectionId, ConnectionLimits, ConnectionManager, RealtimeConfig, RealtimeManager,
+    SharedRealtimeEvent,
 };
 use synctv_realtime::sync::{NotificationLevel, RealtimeEvent, RoomMessageHub, WebRTCSignalKind};
 use tokio::sync::{broadcast, mpsc};
@@ -158,7 +159,10 @@ impl RealtimeEventService for LocalRuntimeRealtimeEventService {
         _room_id: RoomId,
         _user_id: UserId,
         connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(tokio::sync::mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> synctv_realtime::Result<(
+        tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
+        ConnectionId,
+    )> {
         let (_tx, rx) = tokio::sync::mpsc::channel(16);
         Ok((rx, connection_id))
     }
@@ -1344,7 +1348,7 @@ impl synctv_realtime::sync::RoomMessageRuntime for FailingRoomMessageRuntime {
         _room_id: RoomId,
         _user_id: UserId,
         _connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<mpsc::Receiver<RealtimeEvent>> {
+    ) -> synctv_realtime::Result<mpsc::Receiver<SharedRealtimeEvent>> {
         Err(synctv_realtime::Error::Internal(anyhow::anyhow!(
             "injected room subscription failure"
         )))
@@ -7837,21 +7841,21 @@ async fn test_guest_cleanup_broadcasts_guest_left() {
         .await
         .checked("guest left event should be delivered")
         .checked("guest left receiver should remain open until event is read");
-    match event {
+    match event.as_ref() {
         RealtimeEvent::GuestLeft {
             room_id,
             guest_id,
             username,
             ..
         } => {
-            assert_eq!(room_id, handler.room_id);
+            assert_eq!(*room_id, handler.room_id);
             assert_eq!(
                 guest_id,
-                handler
+                &handler
                     .public_actor_id()
                     .checked("guest public actor id should encode")
             );
-            assert_eq!(username, handler.username);
+            assert_eq!(username, &handler.username);
         }
         other => std::panic::panic_any(format!("expected GuestLeft event, got {other:?}")),
     }

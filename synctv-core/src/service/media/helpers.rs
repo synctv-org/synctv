@@ -4,6 +4,7 @@ use crate::{
 };
 
 pub(super) const MAX_BATCH_SIZE: usize = 100;
+pub(super) const MEDIA_BATCH_PREPARE_CONCURRENCY: usize = 8;
 const MEDIA_BATCH_POSITION_STEP: f64 = 1024.0;
 
 pub(super) fn batch_media_position(index: usize, start_position: f64) -> Result<f64> {

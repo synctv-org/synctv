@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 # Internal
-synctv-proto = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main"] }
 synctv-media-providers = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 

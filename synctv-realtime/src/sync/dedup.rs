@@ -22,15 +22,8 @@ pub enum DedupKeyError {
 /// Deduplication key for events
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DedupKey {
-    pub event_type: String,
-    pub room_id: String,
-    pub user_id: String,
-    /// Extra discriminator for events without `room_id/user_id` (e.g. `SystemNotification` message)
-    pub extra: String,
-    pub timestamp_ms: i64,
-    /// Content hash to prevent false positives on same-millisecond events
-    /// with different payloads (e.g. two chat messages in the same ms)
-    pub content_hash: u64,
+    pub room_id: Option<i64>,
+    pub event_id: String,
 }
 
 impl DedupKey {
@@ -43,14 +36,8 @@ impl DedupKey {
             });
         }
         Ok(Self {
-            event_type: event.event_type().to_string(),
-            room_id: event
-                .room_id()
-                .map_or_else(|| "global".to_string(), ToString::to_string),
-            user_id: String::new(),
-            extra: eid.to_string(),
-            timestamp_ms: event.timestamp().timestamp_millis(),
-            content_hash: 0,
+            room_id: event.room_id().map(synctv_core::models::id::RoomId::as_i64),
+            event_id: eid.to_string(),
         })
     }
 }
@@ -168,12 +155,8 @@ mod tests {
         let dedup = MessageDeduplicator::with_defaults();
 
         let key = DedupKey {
-            event_type: "chat".to_string(),
-            room_id: "room1".to_string(),
-            user_id: "user1".to_string(),
-            extra: String::new(),
-            timestamp_ms: 1000,
-            content_hash: 0,
+            room_id: Some(1),
+            event_id: "event-1".to_string(),
         };
 
         assert!(dedup.should_process(&key));
@@ -192,12 +175,8 @@ mod tests {
 
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
         let key = DedupKey {
-            event_type: "chat".to_string(),
-            room_id: "room1".to_string(),
-            user_id: "user1".to_string(),
-            extra: String::new(),
-            timestamp_ms: 1000,
-            content_hash: 0,
+            room_id: Some(1),
+            event_id: "event-1".to_string(),
         };
 
         let success_count = Arc::new(AtomicUsize::new(0));
@@ -249,6 +228,39 @@ mod tests {
 
         assert!(dedup.should_process(&key));
         assert!(!dedup.should_process(&key));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dedup_key_is_scoped_by_room_and_event_id() -> std::result::Result<(), DedupKeyError> {
+        let event_id = synctv_common::snanoid!(16);
+        let first_room = crate::sync::RealtimeEvent::ChatMessage {
+            event_id: event_id.clone(),
+            room_id: RoomId::expect_positive(10_000_092),
+            user_id: UserId::expect_positive(10_000_010),
+            username: "test".to_string(),
+            message: "Hello".to_string(),
+            timestamp: Utc::now(),
+            display_position: None,
+            display_color: None,
+        };
+        let second_room = crate::sync::RealtimeEvent::ChatMessage {
+            event_id,
+            room_id: RoomId::expect_positive(10_000_093),
+            user_id: UserId::expect_positive(10_000_010),
+            username: "test".to_string(),
+            message: "Hello".to_string(),
+            timestamp: Utc::now(),
+            display_position: None,
+            display_color: None,
+        };
+
+        let first_key = DedupKey::try_from_event(&first_room)?;
+        let second_key = DedupKey::try_from_event(&second_room)?;
+
+        assert_ne!(first_key, second_key);
+        assert_eq!(first_key.room_id, Some(10_000_092));
+        assert_eq!(second_key.room_id, Some(10_000_093));
         Ok(())
     }
 

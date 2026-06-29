@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use synctv_core::models::{RoomId, UserId};
-use synctv_realtime::sync::{BroadcastResult, ConnectionId, RealtimeEvent, RealtimeManager};
+use synctv_realtime::sync::{
+    BroadcastResult, ConnectionId, RealtimeEvent, RealtimeManager, SharedRealtimeEvent,
+};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +121,7 @@ pub trait RealtimeEventService: Send + Sync {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)>;
+    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)>;
 
     fn unsubscribe(&self, connection_id: &str);
 
@@ -180,7 +182,7 @@ impl RealtimeEventService for LocalNoopRealtimeEventService {
         _room_id: RoomId,
         _user_id: UserId,
         connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = mpsc::channel(16);
         Ok((rx, connection_id))
     }
@@ -226,7 +228,7 @@ impl RealtimeEventService for RealtimeManager {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
         RealtimeManager::subscribe_with_id(self, room_id, user_id, connection_id).await
     }
 
@@ -363,7 +365,7 @@ mod tests {
         assert_eq!(event_service.broadcast_local(&room_id(), &event), 1);
         assert!(matches!(
             room_rx.recv().await,
-            Some(RealtimeEvent::ChatMessage { .. })
+            Some(event) if matches!(event.as_ref(), RealtimeEvent::ChatMessage { .. })
         ));
         assert!(!event_service.metrics().distributed_enabled);
 

@@ -10,7 +10,9 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     service::auth::{JwtValidator, SecurityPipeline},
 };
-use synctv_realtime::sync::{BroadcastResult, ConnectionId, PublishRequest, RealtimeEvent};
+use synctv_realtime::sync::{
+    BroadcastResult, ConnectionId, PublishRequest, RealtimeEvent, SharedRealtimeEvent,
+};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::impls::{AdminApiRuntime, ClientApiRuntime, RequestExecutor};
@@ -129,7 +131,7 @@ impl RealtimeEventService for RecordingRealtimeEventService {
         _room_id: RoomId,
         _user_id: UserId,
         connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
         let (_tx, rx) = mpsc::channel(16);
         Ok((rx, connection_id))
     }

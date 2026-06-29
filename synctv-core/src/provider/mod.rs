@@ -33,6 +33,8 @@ pub mod emby;
 pub mod live_proxy;
 pub mod rtmp;
 
+use std::sync::LazyLock;
+
 pub use access::{
     AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
     ProviderAccessService, ProviderCredentialReader,
@@ -62,6 +64,8 @@ use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMed
 use crate::models::{normalize_provider_instance_name, MediaId, RoomId};
 use std::future::Future;
 use std::time::Duration;
+
+use crate::cache::{SingleFlight, SingleFlightError};
 
 pub(crate) fn subtitle_headers_for_proxy(
     media_headers: &std::collections::HashMap<String, String>,
@@ -177,6 +181,134 @@ impl ProviderSet {
 pub(crate) fn bound_provider_instance_name<'a>(ctx: &'a ProviderContext<'a>) -> Option<&'a str> {
     normalize_provider_instance_name(ctx.provider_instance_name())
 }
+
+#[derive(Debug, Clone, thiserror::Error)]
+enum ProviderPlaybackFillError {
+    #[error("Invalid URL: {0}")]
+    InvalidUrl(String),
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    #[error("Authentication required")]
+    AuthRequired,
+    #[error("Credential required")]
+    CredentialRequired,
+    #[error("Invalid credential type")]
+    InvalidCredentialType,
+    #[error("Provider authentication failed: {0}")]
+    Authentication(String),
+    #[error("Resource not found")]
+    NotFound,
+    #[error("Provider API error: {0}")]
+    ApiError(String),
+    #[error("Upstream HTTP {status} for {url}")]
+    UpstreamHttp { status: u16, url: String },
+    #[error("Unsupported format: {0}")]
+    UnsupportedFormat(String),
+    #[error("Parse error: {0}")]
+    ParseError(String),
+    #[error("Missing provider instance")]
+    MissingInstance,
+    #[error("Provider instance not found: {0}")]
+    InstanceNotFound(String),
+    #[error("Credential not found: {0}")]
+    CredentialNotFound(String),
+    #[error("Credential expired: {0}")]
+    CredentialExpired(String),
+    #[error("Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings.")]
+    EncryptionRequired(&'static str),
+    #[error("Route registration failed: {0}")]
+    RouteRegistrationFailed(String),
+    #[error("IO error: {0}")]
+    IoError(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
+    #[error("JSON error: {0}")]
+    JsonError(String),
+}
+
+impl From<ProviderError> for ProviderPlaybackFillError {
+    fn from(error: ProviderError) -> Self {
+        match error {
+            ProviderError::InvalidUrl(message) => Self::InvalidUrl(message),
+            ProviderError::InvalidConfig(message) => Self::InvalidConfig(message),
+            ProviderError::MissingField(message) => Self::MissingField(message),
+            ProviderError::NetworkError(message) => Self::NetworkError(message),
+            ProviderError::AuthRequired => Self::AuthRequired,
+            ProviderError::CredentialRequired => Self::CredentialRequired,
+            ProviderError::InvalidCredentialType => Self::InvalidCredentialType,
+            ProviderError::Authentication(message) => Self::Authentication(message),
+            ProviderError::NotFound => Self::NotFound,
+            ProviderError::ApiError(message) => Self::ApiError(message),
+            ProviderError::UpstreamHttp { status, url } => Self::UpstreamHttp { status, url },
+            ProviderError::UnsupportedFormat(message) => Self::UnsupportedFormat(message),
+            ProviderError::ParseError(message) => Self::ParseError(message),
+            ProviderError::MissingInstance => Self::MissingInstance,
+            ProviderError::InstanceNotFound(message) => Self::InstanceNotFound(message),
+            ProviderError::CredentialNotFound(message) => Self::CredentialNotFound(message),
+            ProviderError::CredentialExpired(message) => Self::CredentialExpired(message),
+            ProviderError::EncryptionRequired(provider) => Self::EncryptionRequired(provider),
+            ProviderError::RouteRegistrationFailed(message) => {
+                Self::RouteRegistrationFailed(message)
+            }
+            ProviderError::IoError(error) => Self::IoError(error.to_string()),
+            ProviderError::Internal(message) => Self::Internal(message),
+            ProviderError::JsonError(error) => Self::JsonError(error.to_string()),
+        }
+    }
+}
+
+impl From<ProviderPlaybackFillError> for ProviderError {
+    fn from(error: ProviderPlaybackFillError) -> Self {
+        match error {
+            ProviderPlaybackFillError::InvalidUrl(message) => Self::InvalidUrl(message),
+            ProviderPlaybackFillError::InvalidConfig(message) => Self::InvalidConfig(message),
+            ProviderPlaybackFillError::MissingField(message) => Self::MissingField(message),
+            ProviderPlaybackFillError::NetworkError(message) => Self::NetworkError(message),
+            ProviderPlaybackFillError::AuthRequired => Self::AuthRequired,
+            ProviderPlaybackFillError::CredentialRequired => Self::CredentialRequired,
+            ProviderPlaybackFillError::InvalidCredentialType => Self::InvalidCredentialType,
+            ProviderPlaybackFillError::Authentication(message) => Self::Authentication(message),
+            ProviderPlaybackFillError::NotFound => Self::NotFound,
+            ProviderPlaybackFillError::ApiError(message) => Self::ApiError(message),
+            ProviderPlaybackFillError::UpstreamHttp { status, url } => {
+                Self::UpstreamHttp { status, url }
+            }
+            ProviderPlaybackFillError::UnsupportedFormat(message) => {
+                Self::UnsupportedFormat(message)
+            }
+            ProviderPlaybackFillError::ParseError(message) => Self::ParseError(message),
+            ProviderPlaybackFillError::MissingInstance => Self::MissingInstance,
+            ProviderPlaybackFillError::InstanceNotFound(message) => Self::InstanceNotFound(message),
+            ProviderPlaybackFillError::CredentialNotFound(message) => {
+                Self::CredentialNotFound(message)
+            }
+            ProviderPlaybackFillError::CredentialExpired(message) => {
+                Self::CredentialExpired(message)
+            }
+            ProviderPlaybackFillError::EncryptionRequired(provider) => {
+                Self::EncryptionRequired(provider)
+            }
+            ProviderPlaybackFillError::RouteRegistrationFailed(message) => {
+                Self::RouteRegistrationFailed(message)
+            }
+            ProviderPlaybackFillError::IoError(message) => {
+                Self::IoError(std::io::Error::other(message))
+            }
+            ProviderPlaybackFillError::Internal(message) => Self::Internal(message),
+            ProviderPlaybackFillError::JsonError(message) => {
+                Self::JsonError(serde_json::Error::io(std::io::Error::other(message)))
+            }
+        }
+    }
+}
+
+static PLAYBACK_FILL_SINGLEFLIGHT: LazyLock<
+    SingleFlight<String, VersionedPlayback, ProviderPlaybackFillError>,
+> = LazyLock::new(SingleFlight::new);
 
 #[must_use]
 pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
@@ -349,6 +481,20 @@ pub(crate) async fn cache_versioned_playback_and_build_response(
     ctx: &ProviderContext<'_>,
     mark_provider_resources: impl FnOnce(&mut PlaybackResult, &str, i64),
 ) -> std::result::Result<PlaybackResult, ProviderError> {
+    let versioned =
+        cache_versioned_playback(result, provider_name, cache_key, cache_ttl, ctx).await?;
+
+    build_cached_versioned_playback_response(versioned, provider_name, ctx, mark_provider_resources)
+        .await
+}
+
+async fn cache_versioned_playback(
+    result: PlaybackResult,
+    provider_name: &str,
+    cache_key: &str,
+    cache_ttl: std::time::Duration,
+    ctx: &ProviderContext<'_>,
+) -> std::result::Result<VersionedPlayback, ProviderError> {
     let ttl_secs = i64::try_from(cache_ttl.as_secs()).map_err(|_| {
         ProviderError::Internal(format!(
             "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
@@ -374,21 +520,13 @@ pub(crate) async fn cache_versioned_playback_and_build_response(
                 "Provider '{provider_name}' failed to persist playback cache entry '{cache_key}': {e}"
             ))
         })?;
-        persist_versioned_mapping(store.as_ref(), &versioned, cache_ttl, provider_name).await?;
     } else {
         return Err(ProviderError::Internal(format!(
             "Provider '{provider_name}' cannot generate playback transport without a provider store"
         )));
     }
 
-    Ok(build_versioned_playback_response(
-        result,
-        provider_name,
-        ctx.provider_instance_name(),
-        &versioned.version,
-        versioned.expires_at,
-        mark_provider_resources,
-    ))
+    Ok(versioned)
 }
 
 const PLAYBACK_CACHE_LOCK_TTL: Duration = Duration::from_secs(30);
@@ -427,8 +565,8 @@ pub(crate) async fn cached_versioned_playback_or_fill<F, Fut>(
     fill: F,
 ) -> std::result::Result<PlaybackResult, ProviderError>
 where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = std::result::Result<PlaybackResult, ProviderError>>,
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = std::result::Result<PlaybackResult, ProviderError>> + Send,
 {
     let store = ctx.store.as_ref().ok_or_else(|| {
         ProviderError::Internal(format!(
@@ -482,14 +620,26 @@ where
         }
     }
 
-    let result = fill().await?;
-    cache_versioned_playback_and_build_response(
-        result,
-        provider_name,
-        cache_key,
-        cache_ttl,
-        ctx,
-        mark_provider_resources,
-    )
-    .await
+    let singleflight_key = format!("{provider_name}:{cache_key}");
+    let versioned = PLAYBACK_FILL_SINGLEFLIGHT
+        .do_work(singleflight_key, async {
+            if let Some(cached) = read_fresh_versioned_playback(store.as_ref(), cache_key).await {
+                return Ok(cached);
+            }
+
+            let result = fill().await.map_err(ProviderPlaybackFillError::from)?;
+            cache_versioned_playback(result, provider_name, cache_key, cache_ttl, ctx)
+                .await
+                .map_err(ProviderPlaybackFillError::from)
+        })
+        .await
+        .map_err(|error| match error {
+            SingleFlightError::Inner(error) => ProviderError::from(error),
+            SingleFlightError::WorkerFailed => ProviderError::Internal(format!(
+                "Provider '{provider_name}' playback singleflight worker failed"
+            )),
+        })?;
+
+    build_cached_versioned_playback_response(versioned, provider_name, ctx, mark_provider_resources)
+        .await
 }

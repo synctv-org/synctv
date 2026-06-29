@@ -6,6 +6,7 @@
 
 use bytes::Bytes;
 use moka::future::Cache;
+use std::fmt::Write as _;
 use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::Request;
@@ -274,36 +275,21 @@ impl HlsProxyClient {
         epoch: u64,
         segment_name: &str,
     ) -> String {
-        Self::compose_cache_key("seg", room_id, media_id, epoch, segment_name)
-    }
-
-    #[inline]
-    fn encode_component(component: &str) -> String {
-        format!("{}:{component}", component.len())
-    }
-
-    #[inline]
-    fn cache_stream_prefix(room_id: &str, media_id: &str) -> String {
-        format!(
-            "|{}|{}|",
-            Self::encode_component(room_id),
-            Self::encode_component(media_id)
-        )
-    }
-
-    fn compose_cache_key(
-        kind: &str,
-        room_id: &str,
-        media_id: &str,
-        epoch: u64,
-        tail: &str,
-    ) -> String {
-        format!(
-            "{}{kind}|{}|{}",
-            Self::cache_stream_prefix(room_id, media_id),
-            epoch,
-            Self::encode_component(tail)
-        )
+        let mut key = String::with_capacity(
+            room_id
+                .len()
+                .saturating_add(media_id.len())
+                .saturating_add(segment_name.len())
+                .saturating_add(64),
+        );
+        let _ = write!(
+            key,
+            "|{}:{room_id}|{}:{media_id}|seg|{epoch}|{}:{segment_name}",
+            room_id.len(),
+            media_id.len(),
+            segment_name.len()
+        );
+        key
     }
 
     /// Attach cluster authentication secret to a gRPC request.

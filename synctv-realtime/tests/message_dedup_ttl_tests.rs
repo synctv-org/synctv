@@ -10,14 +10,10 @@
 use std::time::Duration;
 use synctv_realtime::sync::{DedupKey, MessageDeduplicator};
 
-fn make_key(event_type: &str, ts: i64) -> DedupKey {
+fn make_key(event_id: impl Into<String>) -> DedupKey {
     DedupKey {
-        event_type: event_type.to_string(),
-        room_id: "room1".to_string(),
-        user_id: "user1".to_string(),
-        extra: String::new(),
-        timestamp_ms: ts,
-        content_hash: 0,
+        room_id: Some(1),
+        event_id: event_id.into(),
     }
 }
 
@@ -29,7 +25,7 @@ fn make_key(event_type: &str, ts: i64) -> DedupKey {
 async fn test_dedup_ttl_expiry_allows_reprocessing() {
     let dedup = MessageDeduplicator::new(Duration::from_secs(1)); // 1 second dedup window
 
-    let key = make_key("chat", 1000);
+    let key = make_key("event-1");
 
     // First call should succeed
     assert!(dedup.should_process(&key), "First call should return true");
@@ -50,7 +46,7 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
     // Re-create with the same short TTL
     let dedup2 = MessageDeduplicator::new(Duration::from_secs(1));
 
-    let key2 = make_key("chat", 2000);
+    let key2 = make_key("event-2");
 
     // Mark it
     assert!(dedup2.should_process(&key2));
@@ -71,7 +67,7 @@ async fn test_dedup_short_ttl_vs_long_ttl() {
     let short_dedup = MessageDeduplicator::new(Duration::from_millis(500)); // 500ms window
     let long_dedup = MessageDeduplicator::new(Duration::from_mins(1)); // 60s window
 
-    let key = make_key("chat", 3000);
+    let key = make_key("event-3");
 
     // Both mark the key
     assert!(short_dedup.should_process(&key));
@@ -101,7 +97,7 @@ async fn test_dedup_short_ttl_vs_long_ttl() {
 async fn test_mark_processed_respects_ttl() {
     let dedup = MessageDeduplicator::new(Duration::from_secs(1));
 
-    let key = make_key("playback", 4000);
+    let key = make_key("event-4");
 
     // Mark processed explicitly
     dedup.mark_processed(key.clone());
@@ -125,7 +121,7 @@ async fn test_concurrent_should_process_per_ttl_window() {
     use std::sync::Arc;
 
     let dedup = Arc::new(MessageDeduplicator::new(Duration::from_secs(1)));
-    let key = make_key("sync", 5000);
+    let key = make_key("event-5");
 
     // Window 1: 10 concurrent callers
     let success_count = Arc::new(AtomicUsize::new(0));
@@ -193,8 +189,8 @@ async fn test_len_reflects_ttl_expiry() {
 
     assert_eq!(dedup.len(), 0);
 
-    let key1 = make_key("chat", 1000);
-    let key2 = make_key("chat", 2000);
+    let key1 = make_key("event-6");
+    let key2 = make_key("event-7");
 
     let _ = dedup.should_process(&key1);
     let _ = dedup.should_process(&key2);

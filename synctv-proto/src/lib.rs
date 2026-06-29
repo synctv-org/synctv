@@ -9,6 +9,7 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
+#[cfg(feature = "main")]
 pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
         prost_reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)
@@ -17,17 +18,20 @@ pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
 
 /// Encoded file descriptor set for client/admin/oauth2 proto definitions.
 /// Used by tonic-reflection to serve gRPC server reflection.
+#[cfg(feature = "main")]
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
     "/descriptor.bin"
 ));
 
 /// Encoded file descriptor set for provider proto definitions.
+#[cfg(feature = "providers")]
 pub const PROVIDERS_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
     "/descriptor.bin"
 ));
 
+#[cfg(feature = "providers")]
 pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
         prost_reflect::DescriptorPool::decode(PROVIDERS_FILE_DESCRIPTOR_SET)
@@ -35,17 +39,20 @@ pub static PROVIDERS_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::Descrip
     });
 
 /// Encoded file descriptor set for playback-provider proto definitions.
+#[cfg(feature = "playback-provider")]
 pub const PLAYBACK_PROVIDER_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("SYNCTV_PROTO_PLAYBACK_PROVIDER_OUT_DIR"),
     "/descriptor.bin"
 ));
 
+#[cfg(feature = "playback-provider")]
 pub static PLAYBACK_PROVIDER_DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {
         prost_reflect::DescriptorPool::decode(PLAYBACK_PROVIDER_FILE_DESCRIPTOR_SET)
             .expect("synctv-proto playback-provider descriptor pool must decode")
     });
 
+#[cfg(any(feature = "main", feature = "providers", feature = "playback-provider"))]
 pub fn validate<M: prost_reflect::ReflectMessage>(
     message: &M,
 ) -> Result<(), prost_protovalidate::Error> {
@@ -53,6 +60,7 @@ pub fn validate<M: prost_reflect::ReflectMessage>(
 }
 
 // Common shared types (enums, RoomMember)
+#[cfg(feature = "main")]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
 pub mod common {
@@ -67,6 +75,7 @@ pub mod common {
 }
 
 // Provider source configuration contracts
+#[cfg(feature = "main")]
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
@@ -82,6 +91,7 @@ pub mod source_config {
 }
 
 // Client API
+#[cfg(feature = "main")]
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
@@ -97,6 +107,7 @@ pub mod client {
 }
 
 // Admin API
+#[cfg(feature = "main")]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
 pub mod admin {
@@ -111,6 +122,7 @@ pub mod admin {
 }
 
 // Providers
+#[cfg(feature = "providers")]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
 pub mod providers {
@@ -181,6 +193,7 @@ pub mod providers {
 }
 
 // Playback provider playback resources
+#[cfg(feature = "playback-provider")]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
 pub mod playback_provider {

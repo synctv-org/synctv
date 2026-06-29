@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::{
     models::{RealtimeEvent, RoomPermissionSet},
@@ -14,6 +14,111 @@ use crate::{
 
 pub const REALTIME_OUTBOX_CHANNEL: &str = "realtime_outbox_new";
 const DEFAULT_MAX_ATTEMPTS: i32 = 12;
+const INSERT_MANY_CHUNK_SIZE: usize = 1000;
+
+struct RoomResourceEventBatch {
+    event_ids: Vec<String>,
+    scope_types: Vec<i16>,
+    room_ids: Vec<Option<i64>>,
+    user_ids: Vec<Option<i64>>,
+    aggregate_types: Vec<String>,
+    aggregate_ids: Vec<String>,
+    resource_types: Vec<String>,
+    resource_ids: Vec<String>,
+    event_types: Vec<String>,
+    event_versions: Vec<i64>,
+    aggregate_versions: Vec<Option<i64>>,
+    actor_user_ids: Vec<Option<i64>>,
+    payloads: Vec<Option<serde_json::Value>>,
+    summaries: Vec<serde_json::Value>,
+    occurred_ats: Vec<DateTime<Utc>>,
+}
+
+impl RoomResourceEventBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            event_ids: Vec::with_capacity(capacity),
+            scope_types: Vec::with_capacity(capacity),
+            room_ids: Vec::with_capacity(capacity),
+            user_ids: Vec::with_capacity(capacity),
+            aggregate_types: Vec::with_capacity(capacity),
+            aggregate_ids: Vec::with_capacity(capacity),
+            resource_types: Vec::with_capacity(capacity),
+            resource_ids: Vec::with_capacity(capacity),
+            event_types: Vec::with_capacity(capacity),
+            event_versions: Vec::with_capacity(capacity),
+            aggregate_versions: Vec::with_capacity(capacity),
+            actor_user_ids: Vec::with_capacity(capacity),
+            payloads: Vec::with_capacity(capacity),
+            summaries: Vec::with_capacity(capacity),
+            occurred_ats: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, event: &NewRoomResourceEvent) -> Result<()> {
+        self.event_ids.push(event.event_id.clone());
+        self.scope_types.push(event.scope_type.as_i16());
+        self.room_ids.push(event.room_id);
+        self.user_ids.push(event.user_id);
+        self.aggregate_types.push(event.aggregate_type.clone());
+        self.aggregate_ids.push(event.aggregate_id.clone());
+        self.resource_types
+            .push(event.resource_type.as_db_str().to_string());
+        self.resource_ids.push(event.resource_id.clone());
+        self.event_types.push(event.event_type.clone());
+        self.event_versions.push(event.event_version);
+        self.aggregate_versions.push(event.aggregate_version);
+        self.actor_user_ids.push(event.actor_user_id);
+        self.payloads.push(
+            event
+                .payload
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+        );
+        self.summaries.push(serde_json::to_value(&event.summary)?);
+        self.occurred_ats.push(event.occurred_at);
+        Ok(())
+    }
+}
+
+struct RealtimeOutboxEventBatch {
+    ids: Vec<String>,
+    aggregate_types: Vec<String>,
+    aggregate_ids: Vec<String>,
+    event_types: Vec<String>,
+    event_versions: Vec<i64>,
+    aggregate_versions: Vec<Option<i64>>,
+    payloads: Vec<serde_json::Value>,
+    statuses: Vec<i16>,
+}
+
+impl RealtimeOutboxEventBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ids: Vec::with_capacity(capacity),
+            aggregate_types: Vec::with_capacity(capacity),
+            aggregate_ids: Vec::with_capacity(capacity),
+            event_types: Vec::with_capacity(capacity),
+            event_versions: Vec::with_capacity(capacity),
+            aggregate_versions: Vec::with_capacity(capacity),
+            payloads: Vec::with_capacity(capacity),
+            statuses: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, event: &NewRealtimeOutboxEvent) -> Result<()> {
+        self.ids.push(event.id.clone());
+        self.aggregate_types.push(event.aggregate_type.clone());
+        self.aggregate_ids.push(event.aggregate_id.clone());
+        self.event_types.push(event.event_type.clone());
+        self.event_versions.push(event.event_version);
+        self.aggregate_versions.push(event.aggregate_version);
+        self.payloads.push(serde_json::to_value(&event.payload)?);
+        self.statuses.push(RealtimeOutboxStatus::Pending.as_i16());
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -264,6 +369,32 @@ impl RealtimeOutboxRepository {
         Ok(())
     }
 
+    pub async fn insert_many(&self, events: &[NewRealtimeOutboxEvent]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        self.insert_many_with_executor(events, &mut tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn insert_many_with_executor(
+        &self,
+        events: &[NewRealtimeOutboxEvent],
+        executor: &mut PgConnection,
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let resource_events = events
+            .iter()
+            .map(room_resource_event_from_outbox_event)
+            .collect::<Result<Vec<_>>>()?;
+
+        insert_resource_events_many(&resource_events, executor).await?;
+        insert_realtime_outbox_events_many(events, executor).await?;
+        Ok(())
+    }
+
     pub async fn claim_batch(
         &self,
         worker_id: &str,
@@ -412,6 +543,195 @@ fn ensure_outbox_row_updated(rows_affected: u64, id: &str, operation: &str) -> R
     Err(Error::Internal(format!(
         "Realtime outbox {operation} updated {rows_affected} rows for id {id}"
     )))
+}
+
+async fn insert_resource_events_many(
+    resource_events: &[Option<NewRoomResourceEvent>],
+    executor: &mut PgConnection,
+) -> Result<()> {
+    let events = resource_events
+        .iter()
+        .filter_map(Option::as_ref)
+        .collect::<Vec<_>>();
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in events.chunks(INSERT_MANY_CHUNK_SIZE) {
+        insert_resource_event_chunk(chunk, executor).await?;
+    }
+
+    Ok(())
+}
+
+async fn insert_resource_event_chunk(
+    events: &[&NewRoomResourceEvent],
+    executor: &mut PgConnection,
+) -> Result<()> {
+    let mut batch = RoomResourceEventBatch::with_capacity(events.len());
+    for event in events {
+        batch.push(event)?;
+    }
+
+    sqlx::query!(
+        r#"
+        INSERT INTO room_resource_events (
+            event_id, scope_type, room_id, user_id, aggregate_type, aggregate_id,
+            resource_type, resource_id, event_type, event_version, aggregate_version,
+            actor_user_id, payload, summary, occurred_at
+        )
+        SELECT
+            event_id::text,
+            scope_type::smallint,
+            room_id::bigint,
+            user_id::bigint,
+            aggregate_type::text,
+            aggregate_id::text,
+            resource_type::text,
+            resource_id::text,
+            event_type::text,
+            event_version::bigint,
+            aggregate_version::bigint,
+            actor_user_id::bigint,
+            payload::jsonb,
+            summary::jsonb,
+            occurred_at::timestamptz
+        FROM UNNEST(
+            $1::text[],
+            $2::smallint[],
+            $3::bigint[],
+            $4::bigint[],
+            $5::text[],
+            $6::text[],
+            $7::text[],
+            $8::text[],
+            $9::text[],
+            $10::bigint[],
+            $11::bigint[],
+            $12::bigint[],
+            $13::jsonb[],
+            $14::jsonb[],
+            $15::timestamptz[]
+        ) AS t(
+            event_id,
+            scope_type,
+            room_id,
+            user_id,
+            aggregate_type,
+            aggregate_id,
+            resource_type,
+            resource_id,
+            event_type,
+            event_version,
+            aggregate_version,
+            actor_user_id,
+            payload,
+            summary,
+            occurred_at
+        )
+        ON CONFLICT (event_id) DO NOTHING
+        "#,
+        &batch.event_ids,
+        &batch.scope_types,
+        &batch.room_ids as _,
+        &batch.user_ids as _,
+        &batch.aggregate_types,
+        &batch.aggregate_ids,
+        &batch.resource_types,
+        &batch.resource_ids,
+        &batch.event_types,
+        &batch.event_versions,
+        &batch.aggregate_versions as _,
+        &batch.actor_user_ids as _,
+        &batch.payloads as _,
+        &batch.summaries,
+        &batch.occurred_ats,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+async fn insert_realtime_outbox_events_many(
+    events: &[NewRealtimeOutboxEvent],
+    executor: &mut PgConnection,
+) -> Result<()> {
+    let enqueue_events = events
+        .iter()
+        .filter(|event| event.enqueue_outbox)
+        .collect::<Vec<_>>();
+    if enqueue_events.is_empty() {
+        return Ok(());
+    }
+
+    for chunk in enqueue_events.chunks(INSERT_MANY_CHUNK_SIZE) {
+        insert_realtime_outbox_event_chunk(chunk, executor).await?;
+    }
+
+    Ok(())
+}
+
+async fn insert_realtime_outbox_event_chunk(
+    events: &[&NewRealtimeOutboxEvent],
+    executor: &mut PgConnection,
+) -> Result<()> {
+    let mut batch = RealtimeOutboxEventBatch::with_capacity(events.len());
+    for event in events {
+        batch.push(event)?;
+    }
+
+    sqlx::query!(
+        r#"
+        WITH inserted AS (
+            INSERT INTO realtime_outbox (
+                id, aggregate_type, aggregate_id, event_type, event_version,
+                aggregate_version, payload, status
+            )
+            SELECT
+                id::text,
+                aggregate_type::text,
+                aggregate_id::text,
+                event_type::text,
+                event_version::bigint,
+                aggregate_version::bigint,
+                payload::jsonb,
+                status::smallint
+            FROM UNNEST(
+                $1::text[],
+                $2::text[],
+                $3::text[],
+                $4::text[],
+                $5::bigint[],
+                $6::bigint[],
+                $7::jsonb[],
+                $8::smallint[]
+            ) AS t(
+                id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                event_version,
+                aggregate_version,
+                payload,
+                status
+            )
+            RETURNING id
+        )
+        SELECT pg_notify($9, id) FROM inserted
+        "#,
+        &batch.ids,
+        &batch.aggregate_types,
+        &batch.aggregate_ids,
+        &batch.event_types,
+        &batch.event_versions,
+        &batch.aggregate_versions as _,
+        &batch.payloads,
+        &batch.statuses,
+        REALTIME_OUTBOX_CHANNEL,
+    )
+    .execute(executor)
+    .await?;
+    Ok(())
 }
 
 fn room_resource_event_from_outbox_event(

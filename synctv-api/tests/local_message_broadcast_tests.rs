@@ -87,7 +87,7 @@ async fn test_local_subscribe_and_broadcast() {
         .expect("Should receive message within timeout")
         .expect("Should have a message");
 
-    match received {
+    match received.as_ref() {
         RealtimeEvent::ChatMessage { message, .. } => {
             assert_eq!(message, "Hello local!");
         }
@@ -140,7 +140,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
             .unwrap_or_else(|_| panic!("Subscriber {i} should receive message within timeout"))
             .expect("Should have a message");
 
-        match received {
+        match received.as_ref() {
             RealtimeEvent::ChatMessage { message, .. } => {
                 assert_eq!(
                     message, "Hello everyone!",
@@ -214,7 +214,7 @@ async fn test_local_realtime_manager_supports_room_operations() {
         .expect("Should receive event")
         .expect("Should have event");
 
-    match received {
+    match received.as_ref() {
         RealtimeEvent::UserJoined { username, .. } => {
             assert_eq!(username, "user1");
         }

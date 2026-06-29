@@ -173,7 +173,7 @@ pub async fn create_node_with_config(
 pub async fn broadcast_until_all_clients_receive(
     manager: &RealtimeManager,
     clients: &mut [(
-        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::SharedRealtimeEvent>,
         ConnectionId,
     )],
     expected_message: &str,
@@ -194,7 +194,7 @@ pub async fn broadcast_until_all_clients_receive(
 async fn broadcast_until_all_clients_receive_with(
     mut broadcast: impl FnMut(),
     clients: &mut [(
-        tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
+        tokio::sync::mpsc::Receiver<synctv_realtime::sync::SharedRealtimeEvent>,
         ConnectionId,
     )],
     expected_message: &str,
@@ -215,8 +215,12 @@ async fn broadcast_until_all_clients_receive_with(
                 }
 
                 match rx.try_recv() {
-                    Ok(synctv_realtime::sync::RealtimeEvent::ChatMessage { message, .. })
-                        if message == expected_message =>
+                    Ok(event)
+                        if matches!(
+                            event.as_ref(),
+                            synctv_realtime::sync::RealtimeEvent::ChatMessage { message, .. }
+                                if message == expected_message
+                        ) =>
                     {
                         pending[index] = false;
                         made_progress = true;
@@ -256,11 +260,11 @@ async fn broadcast_until_all_clients_receive_with(
 
 pub async fn broadcast_until_room_event(
     manager: &RealtimeManager,
-    room_rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::RealtimeEvent>,
+    room_rx: &mut tokio::sync::mpsc::Receiver<synctv_realtime::sync::SharedRealtimeEvent>,
     mut make_event: impl FnMut() -> synctv_realtime::sync::RealtimeEvent,
     mut matches: impl FnMut(&synctv_realtime::sync::RealtimeEvent) -> bool,
     label: &str,
-) -> synctv_realtime::sync::RealtimeEvent {
+) -> synctv_realtime::sync::SharedRealtimeEvent {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
 
     loop {

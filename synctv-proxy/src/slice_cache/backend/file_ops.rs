@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 
 use super::file_format::{
     cache_entry_deadline_millis, encode_header, millis_since_epoch, system_time_to_millis,
@@ -165,19 +166,23 @@ async fn write_atomic(
     let header_len = u32::try_from(header_bytes.len())
         .map_err(|_| anyhow::anyhow!("cache header too large: {}", header_bytes.len()))?;
 
-    let mut file_content = Vec::with_capacity(4 + 4 + header_bytes.len() + data.len());
-    file_content.extend_from_slice(CACHE_FILE_MAGIC);
-    file_content.extend_from_slice(&header_len.to_le_bytes());
-    file_content.extend_from_slice(&header_bytes);
-    file_content.extend_from_slice(data);
-
     let tmp_dir = tmp_dir(cache_dir);
     fs::create_dir_all(&tmp_dir).await?;
     let tmp_path = tmp_dir.join(next_temp_name(temp_counter));
 
-    fs::write(&tmp_path, &file_content)
+    let mut file = fs::File::create(&tmp_path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create temp file {}: {e}", tmp_path.display()))?;
+    file.write_all(CACHE_FILE_MAGIC).await?;
+    file.write_all(&header_len.to_le_bytes()).await?;
+    file.write_all(&header_bytes).await?;
+    file.write_all(data)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {e}", tmp_path.display()))?;
+    file.flush()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to flush temp file {}: {e}", tmp_path.display()))?;
+    drop(file);
 
     if let Err(e) = fs::rename(&tmp_path, path).await {
         if let Err(cleanup_error) = fs::remove_file(&tmp_path).await {

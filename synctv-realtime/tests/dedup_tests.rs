@@ -1,20 +1,16 @@
 //! Deduplication tests
 //!
 //! Tests for `MessageDeduplicator` behavior: `mark_processed` prevents
-//! reprocessing, `len` tracking, and different events at the same
-//! timestamp produce different dedup keys.
+//! reprocessing, `len` tracking, and room-scoped event IDs produce different
+//! dedup keys.
 
 #![allow(clippy::unwrap_used)]
 use synctv_realtime::sync::{DedupKey, MessageDeduplicator};
 
-fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> DedupKey {
+fn make_key(room_id: i64, event_id: impl Into<String>) -> DedupKey {
     DedupKey {
-        event_type: event_type.to_string(),
-        room_id: room.to_string(),
-        user_id: user.to_string(),
-        extra: String::new(),
-        timestamp_ms: ts,
-        content_hash: hash,
+        room_id: Some(room_id),
+        event_id: event_id.into(),
     }
 }
 
@@ -23,7 +19,7 @@ fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> Ded
 #[tokio::test]
 async fn test_mark_processed_prevents_reprocessing() {
     let dedup = MessageDeduplicator::default();
-    let key = make_key("chat", "room1", "user1", 1000, 42);
+    let key = make_key(1, "event-1");
 
     // Before marking, should_process returns true
     assert!(dedup.should_process(&key), "First call should return true");
@@ -36,7 +32,7 @@ async fn test_mark_processed_prevents_reprocessing() {
     );
 
     // Using mark_processed explicitly on a new key
-    let key2 = make_key("chat", "room2", "user1", 2000, 99);
+    let key2 = make_key(2, "event-2");
     dedup.mark_processed(key2.clone());
     assert!(
         !dedup.should_process(&key2),
@@ -52,11 +48,11 @@ async fn test_dedup_len_tracking() {
 
     assert_eq!(dedup.len(), 0);
 
-    let key1 = make_key("chat", "r1", "u1", 1000, 0);
+    let key1 = make_key(1, "event-1");
     let _ = dedup.should_process(&key1);
     assert_eq!(dedup.len(), 1, "One entry after first should_process");
 
-    let key2 = make_key("chat", "r2", "u2", 2000, 0);
+    let key2 = make_key(2, "event-2");
     let _ = dedup.should_process(&key2);
     assert_eq!(dedup.len(), 2, "Two entries after second should_process");
 
@@ -72,13 +68,11 @@ async fn test_dedup_len_tracking() {
 // Test 3: Different events at same timestamp with different keys
 
 #[tokio::test]
-async fn test_different_events_same_timestamp_different_keys() {
+async fn test_room_scoped_event_ids_produce_different_keys() {
     let dedup = MessageDeduplicator::default();
-    let ts = 5000i64;
 
-    // Two different events at the exact same timestamp
-    let key_a = make_key("chat", "room1", "user1", ts, 111);
-    let key_b = make_key("chat", "room1", "user1", ts, 222);
+    let key_a = make_key(1, "shared-event");
+    let key_b = make_key(2, "shared-event");
 
     assert!(
         dedup.should_process(&key_a),
@@ -86,17 +80,16 @@ async fn test_different_events_same_timestamp_different_keys() {
     );
     assert!(
         dedup.should_process(&key_b),
-        "Second event with different content_hash should also be processed"
+        "Second room-scoped key should also be processed"
     );
 
     // Both should now be duplicates
     assert!(!dedup.should_process(&key_a));
     assert!(!dedup.should_process(&key_b));
 
-    // Same content_hash but different event_type
-    let key_c = make_key("playback", "room1", "user1", ts, 111);
+    let key_c = make_key(1, "different-event");
     assert!(
         dedup.should_process(&key_c),
-        "Different event_type should produce a different key"
+        "Different event_id should produce a different key"
     );
 }

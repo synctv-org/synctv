@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO room_resource_events (\n            event_id, scope_type, room_id, user_id, aggregate_type, aggregate_id,\n            resource_type, resource_id, event_type, event_version, aggregate_version,\n            actor_user_id, payload, summary, occurred_at\n        )\n        SELECT\n            event_id::text,\n            scope_type::smallint,\n            room_id::bigint,\n            user_id::bigint,\n            aggregate_type::text,\n            aggregate_id::text,\n            resource_type::text,\n            resource_id::text,\n            event_type::text,\n            event_version::bigint,\n            aggregate_version::bigint,\n            actor_user_id::bigint,\n            payload::jsonb,\n            summary::jsonb,\n            occurred_at::timestamptz\n        FROM UNNEST(\n            $1::text[],\n            $2::smallint[],\n            $3::bigint[],\n            $4::bigint[],\n            $5::text[],\n            $6::text[],\n            $7::text[],\n            $8::text[],\n            $9::text[],\n            $10::bigint[],\n            $11::bigint[],\n            $12::bigint[],\n            $13::jsonb[],\n            $14::jsonb[],\n            $15::timestamptz[]\n        ) AS t(\n            event_id,\n            scope_type,\n            room_id,\n            user_id,\n            aggregate_type,\n            aggregate_id,\n            resource_type,\n            resource_id,\n            event_type,\n            event_version,\n            aggregate_version,\n            actor_user_id,\n            payload,\n            summary,\n            occurred_at\n        )\n        ON CONFLICT (event_id) DO NOTHING\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int2Array",
+        "Int8Array",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "Int8Array",
+        "Int8Array",
+        "JsonbArray",
+        "JsonbArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "159d70f64253112de45108937cecd3811e3fe9fe3228a5ce9029ec486fc960e9"
+}

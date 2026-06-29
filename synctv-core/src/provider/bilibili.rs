@@ -837,7 +837,7 @@ impl MediaProvider for BilibiliProvider {
 
         let (cache_key, cache_ttl) = playback_cache_entry(config, &credential_cache_partition)?;
 
-        super::cached_versioned_playback_or_fill(
+        Box::pin(super::cached_versioned_playback_or_fill(
             Self::NAME,
             &cache_key,
             cache_ttl,
@@ -853,7 +853,7 @@ impl MediaProvider for BilibiliProvider {
                 )
                 .await
             },
-        )
+        ))
         .await
     }
 

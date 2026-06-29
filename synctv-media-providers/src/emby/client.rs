@@ -451,33 +451,11 @@ impl EmbyClient {
             url_encode(item_id)
         );
         let headers = self.build_headers()?;
-        let client = self.client.clone();
-
-        with_retry(|| {
-            let url = url.clone();
-            let headers = headers.clone();
-            let client = client.clone();
-            async move {
-                let response = client.get(&url).headers(headers).send().await?;
-
-                let response = check_response(response).await?;
-                let json: Value = json_with_limit(response).await?;
-                let items = json["Items"]
-                    .as_array()
-                    .ok_or_else(|| EmbyError::Parse("Missing Items array".to_string()))?;
-
-                if items.is_empty() {
-                    return Err(EmbyError::Api {
-                        code: 0,
-                        message: "Item not found".to_string(),
-                    });
-                }
-
-                let item: Item = serde_json::from_value(items[0].clone())?;
-                Ok(item)
-            }
+        let response: ItemsResponse = self.send_get_json(&url, &headers).await?;
+        response.items.into_iter().next().ok_or(EmbyError::Api {
+            code: 0,
+            message: "Item not found".to_string(),
         })
-        .await
     }
 
     /// Get current user information

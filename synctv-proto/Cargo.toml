@@ -6,7 +6,11 @@ authors.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["full"]
+full = ["main", "providers", "playback-provider"]
+main = []
+providers = ["main"]
+playback-provider = []
 openapi = ["dep:utoipa"]
 tls-aws-lc = ["tonic/tls-aws-lc"]
 tls-ring = ["tonic/tls-ring"]

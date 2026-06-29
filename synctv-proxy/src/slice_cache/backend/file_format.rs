@@ -68,10 +68,17 @@ pub(super) async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntry
     })?;
     validate_cache_header(path, &header)?;
 
-    let mut data_buf = Vec::new();
+    let data_size = usize::try_from(header.data_size).map_err(|_| {
+        anyhow::anyhow!(
+            "Data size in {} is too large for this platform: {}",
+            path.display(),
+            header.data_size
+        )
+    })?;
+    let mut data_buf = Vec::with_capacity(data_size);
     file.read_to_end(&mut data_buf).await?;
 
-    if data_buf.len() as u64 != header.data_size {
+    if data_buf.len() != data_size {
         return Err(anyhow::anyhow!(
             "Data size mismatch in {}: header says {} but file has {} bytes",
             path.display(),

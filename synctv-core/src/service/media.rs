@@ -28,6 +28,7 @@ use crate::{
     },
     Error, Result,
 };
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -38,6 +39,7 @@ pub use cover::CreateMediaCoverUploadSession;
 use helpers::{
     batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
     media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,
+    MEDIA_BATCH_PREPARE_CONCURRENCY,
 };
 
 pub type RealtimeOutboxMediaEventFactory =
@@ -168,9 +170,7 @@ impl MediaService {
             .transpose()?
         {
             if let Some(outbox) = &self.realtime_outbox {
-                for event in &events {
-                    outbox.insert_with_executor(event, &mut **tx).await?;
-                }
+                outbox.insert_many_with_executor(&events, tx).await?;
             }
         }
         Ok(())
@@ -322,6 +322,44 @@ impl MediaService {
             provider_instance_name: bound_provider_instance,
             source_config: prepared_source_config,
         })
+    }
+
+    async fn validate_and_prepare_media_batch(
+        &self,
+        user_id: UserId,
+        room_id: RoomId,
+        items: Vec<AddMediaRequest>,
+    ) -> Result<Vec<(AddMediaRequest, PreparedMediaSource)>> {
+        futures::stream::iter(items.into_iter().map(|item| {
+            let service = self.clone();
+            async move {
+                validate_media_name(&item.name)?;
+                if item.description.chars().count() > 5000 {
+                    return Err(Error::InvalidInput(format!(
+                        "Media description for item '{}' cannot exceed 5000 characters",
+                        item.name
+                    )));
+                }
+
+                let prepared_source = service
+                    .prepare_media_source(
+                        &user_id,
+                        &room_id,
+                        item.source_provider,
+                        item.provider_instance_name.as_deref(),
+                        item.source_config.clone(),
+                        Some(&item.name),
+                    )
+                    .await?;
+
+                Ok((item, prepared_source))
+            }
+        }))
+        .buffered(MEDIA_BATCH_PREPARE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
     }
 
     /// Create a new media service
@@ -582,30 +620,9 @@ impl MediaService {
             )));
         }
 
-        // Validate all items before starting a transaction
-        let mut validated_items = Vec::with_capacity(items.len());
-        for item in items {
-            validate_media_name(&item.name)?;
-            if item.description.chars().count() > 5000 {
-                return Err(Error::InvalidInput(format!(
-                    "Media description for item '{}' cannot exceed 5000 characters",
-                    item.name
-                )));
-            }
-
-            let prepared_source = self
-                .prepare_media_source(
-                    &user_id,
-                    &room_id,
-                    item.source_provider,
-                    item.provider_instance_name.as_deref(),
-                    item.source_config.clone(),
-                    Some(&item.name),
-                )
-                .await?;
-
-            validated_items.push((item, prepared_source));
-        }
+        let mut validated_items = self
+            .validate_and_prepare_media_batch(user_id, room_id, items)
+            .await?;
 
         for (item, _) in &mut validated_items {
             item.playlist_id = playlist_id;

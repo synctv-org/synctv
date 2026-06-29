@@ -387,11 +387,12 @@ async fn database_part_chunk(part: FileBlobPart, range: FileByteRange) -> Result
         .map_err(|_| Error::Internal("file range start is invalid".to_string()))?;
     let end = usize::try_from(part_end_exclusive)
         .map_err(|_| Error::Internal("file range end is invalid".to_string()))?;
-    let slice = part_data
-        .data
-        .get(start..end)
-        .ok_or_else(|| Error::Internal("file range does not fit blob part".to_string()))?;
-    Ok(bytes::Bytes::copy_from_slice(slice))
+    if end > part_data.data.len() || start > end {
+        return Err(Error::Internal(
+            "file range does not fit blob part".to_string(),
+        ));
+    }
+    Ok(bytes::Bytes::from(part_data.data).slice(start..end))
 }
 
 fn database_upload_max_size_bytes(policy_max_size_bytes: i64) -> i64 {

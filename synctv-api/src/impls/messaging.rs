@@ -24,8 +24,7 @@ use synctv_core::{
         RequestRateLimiterService, RoomService,
     },
 };
-use synctv_realtime::sync::ConnectionId;
-use synctv_realtime::sync::RealtimeEvent;
+use synctv_realtime::sync::{ConnectionId, RealtimeEvent, SharedRealtimeEvent};
 
 use crate::chat_event_dispatcher::ChatEventDispatcher;
 
@@ -228,7 +227,7 @@ pub struct StreamMessageHandler {
     /// a window where the connection is joined in `ConnectionManager` but not yet
     /// subscribed in `RoomMessageHub`.
     pending_room_event_rx:
-        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<RealtimeEvent>>>>,
+        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Receiver<SharedRealtimeEvent>>>>,
     /// Authenticated member/settings snapshot validated during `pre_join()`.
     pending_initial_join_state: Arc<tokio::sync::Mutex<Option<InitialRealtimeJoinState>>>,
     /// Instance-level concurrency configuration for backpressure control.
@@ -902,7 +901,7 @@ impl StreamMessageHandler {
 
     async fn take_room_event_subscription(
         &self,
-    ) -> Result<tokio::sync::mpsc::Receiver<RealtimeEvent>, String> {
+    ) -> Result<tokio::sync::mpsc::Receiver<SharedRealtimeEvent>, String> {
         if let Some(event_rx) = self.pending_room_event_rx.lock().await.take() {
             return Ok(event_rx);
         }
@@ -1100,7 +1099,7 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
+                        if !matches!(event.as_ref(), RealtimeEvent::ChatMessageEvent { .. }) {
                             let mut send_failed = false;
                             let messages = match realtime_event_to_server_messages(
                                 &event,
@@ -1131,7 +1130,7 @@ impl StreamMessageHandler {
                         }
 
                         let should_refresh_observed_resources = !matches!(
-                            event,
+                            event.as_ref(),
                             RealtimeEvent::ChatMessageEvent { .. }
                         ) || self.resource_observer.has_chat_events_observation().await;
 
@@ -2003,7 +2002,7 @@ impl StreamMessageHandler {
                             Some(event) => {
                                 event_handler.apply_connection_state_from_room_event(&event);
                                 let is_room_shutdown = matches!(
-                                    event,
+                                    event.as_ref(),
                                     RealtimeEvent::RoomDeleted { .. }
                                         | RealtimeEvent::RoomBanned { .. }
                                         | RealtimeEvent::RoomOwnerInactive { .. }
@@ -2035,7 +2034,7 @@ impl StreamMessageHandler {
                                     }
                                 }
 
-                                if !matches!(event, RealtimeEvent::ChatMessageEvent { .. }) {
+                                if !matches!(event.as_ref(), RealtimeEvent::ChatMessageEvent { .. }) {
                                     let messages = match realtime_event_to_server_messages(
                                         &event,
                                         &room_id_str,

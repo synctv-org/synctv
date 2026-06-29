@@ -23,7 +23,7 @@ use super::transport::{
     RealtimeEventHandler, RealtimeMessageTransport, RealtimeMessageTransportConfig,
     RealtimeMessageTransportFactory,
 };
-use super::RealtimeEvent;
+use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::Result as RealtimeResult;
 use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
 use synctv_core::config::ClusterChannelConfig;
@@ -1151,7 +1151,10 @@ impl RealtimeManager {
         &self,
         room_id: RoomId,
         user_id: UserId,
-    ) -> crate::Result<(tokio::sync::mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> crate::Result<(
+        tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
+        ConnectionId,
+    )> {
         let connection_id = ConnectionId::new(format!("{user_id}_{}", synctv_common::snanoid!(8)));
         self.subscribe_with_id(room_id, user_id, connection_id)
             .await
@@ -1167,7 +1170,10 @@ impl RealtimeManager {
         room_id: RoomId,
         user_id: UserId,
         connection_id: ConnectionId,
-    ) -> crate::Result<(tokio::sync::mpsc::Receiver<RealtimeEvent>, ConnectionId)> {
+    ) -> crate::Result<(
+        tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
+        ConnectionId,
+    )> {
         let room_id_str = room_id.to_string();
         let user_id_str = user_id.to_string();
         let rx = self

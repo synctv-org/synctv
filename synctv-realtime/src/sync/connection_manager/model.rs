@@ -23,12 +23,13 @@ impl TimeoutIndex {
         connection_id: &str,
         deadline: Instant,
     ) {
+        let connection_id = connection_id.to_string();
         if let Some(previous_deadline) =
-            deadlines_by_connection.insert(connection_id.to_string(), deadline)
+            deadlines_by_connection.insert(connection_id.clone(), deadline)
         {
-            deadlines.remove(&(previous_deadline, connection_id.to_string()));
+            deadlines.remove(&(previous_deadline, connection_id.clone()));
         }
-        deadlines.insert((deadline, connection_id.to_string()));
+        deadlines.insert((deadline, connection_id));
     }
 
     fn clear_deadline(

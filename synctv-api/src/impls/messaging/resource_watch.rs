@@ -4,7 +4,7 @@ use synctv_core::{
     models::{RoomId, RoomPermission, UserId},
     service::{ChatService, OnlinePresenceService, RoomService},
 };
-use synctv_realtime::sync::{ConnectionId, RealtimeEvent};
+use synctv_realtime::sync::{ConnectionId, RealtimeEvent, SharedRealtimeEvent};
 
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
@@ -80,7 +80,7 @@ pub struct ResourceWatchSession {
 
 pub struct PreparedResourceWatchSession {
     session: ResourceWatchSession,
-    event_rx: tokio::sync::mpsc::Receiver<RealtimeEvent>,
+    event_rx: tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
 }
 
 impl ResourceWatchSession {

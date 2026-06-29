@@ -243,7 +243,8 @@ async fn test_dedup_with_different_events() {
     let user = uid("user1");
     let event_id = synctv_common::snanoid!(16);
 
-    // Same event_id but different event types
+    // Same room and event_id identify one event even if replay paths deserialize
+    // it through different local variants.
     let event1 = RealtimeEvent::UserJoined {
         event_id: event_id.clone(),
         room_id: room,
@@ -271,8 +272,7 @@ async fn test_dedup_with_different_events() {
     let key1 = DedupKey::try_from_event(&event1).unwrap();
     let key2 = DedupKey::try_from_event(&event2).unwrap();
 
-    // Different event types should have different keys
-    assert_ne!(key1.event_type, key2.event_type);
+    assert_eq!(key1, key2);
 
     let should_process1 = dedup.should_process(&key1);
     assert!(should_process1, "First event should be processable");
@@ -280,8 +280,8 @@ async fn test_dedup_with_different_events() {
 
     let should_process2 = dedup.should_process(&key2);
     assert!(
-        should_process2,
-        "Different event type should be processable"
+        !should_process2,
+        "Same room and event_id should be treated as a duplicate"
     );
 }
 
@@ -805,10 +805,8 @@ async fn test_dedup_key_from_event() {
 
     let key = DedupKey::try_from_event(&event).unwrap();
 
-    assert_eq!(key.event_type, "chat_message");
-    assert_eq!(key.room_id, room.to_string());
-    // When event_id is present, it's embedded in the extra field
-    assert_eq!(key.extra, event_id);
+    assert_eq!(key.room_id, Some(room.as_i64()));
+    assert_eq!(key.event_id, event_id);
 }
 
 // Test 12: Room subscribers listing

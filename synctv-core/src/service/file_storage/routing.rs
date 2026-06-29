@@ -91,7 +91,8 @@ impl FileStorageService for RoutedFileStorageService {
     ) -> Result<Vec<NewStoredFile>> {
         validate_stored_files(&files)?;
         let mut prepared = Vec::with_capacity(files.len());
-        let mut by_backend: HashMap<String, Vec<NewStoredFile>> = HashMap::new();
+        let mut by_backend: HashMap<String, Vec<NewStoredFile>> =
+            HashMap::with_capacity(files.len());
         for file in files {
             by_backend
                 .entry(file.storage_backend.clone())
@@ -129,7 +130,8 @@ impl FileStorageService for RoutedFileStorageService {
             ));
         };
         let mut prepared = Vec::with_capacity(files.len());
-        let mut by_backend: HashMap<String, Vec<SubmittedFileReference>> = HashMap::new();
+        let mut by_backend: HashMap<String, Vec<SubmittedFileReference>> =
+            HashMap::with_capacity(files.len());
         for file in files {
             let backend_name = match file.kind {
                 SubmittedFileReferenceKind::Upload => {
@@ -187,7 +189,8 @@ impl FileStorageService for RoutedFileStorageService {
         origin: FileStorageCleanupOrigin,
         files: &[FileReferenceTarget],
     ) -> Result<()> {
-        let mut by_backend: HashMap<&str, Vec<FileReferenceTarget>> = HashMap::new();
+        let mut by_backend: HashMap<&str, Vec<FileReferenceTarget>> =
+            HashMap::with_capacity(files.len());
         for file in files {
             by_backend
                 .entry(file.storage_backend.as_str())
@@ -208,7 +211,8 @@ impl FileStorageService for RoutedFileStorageService {
         origin: FileStorageCleanupOrigin,
         files: &[FileReferenceTarget],
     ) -> Result<()> {
-        let mut by_backend: HashMap<&str, Vec<FileReferenceTarget>> = HashMap::new();
+        let mut by_backend: HashMap<&str, Vec<FileReferenceTarget>> =
+            HashMap::with_capacity(files.len());
         for file in files {
             by_backend
                 .entry(file.storage_backend.as_str())

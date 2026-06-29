@@ -38,6 +38,8 @@ pub use transport::{
     RealtimeMessageTransportFactory, RealtimeMessageTransportRuntime,
 };
 
+pub type SharedRealtimeEvent = Arc<RealtimeEvent>;
+
 #[must_use]
 pub fn build_realtime_message_transport_factory(
     runtime: Arc<dyn RedisCoordinationRuntime>,

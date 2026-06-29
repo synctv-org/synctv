@@ -113,7 +113,7 @@ async fn test_redis_pubsub_no_message_loss() {
         }
         match tokio::time::timeout(remaining, room_rx.recv()).await {
             Ok(Some(evt)) => {
-                if let RealtimeEvent::ChatMessage { message, .. } = &evt {
+                if let RealtimeEvent::ChatMessage { message, .. } = evt.as_ref() {
                     received_messages.push(message.clone());
                 }
             }
@@ -217,10 +217,12 @@ async fn test_redis_stream_catchup() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while historical_messages.len() < 5 && tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(RealtimeEvent::ChatMessage { message, .. })) => {
-                historical_messages.push(message);
+            Ok(Some(event)) => {
+                if let RealtimeEvent::ChatMessage { message, .. } = event.as_ref() {
+                    historical_messages.push(message.clone());
+                }
             }
-            Ok(Some(_)) | Err(_) => {}
+            Err(_) => {}
             Ok(None) => panic!("room channel closed unexpectedly during catch-up"),
         }
     }
@@ -259,7 +261,7 @@ async fn test_redis_stream_catchup() {
     .await;
 
     assert_eq!(received.event_type(), "chat_message");
-    if let RealtimeEvent::ChatMessage { message, .. } = &received {
+    if let RealtimeEvent::ChatMessage { message, .. } = received.as_ref() {
         assert_eq!(message, "Live message after subscriber connect");
     }
 
@@ -357,7 +359,7 @@ async fn test_redis_failure_and_recovery() {
         .await
         .expect("Local subscriber should receive normal message")
         .expect("Local channel not closed");
-    if let RealtimeEvent::ChatMessage { message, .. } = &local_received {
+    if let RealtimeEvent::ChatMessage { message, .. } = local_received.as_ref() {
         assert_eq!(message, "Normal message");
     } else {
         panic!("Expected local normal ChatMessage");
@@ -372,13 +374,14 @@ async fn test_redis_failure_and_recovery() {
         .await
         .expect("subscribe should succeed");
 
-    while let Ok(Some(RealtimeEvent::ChatMessage { message, .. })) =
-        tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await
     {
-        assert_eq!(
-            message, "Normal message",
-            "unexpected buffered local message before recovery test"
-        );
+        if let RealtimeEvent::ChatMessage { message, .. } = event.as_ref() {
+            assert_eq!(
+                message, "Normal message",
+                "unexpected buffered local message before recovery test"
+            );
+        }
     }
 
     // Broadcast from user_b on node A should reach both subscribers on node A
@@ -410,7 +413,7 @@ async fn test_redis_failure_and_recovery() {
         .expect("Second local subscriber should receive message")
         .expect("Second local subscriber channel closed");
     for received in [&local_a, &local_a2] {
-        if let RealtimeEvent::ChatMessage { message, .. } = received {
+        if let RealtimeEvent::ChatMessage { message, .. } = received.as_ref() {
             assert_eq!(message, "Local broadcast test");
         } else {
             panic!("Expected local ChatMessage");
@@ -440,8 +443,10 @@ async fn test_redis_failure_and_recovery() {
     let mut received_messages = Vec::new();
     for _ in 0..5 {
         match tokio::time::timeout(Duration::from_secs(5), rx_b.recv()).await {
-            Ok(Some(RealtimeEvent::ChatMessage { message, .. })) => {
-                received_messages.push(message);
+            Ok(Some(event)) => {
+                if let RealtimeEvent::ChatMessage { message, .. } = event.as_ref() {
+                    received_messages.push(message.clone());
+                }
             }
             _ => break,
         }
@@ -535,7 +540,9 @@ async fn test_redis_reconnection_event_preservation() {
             break;
         }
         match tokio::time::timeout(remaining, rx_b.recv()).await {
-            Ok(Some(RealtimeEvent::ChatMessage { .. })) => received_count += 1,
+            Ok(Some(event)) if matches!(event.as_ref(), RealtimeEvent::ChatMessage { .. }) => {
+                received_count += 1;
+            }
             Ok(Some(_)) => {} // Other event types
             Ok(None) | Err(_) => break, // Channel closed
                                // Timeout

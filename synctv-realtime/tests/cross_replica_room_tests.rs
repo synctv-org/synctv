@@ -108,7 +108,7 @@ async fn test_cross_replica_room_event_propagation() {
     assert_eq!(received.event_type(), "chat_message");
     if let RealtimeEvent::ChatMessage {
         message, username, ..
-    } = &received
+    } = received.as_ref()
     {
         assert_eq!(message, "Hello from node B!");
         assert_eq!(username, "sender");
@@ -282,7 +282,7 @@ async fn test_cross_replica_room_settings_changed() {
     assert_eq!(received.event_type(), "room_settings_changed");
     if let RealtimeEvent::RoomSettingsChanged {
         settings, version, ..
-    } = &received
+    } = received.as_ref()
     {
         assert_eq!(settings.max_members.0, 50);
         assert!(!settings.chat_enabled.0);
@@ -337,7 +337,7 @@ async fn test_multiple_rooms_cross_replica() {
     )
     .await;
 
-    if let RealtimeEvent::ChatMessage { message, .. } = &msg1 {
+    if let RealtimeEvent::ChatMessage { message, .. } = msg1.as_ref() {
         assert_eq!(message, "To room 1");
     } else {
         panic!("Expected ChatMessage for room1");
@@ -361,7 +361,7 @@ async fn test_multiple_rooms_cross_replica() {
     )
     .await;
 
-    if let RealtimeEvent::ChatMessage { message, .. } = &msg2 {
+    if let RealtimeEvent::ChatMessage { message, .. } = msg2.as_ref() {
         assert_eq!(message, "To room 2");
     } else {
         panic!("Expected ChatMessage for room2");

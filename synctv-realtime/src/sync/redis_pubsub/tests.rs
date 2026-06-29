@@ -1,7 +1,7 @@
 use super::*;
 use crate::sync::{
     CacheTarget, ConnectionId, RealtimeEventHandler, RoomMessageHub, RoomMessageRuntime,
-    WebRTCSignalKind,
+    SharedRealtimeEvent, WebRTCSignalKind,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -98,10 +98,10 @@ impl RealtimeEventHandler for RecordingEventHandler {
 
 async fn publish_until_received<F>(
     publish_tx: &tokio::sync::mpsc::Sender<PublishRequest>,
-    rx: &mut tokio::sync::mpsc::Receiver<RealtimeEvent>,
+    rx: &mut tokio::sync::mpsc::Receiver<SharedRealtimeEvent>,
     make_event: F,
     timeout_label: &str,
-) -> Result<RealtimeEvent, Box<dyn std::error::Error>>
+) -> Result<SharedRealtimeEvent, Box<dyn std::error::Error>>
 where
     F: Fn() -> RealtimeEvent,
 {
@@ -329,7 +329,10 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
     );
 
     let drained = rx.recv().await.ok_or("filler message should be present")?;
-    assert!(matches!(drained, RealtimeEvent::ChatMessage { .. }));
+    assert!(matches!(
+        drained.as_ref(),
+        RealtimeEvent::ChatMessage { .. }
+    ));
 
     tokio::time::timeout(Duration::from_secs(1), dispatch_task).await??;
 
@@ -338,7 +341,7 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
         let msg = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await?
             .ok_or("queued message should arrive")?;
-        if matches!(msg, RealtimeEvent::RoomDeleted { .. }) {
+        if matches!(msg.as_ref(), RealtimeEvent::RoomDeleted { .. }) {
             saw_room_deleted = true;
             break;
         }
@@ -886,7 +889,7 @@ async fn test_dispatch_event_only_delivers_duplicate_once() -> TestResult {
     let first = tokio::time::timeout(Duration::from_millis(100), rx.recv())
         .await?
         .ok_or("first event should be delivered")?;
-    assert!(matches!(first, RealtimeEvent::ChatMessage { .. }));
+    assert!(matches!(first.as_ref(), RealtimeEvent::ChatMessage { .. }));
     assert!(
         tokio::time::timeout(Duration::from_millis(100), rx.recv())
             .await

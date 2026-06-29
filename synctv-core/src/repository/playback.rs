@@ -33,16 +33,16 @@ impl RoomPlaybackStateRepository {
         let progress = sqlx::query_as!(
             RoomPlaybackProgress,
             r#"
-            SELECT id,
-                   room_id AS "room_id: RoomId",
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
                    media_id AS "media_id?: MediaId",
                    playlist_id AS "playlist_id?: PlaylistId",
                    target AS "target?: crate::models::ProviderTarget",
-                   target_hash,
-                   "position",
-                   created_at,
-                   updated_at,
-                   version
+                   target_hash AS "target_hash!",
+                   "position" AS "position!",
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM room_playback_progress
             WHERE room_id = $1
               AND media_id IS NOT DISTINCT FROM $2
@@ -69,16 +69,16 @@ impl RoomPlaybackStateRepository {
         let progress = sqlx::query_as!(
             RoomPlaybackProgress,
             r#"
-            SELECT id,
-                   room_id AS "room_id: RoomId",
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
                    media_id AS "media_id?: MediaId",
                    playlist_id AS "playlist_id?: PlaylistId",
                    target AS "target?: crate::models::ProviderTarget",
-                   target_hash,
-                   "position",
-                   created_at,
-                   updated_at,
-                   version
+                   target_hash AS "target_hash!",
+                   "position" AS "position!",
+                   created_at AS "created_at!",
+                   updated_at AS "updated_at!",
+                   version AS "version!"
             FROM room_playback_progress
             WHERE id = $1
               AND room_id = $2
@@ -120,16 +120,16 @@ impl RoomPlaybackStateRepository {
             DO UPDATE SET target = EXCLUDED.target,
                           "position" = EXCLUDED."position",
                           version = room_playback_progress.version + 1
-            RETURNING id,
-                      room_id AS "room_id: RoomId",
+            RETURNING id AS "id!",
+                      room_id AS "room_id!: RoomId",
                       media_id AS "media_id?: MediaId",
                       playlist_id AS "playlist_id?: PlaylistId",
                       target AS "target?: crate::models::ProviderTarget",
-                      target_hash,
-                      "position",
-                      created_at,
-                      updated_at,
-                      version
+                      target_hash AS "target_hash!",
+                      "position" AS "position!",
+                      created_at AS "created_at!",
+                      updated_at AS "updated_at!",
+                      version AS "version!"
             "#,
             state.room_id as RoomId,
             state.playing_media_id as Option<MediaId>,
@@ -159,16 +159,16 @@ impl RoomPlaybackStateRepository {
                 version = version + 1
             WHERE id = $1
               AND room_id = $2
-            RETURNING id,
-                      room_id AS "room_id: RoomId",
+            RETURNING id AS "id!",
+                      room_id AS "room_id!: RoomId",
                       media_id AS "media_id?: MediaId",
                       playlist_id AS "playlist_id?: PlaylistId",
                       target AS "target?: crate::models::ProviderTarget",
-                      target_hash,
-                      "position",
-                      created_at,
-                      updated_at,
-                      version
+                      target_hash AS "target_hash!",
+                      "position" AS "position!",
+                      created_at AS "created_at!",
+                      updated_at AS "updated_at!",
+                      version AS "version!"
             "#,
             progress_id,
             room_id as &RoomId,
@@ -306,16 +306,16 @@ impl RoomPlaybackStateRepository {
                           updated_at,
                           version
             )
-            SELECT updated.room_id AS "room_id: RoomId",
+            SELECT updated.room_id AS "room_id!: RoomId",
                    updated.playing_media_id AS "playing_media_id?: MediaId",
                    updated.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                    updated.target AS "target?: crate::models::ProviderTarget",
                    updated.current_progress_id,
                    COALESCE(progress."position", 0.0) AS "position!",
-                   updated.speed,
-                   updated.is_playing,
-                   updated.updated_at,
-                   updated.version
+                   updated.speed AS "speed!",
+                   updated.is_playing AS "is_playing!",
+                   updated.updated_at AS "updated_at!",
+                   updated.version AS "version!"
             FROM updated
             LEFT JOIN room_playback_progress progress ON progress.id = updated.current_progress_id"#,
             state.room_id as RoomId,
@@ -361,16 +361,16 @@ impl RoomPlaybackStateRepository {
         // Fetch the row (either just inserted or already existing)
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT state.room_id AS "room_id: RoomId",
+            r#"SELECT state.room_id AS "room_id!: RoomId",
                       state.playing_media_id AS "playing_media_id?: MediaId",
                       state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                       state.target AS "target?: crate::models::ProviderTarget",
                       state.current_progress_id,
                       COALESCE(progress."position", 0.0) AS "position!",
-                      state.speed,
-                      state.is_playing,
-                      state.updated_at,
-                      state.version
+                      state.speed AS "speed!",
+                      state.is_playing AS "is_playing!",
+                      state.updated_at AS "updated_at!",
+                      state.version AS "version!"
              FROM room_playback_state state
              LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
              WHERE state.room_id = $1"#,
@@ -411,16 +411,16 @@ impl RoomPlaybackStateRepository {
 
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT state.room_id AS "room_id: RoomId",
+            r#"SELECT state.room_id AS "room_id!: RoomId",
                       state.playing_media_id AS "playing_media_id?: MediaId",
                       state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                       state.target AS "target?: crate::models::ProviderTarget",
                       state.current_progress_id,
                       COALESCE(progress."position", 0.0) AS "position!",
-                      state.speed,
-                      state.is_playing,
-                      state.updated_at,
-                      state.version
+                      state.speed AS "speed!",
+                      state.is_playing AS "is_playing!",
+                      state.updated_at AS "updated_at!",
+                      state.version AS "version!"
              FROM room_playback_state state
              LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
              WHERE state.room_id = $1"#,
@@ -436,16 +436,16 @@ impl RoomPlaybackStateRepository {
     pub async fn get(&self, room_id: &RoomId) -> Result<Option<RoomPlaybackState>> {
         let result = sqlx::query_as!(
             RoomPlaybackState,
-            r#"SELECT state.room_id AS "room_id: RoomId",
+            r#"SELECT state.room_id AS "room_id!: RoomId",
                       state.playing_media_id AS "playing_media_id?: MediaId",
                       state.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                       state.target AS "target?: crate::models::ProviderTarget",
                       state.current_progress_id,
                       COALESCE(progress."position", 0.0) AS "position!",
-                      state.speed,
-                      state.is_playing,
-                      state.updated_at,
-                      state.version
+                      state.speed AS "speed!",
+                      state.is_playing AS "is_playing!",
+                      state.updated_at AS "updated_at!",
+                      state.version AS "version!"
              FROM room_playback_state state
              LEFT JOIN room_playback_progress progress ON progress.id = state.current_progress_id
              WHERE state.room_id = $1"#,
@@ -562,16 +562,16 @@ impl RoomPlaybackStateRepository {
                 LEFT JOIN playlists p ON p.id = rps.playing_playlist_id
                 WHERE m.creator_id = $1 OR p.creator_id = $1
             )
-            SELECT rps.room_id AS "room_id: RoomId",
+            SELECT rps.room_id AS "room_id!: RoomId",
                    rps.playing_media_id AS "playing_media_id?: MediaId",
                    rps.playing_playlist_id AS "playing_playlist_id?: PlaylistId",
                    rps.target AS "target?: crate::models::ProviderTarget",
                    rps.current_progress_id,
                    COALESCE(progress."position", 0.0) AS "position!",
-                   rps.speed,
-                   rps.is_playing,
-                   rps.updated_at,
-                   rps.version
+                   rps.speed AS "speed!",
+                   rps.is_playing AS "is_playing!",
+                   rps.updated_at AS "updated_at!",
+                   rps.version AS "version!"
             FROM room_playback_state rps
             JOIN impacted_rooms impacted ON impacted.room_id = rps.room_id
             LEFT JOIN room_playback_progress progress ON progress.id = rps.current_progress_id

@@ -115,7 +115,7 @@ synctv-livestream = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
 synctv-realtime = { workspace = true, default-features = false }
 synctv-proxy = { workspace = true, default-features = false }
-synctv-proto = { workspace = true, default-features = false }
+synctv-proto = { workspace = true, default-features = false, features = ["main", "providers"] }
 synctv-management = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 synctv-xiu = { workspace = true, default-features = false }

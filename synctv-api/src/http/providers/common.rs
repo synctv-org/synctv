@@ -1,18 +1,18 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post, put},
     Json, Router,
 };
 use futures::future::BoxFuture;
 
 use super::super::middleware::RequestMetadata;
-use super::super::validation::ProtoQuery;
 use super::super::{
     admin_execute::{execute_admin_endpoint, execute_admin_endpoint_with_control},
     AppState,
 };
 use super::super::{error::map_api_error, AppResult};
 use crate::impls::{ApiError, EndpointRateLimitCategory};
+use std::str::FromStr as _;
 use synctv_proto::providers::common::{
     AddProviderInstanceRequest, AddProviderInstanceResponse, DeleteProviderInstanceRequest,
     DeleteProviderInstanceResponse, DisableProviderInstanceRequest,
@@ -23,6 +23,57 @@ use synctv_proto::providers::common::{
     ReconnectProviderInstanceResponse, UpdateProviderInstanceRequest,
     UpdateProviderInstanceResponse,
 };
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderInstancesAvailableQuery {
+    provider_type: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProviderInstancesQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+    provider_type: Option<String>,
+    search: Option<String>,
+    enabled: Option<bool>,
+    tls: Option<bool>,
+    sort_by: Option<i32>,
+    sort_direction: Option<i32>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderBackendsPath {
+    provider_type: String,
+}
+
+fn source_provider_param(value: Option<&str>) -> Result<i32, super::super::AppError> {
+    let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(synctv_proto::source_config::SourceProvider::Unspecified as i32);
+    };
+    if let Ok(value) = raw.parse::<i32>() {
+        return Ok(value);
+    }
+    let normalized = raw
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|ch| *ch != '-' && *ch != '_')
+        .collect::<String>();
+    let canonical = match normalized.as_str() {
+        "directurl" => "direct_url",
+        "bilibili" => "bilibili",
+        "alist" => "alist",
+        "emby" => "emby",
+        "rtmp" => "rtmp",
+        "liveproxy" => "live_proxy",
+        _ => raw,
+    };
+    synctv_core::models::SourceProvider::from_str(canonical)
+        .map(|provider| crate::impls::source_provider::core_source_provider_to_proto(provider))
+        .map_err(|_| super::super::AppError::bad_request("Invalid providerType"))
+}
 
 pub(crate) fn register_common_routes() -> Router<AppState> {
     Router::new()
@@ -65,9 +116,12 @@ pub(crate) fn register_common_routes() -> Router<AppState> {
 )]
 pub(crate) async fn list_instances(
     request_meta: RequestMetadata,
-    ProtoQuery(req): ProtoQuery<ListAvailableProviderInstancesRequest>,
+    Query(query): Query<ProviderInstancesAvailableQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<ProviderInstancesResponse>, super::super::AppError> {
+    let req = ListAvailableProviderInstancesRequest {
+        provider_type: source_provider_param(query.provider_type.as_deref())?,
+    };
     let request_meta = request_meta.0;
     let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
@@ -113,8 +167,18 @@ pub(crate) async fn list_instances(
 pub(crate) async fn list_provider_instances(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    ProtoQuery(req): ProtoQuery<ListProviderInstancesRequest>,
+    Query(query): Query<ProviderInstancesQuery>,
 ) -> Result<Json<ListProviderInstancesResponse>, super::super::AppError> {
+    let req = ListProviderInstancesRequest {
+        page: query.page.unwrap_or_default(),
+        page_size: query.page_size.unwrap_or_default(),
+        provider_type: source_provider_param(query.provider_type.as_deref())?,
+        search: query.search.unwrap_or_default(),
+        enabled: query.enabled,
+        tls: query.tls,
+        sort_by: query.sort_by.unwrap_or_default(),
+        sort_direction: query.sort_direction.unwrap_or_default(),
+    };
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -386,8 +450,11 @@ pub(crate) async fn disable_provider_instance(
 pub(crate) async fn list_backends(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-    Path(req): Path<ListProviderBackendsRequest>,
+    Path(path): Path<ProviderBackendsPath>,
 ) -> Result<Json<ProviderBackendsResponse>, super::super::AppError> {
+    let req = ListProviderBackendsRequest {
+        provider_type: source_provider_param(Some(&path.provider_type))?,
+    };
     let request_meta = request_meta.0;
     let api = state.shared_api_runtime.provider_common_api.clone();
     let executor = api.clone();
@@ -512,6 +579,36 @@ mod tests {
             vec![synctv_proto::source_config::SourceProvider::Alist as i32]
         );
         Ok(())
+    }
+
+    #[test]
+    fn provider_type_param_accepts_rest_names_and_numbers() -> TestResult {
+        assert_eq!(
+            super::source_provider_param(Some("alist"))?,
+            synctv_proto::source_config::SourceProvider::Alist as i32
+        );
+        assert_eq!(
+            super::source_provider_param(Some("liveProxy"))?,
+            synctv_proto::source_config::SourceProvider::LiveProxy as i32
+        );
+        assert_eq!(
+            super::source_provider_param(Some("live_proxy"))?,
+            synctv_proto::source_config::SourceProvider::LiveProxy as i32
+        );
+        assert_eq!(
+            super::source_provider_param(Some("3"))?,
+            synctv_proto::source_config::SourceProvider::Alist as i32
+        );
+        assert_eq!(
+            super::source_provider_param(None)?,
+            synctv_proto::source_config::SourceProvider::Unspecified as i32
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_type_param_rejects_unknown_rest_name() {
+        assert!(super::source_provider_param(Some("unknown-provider")).is_err());
     }
 
     fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {

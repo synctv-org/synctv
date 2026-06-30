@@ -784,6 +784,7 @@ fn test_playback_state_to_proto() -> TestResult {
     assert!((proto.speed - 1.5).abs() < f64::EPSILON);
     assert!(!proto.is_playing);
     assert_eq!(proto.version, 42);
+    assert!(proto.generated_at_millis > 0);
     Ok(())
 }
 
@@ -805,8 +806,12 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestRes
 
     let proto = api_ok(try_playback_state_to_proto(&state, &public_id_codec))?;
 
-    assert!(proto.position >= 123.5);
+    assert!(proto.position >= 123.49);
     assert!(proto.position < 124.5);
+    let generated_at = chrono::DateTime::from_timestamp_millis(proto.generated_at_millis)
+        .ok_or_else(|| test_error("generated_at_millis should be a valid timestamp"))?;
+    let expected = state.computed_position_at(generated_at);
+    assert!((proto.position - expected).abs() < f64::EPSILON);
     Ok(())
 }
 

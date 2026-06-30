@@ -14,9 +14,8 @@ use tokio_stream::{Stream, StreamExt};
 use super::super::websocket::RealtimeTransportFormat;
 use super::query::{parse_watch_delivery_mode, watch_after_event_sequence};
 use super::request_metadata;
-use super::WatchQuery;
 use super::{AppResult, AppState, RequestMetadata};
-use crate::http::validation::ProtoQuery;
+use super::{WatchPlaylistItemsQuery, WatchQuery};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
@@ -25,6 +24,7 @@ use synctv_proto::client::{
     ListPlaylistItemsRequest, WatchChatEventsRequest, WatchChatPinEventsRequest,
     WatchPlaylistItemsRequest, WatchRoomMemberEventsRequest, WatchRoomSettingsRequest,
 };
+use synctv_proto::source_config::SourceProvider;
 
 struct HttpWatchMessageSender {
     sender: tokio::sync::mpsc::Sender<synctv_proto::client::ServerMessage>,
@@ -279,12 +279,26 @@ pub async fn watch_playlist_items(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     headers: HeaderMap,
-    Query(query): Query<WatchQuery>,
-    ProtoQuery(request): ProtoQuery<ListPlaylistItemsRequest>,
+    Query(query): Query<WatchPlaylistItemsQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
     let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    let request = ListPlaylistItemsRequest {
+        playlist_id: query.playlist_id.unwrap_or_default(),
+        target: None,
+        page: query.page.unwrap_or_default(),
+        page_size: query.page_size.unwrap_or_default(),
+        search: query.search.unwrap_or_default(),
+        source_provider: query
+            .source_provider
+            .unwrap_or(SourceProvider::Unspecified as i32),
+        provider_instance_name: query.provider_instance_name.unwrap_or_default(),
+        sort_by: query.sort_by.unwrap_or_default(),
+        sort_direction: query.sort_direction.unwrap_or_default(),
+        availability: query.availability.unwrap_or_default(),
+        refresh: query.refresh.unwrap_or_default(),
+    };
     let request = WatchPlaylistItemsRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playlist_items: Some(synctv_proto::client::ObservePlaylistItems {

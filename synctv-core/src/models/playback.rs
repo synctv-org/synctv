@@ -162,8 +162,14 @@ impl RoomPlaybackState {
     /// Computes the server-side playback position from the persisted anchor.
     #[must_use]
     pub fn computed_position(&self) -> f64 {
+        self.computed_position_at(Utc::now())
+    }
+
+    /// Computes playback position at a caller-supplied instant.
+    #[must_use]
+    pub fn computed_position_at(&self, generated_at: chrono::DateTime<Utc>) -> f64 {
         if self.is_playing {
-            let delta = Utc::now() - self.updated_at;
+            let delta = generated_at - self.updated_at;
             let elapsed = delta
                 .to_std()
                 .map_or(0.0, |duration| duration.as_secs_f64());

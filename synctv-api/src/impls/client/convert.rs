@@ -1545,6 +1545,9 @@ pub(crate) fn try_playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::PlaybackState, crate::impls::ApiError> {
+    let generated_at_millis = chrono::Utc::now().timestamp_millis();
+    let generated_at = chrono::DateTime::from_timestamp_millis(generated_at_millis)
+        .unwrap_or_else(chrono::Utc::now);
     Ok(synctv_proto::client::PlaybackState {
         room_id: encode_room_id_for_proto(state.room_id, public_id_codec)?,
         playing_media_id: state
@@ -1552,7 +1555,7 @@ pub(crate) fn try_playback_state_to_proto(
             .map(|id| encode_media_id_for_proto(id, public_id_codec))
             .transpose()?
             .unwrap_or_default(),
-        position: state.computed_position(),
+        position: state.computed_position_at(generated_at),
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),
@@ -1564,6 +1567,7 @@ pub(crate) fn try_playback_state_to_proto(
             .unwrap_or_default(),
         target: optional_provider_target_to_proto(state.target.as_ref()),
         target_hash: state.target_hash()?,
+        generated_at_millis,
     })
 }
 

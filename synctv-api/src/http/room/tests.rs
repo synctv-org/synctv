@@ -2,7 +2,7 @@ use super::{
     build_get_playback_request, sse_event_from_server_message, sse_event_id_from_resource_event,
     watch_after_event_sequence, CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery,
     MediaCoverObjectQuery, PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery,
-    WatchQuery,
+    WatchPlaylistItemsQuery, WatchQuery,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use synctv_proto::client::{
@@ -222,6 +222,10 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
         "format=json&afterEventSequence=12&extra=true"
     )
     .is_err());
+    assert!(serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
+        "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1&extra=true"
+    )
+    .is_err());
     assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
         "format=json&media_id=media_1&extra=true"
     )
@@ -230,6 +234,18 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
         serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&afterEventSequence=12")
             .expect("watch playback should accept a replay cursor");
     assert_eq!(playback_watch.after_event_sequence, Some(12));
+    let playlist_items_watch = serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
+        "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1",
+    )
+    .expect("playlist item watch should accept list filters");
+    assert_eq!(playlist_items_watch.after_event_sequence, Some(12));
+    assert_eq!(playlist_items_watch.page, Some(1));
+    assert_eq!(playlist_items_watch.page_size, Some(25));
+    assert_eq!(playlist_items_watch.playlist_id.as_deref(), Some("pl_1"));
+    assert!(serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
+        "format=json&playlistId=pl_1&target=%7B%22alist%22%3A%7B%22relativePath%22%3A%22season-1%22%7D%7D"
+    )
+    .is_err());
     assert!(
         serde_urlencoded::from_str::<ChatAttachmentObjectQuery>("token=token&extra=true").is_err()
     );
@@ -648,6 +664,25 @@ fn test_chat_message_path_injected_queries_reject_message_id() -> TestResult {
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn test_chat_playback_messages_query_accepts_structured_emby_target() -> TestResult {
+    let query: super::chat::GetChatPlaybackMessagesQuery = serde_urlencoded::from_str(
+        "playbackPlaylistId=pl_45&playbackTarget=%7B%22emby%22%3A%7B%22itemId%22%3A%225%22%7D%7D&positionSeconds=12.5",
+    )?;
+    let query = query.into_request()?;
+
+    assert_eq!(query.playback_playlist_id, "pl_45");
+    let Some(synctv_proto::client::ProviderTarget {
+        target: Some(synctv_proto::client::provider_target::Target::Emby(target)),
+    }) = query.playback_target
+    else {
+        return Err(test_error("emby playback target should deserialize"));
+    };
+    assert_eq!(target.item_id, "5");
+    assert!((query.position_seconds - 12.5).abs() < f64::EPSILON);
     Ok(())
 }
 

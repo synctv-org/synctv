@@ -30,6 +30,24 @@ pub struct WatchQuery {
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WatchPlaylistItemsQuery {
+    pub delivery_mode: Option<i32>,
+    pub format: Option<String>,
+    pub after_event_sequence: Option<i64>,
+    pub playlist_id: Option<String>,
+    pub page: Option<i32>,
+    pub page_size: Option<i32>,
+    pub search: Option<String>,
+    pub source_provider: Option<i32>,
+    pub provider_instance_name: Option<String>,
+    pub sort_by: Option<i32>,
+    pub sort_direction: Option<i32>,
+    pub availability: Option<i32>,
+    pub refresh: Option<bool>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,

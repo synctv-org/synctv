@@ -17,7 +17,7 @@ RESULTS_DIR="$SMOKE_DIR/results"
 SOCK="unix://$RUN_DIR/synctv.sock"
 BIN="${SYNCTV_BIN:-$ROOT_DIR/target/debug/synctv}"
 BASE_URL="${SYNCTV_BASE_URL:-http://127.0.0.1:8080}"
-STATIC_PORT="${SYNCTV_DEV_STATIC_PORT:-18080}"
+STATIC_PORT="${DEV_STATIC_PORT:-18080}"
 STATIC_URL="http://127.0.0.1:$STATIC_PORT"
 RUN_ID="${SYNCTV_DEV_SMOKE_RUN_ID:-$(date +%Y%m%d%H%M%S)}"
 SMOKE_USER="devuser_$RUN_ID"
@@ -192,7 +192,8 @@ curl_playback_url() {
     /*) url="$BASE_URL$url" ;;
     *) die "Unsupported playback URL in $json_file: $url" ;;
   esac
-  curl -fsS -L --max-time 20 "${header_args[@]}" "$url" -o /tmp/synctv-smoke-playback.bin
+  curl -fsS -L --max-time 20 --range 0-65535 --max-filesize 1048576 \
+    "${header_args[@]}" "$url" -o /tmp/synctv-smoke-playback.bin
   test -s /tmp/synctv-smoke-playback.bin
 }
 

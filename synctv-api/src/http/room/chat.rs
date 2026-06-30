@@ -67,6 +67,57 @@ impl GetChatMessageContextQuery {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct GetChatPlaybackMessagesQuery {
+    #[serde(default)]
+    playback_media_id: String,
+    #[serde(default)]
+    playback_playlist_id: String,
+    #[serde(default)]
+    playback_target: String,
+    #[serde(default)]
+    position_seconds: f64,
+    #[serde(default)]
+    before_seconds: f64,
+    #[serde(default)]
+    after_seconds: f64,
+    #[serde(default)]
+    limit: i32,
+    #[serde(default)]
+    include_deleted: bool,
+}
+
+impl GetChatPlaybackMessagesQuery {
+    pub(super) fn into_request(
+        self,
+    ) -> Result<GetChatPlaybackMessagesRequest, crate::http::AppError> {
+        let playback_target = if self.playback_target.trim().is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&self.playback_target).map_err(|error| {
+                    crate::http::AppError::bad_request(format!(
+                        "Invalid playbackTarget JSON: {error}"
+                    ))
+                })?,
+            )
+        };
+        Ok(GetChatPlaybackMessagesRequest {
+            playback_media_id: self.playback_media_id,
+            playback_playlist_id: self.playback_playlist_id,
+            playback_target,
+            position_seconds: self.position_seconds,
+            before_seconds: self.before_seconds,
+            after_seconds: self.after_seconds,
+            limit: self.limit,
+            include_deleted: self.include_deleted,
+        })
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct UnpinChatMessageQuery {
     #[serde(default)]
     client_operation_id: String,
@@ -319,7 +370,7 @@ pub async fn get_chat_message_context(
             ("roomId" = String, Path, description = "Room ID"),
             ("playbackMediaId" = Option<String>, Query, description = "Playback media ID"),
             ("playbackPlaylistId" = Option<String>, Query, description = "Playback playlist ID"),
-            ("playbackTarget" = Option<synctv_proto::client::ProviderTarget>, Query, description = "Structured provider playback target"),
+            ("playbackTarget" = Option<String>, Query, description = "Provider playback target as ProtoJSON object"),
             ("positionSeconds" = Option<f64>, Query, description = "Playback position in seconds"),
             ("beforeSeconds" = Option<f64>, Query, description = "Seconds before position"),
             ("afterSeconds" = Option<f64>, Query, description = "Seconds after position"),
@@ -341,9 +392,10 @@ pub async fn get_chat_playback_messages(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    ProtoQuery(req): ProtoQuery<GetChatPlaybackMessagesRequest>,
+    ProtoQuery(query): ProtoQuery<GetChatPlaybackMessagesQuery>,
 ) -> AppResult<Json<GetChatPlaybackMessagesResponse>> {
     let room_id = path.room_id;
+    let req = query.into_request()?;
     let response = execute_room_actor_endpoint(
         &state,
         request_meta,

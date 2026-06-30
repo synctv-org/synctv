@@ -15,6 +15,7 @@ use synctv_core::models::{
 };
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
+use synctv_core::service::MediaService;
 use synctv_core::service::media::{
     AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
     MoveMediaRequest as CoreMoveMediaRequest,
@@ -24,7 +25,6 @@ use synctv_core::service::room::{
     MemberResourceCleanupResult, RealtimeOutboxDeleteEntriesEventFactory,
     RealtimeOutboxMemberResourceCleanupEventFactory,
 };
-use synctv_core::service::MediaService;
 
 use super::convert::try_playlist_path_node_to_proto;
 use super::convert::{
@@ -974,6 +974,19 @@ fn map_availability_filter(filter: i32) -> Result<Option<bool>, ApiError> {
         synctv_proto::client::ResourceAvailabilityFilter::All => Ok(None),
         synctv_proto::client::ResourceAvailabilityFilter::Available => Ok(Some(true)),
         synctv_proto::client::ResourceAvailabilityFilter::Unavailable => Ok(Some(false)),
+    }
+}
+
+pub(crate) fn require_dynamic_playlist_creator(
+    playlist: &Playlist,
+    viewer_id: UserId,
+) -> Result<(), ApiError> {
+    if playlist.creator_id == Some(viewer_id) {
+        Ok(())
+    } else {
+        Err(ApiError::Authorization(
+            "Only the playlist creator can browse dynamic provider playlists".to_string(),
+        ))
     }
 }
 
@@ -1950,6 +1963,7 @@ impl ClientApiImpl {
                     "Guests cannot browse dynamic provider playlists".to_string(),
                 ));
             };
+            require_dynamic_playlist_creator(&playlist, uid)?;
             self.room_service
                 .ensure_client_usable_playlist(&playlist)
                 .await
@@ -2295,12 +2309,13 @@ impl crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService for Cli
 #[cfg(test)]
 mod tests {
     use super::{
-        build_add_media_batch_request, build_add_media_request, build_delete_entries_request,
-        build_delete_media_request, build_edit_media_request, build_move_media_request,
-        compute_playlist_items_response_version, file_upload_session_to_room_cover_proto,
-        map_availability_filter, map_media_sort, map_playlist_sort_from_media_sort,
-        map_sort_direction, stored_file_to_file_cover_proto, upload_session_fields,
-        validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
+        DEFAULT_MEDIA_TITLE, build_add_media_batch_request, build_add_media_request,
+        build_delete_entries_request, build_delete_media_request, build_edit_media_request,
+        build_move_media_request, compute_playlist_items_response_version,
+        file_upload_session_to_room_cover_proto, map_availability_filter, map_media_sort,
+        map_playlist_sort_from_media_sort, map_sort_direction, require_dynamic_playlist_creator,
+        stored_file_to_file_cover_proto, upload_session_fields,
+        validate_dynamic_playlist_query_support,
     };
     use chrono::Utc;
     use synctv_core::models::{
@@ -2415,8 +2430,8 @@ mod tests {
     }
 
     #[test]
-    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes(
-    ) -> Result<(), crate::impls::ApiError> {
+    fn test_playlist_items_response_version_changes_when_only_thumbnail_url_changes()
+    -> Result<(), crate::impls::ApiError> {
         let make_response = |thumbnail: &str| synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
@@ -2902,6 +2917,56 @@ mod tests {
 
         assert!(supported);
         Ok(())
+    }
+
+    #[test]
+    fn test_require_dynamic_playlist_creator_allows_creator() -> TestResult {
+        let playlist = make_playlist(
+            "Dynamic Folder",
+            Some(synctv_core::models::SourceProvider::Alist),
+            Some("alist-main"),
+        );
+        let creator_id = playlist
+            .creator_id
+            .ok_or_else(|| test_error("playlist should include creator id"))?;
+
+        api_ok(require_dynamic_playlist_creator(&playlist, creator_id))?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_require_dynamic_playlist_creator_rejects_other_user() {
+        let playlist = make_playlist(
+            "Dynamic Folder",
+            Some(synctv_core::models::SourceProvider::Alist),
+            Some("alist-main"),
+        );
+        let err = require_error(require_dynamic_playlist_creator(
+            &playlist,
+            UserId::expect_positive(999),
+        ));
+
+        assert!(
+            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("Only the playlist creator"))
+        );
+    }
+
+    #[test]
+    fn test_require_dynamic_playlist_creator_rejects_unowned_playlist() {
+        let mut playlist = make_playlist(
+            "Dynamic Folder",
+            Some(synctv_core::models::SourceProvider::Alist),
+            Some("alist-main"),
+        );
+        playlist.creator_id = None;
+        let err = require_error(require_dynamic_playlist_creator(
+            &playlist,
+            UserId::expect_positive(999),
+        ));
+
+        assert!(
+            matches!(err, crate::impls::ApiError::Authorization(message) if message.contains("Only the playlist creator"))
+        );
     }
 
     #[test]

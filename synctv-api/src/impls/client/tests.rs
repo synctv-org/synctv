@@ -66,8 +66,8 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 }
 
 #[tokio::test]
-async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
-) {
+async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested()
+ {
     let requested = RoomPermissionSet(
         synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
             | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,
@@ -515,7 +515,7 @@ fn test_provider_error_upstream_http_is_sanitized() -> TestResult {
         other => {
             return Err(test_error(format!(
                 "expected upstream unavailability, got {other:?}"
-            )))
+            )));
         }
     }
     Ok(())
@@ -1122,6 +1122,77 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         synctv_proto::source_config::SourceProvider::Alist as i32
     );
     assert_eq!(proto.provider_instance_name, "");
+    Ok(())
+}
+
+#[test]
+fn test_playlist_to_proto_for_owner_includes_source_config() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let owner_id = UserId::expect_positive(304);
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::expect_positive(308),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(owner_id),
+        name: "Alist Folder".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 1.0,
+        source_provider: Some(synctv_core::models::SourceProvider::Alist),
+        source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+            "alist-main",
+            "/tv",
+        )),
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+
+    let proto = api_ok(try_playlist_to_proto_for_viewer(
+        &playlist,
+        5,
+        true,
+        Some(owner_id),
+        &public_id_codec,
+    ))?;
+
+    assert!(proto.source_config.is_some());
+    Ok(())
+}
+
+#[test]
+fn test_playlist_to_proto_for_non_owner_hides_source_config() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::expect_positive(309),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
+        name: "Alist Folder".to_string(),
+        description: String::new(),
+        cover_file_reference_id: None,
+        parent_id: None,
+        position: 1.0,
+        source_provider: Some(synctv_core::models::SourceProvider::Alist),
+        source_config: Some(synctv_core_testing::alist_directory_playlist_source_config(
+            "alist-main",
+            "/tv",
+        )),
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+
+    let proto = api_ok(try_playlist_to_proto_for_viewer(
+        &playlist,
+        5,
+        true,
+        Some(UserId::expect_positive(999)),
+        &public_id_codec,
+    ))?;
+
+    assert!(proto.source_config.is_none());
     Ok(())
 }
 

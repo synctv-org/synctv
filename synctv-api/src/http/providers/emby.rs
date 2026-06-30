@@ -37,7 +37,7 @@ const THUMBNAIL_ROUTE_PREFIX: &str = "/api/providers/emby/thumbnail/";
 const THUMBNAIL_SIGNATURE_PROVIDER: &str = "emby-thumbnail";
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ThumbnailQuery {
     server_id: String,
     #[serde(default)]
@@ -792,9 +792,9 @@ mod tests {
         assert_eq!(query.max_height, Some(300));
         assert_eq!(query.max_width, Some(640));
 
-        let error = serde_urlencoded::from_str::<ThumbnailQuery>("serverId=emby-main&extra=value")
-            .expect_err("unknown thumbnail query fields should be rejected");
-        assert!(error.to_string().contains("extra"));
+        let query =
+            serde_urlencoded::from_str::<ThumbnailQuery>("serverId=emby-main&extra=value")?;
+        assert_eq!(query.server_id, "emby-main");
         Ok(())
     }
 

@@ -22,7 +22,7 @@ use synctv_proto::client::{
 };
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetChatMessageQuery {
@@ -40,7 +40,7 @@ impl GetChatMessageQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetChatMessageContextQuery {
@@ -64,7 +64,7 @@ impl GetChatMessageContextQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetChatPlaybackMessagesQuery {
@@ -115,7 +115,7 @@ impl GetChatPlaybackMessagesQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct UnpinChatMessageQuery {
@@ -133,7 +133,7 @@ impl UnpinChatMessageQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct ListChatReactionUsersQuery {
@@ -159,7 +159,7 @@ impl ListChatReactionUsersQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct GetChatMessageReadReceiptsQuery {

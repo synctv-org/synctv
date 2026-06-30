@@ -25,13 +25,13 @@ use synctv_proto::providers::common::{
 };
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderInstancesAvailableQuery {
     provider_type: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderInstancesQuery {
     page: Option<i32>,
     page_size: Option<i32>,

@@ -76,19 +76,18 @@ fn upload_response_headers(
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct UserAvatarObjectPath {
     pub encoded_object_key: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct UserAvatarObjectQuery {
     pub token: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PasskeyCredentialPath {
     pub credential_id: String,
 }
@@ -1082,10 +1081,12 @@ mod tests {
     }
 
     #[test]
-    fn test_user_avatar_object_query_rejects_unknown_fields() {
-        assert!(
-            serde_urlencoded::from_str::<UserAvatarObjectQuery>("token=token&extra=true").is_err()
-        );
+    fn test_user_avatar_object_query_ignores_unknown_fields() -> TestResult {
+        let query = serde_urlencoded::from_str::<UserAvatarObjectQuery>(
+            "token=token&extra=true",
+        )?;
+        assert_eq!(query.token, "token");
+        Ok(())
     }
 
     #[test]

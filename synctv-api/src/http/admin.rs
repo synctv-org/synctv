@@ -28,14 +28,14 @@ fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RoomMemberTargetPath {
     room_id: String,
     user_id: String,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub(crate) struct AdminGetUserRoomsQuery {
@@ -70,7 +70,7 @@ impl AdminGetUserRoomsQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub(crate) struct AdminGetRoomMembersQuery {

@@ -40,7 +40,7 @@ use super::{error::map_api_error, middleware::RequestMetadata, AppError, AppResu
 use crate::impls::EndpointRateLimitCategory;
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct AuthorizationUrlQuery {
     #[serde(default)]
@@ -57,7 +57,7 @@ impl AuthorizationUrlQuery {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct BindAuthorizationUrlQuery {
     #[serde(default)]
@@ -77,7 +77,7 @@ impl BindAuthorizationUrlQuery {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 pub struct UnlinkProviderQuery {
     #[serde(default)]

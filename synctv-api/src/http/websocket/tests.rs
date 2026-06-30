@@ -211,10 +211,10 @@ fn test_ws_query_deserialization_with_ticket() -> TestResult {
 }
 
 #[test]
-fn test_ws_query_deserialization_rejects_extra_fields() -> TestResult {
-    let json = r#"{"ticket":"tix","extra":"rejected"}"#;
-    let error = serde_json::from_str::<WsQuery>(json).expect_err("extra fields should be rejected");
-    assert!(error.to_string().contains("extra"));
+fn test_ws_query_deserialization_ignores_extra_fields() -> TestResult {
+    let json = r#"{"ticket":"tix","extra":"ignored"}"#;
+    let query: WsQuery = serde_json::from_str(json)?;
+    assert_eq!(query.ticket, "tix");
     Ok(())
 }
 

@@ -4,7 +4,7 @@ use super::AppResult;
 use synctv_proto::client::{GetPlaybackRequest, ResourceDeliveryMode};
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
 #[cfg_attr(
     feature = "openapi",
@@ -21,7 +21,7 @@ pub struct GetPlaybackQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct WatchQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
@@ -29,7 +29,7 @@ pub struct WatchQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct WatchPlaylistItemsQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
@@ -47,7 +47,7 @@ pub struct WatchPlaylistItemsQuery {
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,

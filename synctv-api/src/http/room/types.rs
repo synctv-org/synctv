@@ -20,7 +20,6 @@ pub struct ChatAttachmentObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChatAttachmentObjectQuery {
     pub token: String,
 }
@@ -32,7 +31,6 @@ pub struct MediaCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MediaCoverObjectQuery {
     pub token: String,
 }
@@ -44,7 +42,6 @@ pub struct RoomCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RoomCoverObjectQuery {
     pub token: String,
 }
@@ -56,7 +53,6 @@ pub struct PlaylistCoverObjectPath {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PlaylistCoverObjectQuery {
     pub token: String,
 }

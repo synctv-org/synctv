@@ -214,22 +214,26 @@ fn test_build_get_playback_request_omits_profile_when_query_is_empty() -> TestRe
 }
 
 #[test]
-fn test_handwritten_room_queries_reject_unknown_fields() {
-    assert!(
-        serde_urlencoded::from_str::<GetPlaybackQuery>("streamPreference=2&extra=true").is_err()
-    );
-    assert!(serde_urlencoded::from_str::<WatchQuery>(
-        "format=json&afterEventSequence=12&extra=true"
+fn test_handwritten_room_queries_ignore_unknown_fields() {
+    let playback_query =
+        serde_urlencoded::from_str::<GetPlaybackQuery>("streamPreference=2&extra=true")
+            .expect("playback query should ignore unknown fields");
+    assert_eq!(playback_query.stream_preference, Some(2));
+    let watch_query =
+        serde_urlencoded::from_str::<WatchQuery>("format=json&afterEventSequence=12&extra=true")
+            .expect("watch query should ignore unknown fields");
+    assert_eq!(watch_query.format.as_deref(), Some("json"));
+    assert_eq!(watch_query.after_event_sequence, Some(12));
+    let playlist_items_with_extra = serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
+        "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1&extra=true",
     )
-    .is_err());
-    assert!(serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
-        "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1&extra=true"
+    .expect("playlist item watch should ignore unknown fields");
+    assert_eq!(playlist_items_with_extra.playlist_id.as_deref(), Some("pl_1"));
+    let playback_watch_with_extra = serde_urlencoded::from_str::<WatchPlaybackQuery>(
+        "format=json&media_id=media_1&extra=true",
     )
-    .is_err());
-    assert!(serde_urlencoded::from_str::<WatchPlaybackQuery>(
-        "format=json&media_id=media_1&extra=true"
-    )
-    .is_err());
+    .expect("playback watch query should ignore unknown fields");
+    assert_eq!(playback_watch_with_extra.format.as_deref(), Some("json"));
     let playback_watch =
         serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&afterEventSequence=12")
             .expect("watch playback should accept a replay cursor");
@@ -242,18 +246,25 @@ fn test_handwritten_room_queries_reject_unknown_fields() {
     assert_eq!(playlist_items_watch.page, Some(1));
     assert_eq!(playlist_items_watch.page_size, Some(25));
     assert_eq!(playlist_items_watch.playlist_id.as_deref(), Some("pl_1"));
-    assert!(serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
+    let playlist_items_watch = serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
         "format=json&playlistId=pl_1&target=%7B%22alist%22%3A%7B%22relativePath%22%3A%22season-1%22%7D%7D"
     )
-    .is_err());
-    assert!(
-        serde_urlencoded::from_str::<ChatAttachmentObjectQuery>("token=token&extra=true").is_err()
-    );
-    assert!(serde_urlencoded::from_str::<MediaCoverObjectQuery>("token=token&extra=true").is_err());
-    assert!(serde_urlencoded::from_str::<RoomCoverObjectQuery>("token=token&extra=true").is_err());
-    assert!(
-        serde_urlencoded::from_str::<PlaylistCoverObjectQuery>("token=token&extra=true").is_err()
-    );
+    .expect("unsupported dynamic playlist target is ignored by static playlist watch query");
+    assert_eq!(playlist_items_watch.playlist_id.as_deref(), Some("pl_1"));
+    let chat_attachment =
+        serde_urlencoded::from_str::<ChatAttachmentObjectQuery>("token=token&extra=true")
+            .expect("chat attachment query should ignore unknown fields");
+    assert_eq!(chat_attachment.token, "token");
+    let media_cover = serde_urlencoded::from_str::<MediaCoverObjectQuery>("token=token&extra=true")
+        .expect("media cover query should ignore unknown fields");
+    assert_eq!(media_cover.token, "token");
+    let room_cover = serde_urlencoded::from_str::<RoomCoverObjectQuery>("token=token&extra=true")
+        .expect("room cover query should ignore unknown fields");
+    assert_eq!(room_cover.token, "token");
+    let playlist_cover =
+        serde_urlencoded::from_str::<PlaylistCoverObjectQuery>("token=token&extra=true")
+            .expect("playlist cover query should ignore unknown fields");
+    assert_eq!(playlist_cover.token, "token");
 }
 
 #[test]

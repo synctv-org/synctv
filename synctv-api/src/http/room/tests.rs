@@ -228,11 +228,13 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
         "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1&extra=true",
     )
     .expect("playlist item watch should ignore unknown fields");
-    assert_eq!(playlist_items_with_extra.playlist_id.as_deref(), Some("pl_1"));
-    let playback_watch_with_extra = serde_urlencoded::from_str::<WatchPlaybackQuery>(
-        "format=json&media_id=media_1&extra=true",
-    )
-    .expect("playback watch query should ignore unknown fields");
+    assert_eq!(
+        playlist_items_with_extra.playlist_id.as_deref(),
+        Some("pl_1")
+    );
+    let playback_watch_with_extra =
+        serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&media_id=media_1&extra=true")
+            .expect("playback watch query should ignore unknown fields");
     assert_eq!(playback_watch_with_extra.format.as_deref(), Some("json"));
     let playback_watch =
         serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&afterEventSequence=12")

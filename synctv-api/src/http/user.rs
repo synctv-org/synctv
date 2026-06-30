@@ -1082,9 +1082,7 @@ mod tests {
 
     #[test]
     fn test_user_avatar_object_query_ignores_unknown_fields() -> TestResult {
-        let query = serde_urlencoded::from_str::<UserAvatarObjectQuery>(
-            "token=token&extra=true",
-        )?;
+        let query = serde_urlencoded::from_str::<UserAvatarObjectQuery>("token=token&extra=true")?;
         assert_eq!(query.token, "token");
         Ok(())
     }

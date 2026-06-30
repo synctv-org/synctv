@@ -66,8 +66,8 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_without_media_resou
 }
 
 #[tokio::test]
-async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested()
- {
+async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resource_permission_requested(
+) {
     let requested = RoomPermissionSet(
         synctv_core::models::RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES
             | synctv_core::models::RoomAdminPermissionBits::USE_WEBRTC,

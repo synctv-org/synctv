@@ -792,8 +792,7 @@ mod tests {
         assert_eq!(query.max_height, Some(300));
         assert_eq!(query.max_width, Some(640));
 
-        let query =
-            serde_urlencoded::from_str::<ThumbnailQuery>("serverId=emby-main&extra=value")?;
+        let query = serde_urlencoded::from_str::<ThumbnailQuery>("serverId=emby-main&extra=value")?;
         assert_eq!(query.server_id, "emby-main");
         Ok(())
     }

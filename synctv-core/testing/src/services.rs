@@ -17,7 +17,7 @@ use synctv_core::service::{
     room::RoomServiceOptions,
     user::{UserServiceDependencies, UserServiceRuntimeOptions},
     AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService,
-    ProviderInstanceStore, RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry,
+    ProviderInstanceStore, RateLimiter, RemoteProviderManager, RoomService, RuntimeSettingsStore,
     SettingsService, TokenBlacklistStore, UserService,
 };
 
@@ -309,7 +309,7 @@ pub fn create_test_room_service(pool: sqlx::PgPool) -> RoomService {
         pool.clone(),
         create_test_user_service(pool),
         RoomServiceOptions {
-            settings_registry: Some(Arc::new(SettingsRegistry::new(settings_service))),
+            runtime_settings_store: Some(Arc::new(RuntimeSettingsStore::new(settings_service))),
             ..RoomServiceOptions::test_defaults()
         },
     )

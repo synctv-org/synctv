@@ -28,10 +28,10 @@ use synctv_core::{
     service::{
         auth::{jwt::JwtService, OpaquePasswordService, TokenCredentialBinding},
         local_oauth_state_store, AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2BasicProviderConfig,
-        OAuth2LinkResult, OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
-        OAuth2Service, OAuth2ServiceRuntime, RateLimiter, SettingsRegistry, SettingsService,
-        TokenBlacklistStore, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2GithubProviderConfig,
+        OAuth2GoogleProviderConfig, OAuth2LinkResult, OAuth2ProviderConfig, OAuth2ProviderConfigs,
+        OAuth2ProviderPrivateConfig, OAuth2Service, OAuth2ServiceRuntime, RateLimiter,
+        RuntimeSettingsStore, SettingsService, TokenBlacklistStore, UserService,
     },
     Error,
 };
@@ -235,18 +235,21 @@ async fn oauth2_service_with_provider_signup(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
     ));
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
-    let provider_config = OAuth2BasicProviderConfig {
-        client_id: format!("{provider_name}-client-id"),
-        client_secret: format!("{provider_name}-client-secret"),
-        redirect_url: "https://app.example.com/oauth2/callback".to_string(),
-    };
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
     let provider_config = OAuth2ProviderConfig {
         enable_signup: true,
         signup_need_review,
         config: match provider_name {
-            "github" => OAuth2ProviderPrivateConfig::GitHub(provider_config),
-            "google" => OAuth2ProviderPrivateConfig::Google(provider_config),
+            "github" => OAuth2ProviderPrivateConfig::GitHub(OAuth2GithubProviderConfig {
+                client_id: format!("{provider_name}-client-id"),
+                client_secret: format!("{provider_name}-client-secret"),
+                redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+            }),
+            "google" => OAuth2ProviderPrivateConfig::Google(OAuth2GoogleProviderConfig {
+                client_id: format!("{provider_name}-client-id"),
+                client_secret: format!("{provider_name}-client-secret"),
+                redirect_url: "https://app.example.com/oauth2/callback".to_string(),
+            }),
             other => panic!("unsupported test OAuth2 provider: {other}"),
         },
     };
@@ -254,9 +257,12 @@ async fn oauth2_service_with_provider_signup(
         provider_name.to_string(),
         provider_config,
     )]));
-    settings_registry
-        .oauth2_providers
-        .set(oauth2_configs)
+    let mut runtime_settings = runtime_settings_store
+        .runtime_settings()
+        .checked("runtime settings should load");
+    runtime_settings.oauth2.providers = oauth2_configs;
+    runtime_settings_store
+        .persist_runtime_settings(&runtime_settings)
         .await
         .checked("OAuth2 runtime settings should persist");
 
@@ -267,7 +273,7 @@ async fn oauth2_service_with_provider_signup(
         SsrfGuard::strict_policy(),
         false,
         OAuth2ServiceRuntime {
-            settings_registry: Some(settings_registry),
+            runtime_settings_store: Some(runtime_settings_store),
             ..OAuth2ServiceRuntime::default()
         },
     )

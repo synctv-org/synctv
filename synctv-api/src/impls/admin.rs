@@ -4,7 +4,7 @@ use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::service::{
     AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
-    ReviewService, RoomService, SettingsRegistry, SettingsService, UserService,
+    ReviewService, RoomService, RuntimeSettingsStore, SettingsService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 
@@ -82,7 +82,7 @@ pub struct AdminApiConfig {
     pub user_service: Arc<UserService>,
     pub read_pool: Option<sqlx::PgPool>,
     pub settings_service: Arc<SettingsService>,
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub email_service: Arc<EmailService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
@@ -135,7 +135,7 @@ pub struct AdminApiImpl {
     pub ban_record_service: Arc<BanRecordService>,
     pub content_report_service: Arc<ContentReportService>,
     pub settings_service: Arc<SettingsService>,
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub email_service: Arc<EmailService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
@@ -169,7 +169,7 @@ impl AdminApiImpl {
             user_service,
             read_pool,
             settings_service,
-            settings_registry,
+            runtime_settings_store,
             email_service,
             connection_service,
             provider_instance_manager,
@@ -225,7 +225,7 @@ impl AdminApiImpl {
             ban_record_service,
             content_report_service,
             settings_service,
-            settings_registry,
+            runtime_settings_store,
             email_service,
             connection_service,
             presence_service: runtime.presence_service,

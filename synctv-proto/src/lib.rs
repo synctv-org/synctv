@@ -61,6 +61,19 @@ pub fn validate<M: prost_reflect::ReflectMessage>(
 
 // Common shared types (enums, RoomMember)
 #[cfg(feature = "main")]
+#[allow(clippy::pedantic)]
+pub mod google {
+    pub mod rpc {
+        include!(concat!(env!("SYNCTV_PROTO_MAIN_OUT_DIR"), "/google.rpc.rs"));
+        include!(concat!(
+            env!("SYNCTV_PROTO_MAIN_OUT_DIR"),
+            "/google.rpc.serde.rs"
+        ));
+    }
+}
+
+// Common shared types (enums, RoomMember)
+#[cfg(feature = "main")]
 #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
 #[allow(clippy::pedantic)]
 pub mod common {
@@ -370,27 +383,6 @@ mod tests {
         }
     }
 
-    fn room_settings_patch() -> crate::client::RoomSettingsPatch {
-        crate::client::RoomSettingsPatch {
-            allow_guest_join: Some(true),
-            max_members: Some(8),
-            require_approval: None,
-            allow_auto_join: None,
-            chat_enabled: Some(true),
-            auto_play: Some(crate::client::AutoPlaySettingsPatch {
-                enabled: Some(true),
-                mode: Some(crate::client::PlayMode::Sequential as i32),
-                delay: Some(0),
-            }),
-            admin_added_permissions: None,
-            admin_removed_permissions: None,
-            member_added_permissions: None,
-            member_removed_permissions: None,
-            guest_added_permissions: None,
-            guest_removed_permissions: None,
-        }
-    }
-
     fn emby_target(item_id: &str) -> crate::client::ProviderTarget {
         crate::client::ProviderTarget {
             target: Some(crate::client::provider_target::Target::Emby(
@@ -502,6 +494,7 @@ mod tests {
             speed: 1.5,
             is_playing: true,
             updated_at: 1_700_000_000,
+            generated_at_millis: 1_700_000_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
             target: Some(emby_target("provider-item-42")),
@@ -592,6 +585,7 @@ mod tests {
                             speed: 1.0,
                             is_playing: false,
                             updated_at: 0,
+                            generated_at_millis: 0,
                             version: 1,
                             playing_playlist_id: String::new(),
                             target: None,
@@ -770,6 +764,7 @@ mod tests {
             speed: 1.5,
             is_playing: true,
             updated_at: 1_700_000_000,
+            generated_at_millis: 1_700_000_000_000,
             version: 42,
             playing_playlist_id: "playlist-1".into(),
             target: None,
@@ -1116,31 +1111,51 @@ mod tests {
 
     #[test]
     fn http_json_update_room_settings_request_accepts_structured_settings() {
-        let json = r#"{"settings":{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#;
+        let json = r#"{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}"#;
 
         let decoded: crate::admin::UpdateRoomSettingsRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
         assert_eq!(decoded.room_id, "");
-        assert_eq!(decoded.settings, Some(room_settings_patch()));
+        assert_eq!(decoded.allow_guest_join, Some(true));
+        assert_eq!(decoded.max_members, Some(8));
+        assert_eq!(decoded.chat_enabled, Some(true));
+        assert_eq!(
+            decoded.auto_play,
+            Some(crate::client::AutoPlaySettingsPatch {
+                enabled: Some(true),
+                mode: Some(crate::client::PlayMode::Sequential as i32),
+                delay: Some(0),
+            })
+        );
     }
 
     #[test]
     fn http_json_client_update_room_settings_request_accepts_structured_settings() {
-        let json = r#"{"settings":{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}}"#;
+        let json = r#"{"allowGuestJoin":true,"maxMembers":8,"chatEnabled":true,"autoPlay":{"enabled":true,"mode":1,"delay":0}}"#;
 
         let decoded: crate::client::UpdateRoomSettingsRequest =
             serde_json::from_str(json).expect("HTTP JSON should deserialize into proto request");
 
-        assert_eq!(decoded.settings, Some(room_settings_patch()));
+        assert_eq!(decoded.allow_guest_join, Some(true));
+        assert_eq!(decoded.max_members, Some(8));
+        assert_eq!(decoded.chat_enabled, Some(true));
+        assert_eq!(
+            decoded.auto_play,
+            Some(crate::client::AutoPlaySettingsPatch {
+                enabled: Some(true),
+                mode: Some(crate::client::PlayMode::Sequential as i32),
+                delay: Some(0),
+            })
+        );
     }
 
     #[test]
     fn http_json_client_update_room_settings_request_rejects_array_settings() {
-        let json = r#"{"settings":"WzEsMiwzXQ=="}"#;
+        let json = r#"{"autoPlay":[1,2,3]}"#;
 
         serde_json::from_str::<crate::client::UpdateRoomSettingsRequest>(json)
-            .expect_err("room settings must be a structured object");
+            .expect_err("nested room settings patch values must be structured objects");
     }
 
     #[test]

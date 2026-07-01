@@ -101,7 +101,7 @@ pub struct PasskeyCredentialPath {
         tag = "User",
         responses(
             (status = 200, description = "Current user profile", body = GetProfileResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -137,7 +137,7 @@ pub async fn get_me(
         tag = "User",
         responses(
             (status = 200, description = "Current user preferences", body = GetUserPreferencesResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -174,8 +174,8 @@ pub async fn get_user_preferences(
         request_body = UpdateUserPreferencesRequest,
         responses(
             (status = 200, description = "User preferences updated", body = UpdateUserPreferencesResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -214,8 +214,8 @@ pub async fn update_user_preferences(
         request_body = SetUsernameRequest,
         responses(
             (status = 200, description = "Username updated", body = SetUsernameResponse),
-            (status = 400, description = "Invalid update request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid update request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -419,8 +419,8 @@ pub async fn get_user_avatar_object(
         request_body = StartEmailBindRequest,
         responses(
             (status = 200, description = "Email bind confirmation sent", body = StartEmailBindResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -458,8 +458,8 @@ pub async fn start_email_bind(
         request_body = ConfirmEmailBindRequest,
         responses(
             (status = 200, description = "Email bind confirmed", body = ConfirmEmailBindResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -497,8 +497,8 @@ pub async fn confirm_email_bind(
         request_body = UnbindEmailRequest,
         responses(
             (status = 200, description = "Email unbound", body = UnbindEmailResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -536,8 +536,8 @@ pub async fn unbind_email(
         request_body = StartSensitiveOperationVerificationRequest,
         responses(
             (status = 200, description = "Sensitive operation verification started", body = StartSensitiveOperationVerificationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -583,8 +583,8 @@ pub async fn start_sensitive_operation_verification(
         request_body = StartSensitiveOperationPasskeyRequest,
         responses(
             (status = 200, description = "Sensitive operation passkey challenge created", body = StartSensitiveOperationPasskeyResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -626,8 +626,8 @@ pub async fn start_sensitive_operation_passkey(
         request_body = RequestSensitiveOperationEmailCodeRequest,
         responses(
             (status = 200, description = "Sensitive operation email code sent", body = RequestSensitiveOperationEmailCodeResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -669,8 +669,8 @@ pub async fn request_sensitive_operation_email_code(
         request_body = FinishSensitiveOperationVerificationRequest,
         responses(
             (status = 200, description = "Sensitive operation verification progressed", body = FinishSensitiveOperationVerificationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -718,8 +718,8 @@ pub async fn finish_sensitive_operation_verification(
         request_body = StartOpaquePasswordUpdateRequest,
         responses(
             (status = 200, description = "OPAQUE password update challenge created", body = StartOpaquePasswordUpdateResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -761,8 +761,8 @@ pub async fn start_opaque_password_update(
         request_body = FinishOpaquePasswordUpdateRequest,
         responses(
             (status = 200, description = "OPAQUE password update completed", body = FinishOpaquePasswordUpdateResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -804,8 +804,8 @@ pub async fn finish_opaque_password_update(
         request_body = StartPasskeyBindRequest,
         responses(
             (status = 200, description = "Passkey bind challenge created", body = StartPasskeyBindResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -843,8 +843,8 @@ pub async fn start_passkey_bind(
         request_body = FinishPasskeyBindRequest,
         responses(
             (status = 200, description = "Passkey bound to current user", body = PasskeyCredentialResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -885,7 +885,7 @@ pub async fn finish_passkey_bind(
         tag = "User",
         responses(
             (status = 200, description = "Passkeys for current user", body = ListPasskeysResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -925,8 +925,8 @@ pub async fn list_passkeys(
         ),
         responses(
             (status = 200, description = "Passkey deleted", body = DeletePasskeyResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Passkey not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Passkey not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -969,7 +969,7 @@ pub async fn delete_passkey(
         ),
         responses(
             (status = 200, description = "Rooms related to the current user", body = ListMyRoomsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -1012,7 +1012,7 @@ pub async fn list_my_rooms(
         request_body = CloseAccountRequest,
         responses(
             (status = 200, description = "Account closure completed", body = CloseAccountResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

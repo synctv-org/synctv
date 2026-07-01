@@ -16,9 +16,8 @@ service AdminService {
   // =========================
   // System Settings Management
   // =========================
-  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
-  rpc GetSettingsGroup(GetSettingsGroupRequest) returns (GetSettingsGroupResponse);
-  rpc UpdateSettings(UpdateSettingsRequest) returns (UpdateSettingsResponse);
+  rpc GetSettings(GetSettingsRequest) returns (RuntimeSettings);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (RuntimeSettings);
   rpc SendTestEmail(SendTestEmailRequest) returns (SendTestEmailResponse);
 
   // =========================
@@ -51,7 +50,7 @@ service AdminService {
   rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
   rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
   rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
-  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (UpdateRoomSettingsResponse);
+  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
   rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (ResetRoomSettingsResponse);
   rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (UpdateRoomPasswordResponse);
   rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
@@ -133,7 +132,7 @@ message AdminUser {
   synctv.common.UserPresenceStats presence = 13;
 }
 
-message AdminRoom {
+message Room {
   string id = 1;
   string name = 2;
   string creator_id = 3;
@@ -154,28 +153,23 @@ message AdminRoom {
   repeated synctv.client.RoomLabel labels = 18;
 }
 
-message SettingsGroup {
-  string name = 1;
-  oneof settings {
-    ServerSettings server = 2;
-    PermissionSettings permissions = 3;
-    RoomPolicySettings room = 4;
-    UserSettings user = 5;
-    OAuth2Settings oauth2 = 6;
-    ProxySettings proxy = 7;
-    RtmpSettings rtmp = 8;
-    EmailSettings email = 9;
-    WebRtcSettings webrtc = 10;
-    ChatSettings chat = 11;
-    CorsSettings cors = 12;
-  }
+message RuntimeSettings {
+  RoomDefaultsSettings room_defaults = 1 [(buf.validate.field).required = true];
+  PermissionSettings permissions = 2 [(buf.validate.field).required = true];
+  RoomCreationSettings room_creation = 3 [(buf.validate.field).required = true];
+  UserSettings user = 4 [(buf.validate.field).required = true];
+  OAuth2Settings oauth2 = 5 [(buf.validate.field).required = true];
+  ProxySettings proxy = 6 [(buf.validate.field).required = true];
+  RtmpSettings rtmp = 7 [(buf.validate.field).required = true];
+  EmailSettings email = 8 [(buf.validate.field).required = true];
+  WebRtcSettings webrtc = 9 [(buf.validate.field).required = true];
+  ChatSettings chat = 10 [(buf.validate.field).required = true];
+  CorsSettings cors = 11 [(buf.validate.field).required = true];
 }
 
-message ServerSettings {
-  bool allow_room_creation = 1;
-  int64 max_rooms_per_user = 2;
-  int64 max_members_per_room = 3;
-  uint64 max_chat_messages = 4;
+message RoomDefaultsSettings {
+  int64 default_max_members = 1;
+  uint64 default_max_chat_messages = 2;
 }
 
 message PermissionSettings {
@@ -191,10 +185,11 @@ enum RoomPasswordPolicy {
   ROOM_PASSWORD_POLICY_FORBIDDEN = 3;
 }
 
-message RoomPolicySettings {
-  bool disable_create_room = 1;
-  bool create_room_need_review = 2;
+message RoomCreationSettings {
+  bool enabled = 1;
+  bool approval_required = 2;
   RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  int64 max_rooms_per_user = 4;
 }
 
 message UserSettings {
@@ -212,23 +207,31 @@ message OAuth2Settings {
 }
 
 message OAuth2ProviderSettings {
-  string instance_name = 1 [(buf.validate.field).string = {
+  string name = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^[A-Za-z0-9_-]+$"
   }];
   bool enable_signup = 2;
   bool signup_need_review = 3;
+
   oneof config {
-    OAuth2BasicProviderConfig github = 4;
-    OAuth2BasicProviderConfig google = 5;
+    option (buf.validate.oneof).required = true;
+    OAuth2GithubProviderConfig github = 4;
+    OAuth2GoogleProviderConfig google = 5;
     OAuth2LogtoProviderConfig logto = 6;
     OAuth2OidcProviderConfig oidc = 7;
-    OAuth2OidcProviderConfig casdoor = 8;
+    OAuth2CasdoorProviderConfig casdoor = 8;
   }
 }
 
-message OAuth2BasicProviderConfig {
+message OAuth2GithubProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
+}
+
+message OAuth2GoogleProviderConfig {
   string client_id = 1;
   string client_secret = 2;
   string redirect_url = 3;
@@ -242,6 +245,17 @@ message OAuth2LogtoProviderConfig {
 }
 
 message OAuth2OidcProviderConfig {
+  string client_id = 1;
+  string client_secret = 2;
+  string redirect_url = 3;
+  string issuer = 4;
+  optional string auth_url = 5;
+  optional string token_url = 6;
+  optional string userinfo_url = 7;
+  optional string jwks_url = 8;
+}
+
+message OAuth2CasdoorProviderConfig {
   string client_id = 1;
   string client_secret = 2;
   string redirect_url = 3;
@@ -267,7 +281,7 @@ message EmailSettings {
   string smtp_host = 2;
   uint32 smtp_port = 3;
   string smtp_username = 4;
-  string smtp_password = 5;
+  optional string smtp_password = 5;
   bool use_tls = 6;
   string from_email = 7;
   string from_name = 8;
@@ -287,6 +301,101 @@ message ChatSettings {
 
 message CorsSettings {
   repeated string allowed_origins = 1;
+}
+
+message UpdateSettingsRequest {
+  RoomDefaultsSettingsPatch room_defaults = 1;
+  PermissionSettingsPatch permissions = 2;
+  RoomCreationSettingsPatch room_creation = 3;
+  UserSettingsPatch user = 4;
+  OAuth2SettingsPatch oauth2 = 5;
+  ProxySettingsPatch proxy = 6;
+  RtmpSettingsPatch rtmp = 7;
+  EmailSettingsPatch email = 8;
+  WebRtcSettingsPatch webrtc = 9;
+  ChatSettingsPatch chat = 10;
+  CorsSettingsPatch cors = 11;
+}
+
+message RoomDefaultsSettingsPatch {
+  optional int64 default_max_members = 1;
+  optional uint64 default_max_chat_messages = 2;
+}
+
+message PermissionSettingsPatch {
+  optional uint64 admin_default_permissions = 1;
+  optional uint64 member_default_permissions = 2;
+  optional uint64 guest_default_permissions = 3;
+}
+
+message RoomCreationSettingsPatch {
+  optional bool enabled = 1;
+  optional bool approval_required = 2;
+  optional RoomPasswordPolicy password_policy = 3 [(buf.validate.field).enum.defined_only = true];
+  optional int64 max_rooms_per_user = 4;
+}
+
+message UserSettingsPatch {
+  optional bool enable_password_signup = 1;
+  optional bool password_signup_need_review = 2;
+  optional bool enable_email_signup = 3;
+  optional bool email_signup_need_review = 4;
+  optional bool enable_webauthn_signup = 5;
+  optional bool webauthn_signup_need_review = 6;
+  optional bool enable_guest = 7;
+}
+
+message OAuth2ProviderList {
+  repeated OAuth2ProviderSettings providers = 1;
+}
+
+message OAuth2SettingsPatch {
+  OAuth2ProviderList providers = 1;
+}
+
+message ProxySettingsPatch {
+  optional bool movie_proxy = 1;
+  optional bool live_proxy = 2;
+}
+
+message RtmpSettingsPatch {
+  optional string custom_publish_host = 1;
+  optional bool ts_disguised_as_png = 2;
+}
+
+message StringList {
+  repeated string values = 1;
+}
+
+message EmailSettingsPatch {
+  optional bool enabled = 1;
+  optional string smtp_host = 2;
+  optional uint32 smtp_port = 3;
+  optional string smtp_username = 4;
+  optional string smtp_password = 5;
+  optional bool use_tls = 6;
+  optional string from_email = 7;
+  optional string from_name = 8;
+  optional bool whitelist_enabled = 9;
+  StringList whitelist_domains = 10;
+}
+
+message IceServerList {
+  repeated synctv.client.IceServer values = 1;
+}
+
+message WebRtcSettingsPatch {
+  IceServerList external_ice_servers = 1;
+}
+
+message ChatSettingsPatch {
+  optional uint64 max_messages_per_room = 1;
+  optional uint64 max_pinned_messages_per_room = 2;
+  optional int64 message_retention_days = 3;
+}
+
+message CorsSettingsPatch {
+  StringList allowed_origins = 1;
 }
 
 enum BanTargetType {
@@ -423,43 +532,6 @@ message ContentReport {
 // =========================
 
 message GetSettingsRequest {}
-
-message GetSettingsResponse {
-  repeated SettingsGroup groups = 1;
-}
-
-message GetSettingsGroupRequest {
-  string group = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 64
-    pattern: "^[A-Za-z0-9_-]+$"
-  }]; // e.g., "server", "email", "oauth"
-}
-
-message GetSettingsGroupResponse {
-  SettingsGroup group = 1;
-}
-
-message UpdateSettingsRequest {
-  string group = 1;
-  oneof settings {
-    ServerSettings server = 2;
-    PermissionSettings permissions = 3;
-    RoomPolicySettings room = 4;
-    UserSettings user = 5;
-    OAuth2Settings oauth2 = 6;
-    ProxySettings proxy = 7;
-    RtmpSettings rtmp = 8;
-    EmailSettings email = 9;
-    WebRtcSettings webrtc = 10;
-    ChatSettings chat = 11;
-    CorsSettings cors = 12;
-  }
-}
-
-message UpdateSettingsResponse {
-  SettingsGroup group = 1;
-}
 
 message SendTestEmailRequest {
   string to = 1;
@@ -686,7 +758,7 @@ message GetUserRoomsRequest {
 }
 
 message GetUserRoomsResponse {
-  repeated AdminRoom rooms = 1;
+  repeated Room rooms = 1;
   int32 total = 2; // Total number of rooms for this user
 }
 
@@ -815,7 +887,7 @@ message ApproveRoomCreationReviewRequest {
 
 message ApproveRoomCreationReviewResponse {
   RoomCreationReview review = 1;
-  AdminRoom room = 2;
+  Room room = 2;
 }
 
 message RejectRoomCreationReviewRequest {
@@ -931,7 +1003,7 @@ message ListRoomsRequest {
 }
 
 message ListRoomsResponse {
-  repeated AdminRoom rooms = 1;
+  repeated Room rooms = 1;
   int32 total = 2;
 }
 
@@ -1042,7 +1114,7 @@ message UpdateRoomTaxonomyRequest {
 }
 
 message UpdateRoomTaxonomyResponse {
-  AdminRoom room = 1;
+  Room room = 1;
 }
 
 message GetRoomRequest {
@@ -1062,7 +1134,7 @@ message RoomPathRequest {
 }
 
 message GetRoomResponse {
-  AdminRoom room = 1;
+  Room room = 1;
 }
 
 message GetRoomSettingsRequest {
@@ -1084,11 +1156,18 @@ message UpdateRoomSettingsRequest {
     max_len: 64
     pattern: "^room_[A-Za-z0-9]+$"
   }];
-  synctv.client.RoomSettingsPatch settings = 2 [(buf.validate.field).required = true];
-}
-
-message UpdateRoomSettingsResponse {
-  AdminRoom room = 1;
+  optional bool allow_guest_join = 2;
+  optional uint64 max_members = 3;
+  optional bool require_approval = 4;
+  optional bool allow_auto_join = 5;
+  optional bool chat_enabled = 6;
+  synctv.client.AutoPlaySettingsPatch auto_play = 7;
+  optional uint64 admin_added_permissions = 8;
+  optional uint64 admin_removed_permissions = 9;
+  optional uint64 member_added_permissions = 10;
+  optional uint64 member_removed_permissions = 11;
+  optional uint64 guest_added_permissions = 12;
+  optional uint64 guest_removed_permissions = 13;
 }
 
 message ResetRoomSettingsRequest {
@@ -1100,7 +1179,7 @@ message ResetRoomSettingsRequest {
 }
 
 message ResetRoomSettingsResponse {
-  AdminRoom room = 1;
+  Room room = 1;
 }
 
 message UpdateRoomPasswordRequest {
@@ -1138,7 +1217,7 @@ message BanRoomRequest {
 }
 
 message BanRoomResponse {
-  AdminRoom room = 1;
+  Room room = 1;
 }
 
 message UnbanRoomRequest {
@@ -1150,7 +1229,7 @@ message UnbanRoomRequest {
 }
 
 message UnbanRoomResponse {
-  AdminRoom room = 1;
+  Room room = 1;
 }
 
 message GetRoomMembersRequest {
@@ -1347,7 +1426,7 @@ message ListActiveStreamsRequest {
   };
   int32 page = 1;
   int32 page_size = 2;
-  string room_id = 3; // optional filter by room
+  string room_id = 3; // optional filter by room_creation
   string user_id = 4;
   string node_id = 5;
   string search = 6 [(buf.validate.field).string = {max_len: 100}];
@@ -1450,7 +1529,7 @@ message BatchBanRoomsRequest {
 
 // Batch ban rooms response
 message BatchBanRoomsResponse {
-  repeated BatchResultItem results = 1; // Per-room results
+  repeated BatchResultItem results = 1; // Per-room_creation results
   int32 succeeded = 2; // Count of successful operations
   int32 failed = 3; // Count of failed operations
 }
@@ -1581,7 +1660,7 @@ message BatchDeleteRoomsRequest {
 
 // Batch delete rooms response
 message BatchDeleteRoomsResponse {
-  repeated BatchResultItem results = 1; // Per-room results
+  repeated BatchResultItem results = 1; // Per-room_creation results
   int32 succeeded = 2; // Count of successful operations
   int32 failed = 3; // Count of failed operations
 }

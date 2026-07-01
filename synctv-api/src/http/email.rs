@@ -112,8 +112,8 @@ pub(crate) fn create_email_router() -> Router<AppState> {
         request_body = RequestPasswordResetRequest,
         responses(
             (status = 200, description = "Password reset email accepted", body = RequestPasswordResetResponse),
-            (status = 400, description = "Invalid password reset request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid password reset request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -149,7 +149,7 @@ pub async fn request_password_reset(
         request_body = StartOpaquePasswordResetRequest,
         responses(
             (status = 200, description = "OPAQUE password reset challenge created", body = StartOpaquePasswordResetResponse),
-            (status = 400, description = "Invalid password reset request", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid password reset request", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -185,7 +185,7 @@ pub async fn start_opaque_password_reset(
         request_body = FinishOpaquePasswordResetRequest,
         responses(
             (status = 200, description = "Password reset confirmed", body = ConfirmPasswordResetResponse),
-            (status = 400, description = "Invalid password reset confirmation", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid password reset confirmation", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -216,9 +216,9 @@ mod tests {
     #[test]
     fn test_email_service_missing_is_service_unavailable() {
         let err = email_api_unavailable_error();
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::EMAIL_SERVICE_UNAVAILABLE
         );
     }
@@ -226,9 +226,9 @@ mod tests {
     #[test]
     fn test_email_token_service_missing_is_service_unavailable() {
         let err = email_token_service_unavailable_error();
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            err.message,
+            err.message(),
             "Email token service is not available on this server."
         );
     }

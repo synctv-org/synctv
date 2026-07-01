@@ -7,23 +7,38 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ## HTTP Error Response
 
-HTTP APIs use a standard JSON error body:
+HTTP APIs use a Google RPC Status-style JSON error body:
 
 ```json
 {
-  "error": "Invalid username or password",
-  "status": 401,
-  "code": 1002,
-  "requestId": "01HX..."
+  "code": 16,
+  "message": "Invalid username or password",
+  "details": [
+    {
+      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+      "reason": "UNAUTHENTICATED",
+      "domain": "synctv.api",
+      "metadata": {
+        "errorCode": "1002",
+        "errorKind": "unauthenticated",
+        "requestId": "01HX..."
+      }
+    },
+    {
+      "@type": "type.googleapis.com/google.rpc.RequestInfo",
+      "requestId": "01HX..."
+    }
+  ]
 }
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `error` | User-facing summary. 5xx details are sanitized. |
-| `status` | Numeric HTTP status. |
-| `code` | Optional application error code for programmatic handling. |
-| `requestId` | Request identifier for log correlation. |
+| `code` | Numeric gRPC status code. The HTTP status still comes from the HTTP status line. |
+| `message` | User-facing summary. 5xx details are sanitized. |
+| `details[]` | Structured error details, usually including `google.rpc.ErrorInfo` with `reason`, `domain`, and `metadata`. |
+| `details[].metadata.errorCode` | Application error code for programmatic handling. |
+| `details[].metadata.requestId` / `google.rpc.RequestInfo.requestId` | Request identifier for log correlation. |
 
 `429` may include a `Retry-After` header.
 
@@ -67,9 +82,11 @@ HTTP APIs use a standard JSON error body:
 | Server | `9002` | Service unavailable |
 | Server | `9003` | Timeout |
 
-Clients should not parse the `error` text for stable branching.
+Clients should not parse the `message` text for stable branching.
 
 ## gRPC Errors
+
+gRPC errors use the standard status code, message, and embedded `google.rpc.Status` binary details. HTTP-style `x-synctv-error-code` metadata is not sent as a separate trailer; clients should read `google.rpc.ErrorInfo.metadata.errorCode` and `RetryInfo`.
 
 | gRPC code | HTTP equivalent | Meaning |
 | --- | --- | --- |
@@ -114,7 +131,7 @@ Resource observation errors do not necessarily close the connection.
     Use HTTP or gRPC status for login, permission, retry, and refresh decisions.
   </Card>
   <Card title="Use codes" icon="setting">
-    Branch on `code` when present. Do not parse English text.
+    Read application codes from `google.rpc.ErrorInfo.metadata.errorCode`. Do not parse English text.
   </Card>
   <Card title="Keep request IDs" icon="magnifier">
     Collect `requestId`, time, path, and status for support.

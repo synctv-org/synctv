@@ -8,11 +8,11 @@ pub struct SettingsCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SettingsSubcommand {
-    /// List effective runtime settings grouped by category
+    /// Show effective admin settings
     List(SettingsListArgs),
-    /// Get one effective settings group
+    /// Get one effective settings section
     Get(SettingsGetArgs),
-    /// Update one settings group using repeated --set key=value entries
+    /// Update one settings section using a typed ProtoJSON patch
     Update(SettingsUpdateArgs),
     /// Send a test email using the current runtime email settings
     TestEmail(SettingsTestEmailArgs),
@@ -36,9 +36,9 @@ pub struct SettingsGetArgs {
 pub struct SettingsUpdateArgs {
     pub group: String,
 
-    /// Setting override in key=value form. Repeat for multiple fields.
-    #[arg(long = "set", value_name = "KEY=VALUE", required = true, num_args = 1..)]
-    pub entries: Vec<String>,
+    /// Section patch encoded as ProtoJSON.
+    #[arg(long = "patch-json", value_name = "JSON", required = true)]
+    pub patch_json: String,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,

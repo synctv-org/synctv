@@ -7,7 +7,7 @@ use synctv_proto::client::*;
 pub(super) async fn update_room_settings(
     service: &ClientServiceImpl,
     request: Request<UpdateRoomSettingsRequest>,
-) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
+) -> Result<Response<Room>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

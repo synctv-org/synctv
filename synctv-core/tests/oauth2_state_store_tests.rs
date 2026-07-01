@@ -6,7 +6,7 @@
 
 use redis::AsyncCommands;
 use std::sync::Arc;
-use synctv_core::service::{OAuth2State, OAuthStateStore, RedisOAuthStateStore};
+use synctv_core::service::{OAuth2Operation, OAuth2State, OAuthStateStore, RedisOAuthStateStore};
 use synctv_core_testing::{ok, some, start_redis as start_test_redis, test_redis_key_prefix};
 use tokio::sync::RwLock;
 
@@ -39,7 +39,8 @@ fn make_state(instance_name: &str) -> OAuth2State {
         instance_name: instance_name.to_string(),
         redirect_url: Some("/dashboard".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: format!("verifier_{instance_name}"),
         nonce: None,
     }
@@ -237,7 +238,8 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
             instance_name: format!("provider_{i}"),
             redirect_url: None,
             created_at: chrono::Utc::now(),
-            bind_user_id: None,
+            operation: OAuth2Operation::Login,
+            target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
@@ -283,7 +285,8 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
         instance_name: "expired".to_string(),
         redirect_url: None,
         created_at: expired_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
         nonce: None,
     };

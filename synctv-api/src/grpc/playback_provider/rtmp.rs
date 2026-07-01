@@ -116,6 +116,6 @@ fn rtmp_deps<'a>(
         live_streaming_infrastructure: state.shared_api_runtime.client_api.live_infrastructure(),
         connection_runtime: state.connection_manager.as_ref(),
         livestream_config: &state.config.livestream,
-        settings_registry: state.settings_registry.as_deref(),
+        runtime_settings_store: state.runtime_settings_store.as_deref(),
     }
 }

@@ -55,11 +55,11 @@ use synctv_proto::client::{CreateWebSocketTicketRequest, CreateWebSocketTicketRe
         request_body = CreateWebSocketTicketRequest,
         responses(
             (status = 200, description = "WebSocket ticket created", body = CreateWebSocketTicketResponse),
-            (status = 400, description = "Invalid room_id", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Caller cannot create a ticket for this room", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Ticket backend unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid room_id", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Caller cannot create a ticket for this room", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Ticket backend unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

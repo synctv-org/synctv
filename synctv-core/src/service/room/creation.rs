@@ -61,7 +61,7 @@ impl PendingRoomCreationRequestRow {
             (None, None, None, None) => None,
             _ => {
                 return Err(sqlx::Error::Decode(
-                    "Incomplete pending room OPAQUE password material".into(),
+                    "Incomplete pending room creation OPAQUE password material".into(),
                 ));
             }
         };
@@ -81,12 +81,12 @@ impl PendingRoomCreationRequestRow {
 
 #[cfg(test)]
 mod tests {
-    use super::settings_registry_unavailable_for_room_creation;
+    use super::runtime_settings_store_unavailable_for_room_creation;
     use crate::Error;
 
     #[test]
     fn room_creation_policy_unavailable_error_is_service_unavailable() {
-        let error = settings_registry_unavailable_for_room_creation();
+        let error = runtime_settings_store_unavailable_for_room_creation();
 
         assert!(matches!(
             error,
@@ -126,7 +126,7 @@ fn initial_room_settings(settings: Option<RoomSettings>) -> RoomSettings {
     settings.unwrap_or_default()
 }
 
-fn settings_registry_unavailable_for_room_creation() -> Error {
+fn runtime_settings_store_unavailable_for_room_creation() -> Error {
     Error::ServiceUnavailable("Room creation policy is temporarily unavailable".to_string())
 }
 
@@ -284,32 +284,24 @@ impl RoomService {
         password_enabled: bool,
         policy: RoomCreationPolicy,
     ) -> Result<()> {
-        if let Some(ref registry) = self.settings_registry {
-            if policy.enforce_creation_toggle {
-                if registry.disable_create_room.get()? {
-                    tracing::warn!(user_id = %user_id, "Room creation rejected: disable_create_room is true");
-                    return Err(Error::Authorization(
-                        "Room creation is currently disabled".to_string(),
-                    ));
-                }
-                if !registry.allow_room_creation.get()? {
-                    tracing::warn!(user_id = %user_id, "Room creation rejected: allow_room_creation is false");
-                    return Err(Error::Authorization(
-                        "Room creation is currently disabled".to_string(),
-                    ));
-                }
+        if let Some(ref registry) = self.runtime_settings_store {
+            if policy.enforce_creation_toggle && !registry.room_creation.enabled.get()? {
+                tracing::warn!(user_id = %user_id, "Room creation rejected: room_creation.enabled is false");
+                return Err(Error::Authorization(
+                    "Room creation is currently disabled".to_string(),
+                ));
             }
-            match registry.room_password_policy.get()? {
+            match registry.room_creation.password_policy.get()? {
                 RoomPasswordPolicy::Required if !password_enabled => {
-                    tracing::warn!(user_id = %user_id, "Room creation rejected: password required by server policy");
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: password required by room creation policy");
                     return Err(Error::InvalidInput(
-                        "Room password is required by server policy".to_string(),
+                        "Room password is required by room creation policy".to_string(),
                     ));
                 }
                 RoomPasswordPolicy::Forbidden if password_enabled => {
-                    tracing::warn!(user_id = %user_id, "Room creation rejected: passwords not allowed by server policy");
+                    tracing::warn!(user_id = %user_id, "Room creation rejected: passwords forbidden by room creation policy");
                     return Err(Error::InvalidInput(
-                        "Room passwords are not allowed by server policy".to_string(),
+                        "Room password is not allowed by room creation policy".to_string(),
                     ));
                 }
                 _ => {}
@@ -404,9 +396,9 @@ impl RoomService {
         excluding_room_id: Option<&RoomId>,
     ) -> Result<()> {
         let max_rooms = self
-            .settings_registry
+            .runtime_settings_store
             .as_ref()
-            .map(|registry| registry.max_rooms_per_user.get())
+            .map(|registry| registry.room_creation.max_rooms_per_user.get())
             .transpose()?
             .unwrap_or(10);
 
@@ -435,7 +427,7 @@ impl RoomService {
         Ok(())
     }
 
-    /// All database operations run inside a single transaction so the room is
+    /// All database operations run inside a single transaction so the room_creation is
     /// either fully created or not visible at all.
     pub async fn create_room(
         &self,
@@ -556,10 +548,11 @@ impl RoomService {
         }
 
         let need_review = if enforce_creation_policy {
-            self.settings_registry
+            self.runtime_settings_store
                 .as_ref()
-                .ok_or_else(settings_registry_unavailable_for_room_creation)?
-                .create_room_need_review
+                .ok_or_else(runtime_settings_store_unavailable_for_room_creation)?
+                .room_creation
+                .approval_required
                 .get()?
         } else {
             false
@@ -614,7 +607,7 @@ impl RoomService {
                             tracing::warn!(
                                 role = %role,
                                 error = %error,
-                                "Failed to load admins for pending room notification"
+                                "Failed to load admins for pending room creation notification"
                             );
                         }
                     }
@@ -640,7 +633,7 @@ impl RoomService {
                         tracing::warn!(
                             admin_id = %admin.id,
                             error = %e,
-                            "Failed to notify admin about pending room"
+                            "Failed to notify admin about pending room creation"
                         );
                     }
                 }

@@ -7,14 +7,28 @@ import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
 
 ## HTTP 错误响应
 
-HTTP API 使用统一 JSON 错误体：
+HTTP API 使用 Google RPC Status 风格的统一 JSON 错误体：
 
 ```json
 {
-  "error": "Invalid username or password",
-  "status": 401,
-  "code": 1002,
-  "requestId": "01HX..."
+  "code": 16,
+  "message": "Invalid username or password",
+  "details": [
+    {
+      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+      "reason": "UNAUTHENTICATED",
+      "domain": "synctv.api",
+      "metadata": {
+        "errorCode": "1002",
+        "errorKind": "unauthenticated",
+        "requestId": "01HX..."
+      }
+    },
+    {
+      "@type": "type.googleapis.com/google.rpc.RequestInfo",
+      "requestId": "01HX..."
+    }
+  ]
 }
 ```
 
@@ -22,10 +36,11 @@ HTTP API 使用统一 JSON 错误体：
 
 | 字段 | 说明 |
 | --- | --- |
-| `error` | 可展示的错误摘要。5xx 会被服务端脱敏。 |
-| `status` | HTTP 状态码数字。 |
-| `code` | 可选应用错误码，用于程序化处理。 |
-| `requestId` | 请求 ID。排查服务端日志时优先提供它。 |
+| `code` | gRPC 状态码数字。HTTP 状态仍来自 HTTP status line。 |
+| `message` | 可展示的错误摘要。5xx 会被服务端脱敏。 |
+| `details[]` | 结构化错误详情，通常包含 `google.rpc.ErrorInfo`，带 `reason`、`domain` 和 `metadata`。 |
+| `details[].metadata.errorCode` | 应用错误码，用于程序化处理。 |
+| `details[].metadata.requestId` / `google.rpc.RequestInfo.requestId` | 请求 ID。排查服务端日志时优先提供它。 |
 
 `429` 可能带 `Retry-After` header，客户端应按它退避。
 
@@ -71,11 +86,11 @@ HTTP API 使用统一 JSON 错误体：
 | 服务端 | `9002` | 服务不可用 |
 | 服务端 | `9003` | 超时 |
 
-客户端不应依赖 `error` 文本做稳定分支；文本可能为了可读性或安全脱敏而变化。
+客户端不应依赖 `message` 文本做稳定分支；文本可能为了可读性或安全脱敏而变化。
 
 ## gRPC 错误
 
-gRPC 使用标准 status code 和 message。常见映射：
+gRPC 使用标准 status code、message 和嵌入的 `google.rpc.Status` binary details。HTTP 的 `x-synctv-error-code` 元数据不会作为独立 trailer 发送；客户端应读取 `google.rpc.ErrorInfo.metadata.errorCode` 和 `RetryInfo`。常见映射：
 
 | gRPC code | HTTP 类比 | 含义 |
 | --- | --- | --- |
@@ -122,7 +137,7 @@ Provider 错误需要区分 SyncTV 与上游：
     先按 HTTP/gRPC 状态决定登录、权限、重试或刷新本地状态。
   </Card>
   <Card title="使用错误码" icon="setting">
-    有 `code` 时按错误码做程序化分支，不解析英文错误文本。
+    从 `google.rpc.ErrorInfo.metadata.errorCode` 读取应用错误码，不解析英文错误文本。
   </Card>
   <Card title="记录 requestId" icon="magnifier">
     用户提交问题时收集 `requestId`、时间、路径和状态码。

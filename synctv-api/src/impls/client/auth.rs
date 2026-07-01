@@ -263,7 +263,10 @@ impl ClientApiImpl {
         }
 
         self.room_service
-            .check_guest_allowed(&room_id, self.settings_registry.as_ref().map(AsRef::as_ref))
+            .check_guest_allowed(
+                &room_id,
+                self.runtime_settings_store.as_ref().map(AsRef::as_ref),
+            )
             .await
             .map_err(ClientApiImpl::map_room_access_error)?;
 

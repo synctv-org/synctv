@@ -1,4 +1,5 @@
 use crate::models::{RoomAdminPermissionBits, RoomPermissionSet};
+use crate::service::email::EmailConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -36,6 +37,11 @@ impl PermissionSet {
     #[must_use]
     pub const fn bits(&self) -> RoomPermissionSet {
         self.0
+    }
+
+    #[must_use]
+    pub const fn from_bits(bits: RoomPermissionSet) -> Self {
+        Self(bits)
     }
 
     fn names_for_bits(bits: u64) -> Vec<&'static str> {
@@ -222,7 +228,7 @@ impl std::str::FromStr for RoomPasswordPolicy {
             "required" => Ok(Self::Required),
             "forbidden" => Ok(Self::Forbidden),
             _ => Err(RoomPasswordPolicyParseError(format!(
-                "room.password_policy must be one of: optional, required, forbidden; got '{value}'"
+                "room_creation.password_policy must be one of: optional, required, forbidden; got '{value}'"
             ))),
         }
     }
@@ -355,9 +361,9 @@ pub struct OAuth2ProviderConfig {
 )]
 pub enum OAuth2ProviderPrivateConfig {
     #[serde(rename = "github")]
-    GitHub(OAuth2BasicProviderConfig),
+    GitHub(OAuth2GithubProviderConfig),
     #[serde(rename = "google")]
-    Google(OAuth2BasicProviderConfig),
+    Google(OAuth2GoogleProviderConfig),
     #[serde(rename = "logto")]
     Logto(OAuth2LogtoProviderConfig),
     #[serde(rename = "casdoor")]
@@ -368,13 +374,21 @@ pub enum OAuth2ProviderPrivateConfig {
 
 impl Default for OAuth2ProviderPrivateConfig {
     fn default() -> Self {
-        Self::GitHub(OAuth2BasicProviderConfig::default())
+        Self::GitHub(OAuth2GithubProviderConfig::default())
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub struct OAuth2BasicProviderConfig {
+pub struct OAuth2GithubProviderConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OAuth2GoogleProviderConfig {
     pub client_id: String,
     pub client_secret: String,
     pub redirect_url: String,
@@ -519,14 +533,641 @@ impl std::str::FromStr for OAuth2ProviderConfigs {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeSettings {
+    pub room_defaults: RoomDefaultsRuntimeSettings,
+    pub permissions: PermissionRuntimeSettings,
+    pub room_creation: RoomCreationRuntimeSettings,
+    pub user: UserRuntimeSettings,
+    pub oauth2: OAuth2RuntimeSettings,
+    pub proxy: ProxyRuntimeSettings,
+    pub rtmp: RtmpRuntimeSettings,
+    pub email: EmailRuntimeSettings,
+    pub webrtc: WebRtcRuntimeSettings,
+    pub chat: ChatRuntimeSettings,
+    pub cors: CorsRuntimeSettings,
+}
+
+impl RuntimeSettings {
+    pub fn validate(&self) -> crate::Result<()> {
+        self.validate_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
+    }
+
+    pub fn validate_with_ssrf_guard(
+        &self,
+        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ) -> crate::Result<()> {
+        validate_all_runtime_settings(self, ssrf_guard)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeSettingsUpdateMask {
+    pub room_defaults: RoomDefaultsRuntimeSettingsUpdateMask,
+    pub permissions: PermissionRuntimeSettingsUpdateMask,
+    pub room_creation: RoomCreationRuntimeSettingsUpdateMask,
+    pub user: UserRuntimeSettingsUpdateMask,
+    pub oauth2: OAuth2RuntimeSettingsUpdateMask,
+    pub proxy: ProxyRuntimeSettingsUpdateMask,
+    pub rtmp: RtmpRuntimeSettingsUpdateMask,
+    pub email: EmailRuntimeSettingsUpdateMask,
+    pub webrtc: WebRtcRuntimeSettingsUpdateMask,
+    pub chat: ChatRuntimeSettingsUpdateMask,
+    pub cors: CorsRuntimeSettingsUpdateMask,
+}
+
+impl RuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            room_defaults: RoomDefaultsRuntimeSettingsUpdateMask::all(),
+            permissions: PermissionRuntimeSettingsUpdateMask::all(),
+            room_creation: RoomCreationRuntimeSettingsUpdateMask::all(),
+            user: UserRuntimeSettingsUpdateMask::all(),
+            oauth2: OAuth2RuntimeSettingsUpdateMask::all(),
+            proxy: ProxyRuntimeSettingsUpdateMask::all(),
+            rtmp: RtmpRuntimeSettingsUpdateMask::all(),
+            email: EmailRuntimeSettingsUpdateMask::all(),
+            webrtc: WebRtcRuntimeSettingsUpdateMask::all(),
+            chat: ChatRuntimeSettingsUpdateMask::all(),
+            cors: CorsRuntimeSettingsUpdateMask::all(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.room_defaults.is_empty()
+            && self.permissions.is_empty()
+            && self.room_creation.is_empty()
+            && self.user.is_empty()
+            && self.oauth2.is_empty()
+            && self.proxy.is_empty()
+            && self.rtmp.is_empty()
+            && self.email.is_empty()
+            && self.webrtc.is_empty()
+            && self.chat.is_empty()
+            && self.cors.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RoomDefaultsRuntimeSettingsUpdateMask {
+    pub default_max_members: bool,
+    pub default_max_chat_messages: bool,
+}
+
+impl RoomDefaultsRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            default_max_members: true,
+            default_max_chat_messages: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.default_max_members && !self.default_max_chat_messages
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PermissionRuntimeSettingsUpdateMask {
+    pub admin_default_permissions: bool,
+    pub member_default_permissions: bool,
+    pub guest_default_permissions: bool,
+}
+
+impl PermissionRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            admin_default_permissions: true,
+            member_default_permissions: true,
+            guest_default_permissions: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.admin_default_permissions
+            && !self.member_default_permissions
+            && !self.guest_default_permissions
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RoomCreationRuntimeSettingsUpdateMask {
+    pub enabled: bool,
+    pub approval_required: bool,
+    pub password_policy: bool,
+    pub max_rooms_per_user: bool,
+}
+
+impl RoomCreationRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            enabled: true,
+            approval_required: true,
+            password_policy: true,
+            max_rooms_per_user: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.enabled
+            && !self.approval_required
+            && !self.password_policy
+            && !self.max_rooms_per_user
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UserRuntimeSettingsUpdateMask {
+    pub enable_password_signup: bool,
+    pub password_signup_need_review: bool,
+    pub enable_email_signup: bool,
+    pub email_signup_need_review: bool,
+    pub enable_webauthn_signup: bool,
+    pub webauthn_signup_need_review: bool,
+    pub enable_guest: bool,
+}
+
+impl UserRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            enable_password_signup: true,
+            password_signup_need_review: true,
+            enable_email_signup: true,
+            email_signup_need_review: true,
+            enable_webauthn_signup: true,
+            webauthn_signup_need_review: true,
+            enable_guest: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.enable_password_signup
+            && !self.password_signup_need_review
+            && !self.enable_email_signup
+            && !self.email_signup_need_review
+            && !self.enable_webauthn_signup
+            && !self.webauthn_signup_need_review
+            && !self.enable_guest
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OAuth2RuntimeSettingsUpdateMask {
+    pub providers: bool,
+}
+
+impl OAuth2RuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self { providers: true }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.providers
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProxyRuntimeSettingsUpdateMask {
+    pub movie_proxy: bool,
+    pub live_proxy: bool,
+}
+
+impl ProxyRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            movie_proxy: true,
+            live_proxy: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.movie_proxy && !self.live_proxy
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RtmpRuntimeSettingsUpdateMask {
+    pub custom_publish_host: bool,
+    pub ts_disguised_as_png: bool,
+}
+
+impl RtmpRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            custom_publish_host: true,
+            ts_disguised_as_png: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.custom_publish_host && !self.ts_disguised_as_png
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmailRuntimeSettingsUpdateMask {
+    pub enabled: bool,
+    pub smtp_host: bool,
+    pub smtp_port: bool,
+    pub smtp_username: bool,
+    pub smtp_password: bool,
+    pub use_tls: bool,
+    pub from_email: bool,
+    pub from_name: bool,
+    pub whitelist_enabled: bool,
+    pub whitelist_domains: bool,
+}
+
+impl EmailRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            enabled: true,
+            smtp_host: true,
+            smtp_port: true,
+            smtp_username: true,
+            smtp_password: true,
+            use_tls: true,
+            from_email: true,
+            from_name: true,
+            whitelist_enabled: true,
+            whitelist_domains: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.enabled
+            && !self.smtp_host
+            && !self.smtp_port
+            && !self.smtp_username
+            && !self.smtp_password
+            && !self.use_tls
+            && !self.from_email
+            && !self.from_name
+            && !self.whitelist_enabled
+            && !self.whitelist_domains
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebRtcRuntimeSettingsUpdateMask {
+    pub external_ice_servers: bool,
+}
+
+impl WebRtcRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            external_ice_servers: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.external_ice_servers
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChatRuntimeSettingsUpdateMask {
+    pub max_messages_per_room: bool,
+    pub max_pinned_messages_per_room: bool,
+    pub message_retention_days: bool,
+}
+
+impl ChatRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            max_messages_per_room: true,
+            max_pinned_messages_per_room: true,
+            message_retention_days: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.max_messages_per_room
+            && !self.max_pinned_messages_per_room
+            && !self.message_retention_days
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CorsRuntimeSettingsUpdateMask {
+    pub allowed_origins: bool,
+}
+
+impl CorsRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            allowed_origins: true,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.allowed_origins
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomDefaultsRuntimeSettings {
+    pub default_max_members: i64,
+    pub default_max_chat_messages: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRuntimeSettings {
+    pub admin_default_permissions: PermissionSet,
+    pub member_default_permissions: PermissionSet,
+    pub guest_default_permissions: PermissionSet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomCreationRuntimeSettings {
+    pub enabled: bool,
+    pub approval_required: bool,
+    pub password_policy: RoomPasswordPolicy,
+    pub max_rooms_per_user: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserRuntimeSettings {
+    pub enable_password_signup: bool,
+    pub password_signup_need_review: bool,
+    pub enable_email_signup: bool,
+    pub email_signup_need_review: bool,
+    pub enable_webauthn_signup: bool,
+    pub webauthn_signup_need_review: bool,
+    pub enable_guest: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OAuth2RuntimeSettings {
+    pub providers: OAuth2ProviderConfigs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyRuntimeSettings {
+    pub movie_proxy: bool,
+    pub live_proxy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RtmpRuntimeSettings {
+    pub custom_publish_host: String,
+    pub ts_disguised_as_png: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailRuntimeSettings {
+    pub enabled: bool,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: String,
+    pub smtp_password: String,
+    pub use_tls: bool,
+    pub from_email: String,
+    pub from_name: String,
+    pub whitelist_enabled: bool,
+    pub whitelist_domains: Vec<String>,
+}
+
+impl EmailRuntimeSettings {
+    #[must_use]
+    pub fn whitelist_raw(&self) -> String {
+        self.whitelist_domains.join(",")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebRtcRuntimeSettings {
+    pub external_ice_servers: IceServerList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatRuntimeSettings {
+    pub max_messages_per_room: u64,
+    pub max_pinned_messages_per_room: u64,
+    pub message_retention_days: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorsRuntimeSettings {
+    pub allowed_origins: CorsAllowedOrigins,
+}
+
+fn validate_all_runtime_settings(
+    settings: &RuntimeSettings,
+    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+) -> crate::Result<()> {
+    validate_room_defaults_settings(&settings.room_defaults)?;
+    validate_permission_settings(&settings.permissions)?;
+    validate_room_policy_settings(&settings.room_creation)?;
+    validate_user_settings(&settings.user, &settings.email)?;
+    settings
+        .oauth2
+        .providers
+        .validate_with_ssrf_guard(ssrf_guard)?;
+    validate_proxy_settings(&settings.proxy);
+    validate_rtmp_settings(&settings.rtmp);
+    validate_email_settings(&settings.email)?;
+    validate_webrtc_settings(&settings.webrtc)?;
+    validate_chat_settings(&settings.chat)?;
+    validate_cors_settings(&settings.cors)
+}
+
+fn validate_room_defaults_settings(settings: &RoomDefaultsRuntimeSettings) -> crate::Result<()> {
+    if settings.default_max_members <= 0 {
+        return Err(crate::Error::InvalidInput(
+            "room_defaults.default_max_members must be greater than 0".to_string(),
+        ));
+    }
+    if settings.default_max_chat_messages > 10_000 {
+        return Err(crate::Error::InvalidInput(
+            "room_defaults.default_max_chat_messages must be at most 10000".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_permission_settings(settings: &PermissionRuntimeSettings) -> crate::Result<()> {
+    let _ = &settings.admin_default_permissions;
+    let _ = &settings.member_default_permissions;
+    settings.guest_default_permissions.validate_guest_default()
+}
+
+fn validate_room_policy_settings(settings: &RoomCreationRuntimeSettings) -> crate::Result<()> {
+    let _ = settings.enabled;
+    let _ = settings.approval_required;
+    let _ = settings.password_policy;
+    if !(1..=1000).contains(&settings.max_rooms_per_user) {
+        return Err(crate::Error::InvalidInput(
+            "room_creation.max_rooms_per_user must be between 1 and 1000".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_user_settings(
+    settings: &UserRuntimeSettings,
+    email: &EmailRuntimeSettings,
+) -> crate::Result<()> {
+    let _ = settings.enable_password_signup;
+    let _ = settings.password_signup_need_review;
+    if settings.enable_email_signup && !email.enabled {
+        return Err(crate::Error::InvalidInput(
+            "user.enable_email_signup requires email.enabled".to_string(),
+        ));
+    }
+    let _ = settings.email_signup_need_review;
+    let _ = settings.enable_webauthn_signup;
+    let _ = settings.webauthn_signup_need_review;
+    let _ = settings.enable_guest;
+    Ok(())
+}
+
+fn validate_proxy_settings(settings: &ProxyRuntimeSettings) {
+    let _ = settings.movie_proxy;
+    let _ = settings.live_proxy;
+}
+
+fn validate_rtmp_settings(settings: &RtmpRuntimeSettings) {
+    let _ = &settings.custom_publish_host;
+    let _ = settings.ts_disguised_as_png;
+}
+
+fn validate_email_settings(settings: &EmailRuntimeSettings) -> crate::Result<()> {
+    validate_enabled_email_config(settings)?;
+    let _ = settings.whitelist_enabled;
+    for domain in &settings.whitelist_domains {
+        validate_email_domain(domain)?;
+    }
+    Ok(())
+}
+
+fn validate_enabled_email_config(settings: &EmailRuntimeSettings) -> crate::Result<()> {
+    if !settings.enabled {
+        return Ok(());
+    }
+    EmailConfig {
+        smtp_host: settings.smtp_host.trim().to_string(),
+        smtp_port: settings.smtp_port,
+        smtp_username: settings.smtp_username.clone(),
+        smtp_password: settings.smtp_password.clone(),
+        from_email: settings.from_email.trim().to_string(),
+        from_name: settings.from_name.trim().to_string(),
+        use_tls: settings.use_tls,
+    }
+    .validate()
+}
+
+fn validate_webrtc_settings(settings: &WebRtcRuntimeSettings) -> crate::Result<()> {
+    for room_defaults in &settings.external_ice_servers.0 {
+        if room_defaults.urls.is_empty() {
+            return Err(crate::Error::InvalidInput(
+                "webrtc.external_ice_servers entries must include at least one URL".to_string(),
+            ));
+        }
+        for url in &room_defaults.urls {
+            if !(url.starts_with("stun:")
+                || url.starts_with("stuns:")
+                || url.starts_with("turn:")
+                || url.starts_with("turns:"))
+            {
+                return Err(crate::Error::InvalidInput(format!(
+                    "webrtc.external_ice_servers URL must use stun, stuns, turn, or turns scheme: {url}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_chat_settings(settings: &ChatRuntimeSettings) -> crate::Result<()> {
+    if settings.max_messages_per_room > 100_000 {
+        return Err(crate::Error::InvalidInput(
+            "chat.max_messages_per_room must be <= 100000".to_string(),
+        ));
+    }
+    if settings.max_pinned_messages_per_room > 1_000 {
+        return Err(crate::Error::InvalidInput(
+            "chat.max_pinned_messages_per_room must be <= 1000".to_string(),
+        ));
+    }
+    if !(1..=3650).contains(&settings.message_retention_days) {
+        return Err(crate::Error::InvalidInput(
+            "chat.message_retention_days must be between 1 and 3650".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_cors_settings(settings: &CorsRuntimeSettings) -> crate::Result<()> {
+    for origin in &settings.allowed_origins.0 {
+        if origin == "*" {
+            continue;
+        }
+        if !(origin.starts_with("http://") || origin.starts_with("https://")) {
+            return Err(crate::Error::InvalidInput(format!(
+                "cors.allowed_origins must contain HTTP(S) origins or '*': {origin}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_email_domain(entry: &str) -> crate::Result<()> {
+    let domain = entry.trim().trim_start_matches('@');
+    if domain.is_empty()
+        || domain.contains('@')
+        || domain.len() > 253
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || !domain.contains('.')
+        || domain.split('.').any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        })
+    {
+        return Err(crate::Error::InvalidInput(
+            "email.whitelist_domains must contain email domains only".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettings {
-    pub allow_room_creation: bool,
+    pub room_creation_enabled: bool,
     pub max_rooms_per_user: i64,
-    pub max_members_per_room: i64,
+    pub default_max_members: i64,
     pub max_pinned_chat_messages_per_room: u64,
-    pub disable_create_room: bool,
-    pub create_room_need_review: bool,
+    pub approval_required: bool,
     pub room_password_policy: RoomPasswordPolicy,
     pub enable_password_signup: bool,
     pub password_signup_need_review: bool,
@@ -551,12 +1192,11 @@ impl PublicSettings {
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
-            allow_room_creation: true,
+            room_creation_enabled: true,
             max_rooms_per_user: 10,
-            max_members_per_room: 100,
+            default_max_members: 100,
             max_pinned_chat_messages_per_room: 20,
-            disable_create_room: false,
-            create_room_need_review: false,
+            approval_required: false,
             room_password_policy: RoomPasswordPolicy::Optional,
             enable_password_signup: false,
             password_signup_need_review: false,

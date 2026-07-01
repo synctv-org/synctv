@@ -21,7 +21,7 @@ use crate::{
     service::{
         auth::JwtService, chat_attachment_upload_policy, BruteForceProtection,
         DisabledFileStorageService, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
-        SettingsRegistry,
+        RuntimeSettingsStore,
     },
 };
 use image::ImageEncoder;
@@ -698,16 +698,16 @@ fn test_chat_service_with_file_storage(
     test_chat_service_with_options(pool, username_cache, file_storage_service, None)
 }
 
-fn test_chat_service_with_settings_registry(
+fn test_chat_service_with_runtime_settings_store(
     pool: &sqlx::PgPool,
     username_cache: UsernameCache,
-    settings_registry: Arc<SettingsRegistry>,
+    runtime_settings_store: Arc<RuntimeSettingsStore>,
 ) -> ChatService {
     test_chat_service_with_options(
         pool,
         username_cache,
         Arc::new(DisabledFileStorageService),
-        Some(settings_registry),
+        Some(runtime_settings_store),
     )
 }
 
@@ -715,7 +715,7 @@ fn test_chat_service_with_options(
     pool: &sqlx::PgPool,
     username_cache: UsernameCache,
     file_storage_service: Arc<dyn FileStorageService>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
 ) -> ChatService {
     let permission_service = ok(
         PermissionService::new_with_runtime(
@@ -750,7 +750,7 @@ fn test_chat_service_with_options(
             file_storage_service,
             audit_service: None,
             notification_service: NotificationService::default(),
-            settings_registry,
+            runtime_settings_store,
         },
     )
 }
@@ -3547,16 +3547,20 @@ async fn pinned_chat_messages_list_and_emit_state_events() {
 #[tokio::test]
 async fn pinning_chat_message_respects_runtime_room_pin_limit() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-    let settings_registry = Arc::new(SettingsRegistry::new_for_tests());
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new_for_tests());
     ok(
-        settings_registry
-            .max_pinned_chat_messages_per_room
+        runtime_settings_store
+            .chat
+            .max_pinned_messages_per_room
             .set_for_test(&1),
         "pin limit setting should seed",
     );
     let username_cache = UsernameCache::local_only("test:chat:pin-limit:".to_string(), 100, 60);
-    let service =
-        test_chat_service_with_settings_registry(&pool, username_cache.clone(), settings_registry);
+    let service = test_chat_service_with_runtime_settings_store(
+        &pool,
+        username_cache.clone(),
+        runtime_settings_store,
+    );
     let user_repository = Arc::new(UserRepository::new(pool.clone()));
     let owner = ok(
         user_repository

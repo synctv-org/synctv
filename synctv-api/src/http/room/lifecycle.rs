@@ -25,8 +25,8 @@ use synctv_proto::client::{
         request_body = CreateRoomRequest,
         responses(
             (status = 200, description = "Room created", body = CreateRoomResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -73,8 +73,8 @@ pub async fn create_room(
         ),
         responses(
             (status = 200, description = "Room details", body = GetRoomResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -113,10 +113,10 @@ pub async fn get_room(
         request_body = JoinRoomRequest,
         responses(
             (status = 200, description = "Joined room", body = JoinRoomResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -169,8 +169,8 @@ pub async fn join_room(
         ),
         responses(
             (status = 200, description = "Left room", body = LeaveRoomResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -211,9 +211,9 @@ pub async fn leave_room(
         ),
         responses(
             (status = 200, description = "Room deleted", body = DeleteRoomResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -258,7 +258,7 @@ pub async fn delete_room(
         ),
         responses(
             (status = 200, description = "Room availability and status; exists=false when the room is not found", body = CheckRoomResponse),
-            (status = 400, description = "Invalid room ID", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid room ID", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -290,7 +290,7 @@ pub async fn check_room(
         params(ListRoomsRequest),
         responses(
             (status = 200, description = "Rooms list", body = ListRoomsResponse),
-            (status = 400, description = "Invalid query", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid query", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -322,7 +322,7 @@ pub async fn list_or_get_rooms(
         params(GetHotRoomsRequest),
         responses(
             (status = 200, description = "Hot rooms", body = GetHotRoomsResponse),
-            (status = 400, description = "Invalid query", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid query", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]

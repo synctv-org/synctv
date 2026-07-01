@@ -100,7 +100,7 @@ impl UserService {
             refresh_rate_limiter: runtime.refresh_rate_limiter,
             refresh_rate_limit_config: runtime.refresh_rate_limit_config,
             realtime_outbox: runtime.realtime_outbox,
-            settings_registry: runtime.settings_registry,
+            runtime_settings_store: runtime.runtime_settings_store,
             password_registration_policy_override: runtime.password_registration_policy_override,
             password_complexity,
             opaque_password_service: runtime.opaque_password_service,

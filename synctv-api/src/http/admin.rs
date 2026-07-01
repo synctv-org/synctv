@@ -147,7 +147,6 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         )
         // Settings
         .route("/settings", get(get_settings).post(set_settings))
-        .route("/settings/{group}", get(get_settings_group))
         // Email
         .route("/email/test", post(send_test_email))
         // User management
@@ -222,7 +221,7 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         params(admin::ListUserRegistrationReviewsRequest),
         responses(
             (status = 200, description = "User registration reviews", body = admin::ListUserRegistrationReviewsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -254,7 +253,7 @@ pub(crate) async fn list_user_registration_reviews(
         request_body = admin::ApproveUserRegistrationReviewRequest,
         responses(
             (status = 200, description = "User registration review approved", body = admin::ApproveUserRegistrationReviewResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -286,7 +285,7 @@ pub(crate) async fn approve_user_registration_review(
         request_body = admin::RejectUserRegistrationReviewRequest,
         responses(
             (status = 200, description = "User registration review rejected", body = admin::RejectUserRegistrationReviewResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -491,7 +490,7 @@ pub(crate) async fn reject_room_join_review(
         params(admin::ListBanRecordsRequest),
         responses(
             (status = 200, description = "Ban records", body = admin::ListBanRecordsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -534,7 +533,7 @@ pub(crate) async fn list_ban_records(
         ),
         responses(
             (status = 200, description = "Content reports", body = admin::ListContentReportsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -566,7 +565,7 @@ pub(crate) async fn list_content_reports(
         params(("reportId" = String, Path, description = "Content report public id")),
         responses(
             (status = 200, description = "Content report", body = admin::GetContentReportResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -600,7 +599,7 @@ pub(crate) async fn get_content_report(
         request_body = admin::UpdateContentReportStatusRequest,
         responses(
             (status = 200, description = "Content report status updated", body = admin::UpdateContentReportStatusResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -635,7 +634,7 @@ pub(crate) async fn update_content_report_status(
         tag = "Admin",
         responses(
             (status = 200, description = "System stats", body = admin::GetSystemStatsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -663,8 +662,8 @@ pub(crate) async fn get_system_stats(
         path = "/api/admin/settings",
         tag = "Admin",
         responses(
-            (status = 200, description = "All settings groups", body = admin::GetSettingsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 200, description = "Runtime settings", body = admin::RuntimeSettings),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -672,7 +671,7 @@ pub(crate) async fn get_system_stats(
 pub(crate) async fn get_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-) -> AppResult<Json<admin::GetSettingsResponse>> {
+) -> AppResult<Json<admin::RuntimeSettings>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -689,46 +688,14 @@ pub(crate) async fn get_settings(
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
-        get,
-        path = "/api/admin/settings/{group}",
-        tag = "Admin",
-        params(("group" = String, Path, description = "Settings group key")),
-        responses(
-            (status = 200, description = "Single settings group", body = admin::GetSettingsGroupResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
-        ),
-        security(("bearer_auth" = []))
-    )
-)]
-pub(crate) async fn get_settings_group(
-    request_meta: RequestMetadata,
-    State(state): State<AppState>,
-    Path(path): Path<admin::GetSettingsGroupRequest>,
-) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
-    let req = path;
-    let resp = execute_admin_endpoint(
-        &state,
-        request_meta,
-        require_admin_api,
-        move |api, validated, rctx| async move {
-            api.get_settings_group(req, &validated.user_id, &rctx).await
-        },
-    )
-    .await?;
-    Ok(Json(resp))
-}
-
-#[cfg_attr(
-    feature = "openapi",
-    utoipa::path(
         post,
         path = "/api/admin/settings",
         tag = "Admin",
         request_body = admin::UpdateSettingsRequest,
         responses(
-            (status = 200, description = "Settings updated", body = admin::UpdateSettingsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 200, description = "Settings updated", body = admin::RuntimeSettings),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -737,7 +704,7 @@ pub(crate) async fn set_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::UpdateSettingsRequest>,
-) -> AppResult<Json<admin::UpdateSettingsResponse>> {
+) -> AppResult<Json<admin::RuntimeSettings>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -761,8 +728,8 @@ pub(crate) async fn set_settings(
         request_body = admin::SendTestEmailRequest,
         responses(
             (status = 200, description = "Test email sent", body = admin::SendTestEmailResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -796,7 +763,7 @@ pub(crate) async fn send_test_email(
         params(admin::ListUsersRequest),
         responses(
             (status = 200, description = "Users list", body = admin::ListUsersResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -825,8 +792,8 @@ pub(crate) async fn list_users(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User detail", body = admin::GetUserResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "User not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "User not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -855,8 +822,8 @@ pub(crate) async fn get_user(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User preferences", body = admin::GetUserPreferencesResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "User not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "User not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -886,9 +853,9 @@ pub(crate) async fn get_user_preferences(
         request_body = admin::UpdateUserPreferencesRequest,
         responses(
             (status = 200, description = "User preferences updated", body = admin::UpdateUserPreferencesResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "User not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "User not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -922,8 +889,8 @@ pub(crate) async fn update_user_preferences(
         request_body = admin::CreateUserRequest,
         responses(
             (status = 200, description = "User created", body = admin::CreateUserResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -955,7 +922,7 @@ pub(crate) async fn create_user(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User deleted", body = admin::DeleteUserResponse),
-            (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -988,8 +955,8 @@ pub(crate) async fn delete_user(
         request_body = admin::UpdateUserRoleRequest,
         responses(
             (status = 200, description = "User role updated", body = admin::UpdateUserRoleResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1024,8 +991,8 @@ pub(crate) async fn set_user_role(
         request_body = admin::SetUserPasswordRequest,
         responses(
             (status = 200, description = "User password updated", body = admin::SetUserPasswordResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1063,8 +1030,8 @@ pub(crate) async fn set_user_password(
         request_body = admin::UpdateUserUsernameRequest,
         responses(
             (status = 200, description = "Username updated", body = admin::UpdateUserUsernameResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1099,8 +1066,8 @@ pub(crate) async fn set_user_username(
         request_body = admin::BanUserRequest,
         responses(
             (status = 200, description = "User banned", body = admin::BanUserResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1134,7 +1101,7 @@ pub(crate) async fn ban_user(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "User unbanned", body = admin::UnbanUserResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1169,7 +1136,7 @@ pub(crate) async fn unban_user(
         ),
         responses(
             (status = 200, description = "Rooms belonging to user", body = admin::GetUserRoomsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1202,8 +1169,8 @@ pub(crate) async fn get_user_rooms(
         request_body = admin::BatchBanUsersRequest,
         responses(
             (status = 200, description = "Users batch banned", body = admin::BatchBanUsersResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1235,8 +1202,8 @@ pub(crate) async fn batch_ban_users(
         request_body = admin::BatchDeleteUsersRequest,
         responses(
             (status = 200, description = "Users batch deleted", body = admin::BatchDeleteUsersResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1270,7 +1237,7 @@ pub(crate) async fn batch_delete_users(
         params(admin::ListRoomsRequest),
         responses(
             (status = 200, description = "Admin room list", body = admin::ListRoomsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1299,7 +1266,7 @@ pub(crate) async fn list_rooms(
         params(admin::ListRoomCategoriesRequest),
         responses(
             (status = 200, description = "Room categories", body = admin::ListRoomCategoriesResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1328,7 +1295,7 @@ pub(crate) async fn list_room_categories(
         request_body = admin::UpsertRoomCategoryRequest,
         responses(
             (status = 200, description = "Room category upserted", body = admin::UpsertRoomCategoryResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1357,7 +1324,7 @@ pub(crate) async fn upsert_room_category(
         params(("categoryId" = String, Path, description = "Room category ID")),
         responses(
             (status = 200, description = "Room category deleted", body = admin::DeleteRoomCategoryResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1386,7 +1353,7 @@ pub(crate) async fn delete_room_category(
         params(admin::ListRoomLabelsRequest),
         responses(
             (status = 200, description = "Room labels", body = admin::ListRoomLabelsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1415,7 +1382,7 @@ pub(crate) async fn list_room_labels(
         request_body = admin::UpsertRoomLabelRequest,
         responses(
             (status = 200, description = "Room label upserted", body = admin::UpsertRoomLabelResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1444,7 +1411,7 @@ pub(crate) async fn upsert_room_label(
         params(("labelId" = String, Path, description = "Room label ID")),
         responses(
             (status = 200, description = "Room label deleted", body = admin::DeleteRoomLabelResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1474,7 +1441,7 @@ pub(crate) async fn delete_room_label(
         request_body = admin::UpdateRoomTaxonomyRequest,
         responses(
             (status = 200, description = "Room taxonomy updated", body = admin::UpdateRoomTaxonomyResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1508,7 +1475,7 @@ pub(crate) async fn update_room_taxonomy(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Admin room detail", body = admin::GetRoomResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1537,7 +1504,7 @@ pub(crate) async fn get_room(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room deleted", body = admin::DeleteRoomResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1570,8 +1537,8 @@ pub(crate) async fn delete_room(
         request_body = admin::UpdateRoomPasswordRequest,
         responses(
             (status = 200, description = "Room password updated", body = admin::UpdateRoomPasswordResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1608,7 +1575,7 @@ pub(crate) async fn set_room_password(
         ),
         responses(
             (status = 200, description = "Room members", body = admin::GetRoomMembersResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1640,8 +1607,8 @@ pub(crate) async fn get_room_members(
         request_body = admin::AddMemberRequest,
         responses(
             (status = 200, description = "Room member added", body = admin::AddMemberResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1679,8 +1646,8 @@ pub(crate) async fn add_member(
         request_body = admin::UpdateMemberPermissionsRequest,
         responses(
             (status = 200, description = "Room member permissions updated", body = admin::UpdateMemberPermissionsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1719,8 +1686,8 @@ pub(crate) async fn update_member_permissions(
         request_body = admin::KickMemberRequest,
         responses(
             (status = 200, description = "Room member kicked", body = admin::KickMemberResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1756,8 +1723,8 @@ pub(crate) async fn kick_member(
         request_body = admin::BanRoomRequest,
         responses(
             (status = 200, description = "Room banned", body = admin::BanRoomResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1791,7 +1758,7 @@ pub(crate) async fn ban_room(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room unbanned", body = admin::UnbanRoomResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1823,7 +1790,7 @@ pub(crate) async fn unban_room(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room settings", body = admin::GetRoomSettingsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1852,9 +1819,9 @@ pub(crate) async fn get_room_settings(
         params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::UpdateRoomSettingsRequest,
         responses(
-            (status = 200, description = "Room settings updated", body = admin::UpdateRoomSettingsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 200, description = "Room settings updated", body = admin::Room),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1864,7 +1831,7 @@ pub(crate) async fn set_room_settings(
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
-) -> AppResult<Json<admin::UpdateRoomSettingsResponse>> {
+) -> AppResult<Json<admin::Room>> {
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1888,7 +1855,7 @@ pub(crate) async fn set_room_settings(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room settings reset", body = admin::ResetRoomSettingsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1922,8 +1889,8 @@ pub(crate) async fn reset_room_settings(
         request_body = admin::BatchBanRoomsRequest,
         responses(
             (status = 200, description = "Rooms batch banned", body = admin::BatchBanRoomsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1954,8 +1921,8 @@ pub(crate) async fn batch_ban_rooms(
         request_body = admin::BatchDeleteRoomsRequest,
         responses(
             (status = 200, description = "Rooms batch deleted", body = admin::BatchDeleteRoomsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -1988,7 +1955,7 @@ pub(crate) async fn batch_delete_rooms(
         params(admin::ListActiveStreamsRequest),
         responses(
             (status = 200, description = "Active streams", body = admin::ListActiveStreamsResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -2017,8 +1984,8 @@ pub(crate) async fn list_streams(
         request_body = admin::KickStreamRequest,
         responses(
             (status = 200, description = "Stream kicked", body = admin::KickStreamResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Admin authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -2045,7 +2012,7 @@ pub(crate) async fn kick_stream(
         tag = "Admin",
         responses(
             (status = 200, description = "Admins list", body = admin::ListAdminsResponse),
-            (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -2074,7 +2041,7 @@ pub(crate) async fn list_admins(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "Admin added", body = admin::AddAdminResponse),
-            (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -2106,7 +2073,7 @@ pub(crate) async fn add_admin(
         params(("userId" = String, Path, description = "User ID")),
         responses(
             (status = 200, description = "Admin removed", body = admin::RemoveAdminResponse),
-            (status = 401, description = "Root authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -2183,12 +2150,11 @@ mod tests {
 
     #[test]
     fn test_update_room_settings_request_accepts_protojson_body() -> TestResult {
-        let json = r#"{"roomId":"room_body","settings":{"allowGuestJoin":true}}"#;
+        let json = r#"{"roomId":"room_body","allowGuestJoin":true}"#;
         let mut req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
         req.room_id = "room_1".to_string();
         assert_eq!(req.room_id, "room_1");
-        let settings = req.settings.expect("settings should deserialize");
-        assert_eq!(settings.allow_guest_join, Some(true));
+        assert_eq!(req.allow_guest_join, Some(true));
         Ok(())
     }
 
@@ -2323,9 +2289,9 @@ mod tests {
         let Err(err) = require_admin_api(&state) else {
             return Err(test_error("missing admin api should fail"));
         };
-        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            err.message,
+            err.message(),
             "Admin service is not available on this server."
         );
         Ok(())

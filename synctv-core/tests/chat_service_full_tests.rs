@@ -162,7 +162,7 @@ fn make_chat_service_with_options(
             file_storage_service,
             audit_service,
             notification_service,
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     );
     (service, username_cache)
@@ -496,7 +496,7 @@ async fn test_send_message_rate_limit_triggers() {
             file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service: NotificationService::default(),
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     );
 
@@ -907,7 +907,7 @@ async fn test_send_message_broadcasts_to_room_members() {
             file_storage_service: Arc::new(DisabledFileStorageService),
             audit_service: None,
             notification_service,
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     );
 

@@ -82,7 +82,7 @@ pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
 #[cfg(test)]
 pub(in crate::cli) use serve::switch_process_working_dir_to_data_dir;
 #[cfg(test)]
-pub(in crate::cli) use settings::parse_management_settings_update;
+pub(in crate::cli) use settings::parse_management_settings_patch_json;
 #[cfg(test)]
 pub(in crate::cli) use stop::{
     stop_stream_disconnect_can_be_treated_as_success, stop_stream_end_can_be_treated_as_success,
@@ -729,7 +729,8 @@ fn parse_optional_room_settings_json(
 ) -> Result<Option<synctv_proto::client::RoomSettings>> {
     normalized_optional_cli_value(raw)
         .map(|raw| {
-            let patch = serde_json::from_str(&raw).context("invalid room settings patch JSON")?;
+            let patch: synctv_proto::client::UpdateRoomSettingsRequest =
+                serde_json::from_str(&raw).context("invalid room settings patch JSON")?;
             Ok(room_settings_patch_to_full_settings(patch))
         })
         .transpose()
@@ -737,14 +738,12 @@ fn parse_optional_room_settings_json(
 
 fn parse_required_room_settings_json(
     raw: &str,
-) -> Result<Option<synctv_proto::client::RoomSettingsPatch>> {
-    serde_json::from_str(raw)
-        .map(Some)
-        .context("invalid room settings patch JSON")
+) -> Result<synctv_proto::admin::UpdateRoomSettingsRequest> {
+    serde_json::from_str(raw).context("invalid room settings patch JSON")
 }
 
 pub(in crate::cli) fn room_settings_patch_to_full_settings(
-    patch: synctv_proto::client::RoomSettingsPatch,
+    patch: synctv_proto::client::UpdateRoomSettingsRequest,
 ) -> synctv_proto::client::RoomSettings {
     let defaults = synctv_core::models::RoomSettings::default();
     let default_auto_play = defaults.auto_play.value;
@@ -915,28 +914,6 @@ where
     T: DeserializeOwned,
 {
     raw.map(|value| parse_cli_json(label, value)).transpose()
-}
-
-pub(in crate::cli) fn parse_setting_entries(
-    entries: &[String],
-) -> Result<std::collections::HashMap<String, String>> {
-    let mut settings = std::collections::HashMap::with_capacity(entries.len());
-    for entry in entries {
-        let Some((key, value)) = entry.split_once('=') else {
-            bail!("invalid --set entry '{entry}': expected key=value");
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            bail!("invalid --set entry '{entry}': key must not be empty");
-        }
-        if settings
-            .insert(key.to_string(), value.to_string())
-            .is_some()
-        {
-            bail!("duplicate --set entry for key '{key}'");
-        }
-    }
-    Ok(settings)
 }
 
 fn optional_source_provider_to_proto_i32(provider: Option<CliSourceProvider>) -> i32 {

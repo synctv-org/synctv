@@ -97,7 +97,7 @@ pub struct ClientApiConfig {
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
-    pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
     pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
@@ -203,7 +203,7 @@ pub struct ClientApiImpl {
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
-    pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
@@ -544,7 +544,10 @@ impl ClientApiImpl {
         }
 
         self.room_service
-            .check_guest_allowed(&room_id, self.settings_registry.as_ref().map(AsRef::as_ref))
+            .check_guest_allowed(
+                &room_id,
+                self.runtime_settings_store.as_ref().map(AsRef::as_ref),
+            )
             .await
             .map_err(Self::map_room_access_error)?;
 
@@ -749,7 +752,7 @@ impl ClientApiImpl {
             publish_key_service: config.publish_key_service,
             jwt_service: config.jwt_service,
             live_streaming_infrastructure: config.live_streaming_infrastructure,
-            settings_registry: config.settings_registry,
+            runtime_settings_store: config.runtime_settings_store,
             realtime_fanout,
             room_settings_fanout,
             membership_event_fanout,

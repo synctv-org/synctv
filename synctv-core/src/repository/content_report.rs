@@ -310,16 +310,16 @@ impl ContentReportRepository {
                 cr.target_chat_message_id,
                 cr.target_chat_message_created_at,
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
-                cr.reason_code,
-                cr.reason,
+                cr.reason_code AS "reason_code!",
+                cr.reason AS "reason!",
                 cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
-                cr.reviewed_at,
-                cr.resolution_note,
-                cr.created_at,
-                cr.updated_at
+                cr.reviewed_at AS "reviewed_at?",
+                cr.resolution_note AS "resolution_note!",
+                cr.created_at AS "created_at!",
+                cr.updated_at AS "updated_at!"
             FROM content_reports cr
             LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id
             LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by
@@ -411,16 +411,16 @@ impl ContentReportRepository {
                 cr.target_chat_message_id,
                 cr.target_chat_message_created_at,
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
-                cr.reason_code,
-                cr.reason,
+                cr.reason_code AS "reason_code!",
+                cr.reason AS "reason!",
                 cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
-                cr.reviewed_at,
-                cr.resolution_note,
-                cr.created_at,
-                cr.updated_at
+                cr.reviewed_at AS "reviewed_at?",
+                cr.resolution_note AS "resolution_note!",
+                cr.created_at AS "created_at!",
+                cr.updated_at AS "updated_at!"
             FROM content_reports cr
             LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id
             LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by
@@ -480,16 +480,16 @@ impl ContentReportRepository {
                 cr.target_chat_message_id,
                 cr.target_chat_message_created_at,
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
-                cr.reason_code,
-                cr.reason,
+                cr.reason_code AS "reason_code!",
+                cr.reason AS "reason!",
                 cr.metadata AS "metadata!: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
-                cr.reviewed_at,
-                cr.resolution_note,
-                cr.created_at,
-                cr.updated_at
+                cr.reviewed_at AS "reviewed_at?",
+                cr.resolution_note AS "resolution_note!",
+                cr.created_at AS "created_at!",
+                cr.updated_at AS "updated_at!"
             FROM updated cr
             LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id
             LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by

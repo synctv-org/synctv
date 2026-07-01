@@ -9,7 +9,7 @@
 //! |--------------------------------------------------------|----------------------------------|---------------|
 //! | `GET /api/oauth2/:provider/authorize?redirectUrl=` | `GetAuthorizationUrl` | No |
 //! | `GET /api/oauth2/:provider/bind?redirectUrl=` | `GetAuthorizationUrlForBind` | Yes |
-//! | `POST /api/oauth2/:provider/exchange` (JSON body) | `ExchangeAuthorizationCode` | No |
+//! | `POST /api/oauth2/exchange` (JSON body) | `ExchangeAuthorizationCode` | No |
 //! | `GET /api/oauth2/providers` | `ListAvailableProviders` | No |
 //! | `DELETE /api/oauth2/type/:provider/unlink?providerUserId=`| `UnlinkProvider` | Yes |
 //! | `GET /api/oauth2/linked` | `GetLinkedProviders` | Yes |
@@ -142,6 +142,10 @@ fn oauth2_provider_type_path_to_proto(provider: &str) -> Result<i32, AppError> {
     Ok(proto as i32)
 }
 
+fn map_oauth2_exchange_error(error: crate::impls::ApiError) -> AppError {
+    map_api_error(error)
+}
+
 /// Get `OAuth2` authorization URL for login flow
 ///
 /// GET /`api/oauth2/:provider/authorize?redirectUrl`=<url>
@@ -157,7 +161,7 @@ fn oauth2_provider_type_path_to_proto(provider: &str) -> Result<i32, AppError> {
         ),
         responses(
             (status = 200, description = "OAuth2 authorization URL", body = GetAuthorizationUrlResponse),
-            (status = 400, description = "Invalid OAuth2 request", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid OAuth2 request", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -200,26 +204,23 @@ pub async fn get_authorize_url(
 
 /// Exchange authorization code for JWT token (frontend-driven flow)
 ///
-/// POST /api/oauth2/:provider/exchange
+/// POST /api/oauth2/exchange
 /// Body: { "code": "xxx", "state": "xxx" }
 ///
-/// For bind flows (where the `OAuth2` state contains a `bind_user_id`), the caller
-/// must be authenticated and the authenticated user must match the `bind_user_id`
+/// For bind flows (where the `OAuth2` state contains a `target_user_id`), the caller
+/// must be authenticated and the authenticated user must match the `target_user_id`
 /// stored in the state. For login flows, no authentication is required.
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         post,
-        path = "/api/oauth2/{provider}/exchange",
+        path = "/api/oauth2/exchange",
         tag = "OAuth2",
-        params(
-            ("provider" = String, Path, description = "OAuth2 provider instance name")
-        ),
         request_body = ExchangeAuthorizationCodeRequest,
         responses(
             (status = 200, description = "Authorization code exchanged", body = ExchangeAuthorizationCodeResponse),
-            (status = 400, description = "Invalid OAuth2 exchange request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required for bind flow", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid OAuth2 exchange request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required for bind flow", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -228,12 +229,9 @@ pub async fn exchange_authorization_code(
     State(state): State<AppState>,
     connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
-    Path(path): Path<OAuth2ProviderInstancePathRequest>,
-    Json(mut req): Json<ExchangeAuthorizationCodeRequest>,
+    Json(req): Json<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    req.provider = path.provider;
-    let provider_for_log = req.provider.clone();
     let client_ip = crate::client_ip::extract_client_ip_from_headers(
         &state.config,
         connect_info.0.ip(),
@@ -263,12 +261,12 @@ pub async fn exchange_authorization_code(
         .await
         .map_err(|e| {
             error!("Failed to exchange authorization code: {}", e);
-            map_api_error(e)
+            map_oauth2_exchange_error(e)
         })?;
 
     info!(
-        "OAuth2 exchange successful for provider: {} (is_bind: {})",
-        provider_for_log, response.is_bind
+        "OAuth2 exchange successful (operation: {})",
+        response.operation
     );
 
     Ok(Json(response))
@@ -292,8 +290,8 @@ pub async fn exchange_authorization_code(
         ),
         responses(
             (status = 200, description = "OAuth2 bind authorization URL", body = GetAuthorizationUrlForBindResponse),
-            (status = 400, description = "Invalid OAuth2 bind request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid OAuth2 bind request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -356,8 +354,8 @@ pub async fn get_bind_authorize_url(
         ),
         responses(
             (status = 200, description = "OAuth2 provider unlinked", body = UnlinkProviderResponse),
-            (status = 400, description = "Invalid unlink request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid unlink request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -412,7 +410,7 @@ pub async fn unlink_provider(
         tag = "OAuth2",
         responses(
             (status = 200, description = "Available OAuth2 providers", body = ListAvailableProvidersResponse),
-            (status = 503, description = "OAuth2 is not configured", body = synctv_proto::client::ApiErrorResponse)
+            (status = 503, description = "OAuth2 is not configured", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -453,7 +451,7 @@ pub async fn list_available_providers(
         tag = "OAuth2",
         responses(
             (status = 200, description = "Linked OAuth2 providers", body = GetLinkedProvidersResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -497,11 +495,9 @@ mod tests {
 
     #[test]
     fn test_exchange_authorization_code_request_deserializes_proto_body() -> TestResult {
-        let mut req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
-            r#"{"provider":"body-provider","code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
+        let req: ExchangeAuthorizationCodeRequest = serde_json::from_str(
+            r#"{"code":"abc123._+-","state":"AbCdEfGh1234567890aBcDeFgHiJkLm"}"#,
         )?;
-        req.provider = "github-main".to_string();
-        assert_eq!(req.provider, "github-main");
         assert_eq!(req.code, "abc123._+-");
         assert_eq!(req.state, "AbCdEfGh1234567890aBcDeFgHiJkLm");
         Ok(())
@@ -538,16 +534,25 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth2_route_queries_reject_path_fields() {
+    fn test_oauth2_route_queries_ignore_path_fields() {
         let authorize = serde_urlencoded::from_str::<AuthorizationUrlQuery>(
             "provider=github-main&redirectUrl=http%3A%2F%2Flocalhost%2Fcallback",
-        );
-        assert!(authorize.is_err());
+        )
+        .expect("unknown path field should be ignored");
+        let authorize = authorize.into_request("path-provider".to_string());
+        assert_eq!(authorize.provider, "path-provider");
+        assert_eq!(authorize.redirect_url, "http://localhost/callback");
 
         let unlink = serde_urlencoded::from_str::<UnlinkProviderQuery>(
             "provider=1&providerUserId=remote-user-1",
+        )
+        .expect("unknown path field should be ignored");
+        let unlink = unlink.into_request(OAuth2ProviderType::Oauth2ProviderTypeGithub as i32);
+        assert_eq!(
+            unlink.provider,
+            OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
         );
-        assert!(unlink.is_err());
+        assert_eq!(unlink.provider_user_id, "remote-user-1");
     }
 
     #[test]
@@ -571,14 +576,14 @@ mod tests {
             "No binding found for this provider".to_string(),
         ));
 
-        assert_eq!(err.status, StatusCode::NOT_FOUND);
-        assert_eq!(err.message, "No binding found for this provider");
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+        assert_eq!(err.message(), "No binding found for this provider");
     }
 
     #[test]
     fn test_oauth2_missing_is_service_unavailable() {
         let err = oauth2_unavailable_error();
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(err.message, "OAuth2 is not available on this server.");
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.message(), "OAuth2 is not available on this server.");
     }
 }

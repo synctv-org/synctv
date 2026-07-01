@@ -141,17 +141,17 @@ pub(crate) fn room_settings_from_proto(
         client_proto::PlayMode::Shuffle => synctv_core::models::PlayMode::Shuffle,
     };
     let settings = synctv_core::models::RoomSettings {
-        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(
+        allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin::new(
             settings.allow_guest_join,
         ),
-        max_members: synctv_core::models::room_settings::MaxMembers(settings.max_members),
-        require_approval: synctv_core::models::room_settings::RequireApproval(
+        max_members: synctv_core::models::room_settings::MaxMembers::new(settings.max_members),
+        require_approval: synctv_core::models::room_settings::RequireApproval::new(
             settings.require_approval,
         ),
-        allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(
+        allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin::new(
             settings.allow_auto_join,
         ),
-        chat_enabled: synctv_core::models::room_settings::ChatEnabled(settings.chat_enabled),
+        chat_enabled: synctv_core::models::room_settings::ChatEnabled::new(settings.chat_enabled),
         auto_play: synctv_core::models::room_settings::AutoPlay::new(
             synctv_core::models::AutoPlaySettings {
                 enabled: auto_play.enabled,
@@ -159,22 +159,23 @@ pub(crate) fn room_settings_from_proto(
                 delay: auto_play.delay,
             },
         ),
-        admin_added_permissions: synctv_core::models::room_settings::AdminAddedPermissions(
+        admin_added_permissions: synctv_core::models::room_settings::AdminAddedPermissions::new(
             settings.admin_added_permissions,
         ),
-        admin_removed_permissions: synctv_core::models::room_settings::AdminRemovedPermissions(
+        admin_removed_permissions: synctv_core::models::room_settings::AdminRemovedPermissions::new(
             settings.admin_removed_permissions,
         ),
-        member_added_permissions: synctv_core::models::room_settings::MemberAddedPermissions(
+        member_added_permissions: synctv_core::models::room_settings::MemberAddedPermissions::new(
             settings.member_added_permissions,
         ),
-        member_removed_permissions: synctv_core::models::room_settings::MemberRemovedPermissions(
-            settings.member_removed_permissions,
-        ),
-        guest_added_permissions: synctv_core::models::room_settings::GuestAddedPermissions(
+        member_removed_permissions:
+            synctv_core::models::room_settings::MemberRemovedPermissions::new(
+                settings.member_removed_permissions,
+            ),
+        guest_added_permissions: synctv_core::models::room_settings::GuestAddedPermissions::new(
             settings.guest_added_permissions,
         ),
-        guest_removed_permissions: synctv_core::models::room_settings::GuestRemovedPermissions(
+        guest_removed_permissions: synctv_core::models::room_settings::GuestRemovedPermissions::new(
             settings.guest_removed_permissions,
         ),
     };
@@ -184,25 +185,29 @@ pub(crate) fn room_settings_from_proto(
 
 pub(crate) fn apply_room_settings_patch_from_proto(
     mut settings: synctv_core::models::RoomSettings,
-    patch: Option<client_proto::RoomSettingsPatch>,
+    patch: client_proto::UpdateRoomSettingsRequest,
 ) -> Result<synctv_core::models::RoomSettings, crate::impls::ApiError> {
-    let patch = patch.ok_or_else(|| {
-        crate::impls::ApiError::InvalidInput("settings patch is required".to_string())
-    })?;
+    use synctv_core::models::room_settings::{
+        AdminAddedPermissions, AdminRemovedPermissions, AllowAutoJoin, AllowGuestJoin, AutoPlay,
+        ChatEnabled, GuestAddedPermissions, GuestRemovedPermissions, MaxMembers,
+        MemberAddedPermissions, MemberRemovedPermissions, RequireApproval, RoomSettingsPatch,
+    };
+
+    let mut typed_patch = RoomSettingsPatch::default();
     if let Some(value) = patch.allow_guest_join {
-        settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(value);
+        typed_patch.allow_guest_join = Some(AllowGuestJoin::new(value));
     }
     if let Some(value) = patch.max_members {
-        settings.max_members = synctv_core::models::room_settings::MaxMembers(value);
+        typed_patch.max_members = Some(MaxMembers::new(value));
     }
     if let Some(value) = patch.require_approval {
-        settings.require_approval = synctv_core::models::room_settings::RequireApproval(value);
+        typed_patch.require_approval = Some(RequireApproval::new(value));
     }
     if let Some(value) = patch.allow_auto_join {
-        settings.allow_auto_join = synctv_core::models::room_settings::AllowAutoJoin(value);
+        typed_patch.allow_auto_join = Some(AllowAutoJoin::new(value));
     }
     if let Some(value) = patch.chat_enabled {
-        settings.chat_enabled = synctv_core::models::room_settings::ChatEnabled(value);
+        typed_patch.chat_enabled = Some(ChatEnabled::new(value));
     }
     if let Some(auto_play) = patch.auto_play {
         let mut value = settings.auto_play.value.clone();
@@ -224,33 +229,29 @@ pub(crate) fn apply_room_settings_patch_from_proto(
         if let Some(delay) = auto_play.delay {
             value.delay = delay;
         }
-        settings.auto_play = synctv_core::models::room_settings::AutoPlay::new(value);
+        typed_patch.auto_play = Some(AutoPlay::new(value));
     }
     if let Some(value) = patch.admin_added_permissions {
-        settings.admin_added_permissions =
-            synctv_core::models::room_settings::AdminAddedPermissions(value);
+        typed_patch.admin_added_permissions = Some(AdminAddedPermissions::new(value));
     }
     if let Some(value) = patch.admin_removed_permissions {
-        settings.admin_removed_permissions =
-            synctv_core::models::room_settings::AdminRemovedPermissions(value);
+        typed_patch.admin_removed_permissions = Some(AdminRemovedPermissions::new(value));
     }
     if let Some(value) = patch.member_added_permissions {
-        settings.member_added_permissions =
-            synctv_core::models::room_settings::MemberAddedPermissions(value);
+        typed_patch.member_added_permissions = Some(MemberAddedPermissions::new(value));
     }
     if let Some(value) = patch.member_removed_permissions {
-        settings.member_removed_permissions =
-            synctv_core::models::room_settings::MemberRemovedPermissions(value);
+        typed_patch.member_removed_permissions = Some(MemberRemovedPermissions::new(value));
     }
     if let Some(value) = patch.guest_added_permissions {
-        settings.guest_added_permissions =
-            synctv_core::models::room_settings::GuestAddedPermissions(value);
+        typed_patch.guest_added_permissions = Some(GuestAddedPermissions::new(value));
     }
     if let Some(value) = patch.guest_removed_permissions {
-        settings.guest_removed_permissions =
-            synctv_core::models::room_settings::GuestRemovedPermissions(value);
+        typed_patch.guest_removed_permissions = Some(GuestRemovedPermissions::new(value));
     }
-    settings.validate().map_err(crate::impls::ApiError::from)?;
+    settings
+        .apply_patch(typed_patch)
+        .map_err(crate::impls::ApiError::from)?;
     Ok(settings)
 }
 
@@ -919,6 +920,14 @@ pub(crate) fn stored_file_reference_to_media_cover(
     })
 }
 
+fn empty_media_cover() -> Option<synctv_proto::client::MediaCover> {
+    None
+}
+
+fn empty_resource_cover() -> Option<synctv_proto::client::ResourceCover> {
+    None
+}
+
 pub(super) fn user_role_to_proto(role: synctv_core::models::UserRole) -> i32 {
     i32::from(role)
 }
@@ -1244,7 +1253,7 @@ pub(crate) fn try_room_to_proto_with_availability_and_presence(
         is_banned: room.is_banned,
         availability: resource_availability_enum_to_proto(availability),
         version: i64::from(room.version),
-        cover: None,
+        cover: empty_resource_cover(),
         presence: presence.map(room_presence_stats_to_proto).transpose()?,
         creator,
         category: room
@@ -1314,22 +1323,7 @@ pub(crate) fn normalize_created_room_settings(
     settings.cloned().unwrap_or_default()
 }
 
-pub(crate) fn try_media_to_proto(
-    media: &synctv_core::models::Media,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
-    try_media_to_proto_for_viewer(media, true, None, public_id_codec)
-}
-
-pub(crate) fn try_media_to_proto_with_availability(
-    media: &synctv_core::models::Media,
-    is_available: bool,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
-    try_media_to_proto_for_viewer(media, is_available, None, public_id_codec)
-}
-
-pub(crate) fn try_media_to_proto_for_viewer(
+pub(crate) fn try_media_to_proto_for_viewer_without_cover(
     media: &synctv_core::models::Media,
     is_available: bool,
     viewer_id: Option<synctv_core::models::UserId>,
@@ -1354,7 +1348,7 @@ pub(crate) fn try_media_to_proto_for_viewer(
         availability: resource_availability_to_proto(is_available),
         version: i64::from(media.version),
         description: media.description.clone(),
-        cover: None,
+        cover: empty_media_cover(),
     })
 }
 
@@ -1406,31 +1400,19 @@ pub(crate) fn try_media_to_proto_for_viewer_with_cover(
     cover_url: Option<&str>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
-    let mut proto = try_media_to_proto_for_viewer(media, is_available, viewer_id, public_id_codec)?;
+    let mut proto = try_media_to_proto_for_viewer_without_cover(
+        media,
+        is_available,
+        viewer_id,
+        public_id_codec,
+    )?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_media_cover(file, cover_url))
         .transpose()?;
     Ok(proto)
 }
 
-pub(crate) fn try_playlist_to_proto(
-    playlist: &synctv_core::models::Playlist,
-    item_count: i32,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
-    try_playlist_to_proto_with_availability(playlist, item_count, true, public_id_codec)
-}
-
-pub(crate) fn try_playlist_to_proto_with_availability(
-    playlist: &synctv_core::models::Playlist,
-    item_count: i32,
-    is_available: bool,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
-    try_playlist_to_proto_for_viewer(playlist, item_count, is_available, None, public_id_codec)
-}
-
-pub(crate) fn try_playlist_to_proto_for_viewer(
+pub(crate) fn try_playlist_to_proto_for_viewer_without_cover(
     playlist: &synctv_core::models::Playlist,
     item_count: i32,
     is_available: bool,
@@ -1474,7 +1456,13 @@ pub(crate) fn try_playlist_to_proto_for_viewer(
         source_provider,
         provider_instance_name: playlist.provider_instance_name.clone().unwrap_or_default(),
         description: playlist.description.clone(),
-        cover: None,
+        cover: empty_resource_cover(),
+        creator_id: playlist
+            .creator_id
+            .map(|creator_id| public_id_codec.encode_user_id(creator_id))
+            .transpose()
+            .map_err(|error| crate::impls::ApiError::Internal(error.clone()))?
+            .unwrap_or_default(),
     })
 }
 
@@ -1517,7 +1505,7 @@ pub(crate) fn try_playlist_to_proto_for_viewer_with_cover(
     cover_url: Option<&str>,
     public_id_codec: &synctv_core::PublicIdCodec,
 ) -> Result<synctv_proto::client::Playlist, crate::impls::ApiError> {
-    let mut proto = try_playlist_to_proto_for_viewer(
+    let mut proto = try_playlist_to_proto_for_viewer_without_cover(
         playlist,
         item_count,
         is_available,

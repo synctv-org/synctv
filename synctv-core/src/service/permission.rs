@@ -16,7 +16,7 @@ use crate::{
     },
     models::{RoomId, RoomPermissionSet, UserId},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::SettingsRegistry,
+    service::RuntimeSettingsStore,
     Error, Result,
 };
 
@@ -58,7 +58,7 @@ pub struct PermissionService {
     room_settings_repo: Option<RoomSettingsRepository>,
     member_permission_cache: MemberPermissionCache,
     room_settings_cache: RoomSettingsCache,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Arc<SharedInvalidationService>,
     /// When true, source caches are considered unreliable due to Pub/Sub lag.
@@ -74,7 +74,7 @@ pub struct PermissionService {
 
 #[derive(Clone)]
 pub struct PermissionServiceRuntime {
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub cache_size: u64,
     pub cache_ttl_secs: u64,
     pub room_settings_repo: Option<RoomSettingsRepository>,
@@ -90,7 +90,7 @@ impl PermissionServiceRuntime {
     #[must_use]
     pub fn local_only() -> Self {
         Self {
-            settings_registry: None,
+            runtime_settings_store: None,
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
             room_settings_repo: None,
@@ -137,8 +137,8 @@ impl PermissionService {
     }
 
     #[cfg(test)]
-    pub(crate) const fn has_settings_registry(&self) -> bool {
-        self.settings_registry.is_some()
+    pub(crate) const fn has_runtime_settings_store(&self) -> bool {
+        self.runtime_settings_store.is_some()
     }
 
     /// Check if room settings repository is configured

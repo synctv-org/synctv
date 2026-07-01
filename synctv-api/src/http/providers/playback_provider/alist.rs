@@ -82,8 +82,8 @@ impl PlaybackProviderHttpResponse for AlistThumbnailResponse {
         ),
         responses(
             (status = 200, description = "Alist file stream"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -121,8 +121,8 @@ pub fn get_alist_file_stream(
         ),
         responses(
             (status = 200, description = "Alist file stream metadata"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -201,8 +201,8 @@ async fn alist_file_stream(
         ),
         responses(
             (status = 200, description = "Alist transcoded HLS manifest"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -260,8 +260,8 @@ pub async fn get_alist_transcoded_hls_manifest(
         ),
         responses(
             (status = 200, description = "Alist transcoded HLS segment"),
-            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -298,8 +298,8 @@ pub fn get_alist_transcoded_hls_segment(
         ),
         responses(
             (status = 200, description = "Alist transcoded HLS segment metadata"),
-            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -377,8 +377,8 @@ async fn alist_transcoded_hls_segment(
         ),
         responses(
             (status = 200, description = "Alist subtitle"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -435,8 +435,8 @@ pub async fn get_alist_subtitle(
         ),
         responses(
             (status = 200, description = "Alist thumbnail"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]

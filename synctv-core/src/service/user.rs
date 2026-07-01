@@ -59,7 +59,7 @@ pub struct UserService {
     refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
     refresh_rate_limit_config: RefreshRateLimitConfig,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
-    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     password_registration_policy_override: Option<RegistrationPolicy>,
     password_complexity: PasswordComplexityConfig,
     opaque_password_service: Arc<OpaquePasswordService>,
@@ -76,7 +76,7 @@ pub struct UserServiceRuntimeOptions {
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub refresh_rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub refresh_rate_limit_config: RefreshRateLimitConfig,
-    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     pub password_registration_policy_override: Option<RegistrationPolicy>,
     /// Stable OPAQUE server setup used for password registration, login, and reset.
     ///
@@ -104,7 +104,7 @@ impl UserServiceRuntimeOptions {
                 "synctv:test:".to_string(),
             )),
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
-            settings_registry: None,
+            runtime_settings_store: None,
             password_registration_policy_override: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
             opaque_login_session_store: crate::service::user::local_opaque_login_session_store(),

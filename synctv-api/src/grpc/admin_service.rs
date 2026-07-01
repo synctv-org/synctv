@@ -21,30 +21,29 @@ use synctv_proto::admin::{
     DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
     DeleteUserResponse, GetContentReportRequest, GetContentReportResponse, GetRoomMembersRequest,
     GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse, GetSettingsRequest,
-    GetSettingsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
-    GetUserPreferencesResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
-    GetUserRoomsResponse, KickMemberRequest, KickMemberResponse, KickStreamRequest,
-    KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest,
-    ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
-    ListContentReportsResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
-    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
-    ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
-    ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
-    ListUsersRequest, ListUsersResponse, RejectRoomCreationReviewRequest,
-    RejectRoomCreationReviewResponse, RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse,
-    RejectUserRegistrationReviewRequest, RejectUserRegistrationReviewResponse, RemoveAdminRequest,
-    RemoveAdminResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
+    GetRoomSettingsResponse, GetSettingsRequest, GetSystemStatsRequest, GetSystemStatsResponse,
+    GetUserPreferencesRequest, GetUserPreferencesResponse, GetUserRequest, GetUserResponse,
+    GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest, KickMemberResponse,
+    KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
+    ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse,
+    ListContentReportsRequest, ListContentReportsResponse, ListRoomCategoriesRequest,
+    ListRoomCategoriesResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
+    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomLabelsRequest,
+    ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
+    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
+    ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
+    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
+    RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
+    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
     SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
     UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateContentReportStatusRequest,
     UpdateContentReportStatusResponse, UpdateMemberPermissionsRequest,
     UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
-    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateRoomTaxonomyRequest,
-    UpdateRoomTaxonomyResponse, UpdateSettingsRequest, UpdateSettingsResponse,
-    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UpdateUserRoleRequest,
-    UpdateUserRoleResponse, UpdateUserUsernameRequest, UpdateUserUsernameResponse,
-    UpsertRoomCategoryRequest, UpsertRoomCategoryResponse, UpsertRoomLabelRequest,
-    UpsertRoomLabelResponse,
+    UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest, UpdateRoomTaxonomyResponse,
+    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
+    UpdateUserUsernameResponse, UpsertRoomCategoryRequest, UpsertRoomCategoryResponse,
+    UpsertRoomLabelRequest, UpsertRoomLabelResponse,
 };
 
 use crate::impls::AdminApiImpl;
@@ -190,19 +189,9 @@ impl AdminService for AdminServiceImpl {
     async fn get_settings(
         &self,
         request: Request<GetSettingsRequest>,
-    ) -> Result<Response<GetSettingsResponse>, Status> {
+    ) -> Result<Response<synctv_proto::admin::RuntimeSettings>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.get_settings(req, &validated.user_id, &ctx).await
-        })
-        .await
-    }
-
-    async fn get_settings_group(
-        &self,
-        request: Request<GetSettingsGroupRequest>,
-    ) -> Result<Response<GetSettingsGroupResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.get_settings_group(req, &validated.user_id, &ctx).await
         })
         .await
     }
@@ -210,7 +199,7 @@ impl AdminService for AdminServiceImpl {
     async fn update_settings(
         &self,
         request: Request<UpdateSettingsRequest>,
-    ) -> Result<Response<UpdateSettingsResponse>, Status> {
+    ) -> Result<Response<synctv_proto::admin::RuntimeSettings>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.update_settings(req, &validated.user_id, &ctx).await
         })
@@ -652,7 +641,7 @@ impl AdminService for AdminServiceImpl {
     async fn update_room_settings(
         &self,
         request: Request<UpdateRoomSettingsRequest>,
-    ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
+    ) -> Result<Response<synctv_proto::admin::Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.update_room_settings(req, &validated.user_id).await
         })
@@ -836,6 +825,14 @@ impl AdminService for AdminServiceImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tonic_types::StatusExt;
+
+    fn detail_error_code(status: &Status) -> Option<String> {
+        status
+            .get_error_details()
+            .error_info()
+            .and_then(|detail| detail.metadata.get("errorCode").cloned())
+    }
 
     #[test]
     fn test_api_err_not_found() {
@@ -892,13 +889,7 @@ mod tests {
         assert_eq!(status.message(), "Internal error");
         assert!(!status.message().contains("password"));
         assert!(!status.message().contains("database"));
-        assert_eq!(
-            status
-                .metadata()
-                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
-            Some("9000")
-        );
+        assert_eq!(detail_error_code(&status).as_deref(), Some("9000"));
     }
 
     #[test]
@@ -906,13 +897,7 @@ mod tests {
         let err = crate::impls::ApiError::NotFound("user not found".to_string());
         let status = map_api_error(err);
 
-        assert_eq!(
-            status
-                .metadata()
-                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
-            Some("2000")
-        );
+        assert_eq!(detail_error_code(&status).as_deref(), Some("2000"));
     }
 
     #[test]
@@ -924,19 +909,14 @@ mod tests {
         let status = map_api_error(err);
 
         assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(detail_error_code(&status).as_deref(), Some("2002"));
         assert_eq!(
             status
-                .metadata()
-                .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
-            Some("2002")
-        );
-        assert_eq!(
-            status
-                .metadata()
-                .get(crate::grpc_support::RETRY_AFTER_METADATA_KEY)
-                .and_then(|value| value.to_str().ok()),
-            Some("7")
+                .get_error_details()
+                .retry_info()
+                .and_then(|detail| detail.retry_delay)
+                .map(|duration| duration.as_secs()),
+            Some(7)
         );
     }
 

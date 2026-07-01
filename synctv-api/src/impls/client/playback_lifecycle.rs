@@ -864,7 +864,7 @@ mod tests {
                 )
                 .checked("test jwt service"),
                 live_streaming_infrastructure: None,
-                settings_registry: None,
+                runtime_settings_store: None,
                 public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
                 chat_service: None,
                 provider_stores: stores,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            WITH updated AS (\n                UPDATE content_reports\n                SET status = $2,\n                    reviewed_by = $3,\n                    reviewed_at = CURRENT_TIMESTAMP,\n                    resolution_note = $4,\n                    updated_at = CURRENT_TIMESTAMP\n                WHERE id = $1\n                RETURNING *\n            )\n            SELECT\n                cr.id AS \"id!: ContentReportId\",\n                cr.reporter_user_id AS \"reporter_user_id!: UserId\",\n                COALESCE(reporter.username, '') AS \"reporter_username!\",\n                cr.room_id AS \"room_id?: RoomId\",\n                COALESCE(room_ctx.name, '') AS \"room_name!\",\n                cr.target_type AS \"target_type!: ContentReportTargetType\",\n                cr.target_room_id AS \"target_room_id?: RoomId\",\n                COALESCE(target_room.name, '') AS \"target_room_name!\",\n                cr.target_user_id AS \"target_user_id?: UserId\",\n                COALESCE(target_user.username, '') AS \"target_username!\",\n                cr.target_member_room_id AS \"target_member_room_id?: RoomId\",\n                COALESCE(target_member_room.name, '') AS \"target_member_room_name!\",\n                cr.target_member_user_id AS \"target_member_user_id?: UserId\",\n                COALESCE(target_member_user.username, '') AS \"target_member_username!\",\n                cr.target_chat_message_id,\n                cr.target_chat_message_created_at,\n                COALESCE(left(chat.content, 240), '') AS \"target_chat_message_preview!\",\n                cr.reason_code,\n                cr.reason,\n                cr.metadata AS \"metadata!: ContentReportMetadata\",\n                cr.status AS \"status!: ContentReportStatus\",\n                cr.reviewed_by AS \"reviewed_by?: UserId\",\n                COALESCE(reviewer.username, '') AS \"reviewed_by_username!\",\n                cr.reviewed_at,\n                cr.resolution_note,\n                cr.created_at,\n                cr.updated_at\n            FROM updated cr\n            LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id\n            LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by\n            LEFT JOIN rooms room_ctx ON room_ctx.id = cr.room_id\n            LEFT JOIN rooms target_room ON target_room.id = cr.target_room_id\n            LEFT JOIN users target_user ON target_user.id = cr.target_user_id\n            LEFT JOIN rooms target_member_room ON target_member_room.id = cr.target_member_room_id\n            LEFT JOIN users target_member_user ON target_member_user.id = cr.target_member_user_id\n            LEFT JOIN chat_messages chat\n              ON chat.room_id = cr.room_id\n             AND chat.id = cr.target_chat_message_id\n             AND chat.created_at = cr.target_chat_message_created_at\n            ",
+  "query": "\n            SELECT\n                cr.id AS \"id!: ContentReportId\",\n                cr.reporter_user_id AS \"reporter_user_id!: UserId\",\n                COALESCE(reporter.username, '') AS \"reporter_username!\",\n                cr.room_id AS \"room_id?: RoomId\",\n                COALESCE(room_ctx.name, '') AS \"room_name!\",\n                cr.target_type AS \"target_type!: ContentReportTargetType\",\n                cr.target_room_id AS \"target_room_id?: RoomId\",\n                COALESCE(target_room.name, '') AS \"target_room_name!\",\n                cr.target_user_id AS \"target_user_id?: UserId\",\n                COALESCE(target_user.username, '') AS \"target_username!\",\n                cr.target_member_room_id AS \"target_member_room_id?: RoomId\",\n                COALESCE(target_member_room.name, '') AS \"target_member_room_name!\",\n                cr.target_member_user_id AS \"target_member_user_id?: UserId\",\n                COALESCE(target_member_user.username, '') AS \"target_member_username!\",\n                cr.target_chat_message_id,\n                cr.target_chat_message_created_at,\n                COALESCE(left(chat.content, 240), '') AS \"target_chat_message_preview!\",\n                cr.reason_code AS \"reason_code!\",\n                cr.reason AS \"reason!\",\n                cr.metadata AS \"metadata!: ContentReportMetadata\",\n                cr.status AS \"status!: ContentReportStatus\",\n                cr.reviewed_by AS \"reviewed_by?: UserId\",\n                COALESCE(reviewer.username, '') AS \"reviewed_by_username!\",\n                cr.reviewed_at AS \"reviewed_at?\",\n                cr.resolution_note AS \"resolution_note!\",\n                cr.created_at AS \"created_at!\",\n                cr.updated_at AS \"updated_at!\"\n            FROM content_reports cr\n            LEFT JOIN users reporter ON reporter.id = cr.reporter_user_id\n            LEFT JOIN users reviewer ON reviewer.id = cr.reviewed_by\n            LEFT JOIN rooms room_ctx ON room_ctx.id = cr.room_id\n            LEFT JOIN rooms target_room ON target_room.id = cr.target_room_id\n            LEFT JOIN users target_user ON target_user.id = cr.target_user_id\n            LEFT JOIN rooms target_member_room ON target_member_room.id = cr.target_member_room_id\n            LEFT JOIN users target_member_user ON target_member_user.id = cr.target_member_user_id\n            LEFT JOIN chat_messages chat\n              ON chat.room_id = cr.room_id\n             AND chat.id = cr.target_chat_message_id\n             AND chat.created_at = cr.target_chat_message_created_at\n            WHERE cr.id = $1\n            ",
   "describe": {
     "columns": [
       {
@@ -157,7 +157,7 @@
       },
       {
         "ordinal": 17,
-        "name": "reason_code",
+        "name": "reason_code!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -168,7 +168,7 @@
       },
       {
         "ordinal": 18,
-        "name": "reason",
+        "name": "reason!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -218,7 +218,7 @@
       },
       {
         "ordinal": 23,
-        "name": "reviewed_at",
+        "name": "reviewed_at?",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -229,7 +229,7 @@
       },
       {
         "ordinal": 24,
-        "name": "resolution_note",
+        "name": "resolution_note!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -240,7 +240,7 @@
       },
       {
         "ordinal": 25,
-        "name": "created_at",
+        "name": "created_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -251,7 +251,7 @@
       },
       {
         "ordinal": 26,
-        "name": "updated_at",
+        "name": "updated_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -263,23 +263,11 @@
     ],
     "parameters": {
       "Left": [
-        "Int8",
-        "Int2",
-        "Int8",
-        "Text"
+        "Int8"
       ]
     },
     "nullable": [
-      false,
-      false,
-      null,
       true,
-      null,
-      false,
-      true,
-      null,
-      true,
-      null,
       true,
       null,
       true,
@@ -287,17 +275,26 @@
       true,
       true,
       null,
-      false,
-      false,
-      false,
-      false,
       true,
       null,
       true,
-      false,
-      false,
-      false
+      null,
+      true,
+      null,
+      true,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "49a0d8c8fe1fee007c16a065571093b33f11bbbd55109cb29ba2722d35377b16"
+  "hash": "171d507e496e9cd79a32787782920722119f7704a516365e52907a76b07f2029"
 }

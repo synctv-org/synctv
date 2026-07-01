@@ -95,7 +95,7 @@ fn optional_file_range_parses_standard_byte_ranges() -> TestResult {
 
     headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1,2-3"));
     let error = app_err(super::optional_file_range(&headers))?;
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
     Ok(())
 }
 
@@ -222,8 +222,8 @@ fn required_header_str_rejects_missing_header() -> TestResult {
         "missing token",
     ))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert_eq!(error.message, "missing token");
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error.message(), "missing token");
     Ok(())
 }
 
@@ -238,8 +238,8 @@ fn required_header_str_rejects_blank_header() -> TestResult {
         "missing token",
     ))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert_eq!(error.message, "missing token");
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(error.message(), "missing token");
     Ok(())
 }
 
@@ -254,8 +254,8 @@ fn required_header_str_rejects_non_utf8_header() -> TestResult {
         "missing token",
     ))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("x-upload-token"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("x-upload-token"));
     Ok(())
 }
 
@@ -272,8 +272,8 @@ fn optional_header_str_rejects_non_utf8_header() -> TestResult {
         &axum::http::header::CONTENT_TYPE,
     ))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("content-type"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("content-type"));
     Ok(())
 }
 
@@ -320,8 +320,8 @@ fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() -> TestResult 
         Some("10.1.2.3".parse()?),
     ))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("x-forwarded-proto"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("x-forwarded-proto"));
     Ok(())
 }
 
@@ -393,7 +393,7 @@ fn test_app_state_with_rate_limits(
         oauth2_service: None,
         passkey_service: None,
         settings_service: None,
-        settings_registry: None,
+        runtime_settings_store: None,
         email_service: None,
         email_token_service: None,
         publish_key_service: None,
@@ -462,7 +462,7 @@ async fn test_app_state_with_websocket_runtime(
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service: synctv_core::service::NotificationService::default(),
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     );
     router_config.chat_service = Some(Arc::new(chat_service));
@@ -542,7 +542,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service,
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     );
 
@@ -723,7 +723,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         oauth2_service: None,
         passkey_service: None,
         settings_service: None,
-        settings_registry: None,
+        runtime_settings_store: None,
         email_service: None,
         email_token_service: None,
         publish_key_service: None,
@@ -1959,7 +1959,7 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert!(json["paths"]["/api/rooms/{roomId}/media"].is_object());
     assert!(json["paths"]["/api/admin/users"].is_object());
     assert!(json["paths"]["/api/rooms/{roomId}/webrtc/ice-servers"].is_object());
-    assert!(json["paths"]["/api/oauth2/{provider}/exchange"].is_object());
+    assert!(json["paths"]["/api/oauth2/exchange"].is_object());
     assert!(json["paths"]["/api/oauth2/providers"].is_object());
     assert!(json["paths"]["/api/oauth2/{provider}/authorize"].is_object());
     assert!(json["paths"]["/api/notifications"].is_object());

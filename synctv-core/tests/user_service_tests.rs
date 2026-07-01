@@ -26,8 +26,8 @@ use synctv_core::{
         permission::PermissionServiceRuntime,
         user::UserServiceRuntimeOptions,
         AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        InMemoryTokenBlacklistStore, PasskeyService, PermissionService, SecurityPipeline,
-        SecurityPipelineRuntime, SensitiveVerificationOutcome, SettingsRegistry, SettingsService,
+        InMemoryTokenBlacklistStore, PasskeyService, PermissionService, RuntimeSettingsStore,
+        SecurityPipeline, SecurityPipelineRuntime, SensitiveVerificationOutcome, SettingsService,
         TokenAuthContext, UserService,
     },
     Config, Error,
@@ -79,22 +79,24 @@ fn create_user_service_with_runtime(
     )
 }
 
-async fn email_signup_registry(pool: &PgPool) -> Arc<SettingsRegistry> {
+async fn email_signup_registry(pool: &PgPool) -> Arc<RuntimeSettingsStore> {
     let settings_service = Arc::new(SettingsService::new(
         SettingsRepository::new(pool.clone()),
         pool.clone(),
     ));
-    let registry = Arc::new(SettingsRegistry::new(settings_service));
+    let registry = Arc::new(RuntimeSettingsStore::new(settings_service));
+    let mut settings = registry
+        .runtime_settings()
+        .checked("runtime settings should load");
+    settings.email.enabled = true;
+    settings.email.smtp_host = "smtp.example.com".to_string();
+    settings.email.from_email = "noreply@example.com".to_string();
+    settings.user.enable_email_signup = true;
+    settings.user.email_signup_need_review = false;
     registry
-        .enable_email_signup
-        .set(true)
+        .persist_runtime_settings(&settings)
         .await
-        .checked("email signup setting should persist");
-    registry
-        .email_signup_need_review
-        .set(false)
-        .await
-        .checked("email signup review setting should persist");
+        .checked("email signup settings should persist");
     registry
 }
 
@@ -279,7 +281,7 @@ async fn test_email_registration_confirmation_stores_opaque_credential() {
         &pool,
         UserServiceRuntimeOptions {
             opaque_password_service: Arc::clone(&opaque_password_service),
-            settings_registry: Some(email_signup_registry(&pool).await),
+            runtime_settings_store: Some(email_signup_registry(&pool).await),
             ..UserServiceRuntimeOptions::test_defaults()
         },
     );

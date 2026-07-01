@@ -1,13 +1,12 @@
 //! System settings service for runtime configuration management
 //!
-//! Provides methods for managing settings groups with change notifications
+//! Provides methods for managing runtime settings with change notifications
 //! Uses `PostgreSQL` LISTEN/NOTIFY for hot reload across multiple replicas
 //!
 //! Design reference: external design doc 19-configuration-management.md §6.3
 
 use dashmap::DashMap;
 use sqlx::PgPool;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -17,46 +16,9 @@ use crate::cache::{
     CacheDomain, CacheL2Backend, ConsistencyCoordinator, FenceReadResult, NoopCacheL2,
     RuntimeSettingKey, RuntimeSettingsCache, VersionFenceStore,
 };
-use crate::models::settings::SettingsGroup;
+use crate::models::settings::RuntimeSetting;
 use crate::repository::SettingsRepository;
-use crate::service::settings_vars::{Setting, SettingProvider};
 use crate::{Error, InternalExt};
-
-/// Type alias for the shared setting providers map
-pub(crate) type SettingProviders =
-    Arc<parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn SettingProvider>>>>;
-
-type SettingsBatchValidator =
-    Arc<dyn Fn(&SettingsValidationContext) -> Result<(), Error> + Send + Sync>;
-
-pub(crate) struct SettingsValidationContext {
-    values: BTreeMap<String, String>,
-}
-
-impl SettingsValidationContext {
-    fn new(values: BTreeMap<String, String>) -> Self {
-        Self { values }
-    }
-
-    pub(crate) fn get<T>(&self, setting: &Setting<T>) -> Result<T, Error>
-    where
-        T: Clone + std::fmt::Display + std::str::FromStr + Send + Sync + 'static,
-        T::Err: std::fmt::Display + std::error::Error + Send + Sync,
-    {
-        let raw = self.values.get(setting.key()).ok_or_else(|| {
-            Error::Internal(format!(
-                "Missing registered setting '{}' during validation",
-                setting.key()
-            ))
-        })?;
-        raw.parse::<T>().map_err(|error| {
-            Error::InvalidInput(format!(
-                "Invalid value for setting '{}': {error}",
-                setting.key()
-            ))
-        })
-    }
-}
 
 /// System settings service
 #[derive(Clone)]
@@ -64,13 +26,10 @@ pub struct SettingsService {
     repository: Option<SettingsRepository>,
     pool: Option<PgPool>,
     // Lock-free cache using DashMap for concurrent reads.
-    cache: Arc<DashMap<String, SettingsGroup>>,
+    cache: Arc<DashMap<String, RuntimeSetting>>,
     // Broadcast channel for notifying SettingsStorage of remote reload events.
     // Payload is the setting key that was reloaded along with its new value.
     reload_sender: broadcast::Sender<(String, Option<String>)>,
-    // Shared reference to registered setting providers for validation.
-    setting_providers: SettingProviders,
-    batch_validators: Arc<parking_lot::RwLock<Vec<SettingsBatchValidator>>>,
     consistency: ConsistencyCoordinator,
     runtime_cache: RuntimeSettingsCache,
 }
@@ -141,8 +100,6 @@ impl SettingsService {
             pool: Some(pool),
             cache: Arc::new(DashMap::new()),
             reload_sender,
-            setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-            batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
             consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
@@ -163,8 +120,6 @@ impl SettingsService {
             pool: None,
             cache: Arc::new(DashMap::new()),
             reload_sender,
-            setting_providers: Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new())),
-            batch_validators: Arc::new(parking_lot::RwLock::new(Vec::new())),
             consistency: ConsistencyCoordinator::new(runtime.version_fence),
             runtime_cache,
         }
@@ -180,69 +135,6 @@ impl SettingsService {
         self.pool
             .as_ref()
             .ok_or_else(|| Error::Internal("Settings service has no database pool backend".into()))
-    }
-
-    pub(crate) fn providers(&self) -> SettingProviders {
-        Arc::clone(&self.setting_providers)
-    }
-
-    pub(crate) fn add_batch_validator<F>(&self, validator: F)
-    where
-        F: Fn(&SettingsValidationContext) -> Result<(), Error> + Send + Sync + 'static,
-    {
-        self.batch_validators.write().push(Arc::new(validator));
-    }
-
-    /// Validate a setting value using the registered provider for its key.
-    ///
-    /// Returns `Ok(())` only if a provider is registered for the key and the
-    /// provider accepts the value.
-    pub fn validate_setting(&self, key: &str, value: &str) -> Result<(), Error> {
-        let providers = self.setting_providers.read();
-        if let Some(provider) = providers.get(key) {
-            if !provider.user_writable() {
-                return Err(Error::InvalidInput(format!(
-                    "Setting '{key}' is managed by the server runtime and cannot be updated"
-                )));
-            }
-            provider.is_valid_raw(value)?;
-            return Ok(());
-        }
-        Err(Error::InvalidInput(format!("Unknown setting key: {key}")))
-    }
-
-    fn registered_default_snapshot(&self) -> Result<BTreeMap<String, String>, Error> {
-        let defaults = self
-            .setting_providers
-            .read()
-            .values()
-            .map(|provider| {
-                provider
-                    .default_raw()
-                    .map(|raw| (provider.key().to_string(), raw))
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        Ok(defaults)
-    }
-
-    fn validate_setting_update_snapshot(&self, updates: &[(String, String)]) -> Result<(), Error> {
-        let validators = self.batch_validators.read().clone();
-        if validators.is_empty() {
-            return Ok(());
-        }
-
-        let mut snapshot = self.registered_default_snapshot()?;
-        for setting in self.get_all()? {
-            snapshot.insert(setting.key, setting.value);
-        }
-        for (key, value) in updates {
-            snapshot.insert(key.clone(), value.clone());
-        }
-        let context = SettingsValidationContext::new(snapshot);
-        for validator in validators {
-            validator(&context)?;
-        }
-        Ok(())
     }
 
     /// Subscribe to reload events triggered by remote replicas.
@@ -280,8 +172,8 @@ impl SettingsService {
         Ok(())
     }
 
-    /// Get all settings groups
-    pub fn get_all(&self) -> Result<Vec<SettingsGroup>, Error> {
+    /// Get all runtime settings
+    pub fn get_all(&self) -> Result<Vec<RuntimeSetting>, Error> {
         let mut groups: Vec<_> = self
             .cache
             .iter()
@@ -304,7 +196,7 @@ impl SettingsService {
     }
 
     /// Get a specific setting by key
-    pub async fn get(&self, key: &str) -> Result<SettingsGroup, Error> {
+    pub async fn get(&self, key: &str) -> Result<RuntimeSetting, Error> {
         let cache_key = RuntimeSettingKey::new(key);
         let domain = Self::runtime_setting_domain(key);
 
@@ -385,104 +277,20 @@ impl SettingsService {
         self.get_refresh(key).await
     }
 
-    /// Update a setting value by key
-    ///
-    /// Validates the value against the registered provider (if any) before
-    /// persisting to the database.
-    pub async fn update(&self, key: &str, value: String) -> Result<SettingsGroup, Error> {
-        debug!("Updating setting '{}'", key);
-
-        // Validate before writing to database
-        self.validate_setting(key, &value)?;
-        self.validate_setting_update_snapshot(&[(key.to_string(), value.clone())])?;
-
-        let group_name = group_name_from_setting_key(key);
-
-        let observed_version = i64::from(
-            self.repository()?
-                .current_version(key)
-                .await
-                .internal_with_err("Failed to read current setting version")?,
-        );
-        let domain = Self::runtime_setting_domain(key);
-        let reservation = self
-            .consistency
-            .begin_observed_write(&domain, observed_version)
-            .await?;
-        let new_version = reservation
-            .as_ref()
-            .map_or(observed_version + 1, |reservation| reservation.version);
-
-        let write_result = self
-            .repository()?
-            .upsert_with_exact_version(
-                key,
-                &group_name,
-                &value,
-                i32::try_from(observed_version).map_err(|_| {
-                    Error::Internal(format!("Setting version {observed_version} exceeds i32"))
-                })?,
-                i32::try_from(new_version).map_err(|_| {
-                    Error::Internal(format!("Setting version {new_version} exceeds i32"))
-                })?,
-            )
-            .await
-            .internal_with_err("Failed to update setting");
-        let setting = match write_result {
-            Ok(setting) => setting,
-            Err(error) => {
-                self.consistency
-                    .abort_reserved_write(&domain, reservation.as_ref())
-                    .await;
-                return Err(error);
-            }
-        };
-        self.finalize_committed_write_best_effort(
-            &domain,
-            reservation.as_ref(),
-            i64::from(setting.version),
-            "update",
-        )
-        .await;
-
-        // Update cache
-        self.store_cache_entry(setting.clone()).await;
-
-        // Note: pg_notify('settings_changed', key) is handled by the database
-        // trigger (settings_change_trigger on the settings table). No manual
-        // notification is needed here; the trigger fires on UPDATE automatically.
-
-        self.notify_reload_subscribers(key, Some(setting.value.clone()));
-
-        info!("Updated setting '{}'", setting.key);
-        Ok(setting)
-    }
-
     /// Atomically update multiple settings in a single database transaction.
     ///
     /// All updates are committed together or rolled back if any write fails, so the
     /// settings table is never left in a partially-updated state. Cache and reload
     /// subscribers are updated only after the transaction commits successfully.
     ///
-    /// Validates each value against its registered provider before writing.
-    ///
-    /// Cross-validates contradictory settings using the database (not cache) to
-    /// prevent race conditions in multi-replica deployments where two replicas
-    /// could simultaneously set contradictory values based on stale cache reads.
-    pub async fn update_batch(
+    pub(crate) async fn persist_raw_settings_batch_internal(
         &self,
         updates: impl IntoIterator<Item = (String, String)>,
-    ) -> Result<Vec<SettingsGroup>, Error> {
+    ) -> Result<Vec<RuntimeSetting>, Error> {
         let updates: Vec<(String, String)> = updates.into_iter().collect();
         if updates.is_empty() {
             return Ok(vec![]);
         }
-
-        // Validate each value against its registered provider
-        for (key, value) in &updates {
-            self.validate_setting(key, value)?;
-        }
-        self.validate_setting_update_snapshot(&updates)?;
 
         let mut fences = Vec::with_capacity(updates.len());
         for (key, _) in &updates {
@@ -536,7 +344,7 @@ impl SettingsService {
                 )));
             };
             let setting = sqlx::query_as!(
-                crate::models::settings::SettingsGroup,
+                crate::models::settings::RuntimeSetting,
                 r#"
                  INSERT INTO settings (key, group_name, value, version)
                  VALUES ($1, $2, $3, $5)
@@ -615,10 +423,10 @@ impl SettingsService {
         &self,
         key: &str,
         value: String,
-    ) -> Result<SettingsGroup, Error> {
+    ) -> Result<RuntimeSetting, Error> {
         let group_name = group_name_from_setting_key(key);
         let setting = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r#"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, 0)
@@ -779,7 +587,7 @@ impl SettingsService {
     async fn apply_reload_result(
         &self,
         key: &str,
-        result: Result<SettingsGroup, Error>,
+        result: Result<RuntimeSetting, Error>,
     ) -> Result<(), Error> {
         match result {
             Ok(setting) => {
@@ -864,7 +672,7 @@ impl SettingsService {
         }
     }
 
-    async fn get_refresh(&self, key: &str) -> Result<SettingsGroup, Error> {
+    async fn get_refresh(&self, key: &str) -> Result<RuntimeSetting, Error> {
         let setting = self
             .repository()?
             .get(key)
@@ -880,7 +688,7 @@ impl SettingsService {
         Ok(setting)
     }
 
-    async fn store_cache_entry(&self, setting: SettingsGroup) {
+    async fn store_cache_entry(&self, setting: RuntimeSetting) {
         self.cache.insert(setting.key.clone(), setting.clone());
         let cache_key = RuntimeSettingKey::new(setting.key.clone());
         if let Err(error) = self
@@ -925,7 +733,7 @@ mod tests {
         consistency::VersionFenceState, CacheDomain, LocalVersionFenceStore,
         VersionFenceReservation, VersionFenceStore,
     };
-    use crate::models::settings::SettingsGroup;
+    use crate::models::settings::RuntimeSetting;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
@@ -935,46 +743,10 @@ mod tests {
         }
     }
 
-    fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> E {
-        match result {
-            Ok(_) => std::panic::panic_any(context.to_string()),
-            Err(error) => error,
-        }
-    }
-
     fn some<T>(value: Option<T>, context: &str) -> T {
         match value {
             Some(value) => value,
             None => std::panic::panic_any(context.to_string()),
-        }
-    }
-
-    struct TestSettingProvider;
-
-    #[async_trait::async_trait]
-    impl crate::service::settings_vars::SettingProvider for TestSettingProvider {
-        fn key(&self) -> &'static str {
-            "test.mock"
-        }
-
-        fn default_raw(&self) -> crate::Result<String> {
-            Ok("valid".to_string())
-        }
-
-        fn get_raw(&self) -> Option<String> {
-            Some("valid".to_string())
-        }
-        async fn set_raw(&self, _value: String) -> crate::Result<()> {
-            Ok(())
-        }
-        fn is_valid_raw(&self, value: &str) -> crate::Result<()> {
-            if value == "valid" {
-                Ok(())
-            } else {
-                Err(crate::Error::InvalidInput(
-                    "Only 'valid' is accepted".into(),
-                ))
-            }
         }
     }
 
@@ -1062,28 +834,6 @@ mod tests {
         }
     }
 
-    fn provider_map_with_test_provider(key: &str) -> SettingProviders {
-        let providers = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-        providers.write().insert(
-            key.to_string(),
-            Arc::new(TestSettingProvider)
-                as Arc<dyn crate::service::settings_vars::SettingProvider>,
-        );
-        providers
-    }
-
-    fn validate_setting_with_providers(
-        providers: &SettingProviders,
-        key: &str,
-        value: &str,
-    ) -> Result<(), Error> {
-        let providers = providers.read();
-        let provider = providers
-            .get(key)
-            .ok_or_else(|| Error::InvalidInput(format!("Unknown setting key: {key}")))?;
-        provider.is_valid_raw(value)
-    }
-
     fn service_with_fence_store(
         store: Arc<dyn VersionFenceStore>,
     ) -> (
@@ -1098,25 +848,6 @@ mod tests {
         (service, receiver)
     }
 
-    #[test]
-    fn test_validate_setting_rejects_invalid_value() {
-        let providers = provider_map_with_test_provider("test.key");
-        let result = validate_setting_with_providers(&providers, "test.key", "invalid");
-        assert!(result.is_err(), "Should reject invalid values");
-        let err = err(result, "invalid setting should be rejected");
-        assert!(
-            matches!(err, crate::Error::InvalidInput(_)),
-            "Error should be InvalidInput, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn test_validate_setting_accepts_valid_value() {
-        let providers = provider_map_with_test_provider("test.key");
-        let result = validate_setting_with_providers(&providers, "test.key", "valid");
-        assert!(result.is_ok(), "Should accept valid values");
-    }
-
     #[tokio::test]
     async fn test_committed_runtime_setting_finalizer_failure_does_not_block_cache_refresh() {
         let store = Arc::new(FailingCommitFenceStore::default());
@@ -1129,7 +860,7 @@ mod tests {
             .finalize_committed_write_best_effort(&domain, reservation.as_ref(), 1, "test")
             .await;
 
-        let mut setting = SettingsGroup::new("test".to_string(), "\"fresh\"".to_string());
+        let mut setting = RuntimeSetting::new("test".to_string(), "\"fresh\"".to_string());
         setting.key = "test.key".to_string();
         setting.version = 1;
         service.store_cache_entry(setting.clone()).await;
@@ -1172,7 +903,7 @@ mod tests {
                 )
                 .await;
 
-            let mut setting = SettingsGroup::new("test".to_string(), value.to_string());
+            let mut setting = RuntimeSetting::new("test".to_string(), value.to_string());
             setting.key = key.to_string();
             setting.version = version;
             service.store_cache_entry(setting.clone()).await;
@@ -1216,43 +947,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_validate_setting_rejects_unknown_keys() {
-        let providers = provider_map_with_test_provider("test.key");
-        let result = validate_setting_with_providers(&providers, "unknown.key", "anything");
-        assert!(result.is_err(), "Unknown keys must be rejected");
-    }
-
-    #[test]
-    fn test_validate_setting_no_providers_set() {
-        let providers = Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
-        let result = validate_setting_with_providers(&providers, "any.key", "any_value");
-        assert!(
-            result.is_err(),
-            "Validation must fail closed when providers are not registered"
-        );
-    }
-
     #[tokio::test]
     async fn test_reload_setting_preserves_cache_on_non_not_found_error() {
         let service =
             SettingsService::new_without_backend_for_tests(SettingsServiceRuntime::local_only());
 
-        let server_settings = synctv_proto::admin::ServerSettings {
-            allow_room_creation: true,
-            max_rooms_per_user: 0,
-            max_members_per_room: 0,
-            max_chat_messages: 0,
+        let existing = RuntimeSetting {
+            key: crate::service::DefaultMaxMembersSetting::KEY.to_string(),
+            group_name: group_name_from_setting_key(crate::service::DefaultMaxMembersSetting::KEY),
+            value: "100".to_string(),
+            version: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
         };
-        let existing = SettingsGroup::new(
-            "server".to_string(),
-            serde_json::to_string(&server_settings).expect("server settings should serialize"),
-        );
         service.cache.insert(existing.key.clone(), existing.clone());
 
         let result = service
             .apply_reload_result(
-                "server.default",
+                crate::service::DefaultMaxMembersSetting::KEY,
                 Err(Error::Internal(
                     "injected transient database failure".to_string(),
                 )),
@@ -1265,7 +977,9 @@ mod tests {
         );
 
         let cached = some(
-            service.cache.get("server.default"),
+            service
+                .cache
+                .get(crate::service::DefaultMaxMembersSetting::KEY),
             "existing cache entry must be preserved on transient DB errors",
         );
         assert_eq!(cached.value().value, existing.value);

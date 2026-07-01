@@ -24,7 +24,7 @@ use synctv_core::{
         auth::{BruteForceProtection, JwtService},
         notification::{GuestKickReason, RoomEvent},
         room::{CreateRoomWithTaxonomyRequest, RoomCategoryUpdate, RoomServiceOptions},
-        InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, SettingsRegistry,
+        InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, RuntimeSettingsStore,
         SettingsService, UserService,
     },
     Error,
@@ -80,9 +80,9 @@ fn make_room_service(pool: PgPool) -> RoomService {
     RoomService::new_for_tests(pool, user_service).checked("room service should build")
 }
 
-fn make_room_service_with_settings_registry(
+fn make_room_service_with_runtime_settings_store(
     pool: &PgPool,
-    settings_registry: Arc<SettingsRegistry>,
+    runtime_settings_store: Arc<RuntimeSettingsStore>,
 ) -> RoomService {
     let user_service = make_user_service(pool);
 
@@ -90,7 +90,7 @@ fn make_room_service_with_settings_registry(
         pool.clone(),
         user_service,
         RoomServiceOptions {
-            settings_registry: Some(settings_registry),
+            runtime_settings_store: Some(runtime_settings_store),
             ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
@@ -2258,8 +2258,14 @@ async fn test_single_setting_update_with_retry() {
         .await
         .checked("test operation should succeed");
 
+    let mut updated_settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
+    updated_settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+
     let result = room_service
-        .update_room_setting(&room.id, &owner.id, "allowGuestJoin", "true")
+        .set_room_settings(&room.id, &updated_settings)
         .await;
 
     assert!(
@@ -2558,12 +2564,18 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_max_members_cannot_exceed_10000() {
-    use synctv_core::models::room_settings::RoomSettingsRegistry;
+    use synctv_core::models::room_settings::{MaxMembers, RoomSettings, RoomSettingsPatch};
 
-    let result = RoomSettingsRegistry::validate_setting("maxMembers", "10001");
+    let result = RoomSettings::default().apply_patch(RoomSettingsPatch {
+        max_members: Some(MaxMembers(10001)),
+        ..Default::default()
+    });
     assert!(result.is_err(), "max_members > 10000 should be rejected");
 
-    let result = RoomSettingsRegistry::validate_setting("maxMembers", "10000");
+    let result = RoomSettings::default().apply_patch(RoomSettingsPatch {
+        max_members: Some(MaxMembers(10000)),
+        ..Default::default()
+    });
     assert!(result.is_ok(), "max_members = 10000 should be accepted");
 }
 
@@ -2665,8 +2677,13 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
         .checked("test operation should succeed");
 
     // Disable guest join - this should kick the guest
+    let mut updated_settings = room_service
+        .get_room_settings(&room.id)
+        .await
+        .checked("test operation should succeed");
+    updated_settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(false);
     let result = room_service
-        .update_room_setting(&room.id, &owner.id, "allowGuestJoin", "false")
+        .set_room_settings(&room.id, &updated_settings)
         .await;
     assert!(
         result.is_ok(),
@@ -5086,13 +5103,12 @@ async fn test_list_accessible_joined_rooms_excludes_rooms_with_inactive_creator(
 async fn test_list_rooms_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .max_rooms_per_user
-        .set(32)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.max_rooms_per_user = 32;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("page_owner"))
@@ -5919,18 +5935,33 @@ async fn test_admin_delete_orphaned_room_rejects_invalid_requests() {
     );
 }
 
-async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
+async fn make_runtime_settings_store(pool: PgPool) -> Arc<RuntimeSettingsStore> {
     let settings_repo = SettingsRepository::new(pool.clone());
     let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
-    let registry = Arc::new(SettingsRegistry::new(settings_service));
+    let registry = Arc::new(RuntimeSettingsStore::new(settings_service));
 
     // Seed the settings rows that tests may need
     for (key, group, default_value) in [
-        ("room.password_policy", "room", "optional"),
-        ("room.disable_create_room", "room", "false"),
-        ("server.allow_room_creation", "server", "true"),
-        ("server.max_rooms_per_user", "server", "10"),
-        ("room.create_room_need_review", "room", "false"),
+        (
+            synctv_core::service::RoomCreationPasswordPolicySetting::KEY,
+            "room_creation",
+            "optional",
+        ),
+        (
+            synctv_core::service::RoomCreationEnabledSetting::KEY,
+            "room_creation",
+            "true",
+        ),
+        (
+            synctv_core::service::MaxRoomsPerUserSetting::KEY,
+            "room_creation",
+            "10",
+        ),
+        (
+            synctv_core::service::RoomCreationApprovalRequiredSetting::KEY,
+            "room_creation",
+            "false",
+        ),
     ] {
         sqlx::query!(
             "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING",
@@ -5946,13 +5977,27 @@ async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
     registry
 }
 
+async fn persist_test_runtime_settings(
+    registry: &RuntimeSettingsStore,
+    update: impl FnOnce(&mut synctv_core::service::RuntimeSettings),
+) {
+    let mut settings = registry
+        .runtime_settings()
+        .checked("runtime settings should load");
+    update(&mut settings);
+    registry
+        .persist_runtime_settings(&settings)
+        .await
+        .checked("runtime settings should persist");
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_create_room_enforces_password_policy_matrix() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(&pool, registry.clone());
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry.clone());
 
     let owner = user_repo
         .create(&make_user("pwd_policy_matrix_owner"))
@@ -6026,8 +6071,8 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_owner"))
@@ -6081,13 +6126,12 @@ async fn test_transfer_room_ownership_updates_room_and_member_roles() {
 async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .max_rooms_per_user
-        .set(1)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.max_rooms_per_user = 1;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_limit_owner"))
@@ -6141,8 +6185,8 @@ async fn test_transfer_room_ownership_respects_max_rooms_per_user() {
 async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let old_owner = user_repo
         .create(&make_user("room_transfer_dup_owner"))
@@ -6194,13 +6238,12 @@ async fn test_transfer_room_ownership_rejects_duplicate_name_for_new_owner() {
 async fn test_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .max_rooms_per_user
-        .set(1)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.max_rooms_per_user = 1;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("room_create_limit_owner"))
@@ -6240,13 +6283,12 @@ async fn test_create_room_respects_max_rooms_per_user() {
 async fn test_concurrent_create_room_respects_max_rooms_per_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .max_rooms_per_user
-        .set(2)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.max_rooms_per_user = 2;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("room_create_concurrent_limit_owner"))
@@ -6353,13 +6395,12 @@ async fn test_create_room_rejects_banned_creator_in_service_layer() {
 async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_dup_owner"))
@@ -6422,13 +6463,12 @@ async fn test_pending_room_creation_rejects_duplicate_active_room_name() {
 async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_same_name_owner"))
@@ -6487,13 +6527,12 @@ async fn test_pending_room_creation_rejects_duplicate_pending_room_name() {
 async fn test_approve_pending_room_allows_the_request_itself_while_checking_name_policy() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_self_exclusion_owner"))
@@ -6525,17 +6564,16 @@ async fn test_approve_pending_room_allows_the_request_itself_while_checking_name
 async fn test_approve_pending_room_preserves_password_when_policy_required() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
     registry
         .set_room_password_policy(RoomPasswordPolicy::Required)
         .await
         .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_password_required_owner"))
@@ -6599,13 +6637,12 @@ async fn test_approve_pending_room_rejects_creator_banned_after_request() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let user_service = make_user_service(&pool);
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
-    let room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
+    let room_service = make_room_service_with_runtime_settings_store(&pool, registry);
 
     let owner = user_repo
         .create(&make_user("pending_room_banned_after_request_owner"))
@@ -7064,13 +7101,12 @@ async fn test_room_taxonomy_is_admin_curated_and_filterable() {
         [movie_room.id, game_room.id].into_iter().collect()
     );
 
-    let registry = make_settings_registry(pool.clone()).await;
-    registry
-        .create_room_need_review
-        .set(true)
-        .await
-        .checked("test operation should succeed");
-    let review_room_service = make_room_service_with_settings_registry(&pool, registry);
+    let registry = make_runtime_settings_store(pool.clone()).await;
+    persist_test_runtime_settings(&registry, |settings| {
+        settings.room_creation.approval_required = true;
+    })
+    .await;
+    let review_room_service = make_room_service_with_runtime_settings_store(&pool, registry);
     let review_owner = user_repo
         .create(&make_user("taxonomy_review_owner"))
         .await

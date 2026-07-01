@@ -307,10 +307,10 @@ pub async fn clear_playlist_cover(
         request_body = CreateChatAttachmentUploadSessionRequest,
         responses(
             (status = 200, description = "Chat attachment upload session", body = CreateChatAttachmentUploadSessionResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

@@ -15,15 +15,20 @@ pub mod live;
 pub mod playback_provider;
 pub mod rtmp;
 
+#[cfg(test)]
+use axum::http::header;
 use axum::{
     extract::State,
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
 };
 
 use synctv_core::provider::playback_transport::PlaybackTransportAction;
 use synctv_core::provider::ExecutionControl;
 
-use crate::http::{AppError, AppState};
+use crate::{
+    http::{AppError, AppState},
+    impls::ApiError,
+};
 
 #[cfg(test)]
 fn set_default_cache_control(
@@ -318,13 +323,13 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
             AppError::forbidden("Proxy target is not allowed by SSRF policy")
         }
         Some(synctv_proxy::ProxyErrorKind::RangeNotSatisfiable) => {
-            let mut app_error = AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, err.to_string());
             if let Some(total_size) = synctv_proxy::proxy_range_not_satisfiable_total_size(&err) {
-                if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}")) {
-                    app_error = app_error.with_header(header::CONTENT_RANGE, value);
-                }
+                AppError::from(ApiError::RangeNotSatisfiable {
+                    total_size: i64::try_from(total_size).unwrap_or(i64::MAX),
+                })
+            } else {
+                AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, err.to_string())
             }
-            app_error
         }
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             AppError::bad_request(err.to_string())
@@ -730,8 +735,8 @@ mod tests {
             return Err(test_error("invalid provider status should fail"));
         };
 
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(err.message.contains("invalid direct body status code"));
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message(), "Internal error");
         Ok(())
     }
 
@@ -755,8 +760,8 @@ mod tests {
             return Err(test_error("invalid provider content type should fail"));
         };
 
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(err.message.contains("invalid direct body content type"));
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message(), "Internal error");
         Ok(())
     }
 
@@ -823,7 +828,7 @@ mod tests {
             return Err(test_error("unsatisfiable range should map to HTTP 416"));
         };
 
-        assert_eq!(err.status, StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(err.status(), StatusCode::RANGE_NOT_SATISFIABLE);
         let response = err.into_response();
         assert_eq!(
             response
@@ -858,7 +863,7 @@ mod tests {
             ));
         };
 
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
         Ok(())
     }
 
@@ -871,7 +876,7 @@ mod tests {
                 ),
             ),
         );
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
@@ -881,16 +886,16 @@ mod tests {
                 synctv_core::Error::Authorization("Not a member of this room".to_string()),
             ),
         );
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn proxy_signature_errors_hide_verification_details() {
         let err = AppError::unauthorized(synctv_common::messages::INVALID_PROXY_SIGNATURE);
 
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::INVALID_PROXY_SIGNATURE
         );
     }
@@ -916,8 +921,8 @@ mod tests {
         .expect_err("strict SSRF policy must block metadata IPs");
         let err = map_proxy_execution_error(proxy_error);
 
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(err.message, "Proxy target is not allowed by SSRF policy");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert_eq!(err.message(), "Proxy target is not allowed by SSRF policy");
     }
 
     #[test]

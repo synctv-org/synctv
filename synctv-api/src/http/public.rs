@@ -26,7 +26,7 @@ pub(crate) fn create_public_router() -> Router<AppState> {
         tag = "Public",
         responses(
             (status = 200, description = "Public server settings", body = GetPublicSettingsResponse),
-            (status = 500, description = "Failed to load settings", body = synctv_proto::client::ApiErrorResponse)
+            (status = 500, description = "Failed to load settings", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -57,7 +57,7 @@ pub async fn get_public_settings(
         tag = "Public",
         responses(
             (status = 200, description = "Public server identity", body = GetServerInfoResponse),
-            (status = 500, description = "Failed to load server identity", body = synctv_proto::client::ApiErrorResponse)
+            (status = 500, description = "Failed to load server identity", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]

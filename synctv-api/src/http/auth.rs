@@ -70,8 +70,8 @@ where
         request_body = StartOpaqueRegistrationRequest,
         responses(
             (status = 200, description = "OPAQUE registration challenge created", body = StartOpaqueRegistrationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -109,8 +109,8 @@ pub async fn start_opaque_registration(
         request_body = FinishOpaqueRegistrationRequest,
         responses(
             (status = 200, description = "OPAQUE registration succeeded", body = RegisterResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -148,8 +148,8 @@ pub async fn finish_opaque_registration(
         request_body = RegisterWithDirectPasswordRequest,
         responses(
             (status = 200, description = "Direct password registration succeeded", body = RegisterResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -191,9 +191,9 @@ pub async fn register_with_direct_password(
         request_body = LoginWithDirectPasswordRequest,
         responses(
             (status = 200, description = "Direct password login succeeded", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid credentials", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -232,9 +232,9 @@ pub async fn login_with_direct_password(
         request_body = ConfirmEmailLoginRequest,
         responses(
             (status = 200, description = "Email login confirmed", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid credentials", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -279,9 +279,9 @@ pub async fn confirm_email_login(
         request_body = CreateGuestTokenRequest,
         responses(
             (status = 200, description = "Guest token issued for a public room", body = CreateGuestTokenResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Guest access is not allowed", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Guest access is not allowed", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -321,8 +321,8 @@ pub async fn create_guest_token(
         request_body = StartOpaqueLoginRequest,
         responses(
             (status = 200, description = "OPAQUE login challenge created", body = StartOpaqueLoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -362,9 +362,9 @@ pub async fn start_opaque_login(
         request_body = FinishOpaqueLoginRequest,
         responses(
             (status = 200, description = "OPAQUE login succeeded", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid credentials", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -402,8 +402,8 @@ pub async fn finish_opaque_login(
         request_body = StartPasskeyRegistrationRequest,
         responses(
             (status = 200, description = "Passkey registration challenge created", body = StartPasskeyRegistrationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -442,9 +442,9 @@ pub async fn start_passkey_registration(
         request_body = FinishPasskeyRegistrationRequest,
         responses(
             (status = 200, description = "Passkey registration succeeded", body = RegisterResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid credentials", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -487,8 +487,8 @@ pub async fn finish_passkey_registration(
         request_body = StartPasskeyLoginRequest,
         responses(
             (status = 200, description = "Passkey login challenge created", body = StartPasskeyLoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -527,9 +527,9 @@ pub async fn start_passkey_login(
         request_body = FinishPasskeyLoginRequest,
         responses(
             (status = 200, description = "Passkey login succeeded", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid credentials", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid credentials", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -577,8 +577,8 @@ fn require_email_api(
         request_body = RequestEmailLoginRequest,
         responses(
             (status = 200, description = "Email login request accepted", body = RequestEmailLoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -619,8 +619,8 @@ pub async fn request_email_login(
         request_body = RequestEmailRegistrationRequest,
         responses(
             (status = 200, description = "Email registration request accepted", body = RequestEmailRegistrationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -662,8 +662,8 @@ pub async fn request_email_registration(
         request_body = ConfirmEmailRegistrationRequest,
         responses(
             (status = 200, description = "Email registration confirmed", body = RegisterResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -705,9 +705,9 @@ pub async fn confirm_email_registration(
         request_body = RequestMfaEmailCodeRequest,
         responses(
             (status = 200, description = "MFA email code request accepted", body = RequestMfaEmailCodeResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Email service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Email service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -746,10 +746,10 @@ pub async fn request_mfa_email_code(
         request_body = VerifyMfaEmailCodeRequest,
         responses(
             (status = 200, description = "MFA email code verified", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid MFA challenge or code", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Email service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid MFA challenge or code", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Email service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -797,8 +797,8 @@ pub async fn verify_mfa_email_code(
         request_body = StartMfaPasskeyRequest,
         responses(
             (status = 200, description = "MFA passkey challenge created", body = StartMfaPasskeyResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -834,9 +834,9 @@ pub async fn start_mfa_passkey(
         request_body = FinishMfaPasskeyRequest,
         responses(
             (status = 200, description = "MFA passkey verified", body = LoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Invalid MFA challenge or credential", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Invalid MFA challenge or credential", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -876,8 +876,8 @@ pub async fn finish_mfa_passkey(
         request_body = RefreshTokenRequest,
         responses(
             (status = 200, description = "Token refresh succeeded", body = RefreshTokenResponse),
-            (status = 401, description = "Invalid refresh token", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Invalid refresh token", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -920,7 +920,7 @@ pub async fn refresh_token(
         tag = "Auth",
         responses(
             (status = 200, description = "Logout succeeded", body = LogoutResponse),
-            (status = 401, description = "Missing or invalid bearer token", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Missing or invalid bearer token", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

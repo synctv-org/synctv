@@ -35,7 +35,7 @@ pub struct RtmpPlaybackProviderDeps<'a> {
         Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
     pub livestream_config: &'a synctv_core::config::LivestreamConfig,
-    pub settings_registry: Option<&'a synctv_core::service::SettingsRegistry>,
+    pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
 pub type RtmpFlvStreamResponseStream = std::pin::Pin<

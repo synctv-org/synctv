@@ -15,7 +15,7 @@
 //! # Dynamic Settings
 //!
 //! The `chat_max_messages_per_room` setting can be dynamically configured via
-//! `SettingsRegistry`. When a registry is provided, this value is read at
+//! `RuntimeSettingsStore`. When a registry is provided, this value is read at
 //! runtime on each cleanup cycle, allowing admins to
 //! change settings without restarting the service.
 
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::{cleanup_ops, FileStorageService, LeaderCheck, SettingsRegistry};
+use super::{cleanup_ops, FileStorageService, LeaderCheck, RuntimeSettingsStore};
 use crate::service::partitioning::u32_to_i32;
 use crate::{InternalExt, Result};
 
@@ -119,7 +119,7 @@ pub struct CleanupResult {
 
 #[derive(Clone, Default)]
 pub struct CleanupServiceOptions {
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
@@ -128,8 +128,8 @@ pub struct CleanupService {
     pool: PgPool,
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
-    /// Optional settings registry for dynamic `chat_max_messages_per_room`
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    /// Optional runtime settings store for dynamic `chat_max_messages_per_room`
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
@@ -159,17 +159,17 @@ impl CleanupService {
             pool,
             config,
             leader_check,
-            settings_registry: options.settings_registry,
+            runtime_settings_store: options.runtime_settings_store,
             file_storage_service: options.file_storage_service,
         }
     }
 
     /// Get the effective `chat_max_messages_per_room` value.
     ///
-    /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
+    /// Reads from `RuntimeSettingsStore` if available, otherwise falls back to config.
     fn chat_max_messages_per_room(&self) -> Result<i64> {
-        match self.settings_registry.as_ref() {
-            Some(registry) => registry.max_chat_messages_per_room.get().and_then(|value| {
+        match self.runtime_settings_store.as_ref() {
+            Some(registry) => registry.chat.max_messages_per_room.get().and_then(|value| {
                 i64::try_from(value).map_err(|_| {
                     crate::Error::Internal(
                         "chat_max_messages_per_room exceeds i64::MAX".to_string(),
@@ -181,8 +181,8 @@ impl CleanupService {
     }
 
     fn chat_message_event_retention_seconds(&self) -> Result<u64> {
-        let message_retention_days = match self.settings_registry.as_ref() {
-            Some(registry) => registry.chat_message_retention_days.get()?,
+        let message_retention_days = match self.runtime_settings_store.as_ref() {
+            Some(registry) => registry.chat.message_retention_days.get()?,
             None => 90,
         };
         cleanup_ops::effective_chat_message_event_retention_seconds(
@@ -706,7 +706,7 @@ impl CleanupService {
             pool: self.pool.clone(),
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
-            settings_registry: self.settings_registry.clone(),
+            runtime_settings_store: self.runtime_settings_store.clone(),
             file_storage_service: self.file_storage_service.clone(),
         };
 

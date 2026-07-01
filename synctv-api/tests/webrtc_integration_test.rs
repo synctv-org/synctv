@@ -130,7 +130,7 @@ mod permissions {
     use synctv_core::service::auth::jwt::JwtService;
     use synctv_core::service::user::UserServiceRuntimeOptions;
     use synctv_core::service::{
-        BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, SettingsRegistry,
+        BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, RuntimeSettingsStore,
         SettingsService, UserService,
     };
     use synctv_core::service::{ConfiguredIceServer, IceServerList};
@@ -147,7 +147,7 @@ mod permissions {
         pool: sqlx::PgPool,
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
-        settings_registry: Arc<SettingsRegistry>,
+        runtime_settings_store: Arc<RuntimeSettingsStore>,
         client_api: ClientApiImpl,
     }
 
@@ -216,10 +216,10 @@ mod permissions {
         );
         let settings_repo = SettingsRepository::new(pool.clone());
         let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
-        settings_registry
+        let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
+        runtime_settings_store
             .init(CancellationToken::new())
-            .expect("initialize settings registry");
+            .expect("initialize runtime settings store");
         let builtin_stun_url = format!(
             "stun:{}:{}",
             test_webrtc_config().server.advertise_host,
@@ -235,7 +235,7 @@ mod permissions {
                 publish_key_service: None,
                 jwt_service,
                 live_streaming_infrastructure: None,
-                settings_registry: Some(settings_registry.clone()),
+                runtime_settings_store: Some(runtime_settings_store.clone()),
                 public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
                 chat_service: None,
                 provider_stores: Arc::new(
@@ -256,7 +256,7 @@ mod permissions {
             pool,
             user_service,
             room_service,
-            settings_registry,
+            runtime_settings_store,
             client_api,
         }
     }
@@ -276,21 +276,33 @@ mod permissions {
         .0
     }
 
+    async fn persist_external_ice_servers(fixture: &ClientApiFixture, servers: IceServerList) {
+        let mut settings = fixture
+            .runtime_settings_store
+            .runtime_settings()
+            .expect("runtime settings should load");
+        settings.webrtc.external_ice_servers = servers;
+        fixture
+            .runtime_settings_store
+            .persist_runtime_settings(&settings)
+            .await
+            .expect("external ice servers should persist");
+    }
+
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_ice_servers_includes_configured_turn_servers_with_credentials() {
         let fixture = build_client_api_fixture("api-webrtc-custom-ice").await;
 
-        fixture
-            .settings_registry
-            .external_ice_servers
-            .set(IceServerList(vec![ConfiguredIceServer::new(vec![
+        persist_external_ice_servers(
+            &fixture,
+            IceServerList(vec![ConfiguredIceServer::new(vec![
                 "turn:turn.example.com:3478?transport=udp".to_string(),
                 "turns:turn.example.com:5349".to_string(),
             ])
-            .with_auth("turn-user", "turn-password")]))
-            .await
-            .expect("set external ice servers");
+            .with_auth("turn-user", "turn-password")]),
+        )
+        .await;
 
         let creator = register_fixture_user(&fixture, "webrtc_turn_creator").await;
         let member = register_fixture_user(&fixture, "webrtc_turn_member").await;
@@ -352,15 +364,14 @@ mod permissions {
     async fn test_guest_with_use_webrtc_permission_can_bootstrap_ice_servers() {
         let fixture = build_client_api_fixture("api-webrtc-guest-ice").await;
 
-        fixture
-            .settings_registry
-            .external_ice_servers
-            .set(IceServerList(vec![ConfiguredIceServer::new(vec![
+        persist_external_ice_servers(
+            &fixture,
+            IceServerList(vec![ConfiguredIceServer::new(vec![
                 "turn:guest-turn.example.com:3478?transport=udp".to_string(),
             ])
-            .with_auth("guest-turn-user", "guest-turn-password")]))
-            .await
-            .expect("set external ice servers");
+            .with_auth("guest-turn-user", "guest-turn-password")]),
+        )
+        .await;
 
         let creator = register_fixture_user(&fixture, "webrtc_guest_creator").await;
 

@@ -193,8 +193,10 @@ fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
     )
 }
 
-fn create_test_settings_registry(guard: &synctv_common::ssrf::SsrfGuard) -> Arc<SettingsRegistry> {
-    Arc::new(SettingsRegistry::new_for_tests_with_ssrf_guard(guard))
+fn create_test_runtime_settings_store(
+    guard: &synctv_common::ssrf::SsrfGuard,
+) -> Arc<RuntimeSettingsStore> {
+    Arc::new(RuntimeSettingsStore::new_for_tests_with_ssrf_guard(guard))
 }
 
 #[test]
@@ -389,7 +391,8 @@ async fn test_store_and_consume_state() {
         instance_name: "github".to_string(),
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "verifier123".to_string(),
         nonce: None,
     };
@@ -409,7 +412,7 @@ async fn test_store_and_consume_state() {
         retrieved.redirect_url.as_deref(),
         Some("http://127.0.0.1:34567/dashboard")
     );
-    assert!(retrieved.bind_user_id.is_none());
+    assert!(retrieved.target_user_id.is_none());
 }
 
 #[tokio::test]
@@ -419,7 +422,8 @@ async fn test_state_single_use_consumed_on_first_retrieval() {
         instance_name: "google".to_string(),
         redirect_url: None,
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "v".to_string(),
         nonce: None,
     };
@@ -456,14 +460,15 @@ async fn test_state_invalid_token_rejected() {
 }
 
 #[tokio::test]
-async fn test_state_preserves_bind_user_id() {
+async fn test_state_preserves_target_user_id() {
     let service = create_test_service();
     let user_id = UserId::expect_positive(93_001);
     let state = OAuth2State {
         instance_name: "logto".to_string(),
         redirect_url: None,
         created_at: chrono::Utc::now(),
-        bind_user_id: Some(user_id),
+        operation: OAuth2Operation::Bind,
+        target_user_id: Some(user_id),
         pkce_verifier: "bind_verifier".to_string(),
         nonce: None,
     };
@@ -479,8 +484,8 @@ async fn test_state_preserves_bind_user_id() {
 
     assert_eq!(
         some(
-            retrieved.bind_user_id.as_ref(),
-            "bind user id should persist"
+            retrieved.target_user_id.as_ref(),
+            "target user id should persist"
         )
         .to_string(),
         "93001"
@@ -494,7 +499,8 @@ async fn test_verify_state_consumes_token() {
         instance_name: "oidc".to_string(),
         redirect_url: None,
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "pkce_v".to_string(),
         nonce: None,
     };
@@ -581,13 +587,13 @@ async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc
     let guard = synctv_common::ssrf::SsrfGuard::builder()
         .allow_private_network_targets(true)
         .build();
-    let registry = create_test_settings_registry(&guard);
+    let registry = create_test_runtime_settings_store(&guard);
     let configs: crate::service::OAuth2ProviderConfigs = ok(
         r#"{"casdoor_oidc":{"type":"oidc","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"http://127.0.0.1:18081/oauth/callback","issuer":"http://127.0.0.1:18000"}}"#.parse(),
         "test OAuth2 provider config should parse",
     );
     ok(
-        registry.oauth2_providers.set_for_test(&configs),
+        registry.oauth2.providers.set_for_test(&configs),
         "test settings seed should validate",
     );
 
@@ -600,7 +606,7 @@ async fn test_list_available_instances_uses_runtime_ssrf_policy_for_dynamic_oidc
                 .build(),
             false,
             OAuth2ServiceRuntime {
-                settings_registry: Some(registry),
+                runtime_settings_store: Some(registry),
                 ..OAuth2ServiceRuntime::default()
             },
         ),
@@ -709,7 +715,7 @@ async fn test_get_authorization_url_success() {
     assert_eq!(state.instance_name, "github");
     assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
     assert!(state.redirect_url.is_none());
-    assert!(state.bind_user_id.is_none());
+    assert!(state.target_user_id.is_none());
 }
 
 #[tokio::test]
@@ -867,7 +873,11 @@ async fn test_get_authorization_url_with_user_stores_user_id() {
     );
     assert_eq!(state.instance_name, "logto");
     assert_eq!(
-        some(state.bind_user_id.as_ref(), "bind user id should persist").to_string(),
+        some(
+            state.target_user_id.as_ref(),
+            "target user id should persist"
+        )
+        .to_string(),
         "93002"
     );
     assert_eq!(state.pkce_verifier, "test_pkce_verifier_abc123");
@@ -885,17 +895,16 @@ async fn test_get_authorization_url_with_user_none_user_id() {
         .await;
 
     let (_, state_token) = ok(
-        service
-            .get_authorization_url_with_user("github", None, None)
-            .await,
-        "authorization URL without user should generate",
+        service.get_authorization_url("github", None).await,
+        "login authorization URL without user should generate",
     );
 
     let state = ok(
         service.verify_state(&state_token).await,
         "unbound state should verify",
     );
-    assert!(state.bind_user_id.is_none());
+    assert_eq!(state.operation, OAuth2Operation::Login);
+    assert!(state.target_user_id.is_none());
 }
 
 #[tokio::test]
@@ -1062,7 +1071,11 @@ async fn test_full_oauth2_bind_flow() {
         "bound state should verify",
     );
     assert_eq!(
-        some(state.bind_user_id.as_ref(), "bind user id should persist").to_string(),
+        some(
+            state.target_user_id.as_ref(),
+            "target user id should persist"
+        )
+        .to_string(),
         "93003"
     );
     assert_eq!(state.instance_name, "logto");
@@ -1112,7 +1125,8 @@ fn test_oauth2_state_serialization_roundtrip() {
         instance_name: "github".to_string(),
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: Some(UserId::expect_positive(93_004)),
+        operation: OAuth2Operation::Bind,
+        target_user_id: Some(UserId::expect_positive(93_004)),
         pkce_verifier: "S256_challenge_verifier".to_string(),
         nonce: Some("oidc_nonce_123".to_string()),
     };
@@ -1126,8 +1140,8 @@ fn test_oauth2_state_serialization_roundtrip() {
     assert_eq!(deserialized.nonce, state.nonce);
     assert_eq!(
         some(
-            deserialized.bind_user_id.as_ref(),
-            "bind user id should deserialize"
+            deserialized.target_user_id.as_ref(),
+            "target user id should deserialize"
         )
         .to_string(),
         "93004"
@@ -1140,7 +1154,8 @@ fn test_oauth2_state_serialization_none_fields() {
         instance_name: "oidc".to_string(),
         redirect_url: None,
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "v".to_string(),
         nonce: None,
     };
@@ -1149,7 +1164,7 @@ fn test_oauth2_state_serialization_none_fields() {
     let deserialized: OAuth2State = ok(serde_json::from_str(&json), "state should deserialize");
 
     assert!(deserialized.redirect_url.is_none());
-    assert!(deserialized.bind_user_id.is_none());
+    assert!(deserialized.target_user_id.is_none());
 }
 
 #[tokio::test]
@@ -1161,7 +1176,8 @@ async fn test_multiple_concurrent_states() {
             instance_name: format!("provider_{i}"),
             redirect_url: None,
             created_at: chrono::Utc::now(),
-            bind_user_id: None,
+            operation: OAuth2Operation::Login,
+            target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
@@ -1258,7 +1274,8 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "concurrent_verifier".to_string(),
         nonce: None,
     };
@@ -1342,7 +1359,8 @@ async fn test_consuming_one_state_does_not_affect_others() {
             instance_name: format!("provider_{i}"),
             redirect_url: None,
             created_at: chrono::Utc::now(),
-            bind_user_id: None,
+            operation: OAuth2Operation::Login,
+            target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
             nonce: None,
         };
@@ -1381,7 +1399,8 @@ async fn test_state_expired_created_at_rejected() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: expired_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
         nonce: None,
     };
@@ -1409,7 +1428,8 @@ async fn test_state_within_ttl_accepted() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: within_ttl_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "valid_verifier".to_string(),
         nonce: None,
     };
@@ -1435,7 +1455,8 @@ async fn test_state_at_ttl_boundary() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: past_boundary_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "boundary_verifier".to_string(),
         nonce: None,
     };
@@ -1465,7 +1486,8 @@ async fn test_verify_state_checks_created_at_expiry() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: expired_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "expired".to_string(),
         nonce: None,
     };

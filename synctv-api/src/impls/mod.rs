@@ -15,7 +15,7 @@ pub mod client;
 pub(crate) mod email;
 pub mod messaging;
 pub(crate) mod notification;
-pub(crate) mod oauth2;
+pub mod oauth2;
 pub(crate) mod pagination;
 mod playback;
 pub mod playback_provider;
@@ -427,7 +427,7 @@ impl ErrorKind {
 ///
 /// Use `ApiError::from(core_error)` to convert, then call
 /// `.classify()` for the `ErrorKind`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ApiError {
     NotFound(String),
     Authentication(String),
@@ -438,6 +438,8 @@ pub enum ApiError {
     RangeNotSatisfiable {
         total_size: i64,
     },
+    BadGateway(String),
+    RequestTimeout(String),
     RateLimited(String),
     RateLimitedWithRetry {
         message: String,
@@ -446,6 +448,54 @@ pub enum ApiError {
     ServiceUnavailable(String),
     Timeout(String),
     Internal(String),
+    OAuth2InvalidState {
+        message: String,
+    },
+    OAuth2ProviderExchangeFailed {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2MissingTargetUser {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2UnexpectedTargetUser {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2TargetUserMismatch {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2ProviderAccountLinkedElsewhere {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2ProviderLookupFailed {
+        operation: synctv_core::service::OAuth2Operation,
+        kind: ErrorKind,
+        message: String,
+    },
+    OAuth2ProviderLinkFailed {
+        operation: synctv_core::service::OAuth2Operation,
+        kind: ErrorKind,
+        message: String,
+    },
+    OAuth2LoginFailed {
+        operation: synctv_core::service::OAuth2Operation,
+        kind: ErrorKind,
+        message: String,
+    },
+    OAuth2ResponseBuildFailed {
+        operation: synctv_core::service::OAuth2Operation,
+        message: String,
+    },
+    OAuth2General {
+        operation: Option<synctv_core::service::OAuth2Operation>,
+        kind: ErrorKind,
+        message: String,
+        retry_after_seconds: Option<u64>,
+    },
 }
 
 impl From<synctv_core::Error> for ApiError {
@@ -567,18 +617,32 @@ impl From<synctv_core::provider::ProviderError> for ApiError {
 impl ApiError {
     /// Convert this structured error into an `ErrorKind`.
     #[must_use]
-    pub const fn classify(&self) -> ErrorKind {
+    pub fn classify(&self) -> ErrorKind {
         match self {
             Self::NotFound(_) => ErrorKind::NotFound,
-            Self::Authentication(_) => ErrorKind::Unauthenticated,
-            Self::Authorization(_) => ErrorKind::PermissionDenied,
-            Self::AlreadyExists(_) => ErrorKind::AlreadyExists,
+            Self::Authentication(_) | Self::OAuth2InvalidState { .. } => ErrorKind::Unauthenticated,
+            Self::Authorization(_) | Self::OAuth2TargetUserMismatch { .. } => {
+                ErrorKind::PermissionDenied
+            }
+            Self::AlreadyExists(_) | Self::OAuth2ProviderAccountLinkedElsewhere { .. } => {
+                ErrorKind::AlreadyExists
+            }
             Self::Conflict(_) => ErrorKind::Conflict,
             Self::InvalidInput(_) | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
+            Self::BadGateway(_) => ErrorKind::ServiceUnavailable,
+            Self::RequestTimeout(_) | Self::Timeout(_) => ErrorKind::Timeout,
             Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
-            Self::ServiceUnavailable(_) => ErrorKind::ServiceUnavailable,
-            Self::Timeout(_) => ErrorKind::Timeout,
-            Self::Internal(_) => ErrorKind::Internal,
+            Self::ServiceUnavailable(_) | Self::OAuth2ProviderExchangeFailed { .. } => {
+                ErrorKind::ServiceUnavailable
+            }
+            Self::Internal(_)
+            | Self::OAuth2MissingTargetUser { .. }
+            | Self::OAuth2UnexpectedTargetUser { .. }
+            | Self::OAuth2ResponseBuildFailed { .. } => ErrorKind::Internal,
+            Self::OAuth2ProviderLookupFailed { kind, .. }
+            | Self::OAuth2ProviderLinkFailed { kind, .. }
+            | Self::OAuth2LoginFailed { kind, .. }
+            | Self::OAuth2General { kind, .. } => *kind,
         }
     }
 
@@ -592,30 +656,64 @@ impl ApiError {
             | Self::AlreadyExists(msg)
             | Self::Conflict(msg)
             | Self::InvalidInput(msg)
+            | Self::BadGateway(msg)
+            | Self::RequestTimeout(msg)
             | Self::RateLimited(msg)
             | Self::ServiceUnavailable(msg)
             | Self::Timeout(msg)
             | Self::Internal(msg) => msg,
-            Self::RateLimitedWithRetry { message, .. } => message,
+            Self::RateLimitedWithRetry { message, .. }
+            | Self::OAuth2InvalidState { message }
+            | Self::OAuth2ProviderExchangeFailed { message, .. }
+            | Self::OAuth2MissingTargetUser { message, .. }
+            | Self::OAuth2UnexpectedTargetUser { message, .. }
+            | Self::OAuth2TargetUserMismatch { message, .. }
+            | Self::OAuth2ProviderAccountLinkedElsewhere { message, .. }
+            | Self::OAuth2ProviderLookupFailed { message, .. }
+            | Self::OAuth2ProviderLinkFailed { message, .. }
+            | Self::OAuth2LoginFailed { message, .. }
+            | Self::OAuth2ResponseBuildFailed { message, .. }
+            | Self::OAuth2General { message, .. } => message,
             Self::RangeNotSatisfiable { .. } => "Requested byte range is not satisfiable",
         }
     }
 
     #[must_use]
-    pub const fn retry_after_seconds(&self) -> Option<u64> {
+    pub fn retry_after_seconds(&self) -> Option<u64> {
         match self {
             Self::RateLimitedWithRetry {
                 retry_after_seconds,
                 ..
             } => Some(*retry_after_seconds),
+            Self::OAuth2General {
+                retry_after_seconds,
+                ..
+            } => *retry_after_seconds,
             _ => None,
         }
     }
 
     /// Get the application-level error code for this error.
     #[must_use]
-    pub const fn code(&self) -> i32 {
+    pub fn code(&self) -> i32 {
         self.classify().to_code()
+    }
+
+    #[must_use]
+    pub const fn oauth2_operation(&self) -> Option<synctv_core::service::OAuth2Operation> {
+        match self {
+            Self::OAuth2ProviderExchangeFailed { operation, .. }
+            | Self::OAuth2MissingTargetUser { operation, .. }
+            | Self::OAuth2UnexpectedTargetUser { operation, .. }
+            | Self::OAuth2TargetUserMismatch { operation, .. }
+            | Self::OAuth2ProviderAccountLinkedElsewhere { operation, .. }
+            | Self::OAuth2ProviderLookupFailed { operation, .. }
+            | Self::OAuth2ProviderLinkFailed { operation, .. }
+            | Self::OAuth2LoginFailed { operation, .. }
+            | Self::OAuth2ResponseBuildFailed { operation, .. } => Some(*operation),
+            Self::OAuth2General { operation, .. } => *operation,
+            _ => None,
+        }
     }
 }
 
@@ -930,17 +1028,6 @@ mod tests {
                 reason: "x".repeat(501),
             },
             "reason",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_validate_proto_request_rejects_invalid_settings_group() -> TestResult {
-        assert_invalid_proto_request(
-            &synctv_proto::admin::GetSettingsGroupRequest {
-                group: "bad/group".to_string(),
-            },
-            "group",
         )?;
         Ok(())
     }

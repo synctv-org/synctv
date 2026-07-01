@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, FenceReadResult, TieredCache, Versioned};
-use crate::models::settings::SettingsGroup;
+use crate::models::settings::RuntimeSetting;
 use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -50,7 +50,7 @@ impl CacheKey for RuntimeSettingKey {
     }
 }
 
-impl Versioned for SettingsGroup {
+impl Versioned for RuntimeSetting {
     fn cache_version(&self) -> i64 {
         i64::from(self.version)
     }
@@ -58,7 +58,7 @@ impl Versioned for SettingsGroup {
 
 #[derive(Clone)]
 pub struct RuntimeSettingsCache {
-    inner: TieredCache<RuntimeSettingKey, SettingsGroup>,
+    inner: TieredCache<RuntimeSettingKey, RuntimeSetting>,
 }
 
 impl RuntimeSettingsCache {
@@ -80,11 +80,11 @@ impl RuntimeSettingsCache {
         Self { inner }
     }
 
-    pub async fn get_l1(&self, key: &RuntimeSettingKey) -> Option<SettingsGroup> {
+    pub async fn get_l1(&self, key: &RuntimeSettingKey) -> Option<RuntimeSetting> {
         self.inner.get_l1(key).await
     }
 
-    pub async fn get_l2(&self, key: &RuntimeSettingKey) -> Result<Option<SettingsGroup>> {
+    pub async fn get_l2(&self, key: &RuntimeSettingKey) -> Result<Option<RuntimeSetting>> {
         self.inner.get_l2(key).await
     }
 
@@ -92,14 +92,14 @@ impl RuntimeSettingsCache {
         &self,
         key: &RuntimeSettingKey,
         fence_key: &str,
-    ) -> Result<FenceReadResult<SettingsGroup>> {
+    ) -> Result<FenceReadResult<RuntimeSetting>> {
         self.inner.get_by_fence_key(key, fence_key).await
     }
 
     pub async fn set_if_version_at_least(
         &self,
         key: &RuntimeSettingKey,
-        setting: SettingsGroup,
+        setting: RuntimeSetting,
     ) -> Result<bool> {
         self.inner.set_if_version_at_least(key, setting).await
     }

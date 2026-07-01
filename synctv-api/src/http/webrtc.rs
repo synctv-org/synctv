@@ -33,10 +33,10 @@ use synctv_proto::client::GetIceServersResponse;
         ),
         responses(
             (status = 200, description = "ICE servers for the authenticated room actor", body = GetIceServersResponse),
-            (status = 400, description = "Invalid room ID", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "WebRTC permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid room ID", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "WebRTC permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -129,7 +129,7 @@ mod tests {
     fn test_map_api_error_authorization_returns_forbidden() {
         let api_err = ApiError::Authorization("User is not a member of this room".to_string());
         let app_err = map_api_error(api_err);
-        assert_eq!(app_err.status, StatusCode::FORBIDDEN);
+        assert_eq!(app_err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -137,28 +137,20 @@ mod tests {
         // Verify that Authentication errors map to 401 Unauthorized
         let api_err = ApiError::Authentication("Token expired".to_string());
         let app_err = map_api_error(api_err);
-        assert_eq!(app_err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(app_err.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn test_map_api_error_not_found_returns_404() {
         let api_err = ApiError::NotFound("Room not found".to_string());
         let app_err = map_api_error(api_err);
-        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+        assert_eq!(app_err.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn test_map_api_error_internal_returns_500() {
         let api_err = ApiError::Internal("Database connection failed".to_string());
         let app_err = map_api_error(api_err);
-        assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn test_map_api_error_includes_error_code() {
-        let api_err = ApiError::Authorization("Access denied".to_string());
-        let app_err = map_api_error(api_err);
-        // map_api_error should populate the error_code field
-        assert!(app_err.error_code.is_some());
+        assert_eq!(app_err.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

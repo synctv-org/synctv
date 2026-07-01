@@ -191,8 +191,8 @@ impl GetChatMessageReadReceiptsQuery {
         ),
         responses(
             (status = 200, description = "Chat history", body = GetChatHistoryResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -234,9 +234,9 @@ pub async fn get_chat_history(
         ),
         responses(
             (status = 200, description = "Chat search results", body = SearchChatMessagesResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -278,10 +278,10 @@ pub async fn search_chat_messages(
         ),
         responses(
             (status = 200, description = "Chat message", body = GetChatMessageResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -325,10 +325,10 @@ pub async fn get_chat_message(
         ),
         responses(
             (status = 200, description = "Chat message context", body = GetChatMessageContextResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -379,9 +379,9 @@ pub async fn get_chat_message_context(
         ),
         responses(
             (status = 200, description = "Chat messages around playback position", body = GetChatPlaybackMessagesResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room permission", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -425,10 +425,10 @@ pub async fn get_chat_playback_messages(
         request_body = SendChatMessageRequest,
         responses(
             (status = 200, description = "Chat message event", body = ChatMessageEventResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Chat disabled or insufficient permission", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Chat disabled or insufficient permission", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -470,11 +470,11 @@ pub async fn send_chat_message(
         request_body = EditChatMessageRequest,
         responses(
             (status = 200, description = "Chat message edited event", body = ChatMessageEventResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Only the sender can edit this message", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Optimistic lock conflict", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Only the sender can edit this message", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Optimistic lock conflict", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -517,11 +517,11 @@ pub async fn edit_chat_message(
         request_body = DeleteChatMessageRequest,
         responses(
             (status = 200, description = "Chat message deleted event", body = ChatMessageEventResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Sender or DELETE_CHAT permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Optimistic lock conflict", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Sender or DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Optimistic lock conflict", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -563,9 +563,9 @@ pub async fn delete_chat_message(
         ),
         responses(
             (status = 200, description = "Pinned chat messages", body = ListPinnedChatMessagesResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -609,11 +609,11 @@ pub async fn list_pinned_chat_messages(
         request_body = PinChatMessageRequest,
         responses(
             (status = 200, description = "Chat message pinned event", body = ChatPinEventResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "DELETE_CHAT permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Message state conflict", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Message state conflict", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -656,10 +656,10 @@ pub async fn pin_chat_message(
         ),
         responses(
             (status = 200, description = "Chat message unpinned event", body = ChatPinEventResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "DELETE_CHAT permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message or pin not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "DELETE_CHAT permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message or pin not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -701,10 +701,10 @@ pub async fn unpin_chat_message(
         ),
         responses(
             (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -749,10 +749,10 @@ pub async fn set_chat_reaction(
         ),
         responses(
             (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -798,10 +798,10 @@ pub async fn clear_chat_reaction(
         ),
         responses(
             (status = 200, description = "Users who reacted to the chat message", body = ListChatReactionUsersResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -844,10 +844,10 @@ pub async fn list_chat_reaction_users(
         request_body = MarkChatReadRequest,
         responses(
             (status = 200, description = "Chat read state", body = ChatReadStateResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -888,8 +888,8 @@ pub async fn mark_chat_read(
         ),
         responses(
             (status = 200, description = "Chat read state", body = ChatReadStateResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -931,9 +931,9 @@ pub async fn get_chat_read_state(
         ),
         responses(
             (status = 200, description = "Chat message read receipts", body = GetChatMessageReadReceiptsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission and message ownership required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Message not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission and message ownership required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Message not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

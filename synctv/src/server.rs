@@ -94,7 +94,7 @@ pub struct Services {
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     pub settings_service: Arc<synctv_core::service::SettingsService>,
-    pub settings_registry: Arc<synctv_core::service::SettingsRegistry>,
+    pub runtime_settings_store: Arc<synctv_core::service::RuntimeSettingsStore>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
@@ -1587,7 +1587,7 @@ impl SyncTvServer {
                 .user_provider_credential_repository
                 .clone(),
             settings_service: self.services.settings_service.clone(),
-            settings_registry: Some(self.services.settings_registry.clone()),
+            runtime_settings_store: Some(self.services.runtime_settings_store.clone()),
             email_service: self.services.email_service.clone(),
             email_token_service: self.services.email_token_service.clone(),
             ws_ticket_service: self.services.ws_ticket_service.clone(),
@@ -1644,7 +1644,7 @@ impl SyncTvServer {
                 oauth2_service: self.services.oauth2_service.clone(),
                 passkey_service: self.services.passkey_service.clone(),
                 settings_service: Some(self.services.settings_service.clone()),
-                settings_registry: Some(self.services.settings_registry.clone()),
+                runtime_settings_store: Some(self.services.runtime_settings_store.clone()),
                 email_service: self.services.email_service.clone(),
                 email_token_service: self.services.email_token_service.clone(),
                 publish_key_service: Some(self.services.publish_key_service.clone()),
@@ -2063,7 +2063,7 @@ mod tests {
             synctv_core::repository::SettingsRepository::new(pool.clone()),
             pool.clone(),
         ));
-        let settings_registry = Arc::new(synctv_core::service::SettingsRegistry::new(
+        let runtime_settings_store = Arc::new(synctv_core::service::RuntimeSettingsStore::new(
             settings_service.clone(),
         ));
         let (audit_service, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
@@ -2093,7 +2093,7 @@ mod tests {
                 oauth2_service: None,
                 passkey_service: None,
                 settings_service: Some(settings_service),
-                settings_registry: Some(settings_registry),
+                runtime_settings_store: Some(runtime_settings_store),
                 email_service: None,
                 email_token_service: None,
                 publish_key_service: None,

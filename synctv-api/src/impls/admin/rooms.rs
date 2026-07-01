@@ -9,8 +9,8 @@ use super::{
     i64_to_i32_api, load_creator_user_map, normalize_non_empty_filter,
     prepare_delete_entries_outbox_fanout, proto_admin_room_list_sort_by,
     proto_admin_room_member_list_sort_by, proto_admin_sort_direction, proto_room_status_filter,
-    required_room_settings, try_admin_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError,
-    RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    required_room_settings, try_managed_room_to_proto, try_members_to_proto, AdminApiImpl,
+    ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
     convert::{room_category_to_proto, room_label_to_proto, room_presence_stats_to_proto},
@@ -152,7 +152,7 @@ impl AdminApiImpl {
             let creator_avatar_url = self.creator_avatar_url(creator).await?;
             let cover = self.room_cover_for_admin(&r).await?;
             let settings = required_room_settings(&room_settings_map, &r.id)?;
-            room_list.push(try_admin_room_to_proto(
+            room_list.push(try_managed_room_to_proto(
                 &r,
                 Some(settings),
                 Some(member_count),
@@ -971,14 +971,14 @@ impl AdminApiImpl {
                 .iter()
                 .map(|stats| (stats.room_id, stats))
                 .collect();
-        let mut admin_rooms = Vec::with_capacity(rooms.len());
+        let mut managed_rooms = Vec::with_capacity(rooms.len());
         for room in &rooms {
             let creator = creator_user_from_map(&creator_user_map, room)?;
             let creator_avatar_url = self.creator_avatar_url(creator).await?;
             let cover = self.room_cover_for_admin(room).await?;
             let settings = required_room_settings(&room_settings_map, &room.id)?;
             let member_count = crate::impls::room_member_count_or_zero(&member_counts, &room.id);
-            admin_rooms.push(try_admin_room_to_proto(
+            managed_rooms.push(try_managed_room_to_proto(
                 room,
                 Some(settings),
                 Some(member_count),
@@ -993,7 +993,7 @@ impl AdminApiImpl {
         }
 
         Ok(synctv_proto::admin::GetUserRoomsResponse {
-            rooms: admin_rooms,
+            rooms: managed_rooms,
             total: i64_to_i32_api(total, "user room count")?,
         })
     }
@@ -1124,7 +1124,7 @@ impl AdminApiImpl {
         request_id: RoomId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::AdminRoom, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         self.require_admin_actor(admin_user_id).await?;
         let persisted_reviewed_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(admin_user_id);

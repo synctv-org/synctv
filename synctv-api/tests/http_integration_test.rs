@@ -22,13 +22,29 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+fn grpc_code_for_http_status(status: StatusCode) -> i32 {
+    match status {
+        StatusCode::BAD_REQUEST => tonic::Code::InvalidArgument as i32,
+        StatusCode::UNAUTHORIZED => tonic::Code::Unauthenticated as i32,
+        StatusCode::FORBIDDEN => tonic::Code::PermissionDenied as i32,
+        StatusCode::NOT_FOUND => tonic::Code::NotFound as i32,
+        StatusCode::CONFLICT => tonic::Code::Aborted as i32,
+        StatusCode::TOO_MANY_REQUESTS => tonic::Code::ResourceExhausted as i32,
+        StatusCode::SERVICE_UNAVAILABLE => tonic::Code::Unavailable as i32,
+        StatusCode::GATEWAY_TIMEOUT | StatusCode::REQUEST_TIMEOUT => {
+            tonic::Code::DeadlineExceeded as i32
+        }
+        _ => tonic::Code::Internal as i32,
+    }
+}
+
 mod error_responses {
     use super::*;
     use synctv_api::http::error::AppError;
 
-    fn error_router(error: AppError) -> Router {
-        let status = error.status;
-        let message = error.message;
+    fn error_router(error: &AppError) -> Router {
+        let status = error.status();
+        let message = error.message().to_string();
         Router::new().route(
             "/test",
             get(move || async move { Err::<String, AppError>(AppError::new(status, message)) }),
@@ -81,21 +97,21 @@ mod error_responses {
         ];
 
         for (error, expected_status, expected_message_part) in cases {
-            let app = error_router(error);
+            let app = error_router(&error);
             let req = Request::get("/test").body(Body::empty()).unwrap();
             let resp = app.oneshot(req).await.unwrap();
 
             assert_eq!(resp.status(), expected_status);
             let json = body_json(resp).await;
-            assert_eq!(json["status"], expected_status.as_u16());
+            assert_eq!(json["code"], grpc_code_for_http_status(expected_status));
             if let Some(expected_message_part) = expected_message_part {
                 assert!(
-                    json["error"]
+                    json["message"]
                         .as_str()
                         .expect("error response should contain a string message")
                         .contains(expected_message_part),
                     "expected error message to contain {expected_message_part:?}, got {:?}",
-                    json["error"]
+                    json["message"]
                 );
             }
         }
@@ -103,21 +119,24 @@ mod error_responses {
 
     #[tokio::test]
     async fn test_error_response_json_structure() {
-        let app = error_router(AppError::bad_request("test"));
+        let app = error_router(&AppError::bad_request("test"));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         let json = body_json(resp).await;
         let obj = json.as_object().unwrap();
         assert!(
-            obj.contains_key("error"),
-            "Response must contain 'error' field"
+            obj.contains_key("code"),
+            "Response must contain 'code' field"
         );
         assert!(
-            obj.contains_key("status"),
-            "Response must contain 'status' field"
+            obj.contains_key("message"),
+            "Response must contain 'message' field"
         );
-        assert_eq!(obj.len(), 2, "Error response should have exactly 2 fields");
+        assert!(
+            obj.contains_key("details"),
+            "Response must contain 'details' field"
+        );
     }
 
     #[tokio::test]
@@ -176,13 +195,13 @@ mod error_responses {
         ];
 
         for (error, expected_status, expected_parts) in cases {
-            let app = error_router(error);
+            let app = error_router(&error);
             let req = Request::get("/test").body(Body::empty()).unwrap();
             let resp = app.oneshot(req).await.unwrap();
 
             assert_eq!(resp.status(), expected_status);
             let json = body_json(resp).await;
-            let message = json["error"].as_str().unwrap();
+            let message = json["message"].as_str().unwrap();
             for expected_part in expected_parts {
                 assert!(
                     message.contains(expected_part),
@@ -196,13 +215,13 @@ mod error_responses {
     async fn test_internal_error_returns_generic_message() {
         let sensitive_msg =
             "Database connection failed: postgres://admin:secret@db.internal:5432/production";
-        let app = error_router(AppError::internal_server_error(sensitive_msg));
+        let app = error_router(&AppError::internal_server_error(sensitive_msg));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let json = body_json(resp).await;
-        let error_msg = json["error"].as_str().unwrap();
+        let error_msg = json["message"].as_str().unwrap();
 
         assert!(
             !error_msg.contains("postgres://"),
@@ -218,7 +237,7 @@ mod error_responses {
         );
 
         assert_eq!(
-            error_msg, "Internal server error",
+            error_msg, "Internal error",
             "Internal error should return generic message"
         );
     }
@@ -241,11 +260,11 @@ mod error_responses {
         ];
 
         let sensitive_msg = "Error: panic! at /etc/config.toml - postgres://admin:password@localhost redis://localhost private_key=abc123";
-        let app = error_router(AppError::internal_server_error(sensitive_msg));
+        let app = error_router(&AppError::internal_server_error(sensitive_msg));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let json = body_json(resp).await;
-        let error_msg = json["error"].as_str().unwrap().to_lowercase();
+        let error_msg = json["message"].as_str().unwrap().to_lowercase();
 
         for pattern in &sensitive_patterns {
             assert!(
@@ -279,13 +298,13 @@ mod error_responses {
         ];
 
         for (error, expected_status, expected_message) in cases {
-            let app = error_router(error);
+            let app = error_router(&error);
             let req = Request::get("/test").body(Body::empty()).unwrap();
             let resp = app.oneshot(req).await.unwrap();
 
             assert_eq!(resp.status(), expected_status);
             let json = body_json(resp).await;
-            assert_eq!(json["error"], expected_message);
+            assert_eq!(json["message"], expected_message);
         }
     }
 }
@@ -333,12 +352,12 @@ mod error_classification {
 
         for (api_error, expected_status, expected_message) in cases {
             let err = map_api_error(api_error);
-            assert_eq!(err.status, expected_status);
+            assert_eq!(err.status(), expected_status);
             if let Some(expected_message) = expected_message {
                 assert!(
-                    err.message.contains(expected_message),
+                    err.message().contains(expected_message),
                     "expected mapped error message to contain {expected_message:?}, got {:?}",
-                    err.message
+                    err.message()
                 );
             }
         }
@@ -363,7 +382,7 @@ mod error_classification {
 
         for (core_err, expected_status) in cases {
             let app_err = map_api_error(ApiError::from(core_err));
-            assert_eq!(app_err.status, expected_status);
+            assert_eq!(app_err.status(), expected_status);
         }
     }
 }

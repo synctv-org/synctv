@@ -2,7 +2,7 @@ use crate::{
     cache::{CacheDomain, ConsistencyCoordinator, VersionFenceReservation},
     models::{AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings, UserId},
     service::optimistic_retry,
-    Error, InternalExt, Result,
+    Error, Result,
 };
 
 use super::{
@@ -449,99 +449,6 @@ impl RoomService {
         .await?;
 
         Ok(snapshot)
-    }
-
-    /// Update single room setting by key (requires `SET_ROOM_SETTINGS` permission)
-    ///
-    /// The flow is fully generic -- no per-setting special cases here:
-    /// 1. Permission check
-    /// 2. Registry validates type + value constraints (incl. macro validators)
-    /// 3. CAS (Compare-And-Swap) update with automatic retry on version conflict
-    /// 4. Post-apply hooks handle side effects (e.g., kick guests)
-    pub async fn update_room_setting(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        key: &str,
-        value: &str,
-    ) -> Result<String> {
-        use crate::models::room_settings::RoomSettingsRegistry;
-
-        // 1. Permission check
-        self.permission_service
-            .check_permission(
-                room_id,
-                user_id,
-                crate::models::RoomPermission::SET_ROOM_SETTINGS,
-            )
-            .await?;
-
-        // 2. Validate via registry (type parsing + value constraints from macro validators)
-        RoomSettingsRegistry::validate_setting(key, value)?;
-
-        // 3. CAS update with retry
-        let (previous_settings, settings, version) = optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
-            "Settings update failed after maximum retry attempts",
-            || async {
-                let (mut settings, version) =
-                    self.room_settings_repo.get_with_version(room_id).await?;
-                let current = settings.clone();
-                settings.set_by_key(key, value)?;
-                settings.validate()?;
-
-                let domain = CacheDomain::RoomSettings { room_id: *room_id };
-                let reservation = self.begin_room_settings_write(room_id, version).await?;
-                let new_version = if let Some(reservation) = &reservation {
-                    match self
-                        .room_settings_repo
-                        .set_settings_with_exact_version(
-                            room_id,
-                            &settings,
-                            version,
-                            reservation.version,
-                        )
-                        .await
-                    {
-                        Ok(new_version) => {
-                            self.finalize_committed_room_settings_write_best_effort(
-                                &domain,
-                                Some(reservation),
-                                new_version,
-                                "update_room_setting",
-                            )
-                            .await;
-                            new_version
-                        }
-                        Err(error) => {
-                            self.abort_room_settings_write(&domain, Some(reservation))
-                                .await;
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    self.room_settings_repo
-                        .set_settings_with_version(room_id, &settings, version)
-                        .await?
-                };
-                Ok((current, settings, new_version))
-            },
-        )
-        .await?;
-
-        let snapshot = self
-            .finalize_room_settings_update(
-                room_id,
-                &previous_settings,
-                &settings,
-                version,
-                Some(user_id),
-                "",
-            )
-            .await?;
-
-        serde_json::to_string(&snapshot.settings).internal_with_err("Failed to serialize settings")
     }
 
     async fn finalize_room_settings_update(

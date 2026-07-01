@@ -251,7 +251,7 @@ impl ClientApiImpl {
         for (room, role, _status, member_count) in &rooms {
             // Use the full permission calculation instead of role.permissions(),
             // which only gives role-level defaults. calculate_role_default_permissions applies:
-            //   1. Global default permissions (from SettingsRegistry)
+            //   1. Global default permissions (from RuntimeSettingsStore)
             //   2. Room-level overrides (room_added / room_removed)
             let settings = required_room_settings(&room_settings_map, &room.id)?;
             let permissions = self
@@ -1049,7 +1049,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdateRoomSettingsRequest,
-    ) -> Result<synctv_proto::client::UpdateRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Room, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
 
@@ -1091,16 +1091,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::client::UpdateRoomSettingsResponse {
-            room: Some(
-                self.room_to_proto_basic_with_loaded_cover(
-                    &room,
-                    Some(&snapshot.settings),
-                    self.load_room_member_count(&rid).await?,
-                )
-                .await?,
-            ),
-        })
+        self.room_to_proto_basic_with_loaded_cover(
+            &room,
+            Some(&snapshot.settings),
+            self.load_room_member_count(&rid).await?,
+        )
+        .await
     }
 
     pub async fn start_room_password_registration(
@@ -1327,18 +1323,17 @@ impl ClientApiImpl {
         &self,
     ) -> Result<synctv_proto::client::GetPublicSettingsResponse, ApiError> {
         let reg = self
-            .settings_registry
+            .runtime_settings_store
             .as_ref()
-            .ok_or_else(settings_registry_unavailable_error)?;
+            .ok_or_else(runtime_settings_store_unavailable_error)?;
 
         let s = reg.to_public_settings().map_err(ApiError::from)?;
         Ok(synctv_proto::client::GetPublicSettingsResponse {
-            allow_room_creation: s.allow_room_creation,
+            room_creation_enabled: s.room_creation_enabled,
             max_rooms_per_user: s.max_rooms_per_user,
-            max_members_per_room: s.max_members_per_room,
+            default_max_members: s.default_max_members,
             max_pinned_chat_messages_per_room: s.max_pinned_chat_messages_per_room,
-            disable_create_room: s.disable_create_room,
-            create_room_need_review: s.create_room_need_review,
+            room_creation_approval_required: s.approval_required,
             room_password_policy: s.room_password_policy.to_string(),
             enable_password_signup: s.enable_password_signup,
             password_signup_need_review: s.password_signup_need_review,
@@ -1362,9 +1357,9 @@ impl ClientApiImpl {
         &self,
     ) -> Result<synctv_proto::client::GetServerInfoResponse, ApiError> {
         let reg = self
-            .settings_registry
+            .runtime_settings_store
             .as_ref()
-            .ok_or_else(settings_registry_unavailable_error)?;
+            .ok_or_else(runtime_settings_store_unavailable_error)?;
         let server_id = reg
             .get_or_initialize_server_id()
             .await
@@ -2384,7 +2379,7 @@ pub(crate) fn validate_update_room_settings_request(
     req: &synctv_proto::client::UpdateRoomSettingsRequest,
     current: synctv_core::models::RoomSettings,
 ) -> Result<synctv_core::models::RoomSettings, ApiError> {
-    apply_room_settings_patch_from_proto(current, req.settings)
+    apply_room_settings_patch_from_proto(current, *req)
 }
 
 #[cfg(test)]
@@ -2396,7 +2391,7 @@ mod tests {
         delete_chat_message_request_to_core, edit_chat_message_request_to_core,
         optional_positive_limit, optional_positive_window_seconds, optional_trimmed_string,
         parse_proto_chat_attachments, required_playback_position_seconds,
-        required_room_availability, settings_registry_unavailable_error,
+        required_room_availability, runtime_settings_store_unavailable_error,
     };
     use crate::impls::ErrorKind;
     use chrono::Utc;
@@ -2453,7 +2448,7 @@ mod tests {
                 publish_key_service: None,
                 jwt_service: synctv_core_testing::create_test_jwt_service(),
                 live_streaming_infrastructure: None,
-                settings_registry: None,
+                runtime_settings_store: None,
                 provider_stores: std::sync::Arc::new(
                     synctv_core::provider::ProviderStoreRegistry::local_only("test:chat-pin-api:"),
                 ),
@@ -3357,7 +3352,7 @@ mod tests {
 
     #[test]
     fn get_public_settings_missing_registry_is_service_unavailable() {
-        let err = settings_registry_unavailable_error();
+        let err = runtime_settings_store_unavailable_error();
         assert!(matches!(err.classify(), ErrorKind::ServiceUnavailable));
         assert_eq!(
             err.message(),

@@ -1035,7 +1035,7 @@ fn cli_parses_room_create_minimal() {
 
 #[test]
 fn room_create_settings_json_is_applied_as_patch_to_defaults() {
-    let patch: synctv_proto::client::RoomSettingsPatch =
+    let patch: synctv_proto::client::UpdateRoomSettingsRequest =
         serde_json::from_str(r#"{"chatEnabled":false}"#)
             .expect("room settings patch JSON should parse");
 
@@ -4497,29 +4497,27 @@ fn cli_parses_provider_rtmp_get_stream_info_with_hyphen_prefixed_media_id() {
 
 #[test]
 fn cli_parses_settings_get() {
-    let cli = Cli::parse_from(["synctv", "settings", "get", "server"]);
+    let cli = Cli::parse_from(["synctv", "settings", "get", "roomDefaults"]);
     match cli.command {
         Commands::Settings(SettingsCommand {
             command: SettingsSubcommand::Get(args),
             ..
         }) => {
-            assert_eq!(args.group, "server");
+            assert_eq!(args.group, "roomDefaults");
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn cli_parses_settings_update_with_repeated_set_entries() {
+fn cli_parses_settings_update_with_typed_patch_json() {
     let cli = Cli::parse_from([
         "synctv",
         "settings",
         "update",
         "user",
-        "--set",
-        "enablePasswordSignup=true",
-        "--set",
-        "passwordSignupNeedReview=true",
+        "--patch-json",
+        r#"{"enablePasswordSignup":true,"passwordSignupNeedReview":true}"#,
     ]);
     match cli.command {
         Commands::Settings(SettingsCommand {
@@ -4528,11 +4526,8 @@ fn cli_parses_settings_update_with_repeated_set_entries() {
         }) => {
             assert_eq!(args.group, "user");
             assert_eq!(
-                args.entries,
-                vec![
-                    "enablePasswordSignup=true".to_string(),
-                    "passwordSignupNeedReview=true".to_string()
-                ]
+                args.patch_json,
+                r#"{"enablePasswordSignup":true,"passwordSignupNeedReview":true}"#
             );
         }
         other => panic!("unexpected command parsed: {other:?}"),
@@ -4540,60 +4535,92 @@ fn cli_parses_settings_update_with_repeated_set_entries() {
 }
 
 #[test]
-fn settings_update_parser_accepts_permission_names_for_proto_json_fields() {
-    let raw_settings =
-        parse_setting_entries(&["guestDefaultPermissions=view_member_list,use_webrtc".to_string()])
-            .expect("permission setting entries should parse");
-    let settings = parse_management_settings_update("permissions", &raw_settings)
-        .expect("permissions update should parse");
-
-    let synctv_management::proto::update_settings_request::Settings::Permissions(settings) =
-        settings
-    else {
-        panic!("expected permissions settings");
-    };
+fn settings_update_parser_accepts_typed_permission_patch_json() {
+    let request = parse_management_settings_patch_json(
+        "permissions",
+        &format!(
+            r#"{{"guestDefaultPermissions":{}}}"#,
+            RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC
+        ),
+    )
+    .expect("permissions update should parse");
+    let settings = request.permissions.expect("permissions settings");
 
     assert_eq!(
         settings.guest_default_permissions,
-        RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC
+        Some(RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC)
+    );
+    assert_eq!(settings.admin_default_permissions, None);
+}
+
+#[test]
+fn settings_update_parser_accepts_camel_case_section_names() {
+    let room_defaults =
+        parse_management_settings_patch_json("roomDefaults", r#"{"defaultMaxMembers":42}"#)
+            .expect("roomDefaults update should parse");
+    assert_eq!(
+        room_defaults
+            .room_defaults
+            .expect("roomDefaults settings")
+            .default_max_members,
+        Some(42)
+    );
+
+    let room_creation =
+        parse_management_settings_patch_json("roomCreation", r#"{"approvalRequired":true}"#)
+            .expect("roomCreation update should parse");
+    assert_eq!(
+        room_creation
+            .room_creation
+            .expect("roomCreation settings")
+            .approval_required,
+        Some(true)
     );
 }
 
 #[test]
-fn settings_update_parser_rejects_snake_case_field_names() {
-    let raw_settings = parse_setting_entries(&["enable_password_signup=true".to_string()])
-        .expect("setting entries should parse");
+fn settings_update_parser_rejects_snake_case_section_names() {
     let error =
-        parse_management_settings_update("user", &raw_settings).expect_err("snake_case rejects");
-    assert!(error.to_string().contains("enable_password_signup"));
+        parse_management_settings_patch_json("room_creation", r#"{"approvalRequired":true}"#)
+            .expect_err("snake_case section name rejects");
+    let message = error.to_string();
+    assert!(message.contains("unsupported settings group 'room_creation'"));
+    assert!(message.contains("roomCreation"));
+}
+
+#[test]
+fn settings_update_parser_rejects_snake_case_field_names() {
+    let error = parse_management_settings_patch_json("user", r#"{"enable_password_signup":true}"#)
+        .expect_err("snake_case rejects");
+    assert!(error.to_string().contains("user settings patch"));
 }
 
 #[test]
 fn settings_update_parser_accepts_typed_oauth2_proto_json() {
-    let raw_settings = parse_setting_entries(&[r#"providers=[
-      {
-        "instanceName": "github",
-        "enableSignup": true,
-        "signupNeedReview": false,
-        "github": {
-          "clientId": "github-client-id",
-          "clientSecret": "github-client-secret",
-          "redirectUrl": "https://app.example.com/oauth2/callback"
-        }
-      }
-    ]"#
-    .to_string()])
-    .expect("oauth2 setting entries should parse");
-    let settings = parse_management_settings_update("oauth2", &raw_settings)
-        .expect("oauth2 update should parse");
-
-    let synctv_management::proto::update_settings_request::Settings::Oauth2(settings) = settings
-    else {
-        panic!("expected oauth2 settings");
-    };
-    assert_eq!(settings.providers.len(), 1);
-    let provider = &settings.providers[0];
-    assert_eq!(provider.instance_name, "github");
+    let request = parse_management_settings_patch_json(
+        "oauth2",
+        r#"{"providers":{"providers":[
+          {
+            "name": "github",
+            "enableSignup": true,
+            "signupNeedReview": false,
+            "github": {
+              "clientId": "github-client-id",
+              "clientSecret": "github-client-secret",
+              "redirectUrl": "https://app.example.com/oauth2/callback"
+            }
+          }
+        ]}}"#,
+    )
+    .expect("oauth2 update should parse");
+    let settings = request.oauth2.expect("oauth2 settings");
+    let providers = settings
+        .providers
+        .expect("providers wrapper should be present")
+        .providers;
+    assert_eq!(providers.len(), 1);
+    let provider = &providers[0];
+    assert_eq!(provider.name, "github");
     assert!(provider.enable_signup);
     assert!(matches!(
         provider.config,
@@ -4603,52 +4630,58 @@ fn settings_update_parser_accepts_typed_oauth2_proto_json() {
 
 #[test]
 fn settings_update_parser_rejects_oauth2_runtime_provider_map() {
-    let raw_settings = parse_setting_entries(&[r#"providers={
-      "github": {
-        "type": "github",
-        "enableSignup": true,
-        "signupNeedReview": false,
-        "clientId": "github-client-id",
-        "clientSecret": "github-client-secret",
-        "redirectUrl": "https://app.example.com/oauth2/callback"
-      }
-    }"#
-    .to_string()])
-    .expect("oauth2 setting entries should parse");
+    let error = parse_management_settings_patch_json(
+        "oauth2",
+        r#"{"providers":{
+          "github": {
+            "type": "github",
+            "enableSignup": true,
+            "signupNeedReview": false,
+            "clientId": "github-client-id",
+            "clientSecret": "github-client-secret",
+            "redirectUrl": "https://app.example.com/oauth2/callback"
+          }
+        }}"#,
+    )
+    .expect_err("runtime provider map should reject");
 
-    let error = parse_management_settings_update("oauth2", &raw_settings)
-        .expect_err("runtime provider map should reject");
-
-    assert!(error.to_string().contains("invalid providers ProtoJSON"));
+    assert!(error.to_string().contains("oauth2 settings patch"));
 }
 
 #[test]
-fn settings_update_parser_rejects_duplicate_oauth2_instance_names() {
-    let raw_settings = parse_setting_entries(&[r#"providers=[
-      {
-        "instanceName": "github",
-        "github": {
-          "clientId": "github-client-id",
-          "clientSecret": "github-client-secret",
-          "redirectUrl": "https://app.example.com/oauth2/callback"
-        }
-      },
-      {
-        "instanceName": "github",
-        "google": {
-          "clientId": "google-client-id",
-          "clientSecret": "google-client-secret",
-          "redirectUrl": "https://app.example.com/oauth2/callback"
-        }
-      }
-    ]"#
-    .to_string()])
-    .expect("oauth2 setting entries should parse");
-
-    let error = parse_management_settings_update("oauth2", &raw_settings)
-        .expect_err("duplicate instanceName should reject");
-
-    assert!(error.to_string().contains("duplicate oauth2 provider"));
+fn settings_update_parser_rejects_duplicate_oauth2_names() {
+    let request = parse_management_settings_patch_json(
+        "oauth2",
+        r#"{"providers":{"providers":[
+          {
+            "name": "github",
+            "github": {
+              "clientId": "github-client-id",
+              "clientSecret": "github-client-secret",
+              "redirectUrl": "https://app.example.com/oauth2/callback"
+            }
+          },
+          {
+            "name": "github",
+            "google": {
+              "clientId": "google-client-id",
+              "clientSecret": "google-client-secret",
+              "redirectUrl": "https://app.example.com/oauth2/callback"
+            }
+          }
+        ]}}"#,
+    )
+    .expect("duplicate provider names are service-level validation");
+    assert_eq!(
+        request
+            .oauth2
+            .expect("oauth2 settings")
+            .providers
+            .expect("providers")
+            .providers
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -5114,7 +5147,7 @@ fn render_human_output_converts_room_listing_without_context_inference() {
     let _lock = acquire_time_test_lock();
     let _timezone = TimeZoneGuard::set("UTC");
     let rendered = render_human_output(&synctv_proto::admin::ListRoomsResponse {
-        rooms: vec![synctv_proto::admin::AdminRoom {
+        rooms: vec![synctv_proto::admin::Room {
             id: "room-1".into(),
             name: "General".into(),
             creator_id: "user-1".into(),
@@ -5181,6 +5214,7 @@ fn render_human_output_includes_media_and_playlist_availability() {
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
         provider_instance_name: String::new(),
         item_count: 1,
+        creator_id: "user-1".into(),
         created_at: 1_775_144_583_i64,
         updated_at: 1_775_291_071_i64,
         availability: synctv_proto::client::ResourceAvailability::Available as i32,
@@ -5215,6 +5249,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             item_count: 0,
+            creator_id: "user-1".into(),
             created_at: 1,
             updated_at: 2,
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
@@ -5365,54 +5400,50 @@ fn render_human_output_uses_camel_case_for_slice_cache_responses() {
 
 #[test]
 fn render_human_output_uses_proto_json_for_admin_settings() {
-    let rendered_room = render_human_output(&synctv_proto::admin::SettingsGroup {
-        name: "room".into(),
-        settings: Some(synctv_proto::admin::settings_group::Settings::Room(
-            synctv_proto::admin::RoomPolicySettings {
-                disable_create_room: true,
-                create_room_need_review: false,
-                password_policy: synctv_proto::admin::RoomPasswordPolicy::Required as i32,
-            },
-        )),
+    let rendered_room = render_human_output(&synctv_proto::admin::RuntimeSettings {
+        room_creation: Some(synctv_proto::admin::RoomCreationSettings {
+            enabled: true,
+            approval_required: false,
+            password_policy: synctv_proto::admin::RoomPasswordPolicy::Required as i32,
+            max_rooms_per_user: 10,
+        }),
+        ..Default::default()
     })
     .expect("room settings output should render");
-    let rendered_oauth2 = render_human_output(&synctv_proto::admin::SettingsGroup {
-        name: "oauth2".into(),
-        settings: Some(synctv_proto::admin::settings_group::Settings::Oauth2(
-            synctv_proto::admin::OAuth2Settings {
-                providers: vec![synctv_proto::admin::OAuth2ProviderSettings {
-                    instance_name: "github-main".into(),
-                    enable_signup: true,
-                    signup_need_review: true,
-                    config: Some(
-                        synctv_proto::admin::o_auth2_provider_settings::Config::Github(
-                            synctv_proto::admin::OAuth2BasicProviderConfig {
-                                client_id: "client-id".into(),
-                                client_secret: "client-secret".into(),
-                                redirect_url: "https://example.com/callback".into(),
-                            },
-                        ),
+    let rendered_oauth2 = render_human_output(&synctv_proto::admin::RuntimeSettings {
+        oauth2: Some(synctv_proto::admin::OAuth2Settings {
+            providers: vec![synctv_proto::admin::OAuth2ProviderSettings {
+                name: "github-main".into(),
+                enable_signup: true,
+                signup_need_review: true,
+                config: Some(
+                    synctv_proto::admin::o_auth2_provider_settings::Config::Github(
+                        synctv_proto::admin::OAuth2GithubProviderConfig {
+                            client_id: "client-id".into(),
+                            client_secret: "client-secret".into(),
+                            redirect_url: "https://example.com/callback".into(),
+                        },
                     ),
-                }],
-            },
-        )),
+                ),
+            }],
+        }),
+        ..Default::default()
     })
     .expect("oauth2 settings output should render");
 
-    assert_eq!(rendered_room["room"]["disableCreateRoom"], true);
-    assert_eq!(rendered_room["room"]["passwordPolicy"], 2);
-    assert!(rendered_room["room"].get("password_policy").is_none());
+    assert_eq!(rendered_room["roomCreation"]["enabled"], true);
+    assert_eq!(rendered_room["roomCreation"]["passwordPolicy"], 2);
+    assert!(rendered_room["roomCreation"]
+        .get("password_policy")
+        .is_none());
     assert_eq!(
-        rendered_oauth2["oauth2"]["providers"][0]["instanceName"],
+        rendered_oauth2["oauth2"]["providers"][0]["name"],
         "github-main"
     );
     assert_eq!(
         rendered_oauth2["oauth2"]["providers"][0]["github"]["clientId"],
         "client-id"
     );
-    assert!(rendered_oauth2["oauth2"]["providers"][0]
-        .get("providerType")
-        .is_none());
 }
 
 #[test]
@@ -5467,18 +5498,6 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
     assert_eq!(output.default_absolute_pull_url, None);
     assert_eq!(output.pull_urls.len(), 1);
     assert_eq!(output.pull_urls[0].absolute_url, None);
-}
-
-#[test]
-fn parse_setting_entries_rejects_invalid_and_duplicate_entries() {
-    let invalid = parse_setting_entries(&["enablePasswordSignup".to_string()]);
-    assert!(invalid.is_err(), "missing '=' must be rejected");
-
-    let duplicate = parse_setting_entries(&[
-        "enablePasswordSignup=false".to_string(),
-        "enablePasswordSignup=true".to_string(),
-    ]);
-    assert!(duplicate.is_err(), "duplicate keys must be rejected");
 }
 
 #[test]

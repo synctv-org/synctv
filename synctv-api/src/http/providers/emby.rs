@@ -228,17 +228,23 @@ fn authorize_thumbnail_request(
     verify_signed_thumbnail_access(signing_key, public_auth_user_id, raw_query, scope).map(Some)
 }
 
-fn app_error_to_thumbnail_api_error(error: AppError) -> ApiError {
-    match error.status {
-        axum::http::StatusCode::UNAUTHORIZED => ApiError::Authentication(error.message),
-        axum::http::StatusCode::FORBIDDEN => ApiError::Authorization(error.message),
-        axum::http::StatusCode::BAD_REQUEST => ApiError::InvalidInput(error.message),
-        axum::http::StatusCode::NOT_FOUND => ApiError::NotFound(error.message),
-        axum::http::StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(error.message),
-        axum::http::StatusCode::TOO_MANY_REQUESTS => ApiError::RateLimited(error.message),
-        axum::http::StatusCode::SERVICE_UNAVAILABLE => ApiError::ServiceUnavailable(error.message),
-        _ if error.status.is_server_error() => ApiError::Internal(error.message),
-        _ => ApiError::InvalidInput(error.message),
+fn app_error_to_thumbnail_api_error(error: &AppError) -> ApiError {
+    match error.status() {
+        axum::http::StatusCode::UNAUTHORIZED => {
+            ApiError::Authentication(error.message().to_string())
+        }
+        axum::http::StatusCode::FORBIDDEN => ApiError::Authorization(error.message().to_string()),
+        axum::http::StatusCode::BAD_REQUEST => ApiError::InvalidInput(error.message().to_string()),
+        axum::http::StatusCode::NOT_FOUND => ApiError::NotFound(error.message().to_string()),
+        axum::http::StatusCode::REQUEST_TIMEOUT => ApiError::Timeout(error.message().to_string()),
+        axum::http::StatusCode::TOO_MANY_REQUESTS => {
+            ApiError::RateLimited(error.message().to_string())
+        }
+        axum::http::StatusCode::SERVICE_UNAVAILABLE => {
+            ApiError::ServiceUnavailable(error.message().to_string())
+        }
+        status if status.is_server_error() => ApiError::Internal(error.message().to_string()),
+        _ => ApiError::InvalidInput(error.message().to_string()),
     }
 }
 
@@ -291,7 +297,7 @@ pub(crate) fn sign_emby_thumbnail_url(
         _exp: None,
     };
     let (server_id, credential_owner_id, max_height, max_width) =
-        resolve_thumbnail_query(&query).map_err(|error| error.message)?;
+        resolve_thumbnail_query(&query).map_err(|error| error.message().to_string())?;
     let credential_owner_id = credential_owner_id.unwrap_or(user_id);
     let item_id = percent_encoding::percent_decode_str(item_id)
         .decode_utf8()
@@ -340,14 +346,14 @@ pub(crate) fn emby_read_routes() -> Router<AppState> {
         request_body = synctv_proto::providers::emby::LoginRequest,
         responses(
             (status = 200, description = "Emby login succeeded", body = synctv_proto::providers::emby::LoginResponse),
-            (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid login request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -397,14 +403,14 @@ pub(crate) async fn login(
         request_body = synctv_proto::providers::emby::ListRequest,
         responses(
             (status = 200, description = "Emby library listing", body = synctv_proto::providers::emby::ListResponse),
-            (status = 400, description = "Invalid list request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid list request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -454,14 +460,14 @@ pub(crate) async fn list(
         request_body = synctv_proto::providers::emby::GetMeRequest,
         responses(
             (status = 200, description = "Emby account info", body = synctv_proto::providers::emby::GetMeResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -511,14 +517,14 @@ pub(crate) async fn me(
         request_body = synctv_proto::providers::emby::LogoutRequest,
         responses(
             (status = 200, description = "Emby credential removed", body = synctv_proto::providers::emby::LogoutResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -556,12 +562,12 @@ pub(crate) async fn logout(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Emby credentials", body = GetBindsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider bind request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider bind information unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 400, description = "Invalid provider instance query", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider bind request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -606,13 +612,13 @@ pub(crate) async fn binds(
         ),
         responses(
             (status = 200, description = "Proxied Emby thumbnail"),
-            (status = 400, description = "Invalid thumbnail request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Emby credential not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Thumbnail request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid thumbnail request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Emby credential not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Thumbnail request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -658,7 +664,7 @@ pub(crate) async fn thumbnail(
                     credential_owner_id,
                     scope,
                 )
-                .map_err(app_error_to_thumbnail_api_error)?
+                .map_err(|error| app_error_to_thumbnail_api_error(&error))?
                 {
                     let room_id = state
                         .shared_api_runtime
@@ -755,7 +761,7 @@ mod tests {
             _exp: None,
         }))?;
 
-        assert_eq!(err.message, "serverId must not be empty");
+        assert_eq!(err.message(), "serverId must not be empty");
         Ok(())
     }
 
@@ -815,8 +821,8 @@ mod tests {
             },
         ))?;
 
-        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid thumbnail signature");
+        assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message(), "Invalid thumbnail signature");
         Ok(())
     }
 
@@ -852,8 +858,8 @@ mod tests {
             },
         ))?;
 
-        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-        assert_eq!(err.message, "Thumbnail URL is not valid for this user");
+        assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(err.message(), "Thumbnail URL is not valid for this user");
         Ok(())
     }
 

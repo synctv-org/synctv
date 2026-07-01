@@ -2,7 +2,7 @@ use super::{
     build_get_playback_request, sse_event_from_server_message, sse_event_id_from_resource_event,
     watch_after_event_sequence, CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery,
     MediaCoverObjectQuery, PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery,
-    WatchPlaylistItemsQuery, WatchQuery,
+    WatchPlaybackStateQuery, WatchPlaylistItemsQuery, WatchQuery,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use synctv_proto::client::{
@@ -109,8 +109,8 @@ fn test_watch_after_event_sequence_rejects_invalid_last_event_id() -> TestResult
 
     let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("Last-Event-ID"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("Last-Event-ID"));
     Ok(())
 }
 
@@ -121,8 +121,8 @@ fn test_watch_after_event_sequence_rejects_negative_last_event_id() -> TestResul
 
     let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("event sequence"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("event sequence"));
     Ok(())
 }
 
@@ -132,8 +132,8 @@ fn test_watch_after_event_sequence_rejects_negative_query_sequence() -> TestResu
 
     let error = app_err(watch_after_event_sequence(&headers, Some(-1)))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("event sequence"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("event sequence"));
     Ok(())
 }
 
@@ -144,8 +144,8 @@ fn test_watch_after_event_sequence_rejects_non_utf8_last_event_id() -> TestResul
 
     let error = app_err(watch_after_event_sequence(&headers, Some(7)))?;
 
-    assert_eq!(error.status, StatusCode::BAD_REQUEST);
-    assert!(error.message.contains("Last-Event-ID"));
+    assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+    assert!(error.message().contains("Last-Event-ID"));
     Ok(())
 }
 
@@ -224,6 +224,11 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
             .expect("watch query should ignore unknown fields");
     assert_eq!(watch_query.format.as_deref(), Some("json"));
     assert_eq!(watch_query.after_event_sequence, Some(12));
+    let playback_state_watch =
+        serde_urlencoded::from_str::<WatchPlaybackStateQuery>("format=json&eventSequence=12")
+            .expect("watch playback state should accept known event sequence");
+    assert_eq!(playback_state_watch.format.as_deref(), Some("json"));
+    assert_eq!(playback_state_watch.event_sequence, Some(12));
     let playlist_items_with_extra = serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
         "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1&extra=true",
     )
@@ -238,8 +243,8 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
     assert_eq!(playback_watch_with_extra.format.as_deref(), Some("json"));
     let playback_watch =
         serde_urlencoded::from_str::<WatchPlaybackQuery>("format=json&afterEventSequence=12")
-            .expect("watch playback should accept a replay cursor");
-    assert_eq!(playback_watch.after_event_sequence, Some(12));
+            .expect("watch playback should ignore replay cursors");
+    assert_eq!(playback_watch.format.as_deref(), Some("json"));
     let playlist_items_watch = serde_urlencoded::from_str::<WatchPlaylistItemsQuery>(
         "format=json&afterEventSequence=12&page=1&pageSize=25&playlistId=pl_1",
     )
@@ -282,7 +287,7 @@ fn test_build_get_playback_request_rejects_invalid_video_codec() {
     })
     .expect_err("unknown codec must be rejected");
 
-    assert!(error.message.contains("videoCodecs"), "{error:?}");
+    assert!(error.message().contains("videoCodecs"), "{error:?}");
 }
 
 #[test]
@@ -298,7 +303,7 @@ fn test_build_get_playback_request_rejects_invalid_stream_preference() {
     })
     .expect_err("unknown stream preference must be rejected");
 
-    assert!(error.message.contains("streamPreference"), "{error:?}");
+    assert!(error.message().contains("streamPreference"), "{error:?}");
 }
 
 #[test]
@@ -314,7 +319,7 @@ fn test_build_get_playback_request_rejects_invalid_container() {
     })
     .expect_err("unknown container must be rejected");
 
-    assert!(error.message.contains("container"), "{error:?}");
+    assert!(error.message().contains("container"), "{error:?}");
 }
 
 #[test]
@@ -330,7 +335,7 @@ fn test_build_get_playback_request_rejects_invalid_audio_capability() {
     })
     .expect_err("unknown audio capability must be rejected");
 
-    assert!(error.message.contains("audioCapability"), "{error:?}");
+    assert!(error.message().contains("audioCapability"), "{error:?}");
 }
 
 #[test]
@@ -345,7 +350,7 @@ fn test_build_get_playback_request_rejects_invalid_subtitle_preference() -> Test
         subtitle_preference: Some(999),
     }))?;
 
-    assert!(error.message.contains("subtitlePreference"), "{error:?}");
+    assert!(error.message().contains("subtitlePreference"), "{error:?}");
     Ok(())
 }
 
@@ -660,23 +665,15 @@ fn test_parse_chat_history_request_accepts_cursor_only() -> TestResult {
 }
 
 #[test]
-fn test_chat_message_path_injected_queries_reject_message_id() -> TestResult {
+fn test_chat_message_path_injected_queries_ignore_message_id() -> TestResult {
     let _: super::chat::GetChatMessageQuery = serde_urlencoded::from_str("includeDeleted=true")?;
-    assert!(
-        serde_urlencoded::from_str::<super::chat::GetChatMessageQuery>(
-            "messageId=msg_1&includeDeleted=true"
-        )
-        .is_err()
-    );
+    let _: super::chat::GetChatMessageQuery =
+        serde_urlencoded::from_str("messageId=msg_1&includeDeleted=true")?;
 
     let _: super::chat::GetChatMessageContextQuery =
         serde_urlencoded::from_str("beforeLimit=5&afterLimit=6&includeDeleted=true")?;
-    assert!(
-        serde_urlencoded::from_str::<super::chat::GetChatMessageContextQuery>(
-            "messageId=msg_1&beforeLimit=5"
-        )
-        .is_err()
-    );
+    let _: super::chat::GetChatMessageContextQuery =
+        serde_urlencoded::from_str("messageId=msg_1&beforeLimit=5")?;
     Ok(())
 }
 

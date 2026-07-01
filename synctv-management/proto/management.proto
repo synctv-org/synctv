@@ -50,7 +50,7 @@ service ManagementService {
     rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
-    rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (synctv.admin.UpdateRoomSettingsResponse);
+    rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
     rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.ResetRoomSettingsResponse);
     rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.TransferRoomOwnershipResponse);
     rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
@@ -119,9 +119,8 @@ service ManagementService {
     rpc EnableProviderInstance(synctv.provider.common.EnableProviderInstanceRequest) returns (synctv.provider.common.EnableProviderInstanceResponse);
     rpc DisableProviderInstance(synctv.provider.common.DisableProviderInstanceRequest) returns (synctv.provider.common.DisableProviderInstanceResponse);
 
-    rpc GetSettings(GetSettingsRequest) returns (synctv.admin.GetSettingsResponse);
-    rpc GetSettingsGroup(GetSettingsGroupRequest) returns (synctv.admin.GetSettingsGroupResponse);
-    rpc UpdateSettings(UpdateSettingsRequest) returns (synctv.admin.UpdateSettingsResponse);
+    rpc GetSettings(GetSettingsRequest) returns (synctv.admin.RuntimeSettings);
+    rpc UpdateSettings(synctv.admin.UpdateSettingsRequest) returns (synctv.admin.RuntimeSettings);
     rpc SendTestEmail(SendTestEmailRequest) returns (synctv.admin.SendTestEmailResponse);
     rpc GetSystemStats(GetSystemStatsRequest) returns (synctv.admin.GetSystemStatsResponse);
     rpc ListActiveStreams(ListActiveStreamsRequest) returns (synctv.admin.ListActiveStreamsResponse);
@@ -478,11 +477,6 @@ message KickMemberRequest {
 
 message GetRoomSettingsRequest {
     string room_id = 1;
-}
-
-message UpdateRoomSettingsRequest {
-    string room_id = 1;
-    synctv.client.RoomSettingsPatch settings = 2;
 }
 
 message ResetRoomSettingsRequest {
@@ -847,27 +841,6 @@ message BilibiliGetBindsRequest {
 }
 
 message GetSettingsRequest {}
-
-message GetSettingsGroupRequest {
-    string group = 1;
-}
-
-message UpdateSettingsRequest {
-    string group = 1;
-    oneof settings {
-        synctv.admin.ServerSettings server = 2;
-        synctv.admin.PermissionSettings permissions = 3;
-        synctv.admin.RoomPolicySettings room = 4;
-        synctv.admin.UserSettings user = 5;
-        synctv.admin.OAuth2Settings oauth2 = 6;
-        synctv.admin.ProxySettings proxy = 7;
-        synctv.admin.RtmpSettings rtmp = 8;
-        synctv.admin.EmailSettings email = 9;
-        synctv.admin.WebRtcSettings webrtc = 10;
-        synctv.admin.ChatSettings chat = 11;
-        synctv.admin.CorsSettings cors = 12;
-    }
-}
 
 message SendTestEmailRequest {
     string to = 1;

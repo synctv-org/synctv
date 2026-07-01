@@ -22,13 +22,14 @@
 use std::{collections::HashSet, sync::Arc};
 use synctv_core::models::{OAuth2Provider, User, UserId, UserRole, UserStatus};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::{OAuth2LinkResult, OAuth2Service, UserService};
+use synctv_core::service::{OAuth2LinkResult, OAuth2Operation, OAuth2Service, UserService};
 use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
     GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
-    LinkedProvider, ListAvailableProvidersResponse, OAuth2ProviderInstance, OAuth2ProviderType,
-    OAuth2UserInfo, UnlinkProviderRequest, UnlinkProviderResponse,
+    LinkedProvider, ListAvailableProvidersResponse, OAuth2Operation as ProtoOAuth2Operation,
+    OAuth2ProviderInstance, OAuth2ProviderType, OAuth2UserInfo, UnlinkProviderRequest,
+    UnlinkProviderResponse,
 };
 
 use super::ApiError;
@@ -87,10 +88,17 @@ impl OAuth2ApiImpl {
         }
     }
 
+    fn oauth2_operation_to_proto(operation: OAuth2Operation) -> i32 {
+        (match operation {
+            OAuth2Operation::Login => ProtoOAuth2Operation::Oauth2OperationLogin,
+            OAuth2Operation::Bind => ProtoOAuth2Operation::Oauth2OperationBind,
+        }) as i32
+    }
+
     fn exchange_code_result_to_proto(
         result: ExchangeCodeResult,
     ) -> Result<ExchangeAuthorizationCodeResponse, ApiError> {
-        if result.is_bind {
+        if result.operation == OAuth2Operation::Bind {
             if result.access_token.is_some()
                 || result.refresh_token.is_some()
                 || result.user_info.is_some()
@@ -107,7 +115,7 @@ impl OAuth2ApiImpl {
                 expires_in: 0,
                 user_info: None,
                 redirect_url: result.redirect_url,
-                is_bind: true,
+                operation: Self::oauth2_operation_to_proto(result.operation),
                 registration_review_required: false,
                 registration_review_id: None,
             });
@@ -131,7 +139,7 @@ impl OAuth2ApiImpl {
                 expires_in: 0,
                 user_info: None,
                 redirect_url: result.redirect_url,
-                is_bind: false,
+                operation: Self::oauth2_operation_to_proto(result.operation),
                 registration_review_required: true,
                 registration_review_id: Some(registration_review_id),
             });
@@ -153,7 +161,7 @@ impl OAuth2ApiImpl {
             expires_in: result.expires_in,
             user_info: Some(user_info),
             redirect_url: result.redirect_url,
-            is_bind: false,
+            operation: Self::oauth2_operation_to_proto(result.operation),
             registration_review_required: false,
             registration_review_id: None,
         })
@@ -391,6 +399,7 @@ impl OAuth2ApiImpl {
         Ok(GetAuthorizationUrlResponse {
             authorization_url,
             state,
+            operation: Self::oauth2_operation_to_proto(OAuth2Operation::Login),
         })
     }
 
@@ -473,6 +482,7 @@ impl OAuth2ApiImpl {
             .prepare_authorization_url_with_control(
                 &req.provider,
                 redirect_url,
+                OAuth2Operation::Bind,
                 Some(*user_id),
                 control,
             )
@@ -490,6 +500,7 @@ impl OAuth2ApiImpl {
         Ok(GetAuthorizationUrlForBindResponse {
             authorization_url: prepared.auth_url,
             state: prepared.state_token,
+            operation: Self::oauth2_operation_to_proto(prepared.oauth_state.operation),
         })
     }
 
@@ -497,11 +508,11 @@ impl OAuth2ApiImpl {
     ///
     /// Frontend calls this after receiving code and state from `OAuth2` provider redirect.
     ///
-    /// For login flow (no `bind_user_id` in state):
+    /// For login flow (no `target_user_id` in state):
     /// - If user exists: log them in
     /// - If user doesn't exist: create new user account
     ///
-    /// For bind flow (`bind_user_id` present in state):
+    /// For bind flow (`target_user_id` present in state):
     /// - Binds the `OAuth2` provider to the existing user account
     /// - Returns empty tokens (user is already logged in)
     ///
@@ -510,26 +521,17 @@ impl OAuth2ApiImpl {
     /// Pass `None` for login-only flows (no authentication needed).
     pub async fn exchange_authorization_code(
         &self,
-        provider: &str,
         code: &str,
         state: &str,
         current_user_id: Option<&UserId>,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<ExchangeCodeResult, ApiError> {
-        self.exchange_authorization_code_with_control(
-            provider,
-            code,
-            state,
-            current_user_id,
-            client_ip,
-            None,
-        )
-        .await
+        self.exchange_authorization_code_with_control(code, state, current_user_id, client_ip, None)
+            .await
     }
 
     pub async fn exchange_authorization_code_with_control(
         &self,
-        provider: &str,
         code: &str,
         state: &str,
         current_user_id: Option<&UserId>,
@@ -541,59 +543,86 @@ impl OAuth2ApiImpl {
             .oauth2_service
             .verify_state_with_control(state, control)
             .await
-            .map_err(ApiError::from)?;
-
-        // Verify provider matches
-        if oauth_state.instance_name != provider {
-            return Err(ApiError::InvalidInput(
-                "Provider mismatch between request and stored state".to_string(),
-            ));
-        }
+            .map_err(|error| ApiError::OAuth2InvalidState {
+                message: ApiError::from(error).message().to_string(),
+            })?;
+        let operation = oauth_state.operation;
+        let provider_instance_name = oauth_state.instance_name.clone();
 
         // 2. Exchange code for user info using PKCE verifier from stored state
         let user_info = self
             .oauth2_service
             .exchange_code_for_user_info_with_state_and_control(
-                provider,
+                &provider_instance_name,
                 code,
                 &oauth_state,
                 control,
             )
             .await
-            .map_err(ApiError::from)?;
+            .map_err(|error| ApiError::OAuth2ProviderExchangeFailed {
+                operation,
+                message: ApiError::from(error).message().to_string(),
+            })?;
 
-        // 3. Handle bind flow vs login flow
-        if let Some(bind_user_id) = oauth_state.bind_user_id {
+        // 3. Route by the operation captured in the single-use OAuth2 state.
+        if operation == OAuth2Operation::Bind {
+            let target_user_id =
+                oauth_state
+                    .target_user_id
+                    .ok_or_else(|| ApiError::OAuth2MissingTargetUser {
+                        operation,
+                        message: "OAuth2 bind state is missing user id".to_string(),
+                    })?;
             // Bind flow: verify that the currently authenticated user matches
             // the user who initiated the bind request. This prevents a malicious
             // actor from completing another user's OAuth2 bind by replaying the
             // state token.
-            if current_user_id != Some(&bind_user_id) {
-                return Err(ApiError::Authorization(
-                    "Cannot bind OAuth2 to another user's account".to_string(),
-                ));
+            if current_user_id != Some(&target_user_id) {
+                return Err(ApiError::OAuth2TargetUserMismatch {
+                    operation,
+                    message: "Cannot bind OAuth2 to another user's account".to_string(),
+                });
             }
 
             // Check if this provider account is already linked to a different user.
             // Silently reassigning would steal the linkage from the other user.
             if let Some(existing_user_id) = self
                 .oauth2_service
-                .find_user_by_provider_instance(provider, &user_info.provider_user_id)
+                .find_user_by_provider_instance(
+                    &provider_instance_name,
+                    &user_info.provider_user_id,
+                )
                 .await
-                .map_err(ApiError::from)?
+                .map_err(|error| {
+                    let api_error = ApiError::from(error);
+                    ApiError::OAuth2ProviderLookupFailed {
+                        operation,
+                        kind: api_error.classify(),
+                        message: api_error.message().to_string(),
+                    }
+                })?
             {
-                if existing_user_id != bind_user_id {
-                    return Err(ApiError::AlreadyExists(
-                        "This provider account is already linked to another user".to_string(),
-                    ));
+                if existing_user_id != target_user_id {
+                    return Err(ApiError::OAuth2ProviderAccountLinkedElsewhere {
+                        operation,
+                        message: "This provider account is already linked to another user"
+                            .to_string(),
+                    });
                 }
             }
 
             // Bind flow: associate provider with existing user
             self.oauth2_service
-                .upsert_user_provider(&bind_user_id, &user_info)
+                .upsert_user_provider(&target_user_id, &user_info)
                 .await
-                .map_err(ApiError::from)?;
+                .map_err(|error| {
+                    let api_error = ApiError::from(error);
+                    ApiError::OAuth2ProviderLinkFailed {
+                        operation,
+                        kind: api_error.classify(),
+                        message: api_error.message().to_string(),
+                    }
+                })?;
 
             return Ok(ExchangeCodeResult {
                 access_token: None,
@@ -601,18 +630,31 @@ impl OAuth2ApiImpl {
                 expires_in: 0,
                 user_info: None,
                 redirect_url: oauth_state.redirect_url,
-                is_bind: true,
+                operation,
                 registration_review_required: false,
                 registration_review_id: None,
+            });
+        }
+        if oauth_state.target_user_id.is_some() {
+            return Err(ApiError::OAuth2UnexpectedTargetUser {
+                operation,
+                message: "OAuth2 login state contains target user id".to_string(),
             });
         }
 
         // Login flow: find or create user
         let user_id = self
             .oauth2_service
-            .find_user_by_provider_instance(provider, &user_info.provider_user_id)
+            .find_user_by_provider_instance(&provider_instance_name, &user_info.provider_user_id)
             .await
-            .map_err(ApiError::from)?;
+            .map_err(|error| {
+                let api_error = ApiError::from(error);
+                ApiError::OAuth2ProviderLookupFailed {
+                    operation,
+                    kind: api_error.classify(),
+                    message: api_error.message().to_string(),
+                }
+            })?;
 
         let login = if let Some(user_id) = user_id {
             // User exists - generate tokens using OAuth2 login method
@@ -620,31 +662,51 @@ impl OAuth2ApiImpl {
             self.user_service
                 .login_oauth2_with_control(
                     &user_id,
-                    provider,
+                    &provider_instance_name,
                     &user_info.provider_user_id,
                     client_ip,
                     control,
                 )
                 .await
-                .map_err(ApiError::from)?
+                .map_err(|error| {
+                    let api_error = ApiError::from(error);
+                    ApiError::OAuth2LoginFailed {
+                        operation,
+                        kind: api_error.classify(),
+                        message: api_error.message().to_string(),
+                    }
+                })?
         } else {
             match self
                 .oauth2_service
-                .find_or_create_and_link(&self.user_service, provider, &user_info)
+                .find_or_create_and_link(&self.user_service, &provider_instance_name, &user_info)
                 .await
-                .map_err(ApiError::from)?
-            {
+                .map_err(|error| {
+                    let api_error = ApiError::from(error);
+                    ApiError::OAuth2ProviderLinkFailed {
+                        operation,
+                        kind: api_error.classify(),
+                        message: api_error.message().to_string(),
+                    }
+                })? {
                 OAuth2LinkResult::Linked { user_id, .. } => self
                     .user_service
                     .login_oauth2_with_control(
                         &user_id,
-                        provider,
+                        &provider_instance_name,
                         &user_info.provider_user_id,
                         client_ip,
                         control,
                     )
                     .await
-                    .map_err(ApiError::from)?,
+                    .map_err(|error| {
+                        let api_error = ApiError::from(error);
+                        ApiError::OAuth2LoginFailed {
+                            operation,
+                            kind: api_error.classify(),
+                            message: api_error.message().to_string(),
+                        }
+                    })?,
                 OAuth2LinkResult::PendingReview(pending) => {
                     return Ok(ExchangeCodeResult {
                         access_token: None,
@@ -652,12 +714,15 @@ impl OAuth2ApiImpl {
                         expires_in: 0,
                         user_info: None,
                         redirect_url: oauth_state.redirect_url,
-                        is_bind: false,
+                        operation,
                         registration_review_required: true,
                         registration_review_id: Some(
                             self.public_id_codec
                                 .encode_user_id(pending.request_id)
-                                .map_err(ApiError::InvalidInput)?,
+                                .map_err(|message| ApiError::OAuth2ResponseBuildFailed {
+                                    operation,
+                                    message,
+                                })?,
                         ),
                     });
                 }
@@ -667,7 +732,14 @@ impl OAuth2ApiImpl {
         let expires_in = self
             .user_service
             .access_token_duration_seconds()
-            .map_err(ApiError::from)?;
+            .map_err(|error| {
+                let api_error = ApiError::from(error);
+                ApiError::OAuth2LoginFailed {
+                    operation,
+                    kind: api_error.classify(),
+                    message: api_error.message().to_string(),
+                }
+            })?;
 
         match login {
             synctv_core::service::AuthenticatedLogin::Complete {
@@ -679,20 +751,25 @@ impl OAuth2ApiImpl {
                 access_token: Some(access_token),
                 refresh_token: Some(refresh_token),
                 expires_in,
-                user_info: Some(user_to_oauth2_user_info(
-                    &user,
-                    email.as_deref(),
-                    &self.public_id_codec,
-                )?),
+                user_info: Some(
+                    user_to_oauth2_user_info(&user, email.as_deref(), &self.public_id_codec)
+                        .map_err(|error| ApiError::OAuth2ResponseBuildFailed {
+                            operation,
+                            message: error.message().to_string(),
+                        })?,
+                ),
                 redirect_url: oauth_state.redirect_url,
-                is_bind: false,
+                operation,
                 registration_review_required: false,
                 registration_review_id: None,
             }),
             synctv_core::service::AuthenticatedLogin::MfaRequired { .. } => {
-                Err(ApiError::Internal(
-                    "OAuth2 must not start a two-factor authentication session".to_string(),
-                ))
+                Err(ApiError::OAuth2LoginFailed {
+                    operation,
+                    kind: super::ErrorKind::Internal,
+                    message: "OAuth2 must not start a two-factor authentication session"
+                        .to_string(),
+                })
             }
         }
     }
@@ -707,7 +784,6 @@ impl OAuth2ApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let result = self
             .exchange_authorization_code_with_control(
-                &req.provider,
                 &req.code,
                 &req.state,
                 current_user_id,
@@ -715,8 +791,14 @@ impl OAuth2ApiImpl {
                 control,
             )
             .await?;
+        let operation = result.operation;
 
-        Self::exchange_code_result_to_proto(result)
+        Self::exchange_code_result_to_proto(result).map_err(|error| {
+            ApiError::OAuth2ResponseBuildFailed {
+                operation,
+                message: error.message().to_string(),
+            }
+        })
     }
 
     /// List all available `OAuth2` provider instances
@@ -858,7 +940,7 @@ pub struct ExchangeCodeResult {
     pub expires_in: i64,
     pub user_info: Option<OAuth2UserInfo>,
     pub redirect_url: Option<String>,
-    pub is_bind: bool,
+    pub operation: OAuth2Operation,
     pub registration_review_required: bool,
     pub registration_review_id: Option<String>,
 }
@@ -986,7 +1068,7 @@ mod tests {
                 expires_in: 3600,
                 user_info: Some(oauth_user_info()),
                 redirect_url: Some("https://app.example.test/callback".to_string()),
-                is_bind: false,
+                operation: synctv_core::service::OAuth2Operation::Login,
                 registration_review_required: false,
                 registration_review_id: None,
             },
@@ -1011,7 +1093,7 @@ mod tests {
                 expires_in: 0,
                 user_info: None,
                 redirect_url: Some("https://app.example.test/bound".to_string()),
-                is_bind: true,
+                operation: synctv_core::service::OAuth2Operation::Bind,
                 registration_review_required: false,
                 registration_review_id: None,
             },
@@ -1020,7 +1102,10 @@ mod tests {
         assert!(response.access_token.is_none());
         assert!(response.refresh_token.is_none());
         assert!(response.user_info.is_none());
-        assert!(response.is_bind);
+        assert_eq!(
+            response.operation,
+            synctv_proto::client::OAuth2Operation::Oauth2OperationBind as i32
+        );
         Ok(())
     }
 
@@ -1033,7 +1118,7 @@ mod tests {
                 expires_in: 0,
                 user_info: None,
                 redirect_url: None,
-                is_bind: false,
+                operation: synctv_core::service::OAuth2Operation::Login,
                 registration_review_required: true,
                 registration_review_id: Some("review_1".to_string()),
             },
@@ -1055,7 +1140,7 @@ mod tests {
                 expires_in: 3600,
                 user_info: Some(oauth_user_info()),
                 redirect_url: None,
-                is_bind: false,
+                operation: synctv_core::service::OAuth2Operation::Login,
                 registration_review_required: false,
                 registration_review_id: None,
             })
@@ -1084,7 +1169,7 @@ mod tests {
 
         assert!(
             matches!(mapped, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
-            "missing bind users should still be treated as authentication failure, got: {mapped:?}"
+            "missing target users should still be treated as authentication failure, got: {mapped:?}"
         );
     }
 
@@ -1122,7 +1207,6 @@ mod tests {
     #[test]
     fn test_oauth2_request_validation_rejects_invalid_exchange_code() {
         let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
-            provider: "github".to_string(),
             code: "code with spaces".to_string(),
             state: "AbCdEfGh1234567890aBcDeFgHiJkLm".to_string(),
         })
@@ -1134,7 +1218,6 @@ mod tests {
     #[test]
     fn test_oauth2_request_validation_rejects_invalid_exchange_state() {
         let err = crate::impls::validate_proto_request(&ExchangeAuthorizationCodeRequest {
-            provider: "github".to_string(),
             code: "code.with.dots".to_string(),
             state: "short".to_string(),
         })

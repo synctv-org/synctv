@@ -21,8 +21,8 @@ use synctv_proto::client::{GetRoomMembersRequest, GetRoomMembersResponse};
         ),
         responses(
             (status = 200, description = "Room members", body = GetRoomMembersResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

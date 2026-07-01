@@ -153,81 +153,12 @@ async fn coordination_lock_error_short_circuits_room_creation_operation() {
 }
 
 #[test]
-fn test_known_setting_keys_are_valid_via_registry() {
-    use crate::models::room_settings::RoomSettingsRegistry;
-    let known_keys = [
-        ("chatEnabled", "true"),
-        (
-            "autoPlay",
-            r#"{"enabled":true,"mode":"sequential","delay":3}"#,
-        ),
-        ("allowGuestJoin", "true"),
-        ("maxMembers", "100"),
-    ];
-    for (key, val) in &known_keys {
-        assert!(
-            RoomSettingsRegistry::validate_setting(key, val).is_ok(),
-            "Expected key '{key}' with value '{val}' to be valid"
-        );
-    }
-}
-
-#[test]
-fn test_unknown_setting_key_returns_error_via_registry() {
-    use crate::models::room_settings::RoomSettingsRegistry;
-    let result = RoomSettingsRegistry::validate_setting("nonexistent_key", "true");
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_set_by_key_applies_value() {
-    let mut settings = RoomSettings::default();
-    assert!(settings.chat_enabled.0);
-    ok(
-        settings.set_by_key("chatEnabled", "false"),
-        "chatEnabled setting should update",
-    );
-    assert!(!settings.chat_enabled.0);
-}
-
-#[test]
-fn test_set_by_key_invalid_type_returns_error() {
-    let mut settings = RoomSettings::default();
-    let result = settings.set_by_key("chatEnabled", "not_a_bool");
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_set_by_key_unknown_key_returns_error() {
-    let mut settings = RoomSettings::default();
-    let result = settings.set_by_key("nonexistent", "true");
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_set_by_key_max_members() {
-    let mut settings = RoomSettings::default();
-    ok(
-        settings.set_by_key("maxMembers", "42"),
-        "maxMembers setting should update",
-    );
-    assert_eq!(settings.max_members.0, 42);
-}
-
-#[test]
-fn test_set_by_key_max_members_invalid_string() {
-    let mut settings = RoomSettings::default();
-    let result = settings.set_by_key("maxMembers", "not_a_number");
-    assert!(result.is_err());
-}
-
-#[test]
 fn test_settings_validate_permissions_guest_escalation_is_rejected() {
     let settings = RoomSettings {
         guest_added_permissions: GuestAddedPermissions(1 << 21),
         ..RoomSettings::default()
     };
-    let result = settings.validate_permissions();
+    let result = settings.validate();
     assert!(result.is_err());
     match err(result, "guest permission escalation should fail") {
         Error::InvalidInput(msg) => {
@@ -243,7 +174,7 @@ fn test_settings_validate_permissions_member_escalation_is_rejected() {
         member_added_permissions: MemberAddedPermissions(1 << 21),
         ..RoomSettings::default()
     };
-    let result = settings.validate_permissions();
+    let result = settings.validate();
     assert!(result.is_err());
     match err(result, "member permission escalation should fail") {
         Error::InvalidInput(msg) => {
@@ -293,7 +224,7 @@ fn test_settings_validate_permissions_within_limits_is_ok() {
         guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
         ..RoomSettings::default()
     };
-    assert!(settings.validate_permissions().is_ok());
+    assert!(settings.validate().is_ok());
 }
 
 #[test]
@@ -409,18 +340,10 @@ fn test_room_member_add_and_remove_permissions() {
     assert!(!effective.has(crate::models::RoomPermission::CHAT));
 }
 
-/// Replicates the `allow_room_creation` / `disable_create_room` guard logic
+/// Replicates the `room_creation.enabled` guard logic
 /// from `do_create_room` for unit testing without a database.
-fn check_room_creation_allowed(
-    disable_create_room: bool,
-    allow_room_creation: bool,
-) -> crate::Result<()> {
-    if disable_create_room {
-        return Err(Error::Authorization(
-            "Room creation is currently disabled".to_string(),
-        ));
-    }
-    if !allow_room_creation {
+fn check_room_creation_allowed(enabled: bool) -> crate::Result<()> {
+    if !enabled {
         return Err(Error::Authorization(
             "Room creation is currently disabled".to_string(),
         ));
@@ -429,11 +352,11 @@ fn check_room_creation_allowed(
 }
 
 #[test]
-fn test_room_creation_blocked_when_disable_create_room_is_true() {
-    let result = check_room_creation_allowed(true, true);
+fn test_room_creation_blocked_when_disabled() {
+    let result = check_room_creation_allowed(false);
     assert!(
         result.is_err(),
-        "Should reject when disable_create_room=true"
+        "should reject when room_creation.enabled=false"
     );
     match err(result, "disabled room creation should fail") {
         Error::Authorization(msg) => {
@@ -444,25 +367,6 @@ fn test_room_creation_blocked_when_disable_create_room_is_true() {
 }
 
 #[test]
-fn test_room_creation_blocked_when_allow_room_creation_is_false() {
-    let result = check_room_creation_allowed(false, false);
-    assert!(
-        result.is_err(),
-        "Should reject when allow_room_creation=false"
-    );
-    match err(result, "disallowed room creation should fail") {
-        Error::Authorization(msg) => {
-            assert!(msg.contains("disabled"), "got: {msg}");
-        }
-        other => std::panic::panic_any(format!("Expected Authorization, got: {other:?}")),
-    }
-}
-
-#[test]
-fn test_disable_create_room_takes_precedence_over_allow() {
-    let result = check_room_creation_allowed(true, true);
-    assert!(
-        result.is_err(),
-        "disable_create_room=true should take precedence over allow_room_creation=true"
-    );
+fn test_room_creation_allowed_when_enabled() {
+    assert!(check_room_creation_allowed(true).is_ok());
 }

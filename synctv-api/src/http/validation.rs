@@ -27,9 +27,7 @@ impl<T> std::ops::DerefMut for ProtoQuery<T> {
 }
 
 fn map_query_rejection(rejection: &QueryRejection) -> super::AppError {
-    let mut error = super::AppError::new(rejection.status(), rejection.body_text());
-    error.error_code = Some(crate::impls::error_codes::INVALID_ARGUMENT);
-    error
+    super::AppError::from(crate::impls::ApiError::InvalidInput(rejection.body_text()))
 }
 
 impl<S, T> FromRequestParts<S> for ProtoQuery<T>
@@ -84,12 +82,23 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["status"], 400);
-        assert_eq!(json["code"], crate::impls::error_codes::INVALID_ARGUMENT);
+        assert_eq!(json["code"], tonic::Code::InvalidArgument as i32);
         assert!(matches!(
-            json["error"].as_str(),
+            json["message"].as_str(),
             Some(message) if message.contains("page")
         ));
+        let error_info = json["details"]
+            .as_array()
+            .and_then(|details| {
+                details.iter().find(|detail| {
+                    detail["@type"].as_str() == Some("type.googleapis.com/google.rpc.ErrorInfo")
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("missing ErrorInfo detail: {json}"))?;
+        assert_eq!(
+            error_info["metadata"]["errorCode"],
+            crate::impls::error_codes::INVALID_ARGUMENT.to_string()
+        );
         Ok(())
     }
 

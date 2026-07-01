@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT rjr.id AS \"id: ReviewRequestId\",\n                   rjr.room_id AS \"room_id: RoomId\",\n                   COALESCE(r.name, '') AS \"room_name!\",\n                   rjr.user_id AS \"user_id: UserId\",\n                   COALESCE(u.username, '') AS \"username!\",\n                   COALESCE(rjr.requested_role, 0)::int4 AS \"requested_role!\",\n                   rjr.status AS \"status: ReviewStatus\",\n                   rjr.requested_at,\n                   rjr.reviewed_at,\n                   rjr.reviewed_by AS \"reviewed_by: UserId\",\n                   rjr.rejection_reason\n            FROM room_join_requests rjr\n            LEFT JOIN rooms r ON r.id = rjr.room_id\n            LEFT JOIN users u ON u.id = rjr.user_id\n            WHERE rjr.id = $1\n            ",
+  "query": "\n            SELECT rjr.id AS \"id!: ReviewRequestId\",\n                   rjr.room_id AS \"room_id!: RoomId\",\n                   COALESCE(r.name, '') AS \"room_name!\",\n                   rjr.user_id AS \"user_id!: UserId\",\n                   COALESCE(u.username, '') AS \"username!\",\n                   COALESCE(rjr.requested_role, 0)::int4 AS \"requested_role!\",\n                   rjr.status AS \"status!: ReviewStatus\",\n                   rjr.requested_at AS \"requested_at!\",\n                   rjr.reviewed_at AS \"reviewed_at?\",\n                   rjr.reviewed_by AS \"reviewed_by?: UserId\",\n                   rjr.rejection_reason AS \"rejection_reason?\"\n            FROM room_join_requests rjr\n            LEFT JOIN rooms r ON r.id = rjr.room_id\n            LEFT JOIN users u ON u.id = rjr.user_id\n            WHERE rjr.id = $1 AND rjr.room_id = $2\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id: ReviewRequestId",
+        "name": "id!: ReviewRequestId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "room_id: RoomId",
+        "name": "room_id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -33,7 +33,7 @@
       },
       {
         "ordinal": 3,
-        "name": "user_id: UserId",
+        "name": "user_id!: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -56,7 +56,7 @@
       },
       {
         "ordinal": 6,
-        "name": "status: ReviewStatus",
+        "name": "status!: ReviewStatus",
         "type_info": "Int2",
         "origin": {
           "Table": {
@@ -67,7 +67,7 @@
       },
       {
         "ordinal": 7,
-        "name": "requested_at",
+        "name": "requested_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -78,7 +78,7 @@
       },
       {
         "ordinal": 8,
-        "name": "reviewed_at",
+        "name": "reviewed_at?",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -89,7 +89,7 @@
       },
       {
         "ordinal": 9,
-        "name": "reviewed_by: UserId",
+        "name": "reviewed_by?: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -100,7 +100,7 @@
       },
       {
         "ordinal": 10,
-        "name": "rejection_reason",
+        "name": "rejection_reason?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -112,22 +112,23 @@
     ],
     "parameters": {
       "Left": [
+        "Int8",
         "Int8"
       ]
     },
     "nullable": [
-      false,
-      false,
+      true,
+      true,
       null,
-      false,
+      true,
       null,
       null,
-      false,
-      false,
+      true,
+      true,
       true,
       true,
       true
     ]
   },
-  "hash": "9025a26b72c46f49610fc6389911f237b88798b8225da1b0ede8ff72a6be1107"
+  "hash": "bf08d50e1e0143bed9ff59f64837fdcd44f5b75069271a29c4804ad2df4fea9e"
 }

@@ -346,10 +346,10 @@ pub async fn watch_room_members(
         ),
         responses(
             (status = 200, description = "SSE stream of chat resource events"),
-            (status = 400, description = "Invalid request or event cursor", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Realtime manager unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request or event cursor", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Realtime manager unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -391,10 +391,10 @@ pub async fn watch_chat_events(
         ),
         responses(
             (status = 200, description = "SSE stream of chat pin resource events"),
-            (status = 400, description = "Invalid request or event cursor", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Realtime manager unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request or event cursor", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Realtime manager unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

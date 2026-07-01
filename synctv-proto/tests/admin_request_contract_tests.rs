@@ -2,9 +2,9 @@ use synctv_proto::admin::{
     AddAdminRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest, BanUserRequest,
     BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest, BatchDeleteUsersRequest,
     DeleteRoomRequest, DeleteUserRequest, GetRoomMembersRequest, GetRoomRequest,
-    GetRoomSettingsRequest, GetSettingsGroupRequest, GetUserRequest, GetUserRoomsRequest,
-    KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListRoomLabelsRequest,
-    ListRoomsRequest, ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
+    GetRoomSettingsRequest, GetUserRequest, GetUserRoomsRequest, KickStreamRequest,
+    ListActiveStreamsRequest, ListAdminsRequest, ListRoomLabelsRequest, ListRoomsRequest,
+    ListUsersRequest, RejectRoomCreationReviewRequest, RemoveAdminRequest,
     ResetRoomSettingsRequest, RoomPathRequest, UnbanRoomRequest, UnbanUserRequest,
     UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
     UpdateUserRoleRequest, UpsertRoomLabelRequest, UserPathRequest,
@@ -202,7 +202,7 @@ fn test_admin_get_room_settings_request_rejects_invalid_room_id() {
 fn test_admin_update_room_settings_request_rejects_invalid_room_id() {
     let request = UpdateRoomSettingsRequest {
         room_id: "bad-room".to_string(),
-        settings: None,
+        ..Default::default()
     };
 
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
@@ -396,17 +396,6 @@ fn test_admin_get_room_members_request_rejects_too_long_search() {
     let error = synctv_proto::validate(&request).expect_err("request should be invalid");
     let message = error.to_string();
     assert!(message.contains("search"), "{message}");
-}
-
-#[test]
-fn test_admin_settings_group_request_rejects_invalid_group_name() {
-    let request = GetSettingsGroupRequest {
-        group: "bad group".to_string(),
-    };
-
-    let error = synctv_proto::validate(&request).expect_err("request should be invalid");
-    let message = error.to_string();
-    assert!(message.contains("group"), "{message}");
 }
 
 #[test]

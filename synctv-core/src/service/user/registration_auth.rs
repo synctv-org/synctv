@@ -156,7 +156,7 @@ impl UserService {
             }
         }
 
-        let Some(registry) = self.settings_registry.as_ref() else {
+        let Some(registry) = self.runtime_settings_store.as_ref() else {
             return Ok(RegistrationPolicy {
                 enabled: false,
                 need_review: false,
@@ -165,20 +165,20 @@ impl UserService {
 
         Ok(match mode {
             RegistrationMode::Password => RegistrationPolicy {
-                enabled: registry.enable_password_signup.get()?,
-                need_review: registry.password_signup_need_review.get()?,
+                enabled: registry.user.enable_password_signup.get()?,
+                need_review: registry.user.password_signup_need_review.get()?,
             },
             RegistrationMode::Email => RegistrationPolicy {
-                enabled: registry.enable_email_signup.get()?,
-                need_review: registry.email_signup_need_review.get()?,
+                enabled: registry.user.enable_email_signup.get()?,
+                need_review: registry.user.email_signup_need_review.get()?,
             },
             RegistrationMode::OAuth2 => RegistrationPolicy {
                 enabled: false,
                 need_review: false,
             },
             RegistrationMode::WebAuthn => RegistrationPolicy {
-                enabled: registry.enable_webauthn_signup.get()?,
-                need_review: registry.webauthn_signup_need_review.get()?,
+                enabled: registry.user.enable_webauthn_signup.get()?,
+                need_review: registry.user.webauthn_signup_need_review.get()?,
             },
         })
     }

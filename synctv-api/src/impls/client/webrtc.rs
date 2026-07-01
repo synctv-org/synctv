@@ -66,8 +66,8 @@ impl ClientApiImpl {
             });
         }
 
-        if let Some(registry) = &self.settings_registry {
-            let ice_servers = registry.external_ice_servers.get()?;
+        if let Some(registry) = &self.runtime_settings_store {
+            let ice_servers = registry.webrtc.external_ice_servers.get()?;
             for server in &ice_servers.0 {
                 servers.push(IceServer {
                     urls: server.urls.clone(),

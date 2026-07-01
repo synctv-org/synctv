@@ -86,7 +86,7 @@ service UserService {
 service RoomService {
   // Room Settings Management
   rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
-  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (UpdateRoomSettingsResponse);
+  rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
   rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (ResetRoomSettingsResponse);
   rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (TransferRoomOwnershipResponse);
   rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
@@ -296,21 +296,6 @@ message RoomSettings {
   uint64 guest_removed_permissions = 12;
 }
 
-message RoomSettingsPatch {
-  optional bool allow_guest_join = 1;
-  optional uint64 max_members = 2;
-  optional bool require_approval = 3;
-  optional bool allow_auto_join = 4;
-  optional bool chat_enabled = 5;
-  AutoPlaySettingsPatch auto_play = 6;
-  optional uint64 admin_added_permissions = 7;
-  optional uint64 admin_removed_permissions = 8;
-  optional uint64 member_added_permissions = 9;
-  optional uint64 member_removed_permissions = 10;
-  optional uint64 guest_added_permissions = 11;
-  optional uint64 guest_removed_permissions = 12;
-}
-
 message AlistTarget {
   string relative_path = 1;
 }
@@ -445,6 +430,7 @@ message Playlist {
   string provider_instance_name = 14; // Provider instance for dynamic playlists
   string description = 15;
   ResourceCover cover = 16;
+  string creator_id = 17;
 }
 
 message ResourceCover {
@@ -1219,12 +1205,20 @@ message DeleteRoomResponse {
 }
 
 message UpdateRoomSettingsRequest {
-  RoomSettingsPatch settings = 1 [(buf.validate.field).required = true];
+  optional bool allow_guest_join = 1;
+  optional uint64 max_members = 2;
+  optional bool require_approval = 3;
+  optional bool allow_auto_join = 4;
+  optional bool chat_enabled = 5;
+  AutoPlaySettingsPatch auto_play = 6;
+  optional uint64 admin_added_permissions = 7;
+  optional uint64 admin_removed_permissions = 8;
+  optional uint64 member_added_permissions = 9;
+  optional uint64 member_removed_permissions = 10;
+  optional uint64 guest_added_permissions = 11;
+  optional uint64 guest_removed_permissions = 12;
 }
 
-message UpdateRoomSettingsResponse {
-  Room room = 1;
-}
 
 // Get room settings
 message GetRoomSettingsRequest {}
@@ -2400,15 +2394,15 @@ message UnobserveResource {
 
 message ObservePlaybackState {
   // Current room playback control state: playing media, playlist, target, position and speed.
-  // Unset starts from the current state and live changes.
-  optional int64 after_event_sequence = 1;
+  // Client's latest known playback-state event sequence.
+  // When it differs from the server's latest sequence, the server sends the current state snapshot
+  // with the latest cursor and then continues with live changes.
+  optional int64 event_sequence = 1;
 }
 
 message ObservePlayback {
   // Player-ready aggregate for the current playback source.
   PlaybackClientProfile playback_client_profile = 4;
-  // Unset starts from the current snapshot and live changes.
-  optional int64 after_event_sequence = 5;
 }
 
 message ObserveRoomSettings {
@@ -4011,13 +4005,12 @@ message RoomWithStats {
 message GetPublicSettingsRequest {}
 
 message GetPublicSettingsResponse {
-  bool allow_room_creation = 2;
+  bool room_creation_enabled = 2;
   int64 max_rooms_per_user = 3;
-  int64 max_members_per_room = 4;
+  int64 default_max_members = 4;
 
   // Room settings
-  bool disable_create_room = 5;
-  bool create_room_need_review = 6;
+  bool room_creation_approval_required = 6;
   string room_password_policy = 8;
 
   // User settings
@@ -4302,13 +4295,6 @@ message MarkAllAsReadRequest {
 }
 
 message MarkAllAsReadResponse {}
-
-message ApiErrorResponse {
-  string error = 1;
-  uint32 status = 2;
-  optional int32 code = 3;
-  optional string request_id = 4;
-}
 
 message DeleteNotificationRequest {
   int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];

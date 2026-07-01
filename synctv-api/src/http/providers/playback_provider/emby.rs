@@ -75,8 +75,8 @@ impl PlaybackProviderHttpResponse for EmbySubtitleResponse {
         ),
         responses(
             (status = 200, description = "Emby media stream"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -114,8 +114,8 @@ pub fn get_emby_media_stream(
         ),
         responses(
             (status = 200, description = "Emby media stream metadata"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -194,8 +194,8 @@ async fn emby_media_stream(
         ),
         responses(
             (status = 200, description = "Emby HLS manifest"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -253,8 +253,8 @@ pub async fn get_emby_hls_manifest(
         ),
         responses(
             (status = 200, description = "Emby HLS segment"),
-            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -291,8 +291,8 @@ pub fn get_emby_hls_segment(
         ),
         responses(
             (status = 200, description = "Emby HLS segment metadata"),
-            (status = 400, description = "Invalid targetUrl", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid targetUrl", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -370,8 +370,8 @@ async fn emby_hls_segment(
         ),
         responses(
             (status = 200, description = "Emby subtitle"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]

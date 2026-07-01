@@ -126,7 +126,7 @@ pub struct LivePlaybackDeps<'a> {
         Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
     pub livestream_config: &'a synctv_core::config::LivestreamConfig,
-    pub settings_registry: Option<&'a synctv_core::service::SettingsRegistry>,
+    pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
 /// Macro to implement HasLivePlaybackFields for provider types
@@ -149,8 +149,10 @@ macro_rules! impl_has_live_playback_fields {
             fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig {
                 self.livestream_config
             }
-            fn settings_registry(&self) -> Option<&'a synctv_core::service::SettingsRegistry> {
-                self.settings_registry
+            fn runtime_settings_store(
+                &self,
+            ) -> Option<&'a synctv_core::service::RuntimeSettingsStore> {
+                self.runtime_settings_store
             }
         }
     };
@@ -163,7 +165,7 @@ pub trait HasLivePlaybackFields<'a> {
     ) -> Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>;
     fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime;
     fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig;
-    fn settings_registry(&self) -> Option<&'a synctv_core::service::SettingsRegistry>;
+    fn runtime_settings_store(&self) -> Option<&'a synctv_core::service::RuntimeSettingsStore>;
 
     fn live_deps(&self) -> LivePlaybackDeps<'a> {
         LivePlaybackDeps {
@@ -171,7 +173,7 @@ pub trait HasLivePlaybackFields<'a> {
             live_streaming_infrastructure: self.live_streaming_infrastructure(),
             connection_runtime: self.connection_runtime(),
             livestream_config: self.livestream_config(),
-            settings_registry: self.settings_registry(),
+            runtime_settings_store: self.runtime_settings_store(),
         }
     }
 }
@@ -341,7 +343,7 @@ pub async fn get_live_hls_playlist_chunks(
     let infrastructure = deps.live_streaming_infrastructure.ok_or_else(|| {
         ApiError::ServiceUnavailable("Live streaming service is unavailable".to_string())
     })?;
-    let segment_disguised_as_png = live_segments_disguised_as_png(deps.settings_registry)?;
+    let segment_disguised_as_png = live_segments_disguised_as_png(deps.runtime_settings_store)?;
     let playlist = synctv_livestream::HlsStreamingApi::generate_playlist_with_pull(
         infrastructure,
         &room_id_key,
@@ -658,12 +660,12 @@ pub async fn playback_transport_action_to_chunk_stream(
 }
 
 fn live_segments_disguised_as_png(
-    settings_registry: Option<&synctv_core::service::SettingsRegistry>,
+    runtime_settings_store: Option<&synctv_core::service::RuntimeSettingsStore>,
 ) -> Result<bool, ApiError> {
-    let Some(registry) = settings_registry else {
+    let Some(registry) = runtime_settings_store else {
         return Ok(false);
     };
-    registry.ts_disguised_as_png.get().map_err(|error| {
+    registry.rtmp.ts_disguised_as_png.get().map_err(|error| {
         tracing::error!(
             error = %error,
             "Failed to read rtmp.ts_disguised_as_png setting"

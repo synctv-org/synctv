@@ -47,9 +47,9 @@ fn get_notification_api(
         params(synctv_proto::client::ListNotificationsRequest),
         responses(
             (status = 200, description = "Notifications list", body = ListNotificationsResponse),
-            (status = 400, description = "Invalid notification filter", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid notification filter", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -92,9 +92,9 @@ pub async fn list_notifications(
         ),
         responses(
             (status = 200, description = "Notification details", body = GetNotificationResponse),
-            (status = 400, description = "Invalid notification ID", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Notification not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid notification ID", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Notification not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -135,9 +135,9 @@ pub async fn get_notification(
         request_body = MarkAsReadRequest,
         responses(
             (status = 204, description = "Notifications marked as read"),
-            (status = 400, description = "Invalid notification IDs", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid notification IDs", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -182,9 +182,9 @@ pub async fn mark_as_read(
         request_body = Option<MarkAllAsReadRequest>,
         responses(
             (status = 204, description = "Notifications marked as read"),
-            (status = 400, description = "Invalid timestamp", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid timestamp", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -233,9 +233,9 @@ pub async fn mark_all_as_read(
         ),
         responses(
             (status = 204, description = "Notification deleted"),
-            (status = 400, description = "Invalid notification ID", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Notification not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid notification ID", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Notification not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -279,8 +279,8 @@ pub async fn delete_notification(
         tag = "Notification",
         responses(
             (status = 204, description = "All read notifications deleted"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Notification service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Notification service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

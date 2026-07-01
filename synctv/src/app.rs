@@ -517,13 +517,13 @@ struct LocalActivePlaybackRoomSource {
 #[async_trait::async_trait]
 impl synctv_core::service::ActivePlaybackRoomSource for LocalActivePlaybackRoomSource {
     async fn active_room_ids(&self) -> synctv_core::Result<Vec<synctv_core::models::RoomId>> {
-        // Playback lifecycle ownership is local process state. A room is active
+        // Playback lifecycle ownership is local process state. A room_creation is active
         // for these workers when this process has at least one realtime
-        // connection for it. Presence, hot-room indexes, and cluster-wide room
+        // connection for it. Presence, hot-room_creation indexes, and cluster-wide room_creation
         // stats are list/analytics inputs; this adapter is the scheduler
         // boundary for duration probing, auto-advance, and live playback
         // resource lifecycle work. Storage locks and playback-state version
-        // writes converge duplicate attempts when the same room is active on
+        // writes converge duplicate attempts when the same room_creation is active on
         // several nodes.
         //
         // Maintenance contract:
@@ -554,7 +554,7 @@ fn start_room_notification_bridge(
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                warn!(skipped, "room notification bridge lagged behind realtime events");
+                                warn!(skipped, "room creation notification bridge lagged behind realtime events");
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                         }
@@ -676,10 +676,11 @@ impl Application {
                 }
             };
         if options.allow_password_registration {
+            let mut settings = core.services.runtime_settings_store.runtime_settings()?;
+            settings.user.enable_password_signup = true;
             core.services
-                .settings_registry
-                .enable_password_signup
-                .set(true)
+                .runtime_settings_store
+                .persist_runtime_settings(&settings)
                 .await?;
         }
 
@@ -1163,7 +1164,7 @@ impl Application {
             cleanup_config.clone(),
             leader.leader_runtime.clone(),
             synctv_core::service::cleanup::CleanupServiceOptions {
-                settings_registry: Some(core.services.settings_registry.clone()),
+                runtime_settings_store: Some(core.services.runtime_settings_store.clone()),
                 file_storage_service: Some(file_storage_service.clone()),
             },
         );
@@ -1178,7 +1179,7 @@ impl Application {
             leader.leader_runtime.clone(),
             synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
                 config: cleanup_config.clone(),
-                settings_registry: Some(core.services.settings_registry.clone()),
+                runtime_settings_store: Some(core.services.runtime_settings_store.clone()),
                 file_storage_service: Some(file_storage_service.clone()),
             },
         );
@@ -1190,14 +1191,14 @@ impl Application {
 
         if runtime_plan.cluster_runtime() {
             let pool = infra.pool.clone();
-            let settings_registry = core.services.settings_registry.clone();
+            let runtime_settings_store = core.services.runtime_settings_store.clone();
             let leader_runtime = leader.leader_runtime.clone();
             let deferred_leader_runtime = leader_runtime.clone();
             let deferred_cleanup_config = cleanup_config;
             let cancel = shutdown.register_token("cluster_leader_startup_work");
             let task_factory: AsyncOnceTaskFactory = Arc::new(move || {
                 let pool = pool.clone();
-                let settings_registry = settings_registry.clone();
+                let runtime_settings_store = runtime_settings_store.clone();
                 let cleanup_config = deferred_cleanup_config.clone();
                 let leader_runtime = deferred_leader_runtime.clone();
                 let file_storage_service = file_storage_service.clone();
@@ -1211,7 +1212,7 @@ impl Application {
                         cleanup_config.clone(),
                         leader_runtime.clone(),
                         synctv_core::service::cleanup::CleanupServiceOptions {
-                            settings_registry: Some(settings_registry.clone()),
+                            runtime_settings_store: Some(runtime_settings_store.clone()),
                             file_storage_service: Some(file_storage_service.clone()),
                         },
                     );
@@ -1237,7 +1238,7 @@ impl Application {
                             leader_runtime,
                             synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
                                 config: cleanup_config.clone(),
-                                settings_registry: Some(settings_registry),
+                                runtime_settings_store: Some(runtime_settings_store),
                                 file_storage_service: Some(file_storage_service),
                             },
                         );
@@ -1266,12 +1267,12 @@ impl Application {
     ) {
         let cancel = shutdown.register_token("playback_background_tasks");
         // Playback background work starts after cluster realtime is initialized
-        // because active rooms come from local room connections. These workers
+        // because active rooms come from local room_creation connections. These workers
         // run on every node: any replica can be the process currently serving a
-        // room. Database claims, SKIP LOCKED, and playback-state version writes
-        // serialize the actual work when several nodes host the same room.
+        // room_creation. Database claims, SKIP LOCKED, and playback-state version writes
+        // serialize the actual work when several nodes host the same room_creation.
         // Leader election remains for global singleton jobs, while presence and
-        // hot-room scans remain read models for lists, admin views, and metrics.
+        // hot-room_creation scans remain read models for lists, admin views, and metrics.
         let active_room_source = Arc::new(LocalActivePlaybackRoomSource {
             connection_runtime: cluster.realtime_connection_service.clone(),
         });
@@ -1504,7 +1505,7 @@ impl Application {
             );
         }
 
-        // WebRTC (STUN server)
+        // WebRTC (STUN servers)
         let webrtc_components = init_webrtc(&infra.config).await;
 
         // Media providers
@@ -1557,7 +1558,7 @@ impl Application {
             oauth2_service: core.services.oauth2_service.clone(),
             passkey_service: core.services.passkey_service.clone(),
             settings_service: core.services.settings_service.clone(),
-            settings_registry: core.services.settings_registry.clone(),
+            runtime_settings_store: core.services.runtime_settings_store.clone(),
             email_service: core.services.email_service.clone(),
             email_token_service: core.services.email_token_service.clone(),
             ws_ticket_service: core.services.ws_ticket_service.clone(),

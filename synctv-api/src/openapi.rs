@@ -17,6 +17,14 @@ use crate::http::{
 };
 use synctv_proto::client;
 
+#[derive(utoipa::ToSchema)]
+#[schema(rename_all = "camelCase")]
+pub struct GoogleRpcStatusSchema {
+    pub code: i32,
+    pub message: String,
+    pub details: Vec<serde_json::Value>,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -233,7 +241,6 @@ use synctv_proto::client;
         admin::update_content_report_status,
         admin::get_settings,
         admin::set_settings,
-        admin::get_settings_group,
         admin::send_test_email,
         admin::list_users,
         admin::create_user,
@@ -279,7 +286,7 @@ use synctv_proto::client;
     ),
     components(
         schemas(
-            client::ApiErrorResponse,
+            GoogleRpcStatusSchema,
             client::HealthResponse,
             client::HealthDetails,
             client::MemoryHealth,
@@ -377,7 +384,7 @@ use synctv_proto::client;
             client::GetPlaybackResponse,
             client::GetRoomSettingsResponse,
             client::UpdateRoomSettingsRequest,
-            client::UpdateRoomSettingsResponse,
+            client::Room,
             client::ListPlaylistsResponse,
             client::CreatePlaylistRequest,
             client::CreatePlaylistResponse,
@@ -504,10 +511,8 @@ use synctv_proto::client;
             synctv_proto::client::KickRoomStreamRequest,
             synctv_proto::client::KickRoomStreamResponse,
             synctv_proto::admin::GetSystemStatsResponse,
-            synctv_proto::admin::GetSettingsResponse,
-            synctv_proto::admin::GetSettingsGroupResponse,
+            synctv_proto::admin::RuntimeSettings,
             synctv_proto::admin::UpdateSettingsRequest,
-            synctv_proto::admin::UpdateSettingsResponse,
             synctv_proto::admin::SendTestEmailRequest,
             synctv_proto::admin::SendTestEmailResponse,
             synctv_proto::admin::UserRegistrationReview,
@@ -585,7 +590,6 @@ use synctv_proto::client;
             synctv_proto::admin::UnbanRoomResponse,
             synctv_proto::admin::GetRoomSettingsResponse,
             synctv_proto::admin::UpdateRoomSettingsRequest,
-            synctv_proto::admin::UpdateRoomSettingsResponse,
             synctv_proto::admin::ResetRoomSettingsResponse,
             synctv_proto::admin::BatchBanRoomsRequest,
             synctv_proto::admin::BatchBanRoomsResponse,
@@ -608,9 +612,8 @@ use synctv_proto::client;
             synctv_proto::admin::AddAdminResponse,
             synctv_proto::admin::RemoveAdminResponse,
             synctv_proto::admin::AdminUser,
-            synctv_proto::admin::AdminRoom,
-            synctv_proto::providers::common::ProviderInstance,
-            synctv_proto::admin::SettingsGroup
+            synctv_proto::admin::Room,
+            synctv_proto::providers::common::ProviderInstance
         )
     ),
     modifiers(&SecurityAddon),

@@ -21,7 +21,7 @@ impl RoomService for ClientServiceImpl {
     async fn update_room_settings(
         &self,
         request: Request<UpdateRoomSettingsRequest>,
-    ) -> Result<Response<UpdateRoomSettingsResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         settings::update_room_settings(self, request).await
     }
 

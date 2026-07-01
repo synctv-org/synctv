@@ -5,7 +5,7 @@ use super::{
     validate_oauth2_redirect_url, validate_required_oauth2_field,
 };
 use crate::oauth2::{OAuth2Authorization, OAuth2UserInfo, Provider};
-use crate::service::{OAuth2BasicProviderConfig, OAuth2ProviderPrivateConfig};
+use crate::service::{OAuth2GithubProviderConfig, OAuth2ProviderPrivateConfig};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
@@ -281,7 +281,7 @@ pub fn github_factory_from_private_config(
 }
 
 fn github_factory_from_basic_config(
-    config: &OAuth2BasicProviderConfig,
+    config: &OAuth2GithubProviderConfig,
     ssrf_guard: &synctv_common::ssrf::SsrfGuard,
 ) -> Result<Box<dyn Provider>, Error> {
     validate_required_oauth2_field("GitHub", "client_id", &config.client_id)?;
@@ -305,7 +305,7 @@ mod tests {
         client_secret: &str,
         redirect_url: &str,
     ) -> OAuth2ProviderPrivateConfig {
-        OAuth2ProviderPrivateConfig::GitHub(OAuth2BasicProviderConfig {
+        OAuth2ProviderPrivateConfig::GitHub(OAuth2GithubProviderConfig {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
             redirect_url: redirect_url.to_string(),

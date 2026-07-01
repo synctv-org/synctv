@@ -87,7 +87,10 @@ pub use playlists::{
 pub(crate) use query::build_get_playback_request;
 #[cfg(test)]
 pub(crate) use query::watch_after_event_sequence;
-pub use query::{GetPlaybackQuery, WatchPlaybackQuery, WatchPlaylistItemsQuery, WatchQuery};
+pub use query::{
+    GetPlaybackQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, WatchPlaylistItemsQuery,
+    WatchQuery,
+};
 #[cfg(feature = "openapi")]
 pub(crate) use report::{
     __path_get_room_content_report, __path_list_room_content_reports, __path_report_content,

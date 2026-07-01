@@ -250,7 +250,6 @@ pub enum AuditAction {
     TokenFamilyRevoked,
     // Settings access audit (read operations)
     SettingsViewed,
-    SettingsGroupViewed,
     ChatMessageDeleted,
     ContentReportStatusUpdated,
 }
@@ -298,7 +297,6 @@ impl AuditAction {
             Self::TokenFamilyRevoked => "token_family_revoked",
             // Settings access audit (read operations)
             Self::SettingsViewed => "settings_viewed",
-            Self::SettingsGroupViewed => "settings_group_viewed",
             Self::ChatMessageDeleted => "chat_message_deleted",
             Self::ContentReportStatusUpdated => "content_report_status_updated",
         }
@@ -344,7 +342,6 @@ impl AuditAction {
             Self::TokenRefreshed => 35,
             Self::TokenFamilyRevoked => 36,
             Self::SettingsViewed => 37,
-            Self::SettingsGroupViewed => 38,
             Self::ChatMessageDeleted => 39,
             Self::ContentReportStatusUpdated => 40,
         }
@@ -399,7 +396,6 @@ impl TryFrom<i16> for AuditAction {
             35 => Ok(Self::TokenRefreshed),
             36 => Ok(Self::TokenFamilyRevoked),
             37 => Ok(Self::SettingsViewed),
-            38 => Ok(Self::SettingsGroupViewed),
             39 => Ok(Self::ChatMessageDeleted),
             40 => Ok(Self::ContentReportStatusUpdated),
             other => Err(format!("Unknown audit action code: {other}")),
@@ -449,7 +445,6 @@ impl FromStr for AuditAction {
             "token_refreshed" => Ok(Self::TokenRefreshed),
             "token_family_revoked" => Ok(Self::TokenFamilyRevoked),
             "settings_viewed" => Ok(Self::SettingsViewed),
-            "settings_group_viewed" => Ok(Self::SettingsGroupViewed),
             "chat_message_deleted" => Ok(Self::ChatMessageDeleted),
             "content_report_status_updated" => Ok(Self::ContentReportStatusUpdated),
             other => Err(format!("Unknown audit action: {other}")),

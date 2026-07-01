@@ -517,11 +517,11 @@ impl ReviewRepository {
         let row = sqlx::query_as!(
             RoomCreationReviewRow,
             r#"
-            SELECT rcr.id AS "id: RoomId",
-                   rcr.requested_by AS "requested_by: UserId",
+            SELECT rcr.id AS "id!: RoomId",
+                   rcr.requested_by AS "requested_by!: UserId",
                    COALESCE(u.username, '') AS "requested_by_username!",
-                   rcr.name,
-                   rcr.description,
+                   rcr.name AS "name!",
+                   rcr.description AS "description!",
                    rc.id AS "category_id: RoomCategoryId",
                    rc.key AS "category_key?",
                    rc.name AS "category_name?",
@@ -530,11 +530,11 @@ impl ReviewRepository {
                    rc.is_enabled AS "category_is_enabled?",
                    rc.created_at AS "category_created_at?",
                    rc.updated_at AS "category_updated_at?",
-                   rcr.status AS "status: ReviewStatus",
-                   rcr.requested_at,
-                   rcr.reviewed_at,
-                   rcr.reviewed_by AS "reviewed_by: UserId",
-                   rcr.rejection_reason
+                   rcr.status AS "status!: ReviewStatus",
+                   rcr.requested_at AS "requested_at!",
+                   rcr.reviewed_at AS "reviewed_at?",
+                   rcr.reviewed_by AS "reviewed_by?: UserId",
+                   rcr.rejection_reason AS "rejection_reason?"
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
             LEFT JOIN room_categories rc ON rc.id = rcr.category_id
@@ -584,11 +584,11 @@ impl ReviewRepository {
         let rows = sqlx::query_as!(
             RoomCreationReviewRow,
             r#"
-            SELECT rcr.id AS "id: RoomId",
-                   rcr.requested_by AS "requested_by: UserId",
+            SELECT rcr.id AS "id!: RoomId",
+                   rcr.requested_by AS "requested_by!: UserId",
                    COALESCE(u.username, '') AS "requested_by_username!",
-                   rcr.name,
-                   rcr.description,
+                   rcr.name AS "name!",
+                   rcr.description AS "description!",
                    rc.id AS "category_id: RoomCategoryId",
                    rc.key AS "category_key?",
                    rc.name AS "category_name?",
@@ -597,11 +597,11 @@ impl ReviewRepository {
                    rc.is_enabled AS "category_is_enabled?",
                    rc.created_at AS "category_created_at?",
                    rc.updated_at AS "category_updated_at?",
-                   rcr.status AS "status: ReviewStatus",
-                   rcr.requested_at,
-                   rcr.reviewed_at,
-                   rcr.reviewed_by AS "reviewed_by: UserId",
-                   rcr.rejection_reason
+                   rcr.status AS "status!: ReviewStatus",
+                   rcr.requested_at AS "requested_at!",
+                   rcr.reviewed_at AS "reviewed_at?",
+                   rcr.reviewed_by AS "reviewed_by?: UserId",
+                   rcr.rejection_reason AS "rejection_reason?"
             FROM room_creation_requests rcr
             LEFT JOIN users u ON u.id = rcr.requested_by
             LEFT JOIN room_categories rc ON rc.id = rcr.category_id
@@ -641,17 +641,17 @@ impl ReviewRepository {
         sqlx::query_as!(
             RoomJoinReviewRecord,
             r#"
-            SELECT rjr.id AS "id: ReviewRequestId",
-                   rjr.room_id AS "room_id: RoomId",
+            SELECT rjr.id AS "id!: ReviewRequestId",
+                   rjr.room_id AS "room_id!: RoomId",
                    COALESCE(r.name, '') AS "room_name!",
-                   rjr.user_id AS "user_id: UserId",
+                   rjr.user_id AS "user_id!: UserId",
                    COALESCE(u.username, '') AS "username!",
                    COALESCE(rjr.requested_role, 0)::int4 AS "requested_role!",
-                   rjr.status AS "status: ReviewStatus",
-                   rjr.requested_at,
-                   rjr.reviewed_at,
-                   rjr.reviewed_by AS "reviewed_by: UserId",
-                   rjr.rejection_reason
+                   rjr.status AS "status!: ReviewStatus",
+                   rjr.requested_at AS "requested_at!",
+                   rjr.reviewed_at AS "reviewed_at?",
+                   rjr.reviewed_by AS "reviewed_by?: UserId",
+                   rjr.rejection_reason AS "rejection_reason?"
             FROM room_join_requests rjr
             LEFT JOIN rooms r ON r.id = rjr.room_id
             LEFT JOIN users u ON u.id = rjr.user_id
@@ -672,17 +672,17 @@ impl ReviewRepository {
         sqlx::query_as!(
             RoomJoinReviewRecord,
             r#"
-            SELECT rjr.id AS "id: ReviewRequestId",
-                   rjr.room_id AS "room_id: RoomId",
+            SELECT rjr.id AS "id!: ReviewRequestId",
+                   rjr.room_id AS "room_id!: RoomId",
                    COALESCE(r.name, '') AS "room_name!",
-                   rjr.user_id AS "user_id: UserId",
+                   rjr.user_id AS "user_id!: UserId",
                    COALESCE(u.username, '') AS "username!",
                    COALESCE(rjr.requested_role, 0)::int4 AS "requested_role!",
-                   rjr.status AS "status: ReviewStatus",
-                   rjr.requested_at,
-                   rjr.reviewed_at,
-                   rjr.reviewed_by AS "reviewed_by: UserId",
-                   rjr.rejection_reason
+                   rjr.status AS "status!: ReviewStatus",
+                   rjr.requested_at AS "requested_at!",
+                   rjr.reviewed_at AS "reviewed_at?",
+                   rjr.reviewed_by AS "reviewed_by?: UserId",
+                   rjr.rejection_reason AS "rejection_reason?"
             FROM room_join_requests rjr
             LEFT JOIN rooms r ON r.id = rjr.room_id
             LEFT JOIN users u ON u.id = rjr.user_id

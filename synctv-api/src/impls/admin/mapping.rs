@@ -285,7 +285,7 @@ pub(in crate::impls::admin) fn ban_row_to_proto(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::impls::admin) fn try_admin_room_to_proto(
+pub(in crate::impls::admin) fn try_managed_room_to_proto(
     room: &synctv_core::models::Room,
     settings: Option<&synctv_core::models::RoomSettings>,
     member_count: Option<i32>,
@@ -296,9 +296,12 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
     cover_url: Option<&str>,
     presence: Option<&synctv_core::service::OnlineRoomStats>,
     public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_proto::admin::AdminRoom, ApiError> {
+) -> Result<synctv_proto::admin::Room, ApiError> {
     let room_settings = settings.ok_or_else(|| {
-        ApiError::Internal(format!("Missing room settings for admin room {}", room.id))
+        ApiError::Internal(format!(
+            "Missing room settings for managed room {}",
+            room.id
+        ))
     })?;
     let creator_username = creator_username.ok_or_else(|| {
         ApiError::Internal(format!(
@@ -307,9 +310,9 @@ pub(in crate::impls::admin) fn try_admin_room_to_proto(
         ))
     })?;
     let member_count = member_count.ok_or_else(|| {
-        ApiError::Internal(format!("Missing member count for admin room {}", room.id))
+        ApiError::Internal(format!("Missing member count for managed room {}", room.id))
     })?;
-    Ok(synctv_proto::admin::AdminRoom {
+    Ok(synctv_proto::admin::Room {
         id: public_id_codec
             .encode_room_id(room.id)
             .map_err(|error| ApiError::Internal(format!("Failed to encode room id: {error}")))?,

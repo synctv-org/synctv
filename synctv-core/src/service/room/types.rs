@@ -157,7 +157,7 @@ pub struct RoomServiceOptions {
     pub provider_stores: Option<Arc<dyn crate::provider::ProviderStoreResolver>>,
     pub audit_service: Option<Arc<AuditService>>,
     pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
-    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
     pub opaque_password_service: Arc<OpaquePasswordService>,
     pub opaque_password_registration_session_store:
@@ -178,7 +178,7 @@ impl RoomServiceOptions {
             pool,
         ));
         Self {
-            settings_registry: Some(Arc::new(crate::service::SettingsRegistry::new(
+            runtime_settings_store: Some(Arc::new(crate::service::RuntimeSettingsStore::new(
                 settings_service,
             ))),
             ..Self::test_defaults()
@@ -212,7 +212,7 @@ impl RoomServiceOptions {
             )),
             audit_service: None,
             brute_force_service: None,
-            settings_registry: None,
+            runtime_settings_store: None,
             user_notification_service: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
             opaque_password_registration_session_store:

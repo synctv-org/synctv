@@ -356,11 +356,11 @@ mod tests {
         EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
         EmbyLogoutRequest, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
         GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-        GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
-        GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
-        GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
-        KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
-        ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+        GetRoomSettingsRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+        GetSliceCacheStatsResponse, GetStreamInfoRequest, GetSystemStatsRequest,
+        GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
+        KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
+        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
         ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
         ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
         MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
@@ -370,8 +370,8 @@ mod tests {
         StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
         TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
         UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
-        UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-        UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest,
+        UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+        UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_proto::{
@@ -780,9 +780,8 @@ mod tests {
         }
         async fn update_room_settings(
             &self,
-            _: Request<UpdateRoomSettingsRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status>
-        {
+            _: Request<admin_proto::UpdateRoomSettingsRequest>,
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn reset_room_settings(
@@ -1197,19 +1196,13 @@ mod tests {
         async fn get_settings(
             &self,
             _: Request<GetSettingsRequest>,
-        ) -> std::result::Result<Response<admin_proto::GetSettingsResponse>, Status> {
-            unavailable_test_management_response()
-        }
-        async fn get_settings_group(
-            &self,
-            _: Request<GetSettingsGroupRequest>,
-        ) -> std::result::Result<Response<admin_proto::GetSettingsGroupResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::RuntimeSettings>, Status> {
             unavailable_test_management_response()
         }
         async fn update_settings(
             &self,
-            _: Request<UpdateSettingsRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateSettingsResponse>, Status> {
+            _: Request<admin_proto::UpdateSettingsRequest>,
+        ) -> std::result::Result<Response<admin_proto::RuntimeSettings>, Status> {
             unavailable_test_management_response()
         }
         async fn send_test_email(

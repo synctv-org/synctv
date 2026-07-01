@@ -22,7 +22,7 @@ pub(in crate::cli) use execute::{
     apply_root_global_overrides, batch_user_refs_to_proto, build_get_playback_cli_output,
     database_summary, format_management_status_error, management_stream_item,
     management_unary_response_with_timeout, normalized_provider_types,
-    parse_management_settings_update, parse_setting_entries, resolve_remote_endpoint,
+    parse_management_settings_patch_json, resolve_remote_endpoint,
     room_settings_patch_to_full_settings, stop_stream_disconnect_can_be_treated_as_success,
     stop_stream_end_can_be_treated_as_success, switch_process_working_dir_to_data_dir,
     synthesize_stop_completion_if_needed, DatabaseCliOutput, StopServerEventOutput,

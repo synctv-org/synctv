@@ -142,7 +142,7 @@ pub(in crate::cli) struct HumanRoom {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanAdminRoom {
+pub(in crate::cli) struct HumanManagedRoom {
     id: String,
     name: String,
     creator_id: String,
@@ -680,18 +680,6 @@ pub(in crate::cli) struct HumanUpdatePlaybackStateResponse<T> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanSettingsGroupsResponse<T> {
-    groups: Vec<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanSettingsGroupResponse<T> {
-    group: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanGetRoomWithPlaybackResponse<R, P> {
     room: Option<R>,
     playback_state: Option<P>,
@@ -851,11 +839,11 @@ impl ToHuman for synctv_proto::client::Room {
     }
 }
 
-impl ToHuman for synctv_proto::admin::AdminRoom {
-    type Human = HumanAdminRoom;
+impl ToHuman for synctv_proto::admin::Room {
+    type Human = HumanManagedRoom;
 
     fn to_human(&self) -> Self::Human {
-        HumanAdminRoom {
+        HumanManagedRoom {
             id: self.id.clone(),
             name: self.name.clone(),
             creator_id: self.creator_id.clone(),
@@ -1062,7 +1050,7 @@ impl ToHuman for synctv_proto::admin::ListRoomCreationReviewsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::ApproveRoomCreationReviewResponse {
-    type Human = HumanApproveReviewRequestResponse<HumanRoomCreationReview, HumanAdminRoom>;
+    type Human = HumanApproveReviewRequestResponse<HumanRoomCreationReview, HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanApproveReviewRequestResponse {
@@ -1357,7 +1345,7 @@ impl ToHuman for synctv_proto::client::PlaybackState {
     }
 }
 
-impl ToHuman for synctv_proto::admin::SettingsGroup {
+impl ToHuman for synctv_proto::admin::RuntimeSettings {
     type Human = Value;
 
     fn to_human(&self) -> Self::Human {
@@ -1520,7 +1508,7 @@ impl ToHuman for synctv_proto::admin::UnbanUserResponse {
 }
 
 impl ToHuman for synctv_proto::admin::GetUserRoomsResponse {
-    type Human = HumanRoomsResponse<HumanAdminRoom>;
+    type Human = HumanRoomsResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomsResponse {
@@ -1531,7 +1519,7 @@ impl ToHuman for synctv_proto::admin::GetUserRoomsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::ListRoomsResponse {
-    type Human = HumanRoomsResponse<HumanAdminRoom>;
+    type Human = HumanRoomsResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomsResponse {
@@ -1542,17 +1530,7 @@ impl ToHuman for synctv_proto::admin::ListRoomsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::GetRoomResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UpdateRoomSettingsResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
+    type Human = HumanRoomResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomResponse {
@@ -1562,7 +1540,7 @@ impl ToHuman for synctv_proto::admin::UpdateRoomSettingsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::ResetRoomSettingsResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
+    type Human = HumanRoomResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomResponse {
@@ -1572,7 +1550,7 @@ impl ToHuman for synctv_proto::admin::ResetRoomSettingsResponse {
 }
 
 impl ToHuman for synctv_proto::admin::BanRoomResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
+    type Human = HumanRoomResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomResponse {
@@ -1582,7 +1560,7 @@ impl ToHuman for synctv_proto::admin::BanRoomResponse {
 }
 
 impl ToHuman for synctv_proto::admin::UnbanRoomResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
+    type Human = HumanRoomResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomResponse {
@@ -1652,7 +1630,7 @@ impl ToHuman for synctv_proto::admin::DeleteRoomLabelResponse {
 }
 
 impl ToHuman for synctv_proto::admin::UpdateRoomTaxonomyResponse {
-    type Human = HumanRoomResponse<HumanAdminRoom>;
+    type Human = HumanRoomResponse<HumanManagedRoom>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomResponse {
@@ -1753,26 +1731,6 @@ impl ToHuman for synctv_proto::providers::common::DisableProviderInstanceRespons
     }
 }
 
-impl ToHuman for synctv_proto::admin::GetSettingsResponse {
-    type Human = HumanSettingsGroupsResponse<Value>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanSettingsGroupsResponse {
-            groups: self.groups.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::GetSettingsGroupResponse {
-    type Human = HumanSettingsGroupResponse<Value>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanSettingsGroupResponse {
-            group: self.group.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::AddAdminResponse {
     type Human = HumanUserResponse<HumanAdminUser>;
 
@@ -1833,16 +1791,6 @@ impl ToHuman for synctv_proto::client::ListRoomsResponse {
         HumanRoomsResponse {
             rooms: self.rooms.to_human(),
             total: self.total,
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::UpdateRoomSettingsResponse {
-    type Human = HumanRoomResponse<HumanRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
         }
     }
 }
@@ -2196,7 +2144,6 @@ impl_identity_to_human!(
     synctv_proto::admin::BatchBanRoomsResponse,
     synctv_proto::admin::BatchDeleteRoomsResponse,
     synctv_proto::providers::common::DeleteProviderInstanceResponse,
-    synctv_proto::admin::UpdateSettingsResponse,
     synctv_proto::admin::SendTestEmailResponse,
     synctv_proto::client::LeaveRoomResponse,
     synctv_proto::client::DeleteRoomResponse,

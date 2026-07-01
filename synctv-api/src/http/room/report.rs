@@ -43,10 +43,10 @@ fn inject_room_report_target(req: &mut ReportContentRequest, room_id: &str) {
         request_body = ReportContentRequest,
         responses(
             (status = 200, description = "Content report created", body = ReportContentResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room access", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Target not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room access", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Target not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -84,8 +84,8 @@ pub async fn report_content(
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
             (status = 200, description = "Room-scoped content reports", body = ListRoomContentReportsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room access", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room access", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -124,9 +124,9 @@ pub async fn list_room_content_reports(
         ),
         responses(
             (status = 200, description = "Room-scoped content report", body = GetRoomContentReportResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room access", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Report not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room access", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Report not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
@@ -166,9 +166,9 @@ pub async fn get_room_content_report(
         request_body = UpdateRoomContentReportStatusRequest,
         responses(
             (status = 200, description = "Room-scoped content report updated", body = UpdateRoomContentReportStatusResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Insufficient room access", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Report not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Insufficient room access", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Report not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )

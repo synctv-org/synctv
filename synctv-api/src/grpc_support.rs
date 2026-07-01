@@ -1,8 +1,5 @@
 //! Shared gRPC transport helpers used by public API and management services.
 
-pub const ERROR_CODE_METADATA_KEY: &str = "x-synctv-error-code";
-pub use synctv_common::messages::RETRY_AFTER_METADATA_KEY;
-
 /// Map a typed [`ApiError`](crate::impls::ApiError) to a gRPC `Status`.
 ///
 /// Shared across gRPC service implementations to avoid duplicating the
@@ -12,36 +9,8 @@ pub use synctv_common::messages::RETRY_AFTER_METADATA_KEY;
 /// message is returned to the client to avoid leaking sensitive information.
 #[must_use]
 pub fn map_api_error_ref(err: &crate::impls::ApiError) -> tonic::Status {
-    use crate::impls::ErrorKind;
-    let msg = err.message().to_string();
-    let mut status = match err.classify() {
-        ErrorKind::NotFound => tonic::Status::not_found(msg),
-        ErrorKind::Unauthenticated => tonic::Status::unauthenticated(msg),
-        ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
-        ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
-        ErrorKind::Conflict => tonic::Status::aborted(msg),
-        ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
-        ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
-        ErrorKind::ServiceUnavailable => tonic::Status::unavailable(msg),
-        ErrorKind::Timeout => tonic::Status::deadline_exceeded(msg),
-        ErrorKind::Internal => {
-            tracing::error!("API internal error: {msg}");
-            tonic::Status::internal("Internal error")
-        }
-    };
-
-    if let Ok(value) = err.code().to_string().parse() {
-        status.metadata_mut().insert(ERROR_CODE_METADATA_KEY, value);
-    }
-    if let Some(retry_after_seconds) = err.retry_after_seconds() {
-        if let Ok(value) = retry_after_seconds.to_string().parse() {
-            status
-                .metadata_mut()
-                .insert(RETRY_AFTER_METADATA_KEY, value);
-        }
-    }
-
-    status
+    let sanitized = crate::api_error_model::sanitized_api_error(err);
+    crate::api_error_model::GoogleApiError::from_api_error(&sanitized).to_tonic_status()
 }
 
 pub fn map_api_error(err: impl Into<crate::impls::ApiError>) -> tonic::Status {
@@ -51,15 +20,18 @@ pub fn map_api_error(err: impl Into<crate::impls::ApiError>) -> tonic::Status {
 
 #[must_use]
 pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
-    match err {
+    let api_error = match err {
         synctv_core::Error::Authorization(message) => {
-            tonic::Status::permission_denied(message.clone())
+            crate::impls::ApiError::Authorization(message.clone())
         }
         other => {
             tracing::error!(error = %other, "Unexpected authorization-classified auth error");
-            tonic::Status::permission_denied("You do not have permission to perform this action")
+            crate::impls::ApiError::Authorization(
+                "You do not have permission to perform this action".to_string(),
+            )
         }
-    }
+    };
+    map_api_error_ref(&api_error)
 }
 
 /// Extract the effective client IP for gRPC requests.

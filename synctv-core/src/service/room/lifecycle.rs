@@ -15,7 +15,7 @@ use super::{
 };
 
 impl RoomService {
-    /// Check if guests are allowed to access a room
+    /// Check if guests are allowed to access a room_creation
     ///
     /// Validates guest access based on:
     /// 1. Global `enable_guest` setting
@@ -24,7 +24,7 @@ impl RoomService {
     ///
     /// # Arguments
     /// * `room_id` - Room ID to check
-    /// * `settings_registry` - Optional global settings registry (if None, guests are denied -- fail-closed)
+    /// * `runtime_settings_store` - Optional global runtime settings store (if None, guests are denied -- fail-closed)
     ///
     /// # Returns
     /// * `Ok(())` if guests are allowed
@@ -32,11 +32,11 @@ impl RoomService {
     pub async fn check_guest_allowed(
         &self,
         room_id: &RoomId,
-        settings_registry: Option<&crate::service::SettingsRegistry>,
+        runtime_settings_store: Option<&crate::service::RuntimeSettingsStore>,
     ) -> Result<()> {
         // Check global enable_guest setting (fail-closed: deny when registry unavailable)
-        if let Some(registry) = settings_registry {
-            let enable_guest = registry.enable_guest.get()?;
+        if let Some(registry) = runtime_settings_store {
+            let enable_guest = registry.user.enable_guest.get()?;
             if !enable_guest {
                 tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
                 return Err(Error::Authorization(
@@ -44,7 +44,7 @@ impl RoomService {
                 ));
             }
         } else {
-            tracing::debug!(room_id = %room_id, "Guest access denied: settings registry unavailable (fail-closed)");
+            tracing::debug!(room_id = %room_id, "Guest access denied: runtime settings store unavailable (fail-closed)");
             return Err(Error::Authorization(
                 "Guest mode is not available".to_string(),
             ));
@@ -205,7 +205,7 @@ impl RoomService {
         // Track room metrics
         crate::metrics::http::ROOMS_ACTIVE.dec();
 
-        // Audit log (preserved - not deleted with room data)
+        // Audit log (preserved - not deleted with room_creation data)
         self.audit_log(
             &user_id,
             &actor.username,
@@ -227,9 +227,9 @@ impl RoomService {
         Ok(())
     }
 
-    /// Approve a pending room creation request and create the room.
+    /// Approve a pending room_creation creation request and create the room.
     ///
-    /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
+    /// This is an admin-only operation for rooms created when `approval_required=true`.
     /// After approval, the room becomes visible and usable by its creator.
     ///
     /// # Errors
@@ -240,7 +240,7 @@ impl RoomService {
         request_id: RoomId,
         admin_id: Option<&UserId>,
     ) -> Result<Room> {
-        tracing::info!(request_id = %request_id, ?admin_id, "Approving room creation request");
+        tracing::info!(request_id = %request_id, ?admin_id, "Approving room_creation creation request");
 
         let admin_username = if let Some(admin_id) = admin_id {
             let admin = self.user_service.get_user(admin_id).await?;
@@ -259,7 +259,7 @@ impl RoomService {
             .await?
             .ok_or_else(|| {
                 Error::NotFound(format!(
-                    "Pending room creation request {request_id} not found"
+                    "Pending room_creation creation request {request_id} not found"
                 ))
             })?;
         let audit_actor_username = match admin_username {
@@ -329,7 +329,7 @@ impl RoomService {
         .await?;
         if approved == 0 {
             return Err(Error::NotFound(format!(
-                "Pending room creation request {request_id} not found"
+                "Pending room_creation creation request {request_id} not found"
             )));
         }
 
@@ -365,13 +365,13 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// Reject a pending room creation request.
+    /// Reject a pending room_creation creation request.
     ///
-    /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
+    /// This is an admin-only operation for rooms created when `approval_required=true`.
     /// Rejected requests are preserved for review/audit; no room row is created.
     ///
     /// # Errors
-    /// - `Error::NotFound` if room doesn't exist
+    /// - `Error::NotFound` if room_creation doesn't exist
     /// - `Error::NotFound` if the pending request does not exist
     /// - Permission error if caller is not a global admin
     pub async fn reject_room(
@@ -380,7 +380,7 @@ impl RoomService {
         admin_id: Option<&UserId>,
         reason: Option<String>,
     ) -> Result<Room> {
-        tracing::info!(room_id = %room_id, ?admin_id, "Rejecting pending room");
+        tracing::info!(room_id = %room_id, ?admin_id, "Rejecting pending room_creation");
 
         let admin_username = if let Some(admin_id) = admin_id {
             let admin = self.user_service.get_user(admin_id).await?;
@@ -398,7 +398,9 @@ impl RoomService {
         let request = Self::load_pending_room_creation_request_for_update(&room_id, &mut tx)
             .await?
             .ok_or_else(|| {
-                Error::NotFound(format!("Pending room creation request {room_id} not found"))
+                Error::NotFound(format!(
+                    "Pending room_creation creation request {room_id} not found"
+                ))
             })?;
         let audit_actor_username = match admin_username {
             Some(username) => username,
@@ -414,7 +416,7 @@ impl RoomService {
         .await?;
         if rejected == 0 {
             return Err(Error::NotFound(format!(
-                "Pending room creation request {room_id} not found"
+                "Pending room_creation creation request {room_id} not found"
             )));
         }
         tx.commit().await?;
@@ -444,7 +446,7 @@ impl RoomService {
         Ok(updated)
     }
 
-    /// List pending room creation requests (admin only).
+    /// List pending room_creation creation requests (admin only).
     ///
     /// Returns room-shaped DTOs synthesized from pending request records.
     pub async fn list_pending_rooms(

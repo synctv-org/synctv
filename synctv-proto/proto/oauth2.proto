@@ -19,6 +19,12 @@ enum OAuth2ProviderType {
   OAUTH2_PROVIDER_TYPE_GITEE = 10;
 }
 
+enum OAuth2Operation {
+  OAUTH2_OPERATION_UNSPECIFIED = 0;
+  OAUTH2_OPERATION_LOGIN = 1;
+  OAUTH2_OPERATION_BIND = 2;
+}
+
 // ==================== OAuth2 Service ====================
 // OAuth2/OIDC authentication service
 //
@@ -109,6 +115,11 @@ message GetAuthorizationUrlResponse {
   // Frontend should store this temporarily and validate it matches the state
   // received in the callback URL parameters
   string state = 2;
+
+  OAuth2Operation operation = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 }
 
 // ==================== Get Authorization URL for Bind ====================
@@ -142,29 +153,28 @@ message GetAuthorizationUrlForBindResponse {
 
   // State token for CSRF protection
   string state = 2;
+
+  OAuth2Operation operation = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 }
 
 // ==================== Exchange Authorization Code ====================
 
 message ExchangeAuthorizationCodeRequest {
-  // OAuth2 provider instance name (must match the provider used in GetAuthorizationUrl)
-  string provider = 1 [(buf.validate.field).string = {
-    min_len: 1
-    max_len: 64
-    pattern: "^[A-Za-z0-9_-]+$"
-  }];
-
   // Authorization code received from OAuth2 provider redirect
   // Frontend extracts this from the callback URL query parameter
-  string code = 2 [(buf.validate.field).string = {
+  string code = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 256
     pattern: "^[A-Za-z0-9._+-]+$"
   }];
 
   // State token received from OAuth2 provider redirect
-  // Must match the state returned by GetAuthorizationUrl
-  string state = 3 [(buf.validate.field).string = {
+  // The server uses this opaque token to recover the provider instance,
+  // redirect URL, PKCE verifier, OIDC nonce, and bind/login context.
+  string state = 2 [(buf.validate.field).string = {
     len: 32
     pattern: "^[A-Za-z0-9]+$"
   }];
@@ -188,8 +198,10 @@ message ExchangeAuthorizationCodeResponse {
   // Frontend can use this to redirect user after successful authentication
   optional string redirect_url = 5;
 
-  // Whether this was a bind operation (true) or login operation (false)
-  bool is_bind = 6;
+  OAuth2Operation operation = 6 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: [0]
+  }];
 
   // True when a first-time OAuth2 signup was accepted but requires admin review.
   bool registration_review_required = 7;

@@ -1,6 +1,5 @@
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
     response::sse::{Event, KeepAlive, Sse},
     Json,
 };
@@ -10,8 +9,7 @@ use tokio_stream::StreamExt;
 use super::execute::{execute_room_actor_endpoint_with_control, execute_user_endpoint};
 use super::query::{
     build_get_playback_request, build_playback_client_profile_from_watch_query,
-    parse_watch_delivery_mode, watch_after_event_sequence, GetPlaybackQuery, WatchPlaybackQuery,
-    WatchQuery,
+    parse_watch_delivery_mode, GetPlaybackQuery, WatchPlaybackQuery, WatchPlaybackStateQuery,
 };
 use super::watch::open_resource_watch_sse;
 use crate::http::validation::ProtoQuery;
@@ -37,8 +35,8 @@ use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
         request_body = StartPlaybackRequest,
         responses(
             (status = 200, description = "Playback started", body = StartPlaybackResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -80,8 +78,8 @@ pub async fn start_playback(
         request_body = StopPlaybackRequest,
         responses(
             (status = 200, description = "Playback stopped", body = StopPlaybackResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -123,8 +121,8 @@ pub async fn stop_playback(
         ),
         responses(
             (status = 200, description = "Current playback state", body = GetPlaybackResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -160,16 +158,19 @@ pub async fn watch_playback_state(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    headers: HeaderMap,
-    Query(query): Query<WatchQuery>,
+    Query(query): Query<WatchPlaybackStateQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
-    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
+    if query.event_sequence.is_some_and(|sequence| sequence < 0) {
+        return Err(super::super::AppError::bad_request(
+            "Invalid eventSequence; expected a non-negative integer",
+        ));
+    }
     let request = WatchPlaybackStateRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playback_state: Some(synctv_proto::client::ObservePlaybackState {
-            after_event_sequence,
+            event_sequence: query.event_sequence,
         }),
     };
     let observe = crate::impls::messaging::watch_playback_state_observe(request)
@@ -181,18 +182,15 @@ pub async fn watch_playback(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    headers: HeaderMap,
     Query(query): Query<WatchPlaybackQuery>,
 ) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
     let room_id = path.room_id;
     let format = RealtimeTransportFormat::parse(query.format.as_deref())?;
-    let after_event_sequence = watch_after_event_sequence(&headers, query.after_event_sequence)?;
     let playback_client_profile = build_playback_client_profile_from_watch_query(&query)?;
     let request = WatchPlaybackRequest {
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         playback: Some(synctv_proto::client::ObservePlayback {
             playback_client_profile,
-            after_event_sequence,
         }),
     };
     let observe = crate::impls::messaging::watch_playback_observe(request)
@@ -239,8 +237,8 @@ pub async fn watch_bilibili_live_danmaku(
         request_body = UpdatePlaybackStateRequest,
         responses(
             (status = 200, description = "Playback state updated", body = UpdatePlaybackStateResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

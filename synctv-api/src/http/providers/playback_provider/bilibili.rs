@@ -111,7 +111,7 @@ impl PlaybackProviderHttpResponse for BilibiliDanmakuFileResponse {
         path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili media stream"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili media stream"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn get_bilibili_media_stream(
@@ -138,7 +138,7 @@ pub fn get_bilibili_media_stream(
         path = "/api/playback-providers/bilibili/{version}/media-streams/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili media stream metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili media stream metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn head_bilibili_media_stream(
@@ -206,7 +206,7 @@ async fn bilibili_media_stream(
         path = "/api/playback-providers/bilibili/{version}/hls-manifests/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili HLS manifest"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili HLS manifest"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub async fn get_bilibili_hls_manifest(
@@ -254,7 +254,7 @@ pub async fn get_bilibili_hls_manifest(
         path = "/api/playback-providers/bilibili/{version}/hls-segments",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili HLS segment"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili HLS segment"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn get_bilibili_hls_segment(
@@ -281,7 +281,7 @@ pub fn get_bilibili_hls_segment(
         path = "/api/playback-providers/bilibili/{version}/hls-segments",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("targetUrl" = String, Query), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili HLS segment metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili HLS segment metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn head_bilibili_hls_segment(
@@ -348,7 +348,7 @@ async fn bilibili_hls_segment(
         path = "/api/playback-providers/bilibili/{version}/dash-manifests/{modeName}/{manifestMode}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("manifestMode" = String, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili DASH manifest"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili DASH manifest"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub async fn get_bilibili_dash_manifest(
@@ -397,7 +397,7 @@ pub async fn get_bilibili_dash_manifest(
         path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili DASH segment"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili DASH segment"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn get_bilibili_dash_segment(
@@ -424,7 +424,7 @@ pub fn get_bilibili_dash_segment(
         path = "/api/playback-providers/bilibili/{version}/dash-segments/{modeName}/{urlIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("urlIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili DASH segment metadata"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili DASH segment metadata"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub fn head_bilibili_dash_segment(
@@ -492,7 +492,7 @@ async fn bilibili_dash_segment(
         path = "/api/playback-providers/bilibili/{version}/subtitles/{modeName}/{subtitleIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("modeName" = String, Path), ("subtitleIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili subtitle"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili subtitle"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub async fn get_bilibili_subtitle(
@@ -540,7 +540,7 @@ pub async fn get_bilibili_subtitle(
         path = "/api/playback-providers/bilibili/{version}/danmaku-files/{danmakuIndex}",
         tag = "Bilibili Playback Provider",
         params(("version" = String, Path), ("danmakuIndex" = u32, Path), ("sig" = String, Query), ("uid" = String, Query), ("rid" = String, Query), ("exp" = i64, Query)),
-        responses((status = 200, description = "Bilibili danmaku file"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili danmaku file"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub async fn get_bilibili_danmaku_file(
@@ -587,7 +587,7 @@ pub async fn get_bilibili_danmaku_file(
         path = "/api/playback-providers/bilibili/live-danmaku/{mediaId}",
         tag = "Bilibili Playback Provider",
         params(("mediaId" = String, Path)),
-        responses((status = 200, description = "Bilibili live danmaku SSE"), (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse))
+        responses((status = 200, description = "Bilibili live danmaku SSE"), (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema))
     )
 )]
 pub async fn watch_bilibili_live_danmaku(

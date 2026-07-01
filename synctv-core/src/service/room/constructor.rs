@@ -72,7 +72,7 @@ impl RoomService {
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
             PermissionServiceRuntime {
-                settings_registry: options.settings_registry.clone(),
+                runtime_settings_store: options.runtime_settings_store.clone(),
                 room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
                 invalidation_service: options.cache_invalidation.clone(),
                 version_fence: options.version_fence.clone(),
@@ -219,7 +219,7 @@ impl RoomService {
             cache_invalidation: options.cache_invalidation,
             audit_service: options.audit_service,
             brute_force_service: options.brute_force_service,
-            settings_registry: options.settings_registry,
+            runtime_settings_store: options.runtime_settings_store,
             user_notification_service: options.user_notification_service,
             opaque_password_service: options.opaque_password_service,
             opaque_password_registration_session_store: options
@@ -243,13 +243,15 @@ impl RoomService {
     }
 
     #[cfg(test)]
-    pub(crate) const fn has_settings_registry(&self) -> bool {
-        self.settings_registry.is_some()
+    pub(crate) const fn has_runtime_settings_store(&self) -> bool {
+        self.runtime_settings_store.is_some()
     }
 
     #[doc(hidden)]
-    pub const fn settings_registry(&self) -> Option<&Arc<crate::service::SettingsRegistry>> {
-        self.settings_registry.as_ref()
+    pub const fn runtime_settings_store(
+        &self,
+    ) -> Option<&Arc<crate::service::RuntimeSettingsStore>> {
+        self.runtime_settings_store.as_ref()
     }
 
     #[cfg(test)]

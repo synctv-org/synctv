@@ -514,34 +514,34 @@ mod ws_auth_scenarios {
         let err = AppError::unauthorized(
             "Missing authentication: provide token via Authorization header or ?ticket=",
         );
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert!(err.message.contains("Missing authentication"));
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.message().contains("Missing authentication"));
     }
 
     #[test]
     fn test_invalid_token_error() {
         let err = AppError::unauthorized("Invalid or expired token");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid or expired token");
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message(), "Invalid or expired token");
     }
 
     #[test]
     fn test_token_revoked_error() {
         let err = AppError::unauthorized("Token has been revoked");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn test_not_member_error() {
         let err = AppError::forbidden("Not a member of this room");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn test_expired_ticket_error() {
         let err = AppError::unauthorized("Invalid or expired ticket");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid or expired ticket");
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message(), "Invalid or expired ticket");
     }
 }
 
@@ -717,7 +717,7 @@ mod websocket_e2e {
                 ),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
-                settings_registry: None,
+                runtime_settings_store: None,
             },
         ))
     }
@@ -997,7 +997,7 @@ mod websocket_e2e {
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
-            settings_registry: None,
+            runtime_settings_store: None,
             email_service: None,
             email_token_service: None,
             publish_key_service: None,

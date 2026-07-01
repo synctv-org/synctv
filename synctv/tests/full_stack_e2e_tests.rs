@@ -139,7 +139,6 @@ fn observe_playback_message(observe_id: &str) -> synctv_proto::client::ClientMes
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::Playback(ObservePlayback {
                 playback_client_profile: None,
-                after_event_sequence: None,
             })),
         })),
     }
@@ -157,7 +156,7 @@ fn observe_playback_state_message(observe_id: &str) -> synctv_proto::client::Cli
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(observe_resource::Resource::PlaybackState(
                 ObservePlaybackState {
-                    after_event_sequence: None,
+                    event_sequence: None,
                 },
             )),
         })),
@@ -281,7 +280,7 @@ fn room_settings_value(
 }
 
 fn room_settings_patch_json(chat_enabled: bool, allow_guest_join: bool) -> String {
-    serde_json::to_string(&synctv_proto::client::RoomSettingsPatch {
+    serde_json::to_string(&synctv_proto::client::UpdateRoomSettingsRequest {
         chat_enabled: Some(chat_enabled),
         allow_guest_join: Some(allow_guest_join),
         ..Default::default()
@@ -2323,7 +2322,7 @@ async fn start_room_realtime_fixture(label: &str) -> RoomRealtimeFixture {
 }
 
 fn error_message(body: &Value) -> &str {
-    body["error"].as_str().unwrap_or("<missing error>")
+    body["message"].as_str().unwrap_or("<missing error>")
 }
 
 fn bearer_metadata(token: &str) -> MetadataValue<tonic::metadata::Ascii> {
@@ -3310,15 +3309,15 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
 
     let room_settings_group = run_synctv_remote_cli_json(
         &server,
-        &["settings", "get", "room"],
-        "get room settings group",
+        &["settings", "get", "roomCreation"],
+        "get room creation settings group",
     )
     .await;
     assert!(
-        !room_settings_group["room"]["createRoomNeedReview"]
+        !room_settings_group["approvalRequired"]
             .as_bool()
             .unwrap_or(false),
-        "settings get room should default createRoomNeedReview to false: {room_settings_group}"
+        "settings get roomCreation should default approvalRequired to false: {room_settings_group}"
     );
 
     let test_email_result = run_synctv_remote_cli_json(
@@ -3374,7 +3373,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert!(
-        updated_room_settings["room"].is_object(),
+        updated_room_settings["id"].is_string(),
         "room settings update should return room payload: {updated_room_settings}"
     );
 
@@ -3840,17 +3839,14 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "settings",
             "update",
-            "room",
-            "--set",
-            "createRoomNeedReview=true",
+            "roomCreation",
+            "--patch-json",
+            r#"{"approvalRequired":true}"#,
         ],
-        "enable createRoomNeedReview",
+        "enable room creation review",
     )
     .await;
-    assert_eq!(
-        updated_global_room_settings["room"]["createRoomNeedReview"],
-        true
-    );
+    assert_eq!(updated_global_room_settings["approvalRequired"], true);
 
     let review_room = run_synctv_remote_cli_json(
         &server,
@@ -3892,14 +3888,14 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "settings",
             "update",
-            "room",
-            "--set",
-            "createRoomNeedReview=false",
+            "roomCreation",
+            "--patch-json",
+            r#"{"approvalRequired":false}"#,
         ],
-        "disable createRoomNeedReview",
+        "disable room creation review",
     )
     .await;
-    assert!(!reset_global_room_review["room"]["createRoomNeedReview"]
+    assert!(!reset_global_room_review["approvalRequired"]
         .as_bool()
         .unwrap_or(false));
 
@@ -5049,16 +5045,12 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     );
     let settings_list_body: Value = serde_json::from_slice(&settings_list.stdout)
         .expect("CLI settings list output should be JSON");
-    assert!(
-        settings_list_body["groups"]
-            .as_array()
-            .expect("groups should be an array")
-            .iter()
-            .any(|group| group["name"] == "server"),
-        "CLI settings list output should include server group: {settings_list_body}"
+    assert_eq!(
+        settings_list_body["roomCreation"]["enabled"], true,
+        "CLI settings list output should include structured room creation settings: {settings_list_body}"
     );
 
-    let settings_get = run_synctv_remote_cli(&server, &["settings", "get", "server"]).await;
+    let settings_get = run_synctv_remote_cli(&server, &["settings", "get", "roomCreation"]).await;
     assert!(
         settings_get.status.success(),
         "settings get via CLI should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -5067,17 +5059,16 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     );
     let settings_get_body: Value = serde_json::from_slice(&settings_get.stdout)
         .expect("CLI settings get output should be JSON");
-    assert_eq!(settings_get_body["name"], "server");
-    assert_eq!(settings_get_body["server"]["allowRoomCreation"], true);
+    assert_eq!(settings_get_body["enabled"], true);
 
     let settings_update = run_synctv_remote_cli(
         &server,
         &[
             "settings",
             "update",
-            "server",
-            "--set",
-            "maxRoomsPerUser=42",
+            "roomCreation",
+            "--patch-json",
+            r#"{"maxRoomsPerUser":42}"#,
         ],
     )
     .await;
@@ -5089,8 +5080,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     );
     let settings_update_body: Value = serde_json::from_slice(&settings_update.stdout)
         .expect("CLI settings update output should be JSON");
-    assert_eq!(settings_update_body["name"], "server");
-    assert_eq!(settings_update_body["server"]["maxRoomsPerUser"], "42");
+    assert_eq!(settings_update_body["maxRoomsPerUser"], "42");
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -5098,23 +5088,18 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
         )
         .await
         .expect("connect management gRPC client");
-    let server_group = management_client
-        .get_settings_group(management_request(
-            management_proto::GetSettingsGroupRequest {
-                group: "server".to_string(),
-            },
-        ))
+    let settings = management_client
+        .get_settings(management_request(management_proto::GetSettingsRequest {}))
         .await
-        .expect("management get_settings_group should succeed after CLI update")
-        .into_inner()
-        .group
-        .expect("server settings group");
-    let Some(synctv_proto::admin::settings_group::Settings::Server(settings)) =
-        server_group.settings
-    else {
-        panic!("expected server settings group");
-    };
-    assert_eq!(settings.max_rooms_per_user, 42);
+        .expect("management get_settings should succeed after CLI update")
+        .into_inner();
+    assert_eq!(
+        settings
+            .room_creation
+            .expect("room_creation runtime settings")
+            .max_rooms_per_user,
+        42
+    );
 
     let system_stats = run_synctv_remote_cli(&server, &["system", "stats"]).await;
     assert!(

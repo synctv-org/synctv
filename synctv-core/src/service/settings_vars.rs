@@ -6,23 +6,25 @@
 //! - Each setting has its own typed cache
 //! - Type conversion via standard Rust traits (Display, `FromStr`)
 //! - Reading returns cached value (synchronous, fast)
-//! - Writing saves to storage + database (async)
+//! - Persistence is performed through complete typed `RuntimeSettings` snapshots
 //!
 //! # Custom Validation
 //!
-//! Use `with_validator` to add custom validation logic:
+//! Use the `setting!` macro to define concrete setting types with their
+//! key, default value, and validation rules kept in one place:
 //!
 //! ```text
 //! use synctv_core::service::settings_vars::*;
 //!
-//! let max_rooms = setting!(i64, "server.max_rooms", storage, 10)
-//!     .with_validator(|v| {
-//!         if *v > 0 && *v <= 1000 {
-//!             Ok(())
-//!         } else {
-//!             Err(anyhow::anyhow!("max_rooms must be between 1 and 1000"))
-//!         }
-//!     });
+//! setting!(MaxRoomsSetting, i64, "room_creation.max_rooms_per_user", 10, |v: &i64| {
+//!     if *v > 0 && *v <= 1000 {
+//!         Ok(())
+//!     } else {
+//!         Err(anyhow::anyhow!("max_rooms must be between 1 and 1000"))
+//!     }
+//! });
+//!
+//! let max_rooms = MaxRoomsSetting::new(storage);
 //! ```
 
 use parking_lot::RwLock;
@@ -102,45 +104,13 @@ where
     }
 }
 
-/// Trait for setting operations (type-erased)
-///
-/// This trait provides a unified interface for working with a single setting
-#[async_trait::async_trait]
-pub trait SettingProvider: Send + Sync {
-    /// Stable setting key in `group.name` format.
-    fn key(&self) -> &str;
-
-    /// Default raw value serialized using the setting's display representation.
-    fn default_raw(&self) -> Result<String>;
-
-    /// Get raw string value
-    fn get_raw(&self) -> Option<String>;
-
-    /// Set raw string value (persists to database)
-    async fn set_raw(&self, value: String) -> Result<()>;
-
-    /// Whether user/admin initiated settings updates may modify this key.
-    fn user_writable(&self) -> bool {
-        true
-    }
-
-    /// Whether the setting should be projected through user/admin settings APIs.
-    fn user_visible(&self) -> bool {
-        true
-    }
-
-    /// Validate a raw string value
-    fn is_valid_raw(&self, value: &str) -> Result<()>;
-}
-
-/// Macro to create a Setting with any type
+/// Macro to define a concrete setting type.
 ///
 /// # Example
 ///
 /// ```text
-/// let enable_password_signup = setting!(bool, "user.enable_password_signup", storage, false);
-/// let max_rooms = setting!(i64, "server.max_rooms", storage, 10);
-/// let max_rooms_with_validator = setting!(i64, "server.max_rooms", storage, 10, |v| {
+/// setting!(EnablePasswordSignupSetting, bool, "user.enable_password_signup", false);
+/// setting!(MaxRoomsSetting, i64, "room_creation.max_rooms_per_user", 10, |v| {
 ///     if *v > 0 && *v <= 1000 {
 ///         Ok(())
 ///     } else {
@@ -150,14 +120,58 @@ pub trait SettingProvider: Send + Sync {
 /// ```
 #[macro_export]
 macro_rules! setting {
-    // Without validator
-    ($type:ty, $key:expr, $storage:expr, $default:expr) => {
-        $crate::service::settings_vars::Setting::new($key, $storage, $default)
+    ($name:ident, $type:ty, $key:literal, $default:expr) => {
+        #[derive(Clone)]
+        pub struct $name($crate::service::settings_vars::Setting<$type>);
+
+        impl $name {
+            pub const KEY: &'static str = $key;
+
+            #[must_use]
+            pub fn new(
+                storage: std::sync::Arc<$crate::service::settings_vars::SettingsStorage>,
+            ) -> Self {
+                Self($crate::service::settings_vars::Setting::new(
+                    Self::KEY,
+                    storage,
+                    $default,
+                ))
+            }
+        }
+
+        impl std::ops::Deref for $name {
+            type Target = $crate::service::settings_vars::Setting<$type>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
     };
-    // With validator
-    ($type:ty, $key:expr, $storage:expr, $default:expr, $validator:expr) => {
-        $crate::service::settings_vars::Setting::new($key, $storage, $default)
-            .with_validator($validator)
+    ($name:ident, $type:ty, $key:literal, $default:expr, $validator:expr) => {
+        #[derive(Clone)]
+        pub struct $name($crate::service::settings_vars::Setting<$type>);
+
+        impl $name {
+            pub const KEY: &'static str = $key;
+
+            #[must_use]
+            pub fn new(
+                storage: std::sync::Arc<$crate::service::settings_vars::SettingsStorage>,
+            ) -> Self {
+                Self(
+                    $crate::service::settings_vars::Setting::new(Self::KEY, storage, $default)
+                        .with_validator($validator),
+                )
+            }
+        }
+
+        impl std::ops::Deref for $name {
+            type Target = $crate::service::settings_vars::Setting<$type>;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
     };
 }
 
@@ -170,7 +184,6 @@ macro_rules! setting {
 pub struct SettingsStorage {
     inner: Arc<RwLock<HashMap<String, String, BuildHasherDefault<DefaultHasher>>>>,
     settings_service: Option<Arc<SettingsService>>,
-    setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>>,
 }
 
 impl SettingsStorage {
@@ -186,36 +199,18 @@ impl SettingsStorage {
 
     #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
-        let setting_providers = settings_service.providers();
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
             settings_service: Some(settings_service),
-            setting_providers,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_provider_map(
-        setting_providers: Arc<RwLock<HashMap<String, Arc<dyn SettingProvider>>>>,
-    ) -> Self {
+    pub(crate) fn new_for_tests() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::default())),
             settings_service: None,
-            setting_providers,
         }
-    }
-
-    /// Register a setting provider for a key
-    fn register_provider(&self, key: &'static str, provider: Arc<dyn SettingProvider>) {
-        self.setting_providers
-            .write()
-            .insert(key.to_string(), provider);
-    }
-
-    /// Get a provider by key
-    #[must_use]
-    pub fn get_provider(&self, key: &str) -> Option<Arc<dyn SettingProvider>> {
-        self.setting_providers.read().get(key).cloned()
     }
 
     pub(crate) fn settings_service(&self) -> Result<&Arc<SettingsService>> {
@@ -334,20 +329,15 @@ impl SettingsStorage {
         self.inner.write().insert(key.to_string(), value);
     }
 
-    /// Set raw string value for a key, persisting to database before updating cache.
-    pub async fn set_raw(&self, key: &str, value: String) -> Result<()> {
-        // Persist to database first — fail fast if the write fails.
-        self.settings_service()?
-            .update(key, value.clone())
-            .await
-            .map_err(|e| {
-                crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
-            })?;
-
-        // Only update in-memory cache after successful DB write
-        self.inner.write().insert(key.to_string(), value);
-
-        Ok(())
+    /// Apply settings that were already committed by `SettingsService`.
+    pub fn apply_persisted_updates(
+        &self,
+        updates: impl IntoIterator<Item = crate::models::settings::RuntimeSetting>,
+    ) {
+        let mut storage = self.inner.write();
+        for setting in updates {
+            storage.insert(setting.key, setting.value);
+        }
     }
 
     pub(crate) async fn set_raw_internal_if_missing(&self, key: &str, value: String) -> Result<()> {
@@ -360,45 +350,6 @@ impl SettingsStorage {
             })?;
         self.inner.write().insert(setting.key, setting.value);
         Ok(())
-    }
-
-    /// Validate a setting value by key
-    #[must_use]
-    pub fn validate(&self, key: &str, value: &str) -> bool {
-        self.get_provider(key)
-            .is_some_and(|p| p.is_valid_raw(value).is_ok())
-    }
-
-    /// List all registered settings together with their default raw values.
-    ///
-    /// The returned vector is sorted by key to keep admin/API output stable.
-    pub fn registered_defaults(&self) -> Result<Vec<(String, String)>> {
-        let mut entries: Vec<(String, String)> = self
-            .setting_providers
-            .read()
-            .values()
-            .filter(|provider| provider.user_visible())
-            .map(|provider| {
-                provider
-                    .default_raw()
-                    .map(|raw| (provider.key().to_string(), raw))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(entries)
-    }
-
-    /// List all registered keys, including runtime-managed hidden settings.
-    #[must_use]
-    pub fn registered_keys(&self) -> Vec<String> {
-        let mut keys: Vec<String> = self
-            .setting_providers
-            .read()
-            .values()
-            .map(|provider| provider.key().to_string())
-            .collect();
-        keys.sort();
-        keys
     }
 }
 
@@ -423,8 +374,6 @@ where
     raw_cache: Arc<RwLock<Option<String>>>,
     default_value: T,
     validator: Arc<RwLock<Option<ValidatorFn<T>>>>,
-    user_writable: Arc<RwLock<bool>>,
-    user_visible: Arc<RwLock<bool>>,
 }
 
 impl<T> Clone for Setting<T>
@@ -440,8 +389,6 @@ where
             raw_cache: self.raw_cache.clone(),
             default_value: self.default_value.clone(),
             validator: self.validator.clone(),
-            user_writable: self.user_writable.clone(),
-            user_visible: self.user_visible.clone(),
         }
     }
 }
@@ -459,23 +406,14 @@ where
     /// * `storage` - Shared settings storage
     /// * `default_value` - Default value if setting doesn't exist
     pub fn new(key: &'static str, storage: Arc<SettingsStorage>, default_value: T) -> Self {
-        let setting = Self {
+        Self {
             key,
             storage,
             cache: Arc::new(RwLock::new(None)),
             raw_cache: Arc::new(RwLock::new(None)),
             default_value,
             validator: Arc::new(RwLock::new(None)),
-            user_writable: Arc::new(RwLock::new(true)),
-            user_visible: Arc::new(RwLock::new(true)),
-        };
-
-        // Auto-register provider
-        setting
-            .storage
-            .register_provider(key, Arc::new(setting.clone()));
-
-        setting
+        }
     }
 
     /// Set a custom validator for this setting
@@ -483,14 +421,15 @@ where
     /// # Example
     ///
     /// ```text
-    /// let max_rooms = setting!(i64, "server.max_rooms", storage, 10)
-    ///     .with_validator(|v| {
-    ///         if *v > 0 && *v <= 1000 {
-    ///             Ok(())
-    ///         } else {
-    ///             Err(anyhow::anyhow!("max_rooms must be between 1 and 1000"))
-    ///         }
-    ///     });
+    /// setting!(MaxRoomsSetting, i64, "room_creation.max_rooms_per_user", 10, |v: &i64| {
+    ///     if *v > 0 && *v <= 1000 {
+    ///         Ok(())
+    ///     } else {
+    ///         Err(anyhow::anyhow!("max_rooms must be between 1 and 1000"))
+    ///     }
+    /// });
+    ///
+    /// let max_rooms = MaxRoomsSetting::new(storage);
     /// ```
     #[must_use]
     pub fn with_validator<F>(self, validator: F) -> Self
@@ -498,20 +437,6 @@ where
         F: Fn(&T) -> Result<()> + Send + Sync + 'static,
     {
         *self.validator.write() = Some(Arc::new(validator));
-        self
-    }
-
-    /// Mark the setting as writable only by runtime internals.
-    #[must_use]
-    pub fn with_user_updates_disabled(self) -> Self {
-        *self.user_writable.write() = false;
-        self
-    }
-
-    /// Hide the setting from user/admin settings projection APIs.
-    #[must_use]
-    pub fn hidden_from_user_projection(self) -> Self {
-        *self.user_visible.write() = false;
         self
     }
 
@@ -566,22 +491,7 @@ where
         }
     }
 
-    /// Set a new value and persist to database
-    pub async fn set(&self, value: T) -> Result<()> {
-        // Validate if validator is set
-        if let Some(validator) = self.validator.read().as_ref() {
-            validator(&value)?;
-        }
-        // Convert to string using standard Display trait
-        let str_value = SettingsStorage::serialize_setting_value(self.key, &value)?;
-        self.storage.set_raw(self.key, str_value).await?;
-        Ok(())
-    }
-
     /// Return the setting value, creating and persisting it with `initializer` when absent.
-    ///
-    /// This bypasses `user_writable` because it is intended for runtime-owned
-    /// settings that are initialized by the server itself.
     pub async fn get_or_initialize_with<F>(&self, initializer: F) -> Result<T>
     where
         F: FnOnce() -> T,
@@ -638,6 +548,17 @@ where
         self.key
     }
 
+    /// Serialize and validate a typed setting value for batch persistence.
+    pub fn update_entry(&self, value: &T) -> Result<(String, String)> {
+        if let Some(validator) = self.validator.read().as_ref() {
+            validator(value)?;
+        }
+        Ok((
+            self.key.to_string(),
+            SettingsStorage::serialize_setting_value(self.key, value)?,
+        ))
+    }
+
     /// Subscribe to typed changes for this concrete setting.
     ///
     /// Call this before reading the initial value when the caller needs a
@@ -645,52 +566,6 @@ where
     /// initial read establishes the current snapshot.
     pub fn subscribe_changes(&self) -> Result<SettingChangeReceiver<T>> {
         self.storage.subscribe_changes(self.key)
-    }
-}
-
-#[async_trait::async_trait]
-impl<T> SettingProvider for Setting<T>
-where
-    T: Clone + Display + std::str::FromStr + Send + Sync + 'static,
-    <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
-{
-    fn key(&self) -> &str {
-        self.key
-    }
-
-    fn default_raw(&self) -> Result<String> {
-        SettingsStorage::serialize_setting_value(self.key, &self.default_value)
-    }
-
-    fn get_raw(&self) -> Option<String> {
-        self.storage.get_raw(self.key)
-    }
-
-    async fn set_raw(&self, value: String) -> Result<()> {
-        // Validate before setting
-        self.is_valid_raw(&value)?;
-        self.storage.set_raw(self.key, value).await
-    }
-
-    fn user_writable(&self) -> bool {
-        *self.user_writable.read()
-    }
-
-    fn user_visible(&self) -> bool {
-        *self.user_visible.read()
-    }
-
-    fn is_valid_raw(&self, value: &str) -> Result<()> {
-        let v = value
-            .parse::<T>()
-            .map_err(|e| crate::Error::InvalidInput(format!("Invalid setting value: {e}")))?;
-
-        // Run custom validator if set
-        if let Some(validator) = self.validator.read().as_ref() {
-            validator(&v)?;
-        }
-
-        Ok(())
     }
 }
 
@@ -753,11 +628,10 @@ mod tests {
     #[test]
     fn test_custom_validator() {
         let validator_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let harness = test_storage_harness();
-        let storage = harness.storage;
+        let storage = test_storage();
 
         let validator_called_clone = Arc::clone(&validator_called);
-        let _setting = Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(
+        let setting = Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(
             move |v: &i64| -> Result<()> {
                 validator_called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
                 if *v > 0 && *v <= 100 {
@@ -770,61 +644,48 @@ mod tests {
             },
         );
 
-        assert!(storage.validate("test.max_items", "50"));
+        assert!(setting.is_valid_raw("50").is_ok());
         assert!(validator_called.load(std::sync::atomic::Ordering::SeqCst));
 
         validator_called.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert!(!storage.validate("test.max_items", "not_a_number"));
+        assert!(setting.is_valid_raw("not_a_number").is_err());
         assert!(!validator_called.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    struct TestStorageHarness {
-        storage: Arc<SettingsStorage>,
-    }
-
-    fn test_storage_harness() -> TestStorageHarness {
-        let providers = Arc::new(RwLock::new(HashMap::default()));
-        let storage = Arc::new(SettingsStorage::new_with_provider_map(providers));
-
-        TestStorageHarness { storage }
+    fn test_storage() -> Arc<SettingsStorage> {
+        Arc::new(SettingsStorage::new_for_tests())
     }
 
     #[test]
-    fn test_storage_validate_bool_setting_accepts_valid() {
-        let harness = test_storage_harness();
-        let storage = harness.storage;
-        let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
+    fn test_bool_setting_accepts_valid_raw_values() {
+        let storage = test_storage();
+        let setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
+        assert!(setting.is_valid_raw("true").is_ok(), "Should accept 'true'");
         assert!(
-            storage.validate("test.enabled", "true"),
-            "Should accept 'true'"
-        );
-        assert!(
-            storage.validate("test.enabled", "false"),
+            setting.is_valid_raw("false").is_ok(),
             "Should accept 'false'"
         );
     }
 
     #[test]
-    fn test_storage_validate_bool_setting_rejects_invalid() {
-        let harness = test_storage_harness();
-        let storage = harness.storage;
-        let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
+    fn test_bool_setting_rejects_invalid_raw_values() {
+        let storage = test_storage();
+        let setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
         assert!(
-            !storage.validate("test.enabled", "not_a_bool"),
+            setting.is_valid_raw("not_a_bool").is_err(),
             "Should reject non-boolean"
         );
-        assert!(!storage.validate("test.enabled", "1"), "Should reject '1'");
+        assert!(setting.is_valid_raw("1").is_err(), "Should reject '1'");
         assert!(
-            !storage.validate("test.enabled", ""),
+            setting.is_valid_raw("").is_err(),
             "Should reject empty string"
         );
     }
 
     #[test]
-    fn test_storage_validate_i64_setting_with_range_validator() {
-        let harness = test_storage_harness();
-        let storage = harness.storage;
-        let _setting =
+    fn test_i64_setting_raw_validation_with_range_validator() {
+        let storage = test_storage();
+        let setting =
             Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(|v: &i64| {
                 if *v > 0 && *v <= 100 {
                     Ok(())
@@ -833,48 +694,27 @@ mod tests {
                 }
             });
 
-        // Valid values
+        assert!(setting.is_valid_raw("1").is_ok(), "Should accept min bound");
         assert!(
-            storage.validate("test.max_items", "1"),
-            "Should accept min bound"
-        );
-        assert!(
-            storage.validate("test.max_items", "50"),
+            setting.is_valid_raw("50").is_ok(),
             "Should accept mid-range"
         );
         assert!(
-            storage.validate("test.max_items", "100"),
+            setting.is_valid_raw("100").is_ok(),
             "Should accept max bound"
         );
-
-        // Invalid values - out of range
+        assert!(setting.is_valid_raw("0").is_err(), "Should reject zero");
         assert!(
-            !storage.validate("test.max_items", "0"),
-            "Should reject zero"
-        );
-        assert!(
-            !storage.validate("test.max_items", "101"),
+            setting.is_valid_raw("101").is_err(),
             "Should reject above max"
         );
         assert!(
-            !storage.validate("test.max_items", "-5"),
+            setting.is_valid_raw("-5").is_err(),
             "Should reject negative"
         );
-
-        // Invalid values - not a number
         assert!(
-            !storage.validate("test.max_items", "abc"),
+            setting.is_valid_raw("abc").is_err(),
             "Should reject non-numeric"
-        );
-    }
-
-    #[test]
-    fn test_storage_validate_unknown_key_rejects() {
-        let harness = test_storage_harness();
-        let storage = harness.storage;
-        assert!(
-            !storage.validate("unknown.key", "anything"),
-            "unknown keys should fail validation"
         );
     }
 
@@ -890,8 +730,8 @@ mod tests {
             sqlx::query!(
                 "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) \
                  ON CONFLICT (key) DO NOTHING",
-                "room.password_policy",
-                "room",
+                crate::service::RoomCreationPasswordPolicySetting::KEY,
+                "room_creation",
                 "required"
             )
             .execute(&pool)
@@ -905,10 +745,10 @@ mod tests {
             "settings service should initialize",
         );
         ok(storage.init(), "settings storage should initialize");
-        storage
-            .inner
-            .write()
-            .insert("room.password_policy".to_string(), "optional".to_string());
+        storage.inner.write().insert(
+            crate::service::RoomCreationPasswordPolicySetting::KEY.to_string(),
+            "optional".to_string(),
+        );
 
         ok(
             storage.reload_all_from_service(),
@@ -916,7 +756,9 @@ mod tests {
         );
 
         assert_eq!(
-            storage.get_raw("room.password_policy").as_deref(),
+            storage
+                .get_raw(crate::service::RoomCreationPasswordPolicySetting::KEY)
+                .as_deref(),
             Some("required"),
             "full snapshot reload must overwrite stale in-memory values"
         );

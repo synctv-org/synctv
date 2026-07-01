@@ -427,7 +427,7 @@ mod tests {
                 }
             };
 
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
         };
 
         assert_eq!(
-            err.status,
+            err.status(),
             StatusCode::SERVICE_UNAVAILABLE,
             "guest room existence backend failures must not be misreported as unauthorized"
         );

@@ -17,8 +17,8 @@ use synctv_core::{
         auth::{BruteForceProtection, JwtService},
         room::RoomServiceOptions,
         AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
-        PublishKeyService, RemoteProviderManager, RoomService, SettingsRegistry, SettingsService,
-        UserService,
+        PublishKeyService, RemoteProviderManager, RoomService, RuntimeSettingsStore,
+        SettingsService, UserService,
     },
     Config,
 };
@@ -153,7 +153,7 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            settings_registry: None,
+            runtime_settings_store: None,
             public_id_codec: Arc::new(public_id_codec()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
@@ -176,12 +176,12 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
         .initialize()
         .await
         .expect("settings initialized");
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
     let room_service = RoomService::new_with_options(
         pool.clone(),
         (*user_service).clone(),
         RoomServiceOptions {
-            settings_registry: Some(settings_registry.clone()),
+            runtime_settings_store: Some(runtime_settings_store.clone()),
             ..RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     )
@@ -206,7 +206,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
             room_service: Arc::new(room_service),
             user_service,
             settings_service,
-            settings_registry: Some(settings_registry),
+            runtime_settings_store: Some(runtime_settings_store),
             email_service,
             connection_service: connection_manager,
             provider_instance_manager,

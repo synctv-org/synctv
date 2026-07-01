@@ -67,7 +67,7 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
-            settings_registry: None,
+            runtime_settings_store: None,
             public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(

@@ -53,7 +53,10 @@ pub(super) async fn guest_admission_denial_reason(
     }
 
     let policy_denial = room_service
-        .check_guest_allowed(room_id, room_service.settings_registry().map(AsRef::as_ref))
+        .check_guest_allowed(
+            room_id,
+            room_service.runtime_settings_store().map(AsRef::as_ref),
+        )
         .await
         .map_or_else(
             |error| match guest_policy_error_to_denial_reason(error) {

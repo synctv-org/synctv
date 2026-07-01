@@ -90,6 +90,7 @@ tonic = { version = "0.14.6", default-features = false, features = [
 tonic-web = "0.14.6"
 tonic-reflection = "0.14.6"
 tonic-health = "0.14.6"
+tonic-types = "0.14.6"
 tonic-build = "0.14.6"
 tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"

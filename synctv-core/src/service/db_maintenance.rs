@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use super::{
     cleanup::CleanupConfig, cleanup_ops, FileStorageCleanupOrigin, FileStorageService, LeaderCheck,
-    SettingsRegistry,
+    RuntimeSettingsStore,
 };
 use crate::repository::FileStorageRepository;
 use crate::service::partitioning::u32_to_i32;
@@ -34,7 +34,7 @@ const FILE_CLEANUP_RETRY_LIMIT: i64 = 100;
 #[derive(Clone, Default)]
 pub struct DatabaseMaintenanceOptions {
     pub config: CleanupConfig,
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
@@ -42,7 +42,7 @@ pub struct DatabaseMaintenanceService {
     pool: PgPool,
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
 }
 
@@ -88,15 +88,15 @@ impl DatabaseMaintenanceService {
             pool,
             config: options.config,
             leader_check,
-            settings_registry: options.settings_registry,
+            runtime_settings_store: options.runtime_settings_store,
             file_storage_service: options.file_storage_service,
         }
     }
 
     /// Get the configured chat message retention period in days.
     fn chat_message_retention_days(&self) -> CoreResult<i64> {
-        match self.settings_registry.as_ref() {
-            Some(registry) => registry.chat_message_retention_days.get(),
+        match self.runtime_settings_store.as_ref() {
+            Some(registry) => registry.chat.message_retention_days.get(),
             None => Ok(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS),
         }
     }
@@ -164,7 +164,7 @@ impl DatabaseMaintenanceService {
     /// Delete all chat messages older than the configured retention cap.
     ///
     /// The retention period is read from `chat.message_retention_days` in the
-    /// settings registry (default: 90 days). This enforces the hard retention
+    /// runtime settings store (default: 90 days). This enforces the hard retention
     /// limit for rooms that are inactive and therefore never processed by the
     /// per-room count-based cleanup (which only targets rooms with recent
     /// activity). Partition pruning makes this fast because the `created_at`
@@ -411,7 +411,7 @@ impl DatabaseMaintenanceService {
             pool: self.pool.clone(),
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
-            settings_registry: self.settings_registry.clone(),
+            runtime_settings_store: self.runtime_settings_store.clone(),
             file_storage_service: self.file_storage_service.clone(),
         };
 

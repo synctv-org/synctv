@@ -19,7 +19,7 @@ use synctv_core::{
     service::{
         auth::{BruteForceProtection, JwtService},
         AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
-        RemoteProviderManager, RuntimeEmailConfigProvider, SettingsRegistry, SettingsService,
+        RemoteProviderManager, RuntimeEmailConfigProvider, RuntimeSettingsStore, SettingsService,
         UserService,
     },
 };
@@ -62,61 +62,159 @@ fn some_value<T>(value: Option<T>, context: &str) -> TestResult<T> {
     }
 }
 
-fn admin_server_settings(
-    group: synctv_proto::admin::SettingsGroup,
-) -> TestResult<synctv_proto::admin::ServerSettings> {
-    match group.settings {
-        Some(synctv_proto::admin::settings_group::Settings::Server(settings)) => Ok(settings),
-        other => Err(test_error(format!(
-            "expected server settings, got {other:?}"
-        ))),
-    }
+fn admin_room_defaults_settings(
+    settings: &synctv_proto::admin::RuntimeSettings,
+) -> TestResult<&synctv_proto::admin::RoomDefaultsSettings> {
+    settings
+        .room_defaults
+        .as_ref()
+        .ok_or_else(|| test_error("expected room_defaults settings"))
+}
+
+fn admin_room_creation_settings(
+    settings: &synctv_proto::admin::RuntimeSettings,
+) -> TestResult<&synctv_proto::admin::RoomCreationSettings> {
+    settings
+        .room_creation
+        .as_ref()
+        .ok_or_else(|| test_error("expected room_creation settings"))
 }
 
 fn admin_email_settings(
-    group: synctv_proto::admin::SettingsGroup,
-) -> TestResult<synctv_proto::admin::EmailSettings> {
-    match group.settings {
-        Some(synctv_proto::admin::settings_group::Settings::Email(settings)) => Ok(settings),
-        other => Err(test_error(format!(
-            "expected email settings, got {other:?}"
-        ))),
+    settings: &synctv_proto::admin::RuntimeSettings,
+) -> TestResult<&synctv_proto::admin::EmailSettings> {
+    settings
+        .email
+        .as_ref()
+        .ok_or_else(|| test_error("expected email settings"))
+}
+
+fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
+    synctv_core::service::RuntimeSettings {
+        room_defaults: synctv_core::service::RoomDefaultsRuntimeSettings {
+            default_max_members: 100,
+            default_max_chat_messages: 500,
+        },
+        permissions: synctv_core::service::PermissionRuntimeSettings {
+            admin_default_permissions:
+                synctv_core::service::global_settings::PermissionSet::admin_default(),
+            member_default_permissions:
+                synctv_core::service::global_settings::PermissionSet::member_default(),
+            guest_default_permissions:
+                synctv_core::service::global_settings::PermissionSet::guest_default(),
+        },
+        room_creation: synctv_core::service::RoomCreationRuntimeSettings {
+            enabled: true,
+            approval_required: false,
+            password_policy: synctv_core::service::RoomPasswordPolicy::Optional,
+            max_rooms_per_user: 10,
+        },
+        user: synctv_core::service::UserRuntimeSettings {
+            enable_password_signup: true,
+            password_signup_need_review: false,
+            enable_email_signup: true,
+            email_signup_need_review: false,
+            enable_webauthn_signup: true,
+            webauthn_signup_need_review: false,
+            enable_guest: true,
+        },
+        oauth2: synctv_core::service::OAuth2RuntimeSettings {
+            providers: synctv_core::service::OAuth2ProviderConfigs::default(),
+        },
+        proxy: synctv_core::service::ProxyRuntimeSettings {
+            movie_proxy: true,
+            live_proxy: true,
+        },
+        rtmp: synctv_core::service::RtmpRuntimeSettings {
+            custom_publish_host: String::new(),
+            ts_disguised_as_png: false,
+        },
+        email: synctv_core::service::EmailRuntimeSettings {
+            enabled: true,
+            smtp_host: "smtp.example.com".to_string(),
+            smtp_port: 587,
+            smtp_username: "smtp-user".to_string(),
+            smtp_password: "smtp-secret".to_string(),
+            use_tls: true,
+            from_email: "noreply@example.com".to_string(),
+            from_name: "SyncTV".to_string(),
+            whitelist_enabled: true,
+            whitelist_domains: vec!["example.com".to_string()],
+        },
+        webrtc: synctv_core::service::WebRtcRuntimeSettings {
+            external_ice_servers: synctv_core::service::IceServerList(Vec::new()),
+        },
+        chat: synctv_core::service::ChatRuntimeSettings {
+            max_messages_per_room: 500,
+            max_pinned_messages_per_room: 20,
+            message_retention_days: 90,
+        },
+        cors: synctv_core::service::CorsRuntimeSettings {
+            allowed_origins: synctv_core::service::global_settings::CorsAllowedOrigins(vec![
+                "https://app.example.com".to_string(),
+            ]),
+        },
     }
 }
 
-fn update_server_settings(
-    max_rooms_per_user: i64,
-) -> synctv_proto::admin::update_settings_request::Settings {
-    synctv_proto::admin::update_settings_request::Settings::Server(
-        synctv_proto::admin::ServerSettings {
-            allow_room_creation: true,
-            max_rooms_per_user,
-            max_members_per_room: 100,
-            max_chat_messages: 500,
-        },
+async fn current_admin_settings(
+    admin_api: &AdminApiImpl,
+) -> TestResult<synctv_proto::admin::RuntimeSettings> {
+    api_ok(
+        admin_api
+            .get_settings(
+                synctv_proto::admin::GetSettingsRequest {},
+                &UserId::new(),
+                &RequestContext::default(),
+            )
+            .await,
     )
 }
 
-fn update_email_settings(
+async fn update_admin_settings(
+    admin_api: &AdminApiImpl,
+    patch: synctv_proto::admin::UpdateSettingsRequest,
+) -> TestResult<synctv_proto::admin::RuntimeSettings> {
+    api_ok(
+        admin_api
+            .update_settings(patch, &UserId::new(), &RequestContext::default())
+            .await,
+    )
+}
+
+fn room_creation_max_rooms_per_user_patch(
+    max_rooms_per_user: i64,
+) -> synctv_proto::admin::UpdateSettingsRequest {
+    synctv_proto::admin::UpdateSettingsRequest {
+        room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
+            max_rooms_per_user: Some(max_rooms_per_user),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+fn email_settings_patch(
     enabled: bool,
     smtp_host: &str,
     smtp_port: u32,
     from_email: &str,
-) -> synctv_proto::admin::update_settings_request::Settings {
-    synctv_proto::admin::update_settings_request::Settings::Email(
-        synctv_proto::admin::EmailSettings {
-            enabled,
-            smtp_host: smtp_host.to_string(),
-            smtp_port,
-            smtp_username: String::new(),
-            smtp_password: String::new(),
-            use_tls: true,
-            from_email: from_email.to_string(),
-            from_name: "SyncTV".to_string(),
-            whitelist_enabled: false,
-            whitelist_domains: Vec::new(),
-        },
-    )
+) -> synctv_proto::admin::UpdateSettingsRequest {
+    synctv_proto::admin::UpdateSettingsRequest {
+        email: Some(synctv_proto::admin::EmailSettingsPatch {
+            enabled: Some(enabled),
+            smtp_host: Some(smtp_host.to_string()),
+            smtp_port: Some(smtp_port),
+            smtp_username: Some(String::new()),
+            use_tls: Some(true),
+            from_email: Some(from_email.to_string()),
+            from_name: Some("SyncTV".to_string()),
+            whitelist_enabled: Some(false),
+            whitelist_domains: Some(synctv_proto::admin::StringList { values: Vec::new() }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 #[test]
@@ -653,13 +751,13 @@ async fn make_admin_api_for_delete_user_test(
             .map_err(|error| error.to_string()),
         "settings initialized",
     );
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
     let room_service = synctv_core::service::RoomService::new_with_providers_and_options(
         pool.clone(),
         (*user_service).clone(),
         Arc::new(providers_manager),
         synctv_core::service::room::RoomServiceOptions {
-            settings_registry: Some(settings_registry.clone()),
+            runtime_settings_store: Some(runtime_settings_store.clone()),
             realtime_outbox: Some(realtime_outbox),
             ..synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(
                 pool.clone(),
@@ -668,7 +766,7 @@ async fn make_admin_api_for_delete_user_test(
     );
     let room_service = fixture_value(room_service, "room service should build");
     let email_service = EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-        &settings_registry,
+        &runtime_settings_store,
     )));
     let email_service = Arc::new(fixture_value(email_service, "email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
@@ -707,7 +805,7 @@ async fn make_admin_api_for_delete_user_test(
                 room_service,
                 user_service,
                 settings_service,
-                settings_registry: Some(settings_registry),
+                runtime_settings_store: Some(runtime_settings_store),
                 email_service,
                 connection_service: connection_manager,
                 provider_instance_manager,
@@ -762,9 +860,9 @@ async fn make_admin_api_with_livestream_for_test(
             .map_err(|error| error.to_string()),
         "settings initialized",
     );
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
     let email_service = EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-        &settings_registry,
+        &runtime_settings_store,
     )));
     let email_service = Arc::new(fixture_value(email_service, "email service"));
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
@@ -819,7 +917,7 @@ async fn make_admin_api_with_livestream_for_test(
                 room_service,
                 user_service,
                 settings_service,
-                settings_registry: Some(settings_registry),
+                runtime_settings_store: Some(runtime_settings_store),
                 email_service,
                 connection_service: connection_manager,
                 provider_instance_manager,
@@ -1223,7 +1321,7 @@ fn test_admin_room_to_proto_basic() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
     let public_id_codec = synctv_core::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
-    let proto = try_admin_room_to_proto(
+    let proto = try_managed_room_to_proto(
         &room,
         Some(&settings),
         Some(10),
@@ -1268,7 +1366,7 @@ fn test_admin_room_to_proto_banned() -> TestResult {
     let public_id_codec = synctv_core::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     room.is_banned = true;
-    let proto = try_admin_room_to_proto(
+    let proto = try_managed_room_to_proto(
         &room,
         Some(&settings),
         Some(0),
@@ -1299,7 +1397,7 @@ fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
         ..Default::default()
     };
 
-    let proto = try_admin_room_to_proto(
+    let proto = try_managed_room_to_proto(
         &room,
         Some(&settings),
         Some(0),
@@ -1323,7 +1421,7 @@ fn test_admin_room_to_proto_different_statuses() -> TestResult {
         let room = make_test_room(status);
         let public_id_codec = synctv_core::PublicIdCodec::plain();
         let settings = synctv_core::models::RoomSettings::default();
-        let proto = try_admin_room_to_proto(
+        let proto = try_managed_room_to_proto(
             &room,
             Some(&settings),
             Some(0),
@@ -1866,7 +1964,7 @@ fn review_rows_preserve_absent_optional_fields() -> TestResult {
             id: RoomId::new(),
             requested_by: UserId::new(),
             requested_by_username: "owner".to_string(),
-            name: "room".to_string(),
+            name: "room_creation".to_string(),
             description: String::new(),
             status: synctv_core::models::ReviewStatus::Pending,
             requested_at,
@@ -1887,7 +1985,7 @@ fn review_rows_preserve_absent_optional_fields() -> TestResult {
         &synctv_core::repository::RoomJoinReviewRecord {
             id: ReviewRequestId::new(),
             room_id: RoomId::new(),
-            room_name: "room".to_string(),
+            room_name: "room_creation".to_string(),
             user_id: UserId::new(),
             username: "joiner".to_string(),
             requested_role: synctv_proto::common::RoomMemberRole::Member as i32,
@@ -2492,62 +2590,82 @@ fn test_proto_role_to_user_role_admin() -> TestResult {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_settings_group_projects_registered_defaults() -> TestResult {
+async fn test_get_settings_projects_registered_defaults() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    let response = api_ok(
-        admin_api
-            .get_settings_group(
-                synctv_proto::admin::GetSettingsGroupRequest {
-                    group: "server".to_string(),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
-
-    let group = some_value(response.group, "settings group response")?;
-    assert_eq!(group.name, "server");
-
-    let settings = admin_server_settings(group)?;
-    assert!(settings.allow_room_creation);
-    assert_eq!(settings.max_rooms_per_user, 10);
-    assert_eq!(settings.max_members_per_room, 100);
-    assert_eq!(settings.max_chat_messages, 500);
+    let settings = current_admin_settings(&admin_api).await?;
+    let room_defaults = admin_room_defaults_settings(&settings)?;
+    let room_creation = admin_room_creation_settings(&settings)?;
+    assert!(room_creation.enabled);
+    assert_eq!(room_creation.max_rooms_per_user, 10);
+    assert_eq!(room_defaults.default_max_members, 100);
+    assert_eq!(room_defaults.default_max_chat_messages, 500);
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_email_settings_group_does_not_project_smtp_password() -> TestResult {
+async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (_admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+    let current = test_runtime_settings();
+    let patch_result = AdminApiImpl::apply_runtime_settings_patch(
+        current,
+        synctv_proto::admin::UpdateSettingsRequest {
+            room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
+                max_rooms_per_user: Some(42),
+                ..Default::default()
+            }),
+            email: Some(synctv_proto::admin::EmailSettingsPatch {
+                smtp_password: Some(String::new()),
+                whitelist_domains: Some(synctv_proto::admin::StringList { values: Vec::new() }),
+                ..Default::default()
+            }),
+            cors: Some(synctv_proto::admin::CorsSettingsPatch {
+                allowed_origins: Some(synctv_proto::admin::StringList { values: Vec::new() }),
+            }),
+            ..Default::default()
+        },
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+
+    let patched = patch_result.settings;
+    assert_eq!(patched.room_creation.max_rooms_per_user, 42);
+    assert!(patched.room_creation.enabled);
+    assert_eq!(patched.email.smtp_host, "smtp.example.com");
+    assert_eq!(patched.email.smtp_password, "");
+    assert!(patched.email.whitelist_domains.is_empty());
+    assert!(patched.cors.allowed_origins.0.is_empty());
+    assert!(patch_result.update_mask.room_creation.max_rooms_per_user);
+    assert!(!patch_result.update_mask.room_creation.enabled);
+    assert!(patch_result.update_mask.email.smtp_password);
+    assert!(!patch_result.update_mask.email.smtp_host);
+    assert!(patch_result.update_mask.email.whitelist_domains);
+    assert!(patch_result.update_mask.cors.allowed_origins);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_settings_does_not_project_smtp_password() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    core_ok(
-        admin_api
-            .settings_service
-            .update("email.smtp_password", "smtp-secret".to_string())
-            .await,
+    let registry = some_value(
+        admin_api.runtime_settings_store.as_ref(),
+        "runtime settings store",
     )?;
+    let mut runtime_settings = registry
+        .runtime_settings()
+        .map_err(|error| test_error(error.to_string()))?;
+    runtime_settings.email.smtp_password = "smtp-secret".to_string();
+    core_ok(registry.persist_runtime_settings(&runtime_settings).await)?;
 
-    let response = api_ok(
-        admin_api
-            .get_settings_group(
-                synctv_proto::admin::GetSettingsGroupRequest {
-                    group: "email".to_string(),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
-
-    let group = some_value(response.group, "settings group response")?;
-    let settings = admin_email_settings(group)?;
-    assert!(!settings.enabled);
-    assert_eq!(settings.smtp_password, "");
+    let settings = current_admin_settings(&admin_api).await?;
+    let email = admin_email_settings(&settings)?;
+    assert!(!email.enabled);
+    assert_eq!(email.smtp_password, None);
     Ok(())
 }
 
@@ -2557,72 +2675,49 @@ async fn test_get_settings_ignores_hidden_registered_settings_without_warning_pa
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    let settings_registry = some_value(admin_api.settings_registry.as_ref(), "settings registry")?;
-    let server_id = core_ok(settings_registry.get_or_initialize_server_id().await)?;
+    let runtime_settings_store = some_value(
+        admin_api.runtime_settings_store.as_ref(),
+        "runtime settings store",
+    )?;
+    let server_id = core_ok(runtime_settings_store.get_or_initialize_server_id().await)?;
     assert!(server_id.starts_with("srv_"));
 
-    let response = api_ok(
-        admin_api
-            .get_settings_group(
-                synctv_proto::admin::GetSettingsGroupRequest {
-                    group: "server".to_string(),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
-
-    let group = some_value(response.group, "settings group response")?;
-    let settings = admin_server_settings(group)?;
-    assert_eq!(settings.max_rooms_per_user, 10);
+    let settings = current_admin_settings(&admin_api).await?;
+    let room_creation = admin_room_creation_settings(&settings)?;
+    assert_eq!(room_creation.max_rooms_per_user, 10);
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_update_settings_maps_group_entries_to_flat_keys_and_upserts_missing_rows(
+async fn test_update_settings_maps_admin_settings_to_flat_keys_and_upserts_missing_rows(
 ) -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    api_ok(
-        admin_api
-            .update_settings(
-                synctv_proto::admin::UpdateSettingsRequest {
-                    group: "server".to_string(),
-                    settings: Some(update_server_settings(42)),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
+    update_admin_settings(&admin_api, room_creation_max_rooms_per_user_patch(42)).await?;
 
     let max_rooms_per_user = core_ok(
         admin_api
             .settings_service
-            .get("server.max_rooms_per_user")
+            .get(synctv_core::service::MaxRoomsPerUserSetting::KEY)
             .await,
     )?;
-    assert_eq!(max_rooms_per_user.group_name, "server");
+    assert_eq!(max_rooms_per_user.group_name, "room_creation");
     assert_eq!(max_rooms_per_user.value, "42");
-
-    let response = api_ok(
+    assert!(
         admin_api
-            .get_settings_group(
-                synctv_proto::admin::GetSettingsGroupRequest {
-                    group: "server".to_string(),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
-    let group = some_value(response.group, "settings group response")?;
-    let settings = admin_server_settings(group)?;
-    assert_eq!(settings.max_rooms_per_user, 42);
-    assert!(settings.allow_room_creation);
+            .settings_service
+            .get(synctv_core::service::RoomCreationEnabledSetting::KEY)
+            .await
+            .is_err(),
+        "partial settings patch should only write present fields"
+    );
+
+    let settings = current_admin_settings(&admin_api).await?;
+    let room_creation = admin_room_creation_settings(&settings)?;
+    assert_eq!(room_creation.max_rooms_per_user, 42);
+    assert!(room_creation.enabled);
     Ok(())
 }
 
@@ -2638,7 +2733,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             room_service: admin_api.room_service.clone(),
             user_service: admin_api.user_service.clone(),
             settings_service: admin_api.settings_service.clone(),
-            settings_registry: admin_api.settings_registry.clone(),
+            runtime_settings_store: admin_api.runtime_settings_store.clone(),
             email_service: admin_api.email_service.clone(),
             connection_service: admin_api.connection_service.clone(),
             provider_instance_manager: admin_api.provider_instance_manager.clone(),
@@ -2659,23 +2754,12 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
         },
     );
 
-    api_ok(
-        admin_api
-            .update_settings(
-                synctv_proto::admin::UpdateSettingsRequest {
-                    group: "server".to_string(),
-                    settings: Some(update_server_settings(43)),
-                },
-                &UserId::new(),
-                &RequestContext::default(),
-            )
-            .await,
-    )?;
+    update_admin_settings(&admin_api, room_creation_max_rooms_per_user_patch(43)).await?;
 
     let max_rooms_per_user = core_ok(
         admin_api
             .settings_service
-            .get("server.max_rooms_per_user")
+            .get(synctv_core::service::MaxRoomsPerUserSetting::KEY)
             .await,
     )?;
     assert_eq!(max_rooms_per_user.value, "43");
@@ -2692,10 +2776,7 @@ async fn test_update_email_settings_rejects_enabled_incomplete_config() -> TestR
     let error = api_err(
         admin_api
             .update_settings(
-                synctv_proto::admin::UpdateSettingsRequest {
-                    group: "email".to_string(),
-                    settings: Some(update_email_settings(true, "", 587, "")),
-                },
+                email_settings_patch(true, "", 587, ""),
                 &UserId::new(),
                 &RequestContext::default(),
             )
@@ -2703,13 +2784,13 @@ async fn test_update_email_settings_rejects_enabled_incomplete_config() -> TestR
     )?;
 
     assert!(
-        matches!(error, ApiError::InvalidInput(ref message) if message.contains("email.smtp_host")),
+        matches!(error, ApiError::InvalidInput(ref message) if message.contains(synctv_core::service::EmailSmtpHostSetting::KEY)),
         "expected missing smtp_host validation error, got: {error:?}"
     );
     assert!(
         admin_api
             .settings_service
-            .get("email.enabled")
+            .get(synctv_core::service::EmailEnabledSetting::KEY)
             .await
             .is_err(),
         "failed email settings update keeps email.enabled absent"
@@ -2723,17 +2804,89 @@ async fn test_update_email_settings_accepts_enabled_complete_config() -> TestRes
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
-    api_ok(
+    update_admin_settings(
+        &admin_api,
+        email_settings_patch(true, "smtp.example.com", 587, "noreply@example.com"),
+    )
+    .await?;
+
+    let enabled = core_ok(
+        admin_api
+            .settings_service
+            .get(synctv_core::service::EmailEnabledSetting::KEY)
+            .await,
+    )?;
+    assert_eq!(enabled.value, "true");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_runtime_settings_persist_rejects_enabled_incomplete_email_config() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+    let registry = some_value(
+        admin_api.runtime_settings_store.as_ref(),
+        "runtime settings store",
+    )?;
+    let mut runtime_settings = registry
+        .runtime_settings()
+        .map_err(|error| test_error(error.to_string()))?;
+    runtime_settings.email.enabled = true;
+
+    let Err(error) = registry.persist_runtime_settings(&runtime_settings).await else {
+        return Err(test_error("expected runtime settings persist error"));
+    };
+
+    assert!(
+        matches!(error, synctv_core::Error::InvalidInput(ref message) if message.contains(synctv_core::service::EmailSmtpHostSetting::KEY)),
+        "expected missing smtp_host validation error, got: {error:?}"
+    );
+    assert!(
+        admin_api
+            .settings_service
+            .get(synctv_core::service::EmailEnabledSetting::KEY)
+            .await
+            .is_err(),
+        "failed core service update keeps email.enabled absent"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_runtime_settings_patch_uses_role_specific_permission_validation() -> TestResult {
+    let (_postgres, pool) = create_test_pool().await;
+    let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
+
+    update_admin_settings(
+        &admin_api,
+        synctv_proto::admin::UpdateSettingsRequest {
+            permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
+                admin_default_permissions: Some(
+                    synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                ),
+                member_default_permissions: Some(
+                    synctv_core::models::RoomAdminPermissionBits::CHAT,
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let error = api_err(
         admin_api
             .update_settings(
                 synctv_proto::admin::UpdateSettingsRequest {
-                    group: "email".to_string(),
-                    settings: Some(update_email_settings(
-                        true,
-                        "smtp.example.com",
-                        587,
-                        "noreply@example.com",
-                    )),
+                    permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
+                        guest_default_permissions: Some(
+                            synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                        ),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
                 },
                 &UserId::new(),
                 &RequestContext::default(),
@@ -2741,8 +2894,10 @@ async fn test_update_email_settings_accepts_enabled_complete_config() -> TestRes
             .await,
     )?;
 
-    let enabled = core_ok(admin_api.settings_service.get("email.enabled").await)?;
-    assert_eq!(enabled.value, "true");
+    assert!(
+        matches!(error, ApiError::InvalidInput(ref message) if message.contains(synctv_core::service::GuestDefaultPermissionsSetting::KEY)),
+        "expected guest permission validation error, got: {error:?}"
+    );
     Ok(())
 }
 
@@ -4133,10 +4288,10 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
         pool.clone(),
     ));
     core_ok(settings_service.initialize().await)?;
-    let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+    let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
     let email_service = Arc::new(fixture_value(
         EmailService::new(Arc::new(RuntimeEmailConfigProvider::new(
-            &settings_registry,
+            &runtime_settings_store,
         ))),
         "email service",
     ));
@@ -4152,7 +4307,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             room_service,
             user_service,
             settings_service,
-            settings_registry: Some(settings_registry),
+            runtime_settings_store: Some(runtime_settings_store),
             email_service,
             connection_service: connection_manager,
             provider_instance_manager,

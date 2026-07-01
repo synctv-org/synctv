@@ -63,8 +63,8 @@ impl PlaybackProviderHttpResponse for LiveProxyHlsSegmentResponse {
         ),
         responses(
             (status = 200, description = "LiveProxy FLV stream"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -93,8 +93,8 @@ pub fn get_live_proxy_flv_stream(
         ),
         responses(
             (status = 200, description = "LiveProxy FLV stream metadata"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -162,8 +162,8 @@ async fn live_proxy_flv_stream(
         ),
         responses(
             (status = 200, description = "LiveProxy HLS playlist"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -219,8 +219,8 @@ pub async fn get_live_proxy_hls_playlist(
         ),
         responses(
             (status = 200, description = "LiveProxy HLS segment"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -257,8 +257,8 @@ pub fn get_live_proxy_hls_segment(
         ),
         responses(
             (status = 200, description = "LiveProxy HLS segment metadata"),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Playback provider resource not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Playback provider resource not found", body = crate::openapi::GoogleRpcStatusSchema)
         )
     )
 )]
@@ -339,6 +339,6 @@ fn live_proxy_deps<'a>(
         live_streaming_infrastructure: state.shared_api_runtime.client_api.live_infrastructure(),
         connection_runtime: state.connection_manager.as_ref(),
         livestream_config: &state.config.livestream,
-        settings_registry: state.settings_registry.as_deref(),
+        runtime_settings_store: state.runtime_settings_store.as_deref(),
     }
 }

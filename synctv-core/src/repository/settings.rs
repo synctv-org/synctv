@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::{Error, Result};
 
-use crate::models::settings::SettingsGroup;
+use crate::models::settings::RuntimeSetting;
 
 /// Settings repository
 #[derive(Clone)]
@@ -20,9 +20,9 @@ impl SettingsRepository {
     }
 
     /// Get all settings
-    pub async fn get_all(&self) -> Result<Vec<SettingsGroup>> {
+    pub async fn get_all(&self) -> Result<Vec<RuntimeSetting>> {
         let groups = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
@@ -37,16 +37,16 @@ impl SettingsRepository {
     }
 
     /// Get a single setting by key
-    pub async fn get(&self, key: &str) -> Result<SettingsGroup> {
+    pub async fn get(&self, key: &str) -> Result<RuntimeSetting> {
         self.get_optional(key)
             .await?
             .ok_or_else(|| Error::NotFound(format!("Setting not found: {key}")))
     }
 
     /// Get a single setting by key, returning `None` when absent.
-    pub async fn get_optional(&self, key: &str) -> Result<Option<SettingsGroup>> {
+    pub async fn get_optional(&self, key: &str) -> Result<Option<RuntimeSetting>> {
         let row = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
@@ -77,7 +77,7 @@ impl SettingsRepository {
         value: &str,
         expected_version: i32,
         new_version: i32,
-    ) -> Result<SettingsGroup> {
+    ) -> Result<RuntimeSetting> {
         if new_version <= expected_version {
             return Err(Error::InvalidInput(format!(
                 "new setting version {new_version} must be greater than expected version {expected_version}"
@@ -85,7 +85,7 @@ impl SettingsRepository {
         }
 
         let row = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, $5)
@@ -126,9 +126,9 @@ impl SettingsRepository {
     /// A database trigger on the `settings` table automatically sends a
     /// NOTIFY on the `settings_changed` channel so other replicas can
     /// reload the changed setting.
-    pub async fn update(&self, key: &str, value: &str) -> Result<SettingsGroup> {
+    pub async fn update(&self, key: &str, value: &str) -> Result<RuntimeSetting> {
         let row = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             UPDATE settings
             SET value = $1, version = version + 1, updated_at = NOW()
@@ -148,9 +148,9 @@ impl SettingsRepository {
     }
 
     /// Insert or update a setting value by key.
-    pub async fn upsert(&self, key: &str, group_name: &str, value: &str) -> Result<SettingsGroup> {
+    pub async fn upsert(&self, key: &str, group_name: &str, value: &str) -> Result<RuntimeSetting> {
         let row = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             INSERT INTO settings (key, group_name, value, version)
             VALUES ($1, $2, $3, 0)
@@ -186,16 +186,16 @@ impl SettingsRepository {
     /// * `expected_version` - The version the caller expects (from previous get)
     ///
     /// # Returns
-    /// * `Ok(SettingsGroup)` - Updated setting with new version
+    /// * `Ok(RuntimeSetting)` - Updated setting with new version
     /// * `Err(OptimisticLockConflict)` - Version mismatch, update rejected
     pub async fn update_with_version(
         &self,
         key: &str,
         value: &str,
         expected_version: i32,
-    ) -> Result<SettingsGroup> {
+    ) -> Result<RuntimeSetting> {
         let row = sqlx::query_as!(
-            SettingsGroup,
+            RuntimeSetting,
             r"
             UPDATE settings
             SET value = $1, version = version + 1, updated_at = NOW()

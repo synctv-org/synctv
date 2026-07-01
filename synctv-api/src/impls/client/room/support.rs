@@ -11,7 +11,7 @@ use super::super::media::required_stored_file_fields;
 use super::super::media::upload_session_fields;
 use super::super::ClientApiImpl;
 
-pub(super) fn settings_registry_unavailable_error() -> ApiError {
+pub(super) fn runtime_settings_store_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable("Public settings are not available on this server.".to_string())
 }
 

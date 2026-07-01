@@ -211,7 +211,7 @@ pub(crate) fn file_object_download_response(
     let body_stream = download.stream.map(|chunk| {
         chunk.map_err(|error| {
             let app_error = AppError::from(error);
-            std::io::Error::other(app_error.message)
+            std::io::Error::other(app_error.message().to_string())
         })
     });
     let mut response = (StatusCode::OK, Body::from_stream(body_stream)).into_response();
@@ -274,7 +274,7 @@ pub struct RouterConfig {
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
-    pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     pub email_service: Option<Arc<synctv_core::service::EmailService>>,
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
@@ -558,7 +558,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
             publish_key_service: config.publish_key_service.clone(),
             jwt_service: config.jwt_service.clone(),
             live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
-            settings_registry: config.settings_registry.clone(),
+            runtime_settings_store: config.runtime_settings_store.clone(),
             public_id_codec: public_id_codec.clone(),
             chat_service: config.chat_service.clone(),
             provider_stores: provider_stores.clone(),
@@ -585,12 +585,15 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         let email_svc = if let Some(email_service) = config.email_service.clone() {
             email_service
         } else {
-            let settings_registry = config.settings_registry.clone().ok_or_else(|| {
-                anyhow::anyhow!("settings_registry is required to build the admin email service")
-            })?;
+            let runtime_settings_store =
+                config.runtime_settings_store.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "runtime_settings_store is required to build the admin email service"
+                    )
+                })?;
             Arc::new(
                 synctv_core::service::EmailService::new(Arc::new(
-                    synctv_core::service::RuntimeEmailConfigProvider::new(&settings_registry),
+                    synctv_core::service::RuntimeEmailConfigProvider::new(&runtime_settings_store),
                 ))
                 .map_err(|error| {
                     anyhow::anyhow!("Failed to build runtime admin email service: {error}")
@@ -603,7 +606,7 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
                 user_service: config.user_service.clone(),
                 read_pool: config.read_pool.clone(),
                 settings_service: settings_svc.clone(),
-                settings_registry: config.settings_registry.clone(),
+                runtime_settings_store: config.runtime_settings_store.clone(),
                 email_service: email_svc,
                 connection_service: config.connection_manager.clone(),
                 provider_instance_manager: config.provider_instance_manager.clone(),
@@ -802,7 +805,7 @@ pub(crate) mod body_limits {
 fn register_auth_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/api/oauth2/{provider}/exchange",
+            "/api/oauth2/exchange",
             post(oauth2::exchange_authorization_code),
         )
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))

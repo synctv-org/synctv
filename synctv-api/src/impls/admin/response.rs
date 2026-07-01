@@ -4,8 +4,8 @@ use synctv_core::models::UserId;
 use synctv_core::service::UserService;
 
 use super::{
-    try_admin_room_member_to_proto_with_settings, try_admin_room_to_proto, try_admin_user_to_proto,
-    AdminApiImpl, ApiError,
+    try_admin_room_member_to_proto_with_settings, try_admin_user_to_proto,
+    try_managed_room_to_proto, AdminApiImpl, ApiError,
 };
 
 pub(in crate::impls::admin) async fn load_creator_user_map(
@@ -119,7 +119,7 @@ impl AdminApiImpl {
         &self,
         room: &synctv_core::models::Room,
         settings: Option<&synctv_core::models::RoomSettings>,
-    ) -> Result<synctv_proto::admin::AdminRoom, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         let loaded_settings;
         let settings = if let Some(settings) = settings {
             settings
@@ -150,7 +150,7 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         let cover = self.room_cover_for_admin(room).await?;
 
-        try_admin_room_to_proto(
+        try_managed_room_to_proto(
             room,
             Some(settings),
             member_count,

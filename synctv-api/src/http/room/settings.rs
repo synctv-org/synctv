@@ -8,11 +8,10 @@ use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ClearRoomPasswordRequest, FinishRoomPasswordLoginRequest,
-    FinishRoomPasswordRegistrationRequest, JoinRoomResponse, ResetRoomSettingsResponse,
+    FinishRoomPasswordRegistrationRequest, JoinRoomResponse, ResetRoomSettingsResponse, Room,
     SetRoomPasswordResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
     TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdateRoomSettingsRequest,
-    UpdateRoomSettingsResponse,
 };
 
 #[cfg_attr(
@@ -27,9 +26,9 @@ use synctv_proto::client::{
         request_body = StartRoomPasswordLoginRequest,
         responses(
             (status = 200, description = "Room password login challenge created", body = StartRoomPasswordLoginResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -80,9 +79,9 @@ pub async fn start_room_password_login(
         request_body = FinishRoomPasswordLoginRequest,
         responses(
             (status = 200, description = "Joined room", body = JoinRoomResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -133,8 +132,8 @@ pub async fn finish_room_password_login(
         request_body = StartRoomPasswordRegistrationRequest,
         responses(
             (status = 200, description = "Room password registration challenge created", body = StartRoomPasswordRegistrationResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -176,8 +175,8 @@ pub async fn start_room_password_registration(
         request_body = FinishRoomPasswordRegistrationRequest,
         responses(
             (status = 200, description = "Room password updated", body = SetRoomPasswordResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -218,8 +217,8 @@ pub async fn finish_room_password_registration(
         ),
         responses(
             (status = 200, description = "Room password cleared", body = SetRoomPasswordResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -263,8 +262,8 @@ pub async fn clear_room_password(
         ),
         responses(
             (status = 200, description = "Room settings", body = synctv_proto::client::GetRoomSettingsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -301,9 +300,9 @@ pub async fn get_room_settings(
         ),
         request_body = UpdateRoomSettingsRequest,
         responses(
-            (status = 200, description = "Room settings updated", body = UpdateRoomSettingsResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 200, description = "Room settings updated", body = Room),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -315,7 +314,7 @@ pub async fn update_room_settings(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<UpdateRoomSettingsRequest>,
-) -> AppResult<Json<UpdateRoomSettingsResponse>> {
+) -> AppResult<Json<Room>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -345,9 +344,9 @@ pub async fn update_room_settings(
         request_body = TransferRoomOwnershipRequest,
         responses(
             (status = 200, description = "Room ownership transferred", body = TransferRoomOwnershipResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Permission denied", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -388,7 +387,7 @@ pub async fn transfer_room_ownership(
         ),
         responses(
             (status = 200, description = "Room settings reset", body = ResetRoomSettingsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

@@ -75,7 +75,7 @@ pub struct ChatService {
     audit_service: Option<Arc<AuditService>>,
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
-    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     reaction_detail_cache: AsyncCache<ChatReactionDetailCacheKey, ChatReactionUsersPage>,
 }
 
@@ -107,7 +107,7 @@ pub struct ChatDependencies {
     pub file_storage_service: Arc<dyn FileStorageService>,
     pub audit_service: Option<Arc<AuditService>>,
     pub notification_service: NotificationService,
-    pub settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
 }
 
 impl std::fmt::Debug for ChatService {
@@ -136,7 +136,7 @@ impl ChatService {
             file_storage_service,
             audit_service,
             notification_service,
-            settings_registry,
+            runtime_settings_store,
         } = dependencies;
 
         Self {
@@ -150,7 +150,7 @@ impl ChatService {
             file_storage_service,
             audit_service,
             notification_service,
-            settings_registry,
+            runtime_settings_store,
             reaction_detail_cache: AsyncCache::builder()
                 .max_capacity(CHAT_REACTION_DETAIL_CACHE_CAPACITY)
                 .time_to_live(Duration::from_secs(CHAT_REACTION_DETAIL_CACHE_TTL_SECS))
@@ -261,10 +261,13 @@ impl ChatService {
     }
 
     fn max_pinned_chat_messages_per_room(&self) -> Result<Option<i64>> {
-        let Some(settings_registry) = &self.settings_registry else {
+        let Some(runtime_settings_store) = &self.runtime_settings_store else {
             return Ok(None);
         };
-        let limit = settings_registry.max_pinned_chat_messages_per_room.get()?;
+        let limit = runtime_settings_store
+            .chat
+            .max_pinned_messages_per_room
+            .get()?;
         if limit == 0 {
             return Ok(None);
         }
@@ -1575,7 +1578,7 @@ impl ChatService {
     /// providing near real-time message limit enforcement without scanning inactive rooms.
     ///
     /// # Arguments
-    /// * `settings_registry` - Settings registry to get `max_chat_messages` setting
+    /// * `runtime_settings_store` - Runtime settings store to get `max_chat_messages` setting
     /// * `interval_seconds` - Cleanup interval in seconds (default: 60 seconds)
     /// * `activity_window_minutes` - Only cleanup rooms with messages in the last N minutes (default: 3 minutes)
     ///
@@ -1584,7 +1587,7 @@ impl ChatService {
     #[must_use]
     pub fn start_cleanup_task(
         self,
-        settings_registry: Arc<crate::service::SettingsRegistry>,
+        runtime_settings_store: Arc<crate::service::RuntimeSettingsStore>,
         interval_seconds: u64,
         activity_window_minutes: i32,
         cancel: tokio_util::sync::CancellationToken,
@@ -1603,8 +1606,9 @@ impl ChatService {
                 }
 
                 // Get current max_chat_messages_per_room setting
-                let max_messages = settings_registry
-                    .max_chat_messages_per_room
+                let max_messages = runtime_settings_store
+                    .chat
+                    .max_messages_per_room
                     .get()
                     .unwrap_or(500);
 

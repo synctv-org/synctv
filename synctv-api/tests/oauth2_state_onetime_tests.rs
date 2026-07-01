@@ -17,7 +17,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::UserId;
-use synctv_core::service::{local_oauth_state_store, OAuth2State, OAuthStateStore};
+use synctv_core::service::{
+    local_oauth_state_store, OAuth2Operation, OAuth2State, OAuthStateStore,
+};
 
 // Helper functions
 
@@ -32,7 +34,8 @@ fn create_test_state(instance_name: &str) -> OAuth2State {
         instance_name: instance_name.to_string(),
         redirect_url: Some("/dashboard".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "test_verifier_abc123".to_string(),
         nonce: None,
     }
@@ -107,7 +110,8 @@ async fn test_oauth2_state_expired_fails() {
         instance_name: "github".to_string(),
         redirect_url: None,
         created_at: expired_time,
-        bind_user_id: None,
+        operation: OAuth2Operation::Login,
+        target_user_id: None,
         pkce_verifier: "expired_verifier".to_string(),
         nonce: None,
     };
@@ -152,7 +156,8 @@ async fn test_oauth2_state_different_tokens_independent() {
         instance_name: "logto1".to_string(),
         redirect_url: Some("/profile".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: Some(UserId::new()),
+        operation: OAuth2Operation::Bind,
+        target_user_id: Some(UserId::new()),
         pkce_verifier: "verifier_logto".to_string(),
         nonce: None,
     };
@@ -246,15 +251,16 @@ async fn test_oauth2_state_concurrent_only_one_succeeds() {
 }
 
 #[tokio::test]
-async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
+async fn test_oauth2_state_with_target_user_id_consumed_correctly() {
     let state_store = create_state_store();
 
-    let bind_user_id = UserId::new();
+    let target_user_id = UserId::new();
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: Some("/settings".to_string()),
         created_at: chrono::Utc::now(),
-        bind_user_id: Some(bind_user_id),
+        operation: OAuth2Operation::Bind,
+        target_user_id: Some(target_user_id),
         pkce_verifier: "bind_verifier".to_string(),
         nonce: None,
     };
@@ -275,7 +281,7 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
     assert!(result.is_some());
     let retrieved = result.unwrap();
     assert_eq!(retrieved.instance_name, "github");
-    assert_eq!(retrieved.bind_user_id, Some(bind_user_id));
+    assert_eq!(retrieved.target_user_id, Some(target_user_id));
 
     // Second use should fail
     let second = state_store

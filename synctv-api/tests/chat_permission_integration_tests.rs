@@ -118,7 +118,7 @@ fn make_chat_service_with_audit(
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service,
             notification_service: NotificationService::default(),
-            settings_registry: None,
+            runtime_settings_store: None,
         },
     ))
 }
@@ -140,7 +140,7 @@ fn make_client_api(
             publish_key_service: None,
             jwt_service: JwtService::new(TEST_JWT_SECRET).unwrap(),
             live_streaming_infrastructure: None,
-            settings_registry: None,
+            runtime_settings_store: None,
             public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
             chat_service: Some(chat_service),
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(

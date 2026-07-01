@@ -1008,13 +1008,13 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
         ),
         responses(
             (status = 101, description = "Switching Protocols. The HTTP connection is upgraded to a WebSocket stream after authentication, room membership, origin, and runtime checks pass."),
-            (status = 400, description = "Invalid room_id or ticket format", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Missing authentication, invalid or expired token, or invalid or expired ticket", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Origin rejected, room banned, or caller is not allowed to connect to the room", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Room not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "WebSocket handshake timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited or connection limit exceeded", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Realtime runtime or ticket backend unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid room_id or ticket format", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Missing authentication, invalid or expired token, or invalid or expired ticket", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Origin rejected, room banned, or caller is not allowed to connect to the room", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Room not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "WebSocket handshake timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited or connection limit exceeded", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Realtime runtime or ticket backend unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         )
 )]
 pub(crate) const fn websocket_room_connect_doc() {}

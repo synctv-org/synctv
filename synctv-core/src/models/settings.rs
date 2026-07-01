@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// One flat runtime setting row.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
-pub struct SettingsGroup {
+pub struct RuntimeSetting {
     pub key: String,
     /// Rust field matches the database column; JSON/API keeps the shorter `group` name.
     #[serde(rename = "group")]
@@ -16,8 +16,8 @@ pub struct SettingsGroup {
     pub updated_at: DateTime<Utc>,
 }
 
-impl SettingsGroup {
-    /// Create a new settings group
+impl RuntimeSetting {
+    /// Create a new runtime setting
     #[must_use]
     pub fn new(group_name: String, value: String) -> Self {
         Self {
@@ -50,17 +50,20 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_group_new_auto_key() {
-        let sg = SettingsGroup::new("email".to_string(), "{}".to_string());
+    fn test_runtime_setting_new_auto_key() {
+        let sg = RuntimeSetting::new("email".to_string(), "{}".to_string());
         assert_eq!(sg.key, "email.default");
         assert_eq!(sg.group_name, "email");
         assert_eq!(sg.value, "{}");
     }
 
     #[test]
-    fn test_settings_group_json_field_name_is_group() {
-        let sg = SettingsGroup::new("email".to_string(), r#"{"enabled":true}"#.to_string());
-        let json = ok(serde_json::to_value(&sg), "settings group should serialize");
+    fn test_runtime_setting_json_field_name_is_group() {
+        let sg = RuntimeSetting::new("email".to_string(), r#"{"enabled":true}"#.to_string());
+        let json = ok(
+            serde_json::to_value(&sg),
+            "runtime setting should serialize",
+        );
 
         assert!(
             json.get("group").is_some(),
@@ -74,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_group_deserialize_from_group_field() {
+    fn test_runtime_setting_deserialize_from_group_field() {
         let json = serde_json::json!({
             "key": "server.default",
             "group": "server",
@@ -84,9 +87,9 @@ mod tests {
             "version": 0
         });
 
-        let sg: SettingsGroup = ok(
+        let sg: RuntimeSetting = ok(
             serde_json::from_value(json),
-            "settings group should deserialize",
+            "runtime setting should deserialize",
         );
         assert_eq!(sg.key, "server.default");
         assert_eq!(sg.group_name, "server");

@@ -4,6 +4,7 @@ use super::streaming::{
 use super::*;
 use synctv_core::models::UserId;
 use synctv_proto::client::{ClientMessage, ServerMessage};
+use tonic_types::StatusExt;
 
 type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -11,11 +12,11 @@ fn test_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(message.into())
 }
 
-fn metadata_error_code(status: &Status) -> Option<&str> {
+fn detail_error_code(status: &Status) -> Option<String> {
     status
-        .metadata()
-        .get(crate::grpc_support::ERROR_CODE_METADATA_KEY)
-        .and_then(|value| value.to_str().ok())
+        .get_error_details()
+        .error_info()
+        .and_then(|detail| detail.metadata.get("errorCode").cloned())
 }
 
 #[test]
@@ -118,7 +119,7 @@ fn test_message_stream_user_lookup_backend_outage_stays_unavailable() {
     ));
     assert_eq!(status.code(), tonic::Code::Unavailable);
     assert_eq!(status.message(), "user backend unavailable");
-    assert_eq!(metadata_error_code(&status), Some("9002"));
+    assert_eq!(detail_error_code(&status).as_deref(), Some("9002"));
 }
 
 #[test]
@@ -128,27 +129,27 @@ fn test_message_stream_room_lookup_not_found_stays_not_found() {
     )));
     assert_eq!(status.code(), tonic::Code::NotFound);
     assert_eq!(status.message(), "Room not found");
-    assert_eq!(metadata_error_code(&status), Some("2000"));
+    assert_eq!(detail_error_code(&status).as_deref(), Some("2000"));
 }
 
 #[test]
 fn test_message_stream_direct_admission_errors_include_application_code() {
     let invalid = invalid_argument_status("Missing x-room-id header");
     assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
-    assert_eq!(metadata_error_code(&invalid), Some("3000"));
+    assert_eq!(detail_error_code(&invalid).as_deref(), Some("3000"));
 
     let unauthenticated = unauthenticated_status("Invalid authorization header");
     assert_eq!(unauthenticated.code(), tonic::Code::Unauthenticated);
-    assert_eq!(metadata_error_code(&unauthenticated), Some("1000"));
+    assert_eq!(detail_error_code(&unauthenticated).as_deref(), Some("1000"));
 
     let denied = permission_denied_status("This room has been banned");
     assert_eq!(denied.code(), tonic::Code::PermissionDenied);
-    assert_eq!(metadata_error_code(&denied), Some("4000"));
+    assert_eq!(detail_error_code(&denied).as_deref(), Some("4000"));
 
     let unavailable =
         unavailable_status("Real-time messaging requires realtime manager (Redis not configured)");
     assert_eq!(unavailable.code(), tonic::Code::Unavailable);
-    assert_eq!(metadata_error_code(&unavailable), Some("9002"));
+    assert_eq!(detail_error_code(&unavailable).as_deref(), Some("9002"));
 }
 
 #[test]

@@ -128,12 +128,12 @@ fn test_realtime_transport_format_accepts_protobuf() -> TestResult {
 #[test]
 fn test_realtime_transport_format_rejects_unknown_values() -> TestResult {
     let err = app_err(RealtimeTransportFormat::parse(Some("xml")))?;
-    assert_eq!(err.status, StatusCode::BAD_REQUEST);
-    assert!(err.message.contains("Invalid format"));
+    assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    assert!(err.message().contains("Invalid format"));
 
     let err = app_err(RealtimeTransportFormat::parse(Some("proto")))?;
-    assert_eq!(err.status, StatusCode::BAD_REQUEST);
-    assert!(err.message.contains("Invalid format"));
+    assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    assert!(err.message().contains("Invalid format"));
     Ok(())
 }
 
@@ -166,8 +166,8 @@ fn test_websocket_request_metadata_rejects_non_utf8_user_agent() -> TestResult {
 
     let err = app_err(websocket_request_metadata(&config, &headers, None))?;
 
-    assert_eq!(err.status, StatusCode::BAD_REQUEST);
-    assert!(err.message.contains("Invalid user-agent header"));
+    assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+    assert!(err.message().contains("Invalid user-agent header"));
     Ok(())
 }
 
@@ -298,8 +298,8 @@ fn test_auth_priority_invalid_utf8_header_is_not_ignored() -> TestResult {
     );
 
     let err = app_err(extract_authorization_bearer_token(&headers))?;
-    assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
-    assert!(err.message.contains("non-UTF-8"));
+    assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
+    assert!(err.message().contains("non-UTF-8"));
     Ok(())
 }
 
@@ -332,21 +332,21 @@ fn test_unauthorized_error_for_missing_auth() {
     let err = AppError::unauthorized(
         "Missing authentication: provide token via Authorization header or ?ticket=",
     );
-    assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
-    assert!(err.message.contains("Missing authentication"));
+    assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
+    assert!(err.message().contains("Missing authentication"));
 }
 
 #[test]
 fn test_forbidden_error_for_non_member() {
     let err = AppError::forbidden("Not a member of this room");
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
 }
 
 #[test]
 fn test_unauthorized_error_for_revoked_token() {
     let err = AppError::unauthorized("Token has been revoked");
-    assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
-    assert_eq!(err.message, "Token has been revoked");
+    assert_eq!(err.status(), axum::http::StatusCode::UNAUTHORIZED);
+    assert_eq!(err.message(), "Token has been revoked");
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn test_validate_websocket_origin_rejects_same_host_with_mismatched_scheme() -> 
         Some("127.0.0.1".parse()?),
         &config.server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     Ok(())
 }
 
@@ -443,8 +443,8 @@ fn test_validate_websocket_origin_rejects_non_utf8_host() -> TestResult {
         None,
         &synctv_core::Config::default().server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    assert!(err.message.contains("Host"));
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(err.message().contains("Host"));
     Ok(())
 }
 
@@ -460,16 +460,16 @@ fn test_validate_websocket_origin_rejects_malformed_host_port() -> TestResult {
         None,
         &synctv_core::Config::default().server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    assert!(err.message.contains("Host"));
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(err.message().contains("Host"));
     Ok(())
 }
 
 #[test]
 fn test_split_host_and_port_rejects_malformed_ipv6_host_header() -> TestResult {
     let err = app_err(split_host_and_port("[::1:8080"))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    assert!(err.message.contains("Host"));
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(err.message().contains("Host"));
     Ok(())
 }
 
@@ -492,8 +492,8 @@ fn test_validate_websocket_origin_rejects_non_utf8_forwarded_proto_from_trusted_
         Some("127.0.0.1".parse()?),
         &config.server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    assert!(err.message.contains("x-forwarded-proto"));
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(err.message().contains("x-forwarded-proto"));
     Ok(())
 }
 
@@ -541,7 +541,7 @@ fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_p
         Some(direct_peer_ip),
         &config.server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
 
     app_ok(validate_websocket_origin(
         &headers,
@@ -572,8 +572,8 @@ fn test_validate_websocket_origin_rejects_unconfigured_cross_origin() -> TestRes
         None,
         &synctv_core::Config::default().server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-    assert!(err.message.contains("Origin"));
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
+    assert!(err.message().contains("Origin"));
     Ok(())
 }
 
@@ -589,7 +589,7 @@ fn test_validate_websocket_origin_rejects_null_origin() -> TestResult {
         None,
         &synctv_core::Config::default().server,
     ))?;
-    assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     Ok(())
 }
 
@@ -597,7 +597,7 @@ fn test_validate_websocket_origin_rejects_null_origin() -> TestResult {
 fn test_validate_websocket_runtime_dependency_flags_require_realtime_and_chat_services(
 ) -> TestResult {
     let err = app_err(validate_websocket_runtime_dependency_flags(false))?;
-    assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
 
     app_ok(validate_websocket_runtime_dependency_flags(true))?;
     Ok(())
@@ -623,8 +623,8 @@ async fn test_websocket_handshake_timeout_returns_request_timeout_error() -> Tes
 
     let err = app_err(timeout_task.await?)?;
 
-    assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
-    assert_eq!(err.message, "WebSocket handshake timed out");
+    assert_eq!(err.status(), StatusCode::REQUEST_TIMEOUT);
+    assert_eq!(err.message(), "WebSocket handshake timed out");
     Ok(())
 }
 
@@ -672,7 +672,7 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
     tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 
     let err = app_err(timeout_task.await?)?;
-    assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
+    assert_eq!(err.status(), StatusCode::REQUEST_TIMEOUT);
 
     assert!(
         manager.reserve_user_slot(&user_id).is_ok(),
@@ -688,8 +688,8 @@ async fn test_handshake_timeout_releases_reserved_capacity_without_marking_prese
 #[test]
 fn test_room_not_found_maps_to_not_found_error_during_websocket_prepare() {
     let err = AppError::from(synctv_core::Error::NotFound("Room not found".to_string()));
-    assert_eq!(err.status, StatusCode::NOT_FOUND);
-    assert_eq!(err.message, "Room not found");
+    assert_eq!(err.status(), StatusCode::NOT_FOUND);
+    assert_eq!(err.message(), "Room not found");
 }
 
 #[tokio::test]
@@ -702,9 +702,9 @@ async fn test_load_websocket_username_fails_closed_on_storage_error() {
         .await
         .expect_err("username lookup infrastructure failures must fail closed");
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
+        err.message().contains("temporarily unavailable"),
         "username lookup outages should surface as retryable handshake failures"
     );
 }
@@ -715,9 +715,9 @@ fn test_map_security_pipeline_error_maps_backend_outages_to_service_unavailable(
         "Authentication service temporarily unavailable".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
+        err.message().contains("temporarily unavailable"),
         "websocket auth backend outages should remain retryable"
     );
 }
@@ -728,9 +728,9 @@ fn test_map_websocket_ticket_validation_error_preserves_backend_outages() {
         "Authentication service temporarily unavailable".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
+        err.message().contains("temporarily unavailable"),
         "ticket validation outages should not be collapsed into invalid-ticket 401s"
     );
 }
@@ -741,8 +741,8 @@ fn test_map_websocket_ticket_validation_error_keeps_invalid_ticket_as_401() {
         "Invalid or expired ticket".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(err.message, "Invalid or expired ticket");
+    assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(err.message(), "Invalid or expired ticket");
 }
 
 #[test]
@@ -751,8 +751,8 @@ fn test_map_websocket_ticket_validation_error_keeps_room_mismatch_as_403() {
         "Ticket not valid for this room".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::FORBIDDEN);
-    assert_eq!(err.message, "Ticket not valid for this room");
+    assert_eq!(err.status(), StatusCode::FORBIDDEN);
+    assert_eq!(err.message(), "Ticket not valid for this room");
 }
 
 #[test]
@@ -785,9 +785,9 @@ fn test_map_websocket_membership_probe_error_preserves_backend_outages() {
         "membership backend temporarily unavailable".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
+        err.message().contains("temporarily unavailable"),
         "websocket membership probe outages should remain retryable"
     );
 }
@@ -841,11 +841,11 @@ async fn test_validate_websocket_room_membership_rejects_room_with_inactive_crea
         ));
     };
 
-    assert_eq!(err.status, StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), StatusCode::FORBIDDEN);
     assert!(
-        err.message.contains("creator is not active"),
+        err.message().contains("creator is not active"),
         "expected creator-inactive error, got: {}",
-        err.message
+        err.message()
     );
 
     pool.close().await;
@@ -858,8 +858,8 @@ fn test_map_websocket_pre_join_error_maps_typed_rate_limit_prefix() {
         "realtime room capacity exceeded".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(err.message, "realtime room capacity exceeded");
+    assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(err.message(), "realtime room capacity exceeded");
 }
 
 #[test]
@@ -868,8 +868,8 @@ fn test_map_websocket_pre_join_error_maps_raw_capacity_error() {
         "Room at capacity (42 connections, max: 40)".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(err.message, "Room at capacity (42 connections, max: 40)");
+    assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(err.message(), "Room at capacity (42 connections, max: 40)");
 }
 
 #[test]
@@ -878,9 +878,9 @@ fn test_map_websocket_pre_join_error_maps_raw_user_capacity_error() {
         "Too many connections for this user across all replicas (max 3)".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        err.message,
+        err.message(),
         "Too many connections for this user across all replicas (max 3)"
     );
 }
@@ -891,9 +891,9 @@ fn test_map_websocket_pre_join_error_maps_raw_total_capacity_error() {
         "Server at capacity across all replicas (42 connections)".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(
-        err.message,
+        err.message(),
         "Server at capacity across all replicas (42 connections)"
     );
 }
@@ -904,10 +904,11 @@ fn test_map_websocket_pre_join_error_maps_typed_service_unavailable_prefix() {
         "distributed room capacity check unavailable".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
-        "typed service-unavailable pre-join failures should remain retryable"
+        err.message()
+            .contains("distributed room capacity check unavailable"),
+        "typed service-unavailable pre-join failures should preserve retryable cause"
     );
 }
 
@@ -920,10 +921,10 @@ fn test_map_websocket_pre_join_error_maps_raw_degraded_cluster_error() {
         ),
     );
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
-        "raw degraded-cluster pre-join failures should remain retryable"
+        err.message().contains("cluster Redis is degraded"),
+        "raw degraded-cluster pre-join failures should preserve retryable cause"
     );
 }
 
@@ -936,10 +937,10 @@ fn test_map_websocket_pre_join_error_maps_raw_degraded_user_check_error() {
         ),
     );
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
-        "raw degraded user-check failures should remain retryable"
+        err.message().contains("cluster Redis is degraded"),
+        "raw degraded user-check failures should preserve retryable cause"
     );
 }
 
@@ -952,10 +953,10 @@ fn test_map_websocket_pre_join_error_maps_raw_degraded_total_check_error() {
         ),
     );
 
-    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
-        err.message.contains("temporarily unavailable"),
-        "raw degraded total-check failures should remain retryable"
+        err.message().contains("cluster Redis is degraded"),
+        "raw degraded total-check failures should preserve retryable cause"
     );
 }
 
@@ -965,9 +966,9 @@ fn test_map_websocket_pre_join_error_maps_business_denial_to_forbidden() {
         "User is no longer allowed to use real-time messaging".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::FORBIDDEN);
+    assert_eq!(err.status(), StatusCode::FORBIDDEN);
     assert_eq!(
-        err.message,
+        err.message(),
         "User is no longer allowed to use real-time messaging"
     );
 }
@@ -978,8 +979,8 @@ fn test_map_websocket_pre_join_error_hides_unexpected_internal_details() {
         "cluster subscription cache blew up".to_string(),
     ));
 
-    assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(err.message, "Internal error");
+    assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(err.message(), "Internal error");
 }
 
 #[tokio::test]
@@ -1131,7 +1132,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     let handshake_control = ExecutionControl::default();
 
     let error = app_err(commit_websocket_upgrade(&state, prepared, &handshake_control).await)?;
-    assert_eq!(error.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
 
     state
         .router_config
@@ -1186,7 +1187,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
     tokio::time::advance(WEBSOCKET_HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
 
     let err = app_err(timeout_task.await?)?;
-    assert_eq!(err.status, StatusCode::REQUEST_TIMEOUT);
+    assert_eq!(err.status(), StatusCode::REQUEST_TIMEOUT);
 
     state
         .router_config

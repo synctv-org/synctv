@@ -89,14 +89,13 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomSettingsSubcommand::Update(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let mut request = parse_required_room_settings_json(&args.settings_json)?;
+                request.room_id = args.room.resolved_room_id().to_string();
                 let response = management_unary_call!(
                     session,
                     "update room settings",
                     update_room_settings,
-                    management_proto::UpdateRoomSettingsRequest {
-                        room_id: args.room.resolved_room_id().to_string(),
-                        settings: parse_required_room_settings_json(&args.settings_json)?,
-                    }
+                    request
                 )?;
                 args.remote.print_output(&response)
             }

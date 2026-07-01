@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use prost::Message;
 use prost_types::{DescriptorProto, FileDescriptorSet};
 
-const MAIN_PROTO_FILES: [&str; 6] = [
+const MAIN_PROTO_FILES: [&str; 8] = [
+    "proto/google/rpc/status.proto",
+    "proto/google/rpc/error_details.proto",
     "proto/common.proto",
     "proto/source_config.proto",
     "proto/passkey.proto",
@@ -15,7 +17,8 @@ const MAIN_PROTO_FILES: [&str; 6] = [
     "proto/oauth2.proto",
 ];
 const MAIN_PROTO_INCLUDES: [&str; 1] = ["."];
-const MAIN_PBJSON_PREFIXES: [&str; 4] = [
+const MAIN_PBJSON_PREFIXES: [&str; 5] = [
+    ".google.rpc",
     ".synctv.common",
     ".synctv.source_config",
     ".synctv.client",
@@ -146,22 +149,30 @@ fn collect_openapi_schema_aliases_for(
 fn add_openapi_attrs(
     mut builder: tonic_prost_build::Builder,
     aliases: &[(String, String)],
+    schema_prefixes: &[&str],
 ) -> tonic_prost_build::Builder {
-    builder = builder
-        .type_attribute(
-            ".",
-            "#[cfg_attr(feature = \"openapi\", allow(clippy::large_stack_arrays))]",
-        )
-        .type_attribute(
-            ".",
-            "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
-        );
-    builder = builder.type_attribute(
-        ".",
-        "#[cfg_attr(feature = \"openapi\", schema(rename_all = \"camelCase\"))]",
-    );
+    for prefix in schema_prefixes {
+        builder = builder
+            .type_attribute(
+                *prefix,
+                "#[cfg_attr(feature = \"openapi\", allow(clippy::large_stack_arrays))]",
+            )
+            .type_attribute(
+                *prefix,
+                "#[cfg_attr(feature = \"openapi\", derive(utoipa::ToSchema))]",
+            )
+            .type_attribute(
+                *prefix,
+                "#[cfg_attr(feature = \"openapi\", schema(rename_all = \"camelCase\"))]",
+            );
+    }
     for (path, attr) in aliases {
-        builder = builder.type_attribute(path, attr);
+        if schema_prefixes
+            .iter()
+            .any(|prefix| path.starts_with(*prefix))
+        {
+            builder = builder.type_attribute(path, attr);
+        }
     }
     builder
 }
@@ -470,7 +481,16 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(out_dir.join("descriptor.bin"));
-    builder = add_openapi_attrs(builder, &aliases);
+    builder = add_openapi_attrs(
+        builder,
+        &aliases,
+        &[
+            ".synctv.common",
+            ".synctv.source_config",
+            ".synctv.client",
+            ".synctv.admin",
+        ],
+    );
     builder = add_query_params_attrs(
         builder,
         &[
@@ -549,7 +569,17 @@ fn build_provider_protos(
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(out_dir.join("descriptor.bin"));
-    builder = add_openapi_attrs(builder, &aliases);
+    builder = add_openapi_attrs(
+        builder,
+        &aliases,
+        &[
+            ".synctv.provider.common",
+            ".synctv.provider.rtmp",
+            ".synctv.provider.bilibili",
+            ".synctv.provider.alist",
+            ".synctv.provider.emby",
+        ],
+    );
     builder = add_query_params_attrs(builder, &[".synctv.provider.common.ProviderInstanceQuery"]);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
@@ -585,7 +615,7 @@ fn build_playback_provider_protos(
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(out_dir.join("descriptor.bin"));
-    builder = add_openapi_attrs(builder, &aliases);
+    builder = add_openapi_attrs(builder, &aliases, &[".synctv.playback_provider"]);
     builder.out_dir(out_dir).compile_with_config(
         prost_config,
         &PLAYBACK_PROVIDER_PROTO_FILES,

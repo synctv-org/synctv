@@ -242,7 +242,7 @@ pub use room_member::{
     RoomMemberListQuery, RoomMemberListSortBy, RoomMemberWithUser,
 };
 pub use room_settings::RoomSettings;
-pub use settings::SettingsGroup;
+pub use settings::RuntimeSetting;
 pub use source_config::{
     detect_direct_url_format, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
     BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,

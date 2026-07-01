@@ -30,6 +30,14 @@ pub struct WatchQuery {
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WatchPlaybackStateQuery {
+    pub delivery_mode: Option<i32>,
+    pub format: Option<String>,
+    pub event_sequence: Option<i64>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchPlaylistItemsQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
@@ -51,7 +59,6 @@ pub struct WatchPlaylistItemsQuery {
 pub struct WatchPlaybackQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
-    pub after_event_sequence: Option<i64>,
     pub stream_preference: Option<i32>,
     pub max_streaming_bitrate: Option<i64>,
     pub max_audio_channels: Option<i32>,

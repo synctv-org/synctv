@@ -94,10 +94,24 @@ pub use file_upload_policies::{
     MAX_USER_AVATAR_SIZE_BYTES,
 };
 pub use global_settings::{
-    ConfiguredIceServer, IceServerList, OAuth2BasicProviderConfig, OAuth2LogtoProviderConfig,
-    OAuth2OidcProviderConfig, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-    OAuth2ProviderPrivateConfig, OAuth2SignupPolicy, PublicSettings, RoomPasswordPolicy,
-    RuntimeEmailConfigProvider, SettingsRegistry,
+    AdminDefaultPermissionsSetting, ChatRuntimeSettings, ConfiguredIceServer,
+    CorsAllowedOriginsSetting, CorsRuntimeSettings, DefaultMaxChatMessagesSetting,
+    DefaultMaxMembersSetting, EmailEnabledSetting, EmailFromEmailSetting, EmailFromNameSetting,
+    EmailRuntimeSettings, EmailSmtpHostSetting, EmailSmtpPasswordSetting, EmailSmtpPortSetting,
+    EmailSmtpUsernameSetting, EmailUseTlsSetting, EmailWhitelistEnabledSetting,
+    EmailWhitelistSetting, EnableEmailSignupSetting, EnableGuestSetting,
+    EnablePasswordSignupSetting, EnableWebauthnSignupSetting, ExternalIceServersSetting,
+    GuestDefaultPermissionsSetting, IceServerList, LiveProxySetting, MaxMessagesPerRoomSetting,
+    MaxPinnedMessagesPerRoomSetting, MaxRoomsPerUserSetting, MemberDefaultPermissionsSetting,
+    MessageRetentionDaysSetting, MovieProxySetting, OAuth2GithubProviderConfig,
+    OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig,
+    OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
+    OAuth2ProvidersSetting, OAuth2RuntimeSettings, OAuth2SignupPolicy, PermissionRuntimeSettings,
+    ProxyRuntimeSettings, PublicSettings, RoomCreationApprovalRequiredSetting,
+    RoomCreationEnabledSetting, RoomCreationPasswordPolicySetting, RoomCreationRuntimeSettings,
+    RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings,
+    RuntimeEmailConfigProvider, RuntimeSettings, RuntimeSettingsStore, RuntimeSettingsUpdateMask,
+    ServerIdentityIdSetting, TsDisguisedAsPngSetting, UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 pub use media::{
     MediaService, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
@@ -109,8 +123,9 @@ pub use notification_partition_manager::{
     NotificationPartitionManager,
 };
 pub use oauth2::{
-    local_oauth_state_store, OAuth2LinkResult, OAuth2PendingRegistration, OAuth2Service,
-    OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore,
+    local_oauth_state_store, OAuth2LinkResult, OAuth2Operation, OAuth2PendingRegistration,
+    OAuth2Service, OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore,
+    RedisOAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use passkey::{local_passkey_session_store, PasskeyService, PasskeySessionStore};

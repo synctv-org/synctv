@@ -20,7 +20,7 @@
 //!
 //! Public endpoints (no auth required):
 //! - `GetAuthorizationUrl` - initiate `OAuth2` login flow
-//! - `ExchangeAuthorizationCode` - complete `OAuth2` login flow
+//! - `ExchangeAuthorizationCode` - complete `OAuth2` login or bind flow from code/state
 //! - `ListAvailableProviders` - discover available providers
 //!
 //! Authenticated endpoints (JWT required):
@@ -47,6 +47,10 @@ use synctv_core::Config;
 
 use super::map_api_error;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
+
+fn map_oauth2_exchange_error(error: crate::impls::ApiError) -> Status {
+    map_api_error(error)
+}
 
 /// gRPC `OAuth2` service with mixed authentication.
 ///
@@ -163,8 +167,8 @@ impl OAuth2Service for OAuth2GrpcService {
     /// Exchange authorization code for JWT token (optional auth)
     ///
     /// For login flows, no authentication is required.
-    /// For bind flows (`bind_user_id` present in stored state), the caller must be
-    /// authenticated and the token's user ID must match the `bind_user_id`.
+    /// For bind flows (`target_user_id` present in stored state), the caller must be
+    /// authenticated and the token's user ID must match the `target_user_id`.
     async fn exchange_authorization_code(
         &self,
         request: Request<ExchangeAuthorizationCodeRequest>,
@@ -176,7 +180,6 @@ impl OAuth2Service for OAuth2GrpcService {
         )?;
         let client_ip = metadata.client_ip;
         let req = request.into_inner();
-        let provider_for_log = req.provider.clone();
         let oauth2_api = Arc::clone(&self.oauth2_api);
         let response = self
             .request_executor
@@ -198,12 +201,12 @@ impl OAuth2Service for OAuth2GrpcService {
             .await
             .map_err(|e| {
                 error!("Failed to exchange authorization code: {}", e);
-                map_api_error(e)
+                map_oauth2_exchange_error(e)
             })?;
 
         info!(
-            "OAuth2 exchange successful for provider: {} (is_bind: {})",
-            provider_for_log, response.is_bind
+            "OAuth2 exchange successful (operation: {})",
+            response.operation
         );
 
         Ok(Response::new(response))

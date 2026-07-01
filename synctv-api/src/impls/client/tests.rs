@@ -90,17 +90,17 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
 }
 
 #[tokio::test]
-async fn update_room_settings_rejects_missing_settings_before_repository_access() {
-    let err = super::room::validate_update_room_settings_request(
-        &synctv_proto::client::UpdateRoomSettingsRequest { settings: None },
-        synctv_core::models::RoomSettings::default(),
+async fn update_room_settings_accepts_empty_patch_as_noop() -> TestResult {
+    let current = synctv_core::models::RoomSettings::default();
+    let updated = super::room::validate_update_room_settings_request(
+        &synctv_proto::client::UpdateRoomSettingsRequest::default(),
+        current.clone(),
     )
-    .expect_err("missing settings must be rejected");
+    .map_err(test_error)?;
 
-    assert!(
-        matches!(err, ApiError::InvalidInput(ref message) if message.contains("settings patch is required")),
-        "expected settings validation error, got {err:?}"
-    );
+    assert_eq!(updated.allow_guest_join.0, current.allow_guest_join.0);
+    assert_eq!(updated.max_members.0, current.max_members.0);
+    Ok(())
 }
 
 #[test]
@@ -885,11 +885,62 @@ fn make_test_media() -> synctv_core::models::Media {
     }
 }
 
+fn make_test_cover_reference() -> synctv_core::models::StoredFileReference {
+    let now = chrono::Utc::now();
+    synctv_core::models::StoredFileReference {
+        file_reference_id: 901,
+        storage_backend: "database".to_string(),
+        object_key: "covers/original.jpg".to_string(),
+        mime_type: "image/jpeg".to_string(),
+        size_bytes: 4096,
+        content_manifest_sha256: "f".repeat(64),
+        metadata: synctv_core::models::FileMetadata {
+            width: Some(1280),
+            height: Some(720),
+            blurhash: Some("LEHV6nWB2yk8pyo0adR*.7kCMdnj".to_string()),
+            variants: vec![synctv_core::models::FileObjectVariant {
+                storage_backend: "database".to_string(),
+                object_key: "covers/small.jpg".to_string(),
+                original_storage_backend: "database".to_string(),
+                original_object_key: "covers/original.jpg".to_string(),
+                group_id: "fg_cover".to_string(),
+                variant_key: "small".to_string(),
+                label: "Small".to_string(),
+                url: Some("/api/files/covers/small.jpg".to_string()),
+                mime_type: "image/jpeg".to_string(),
+                size_bytes: 1024,
+                width: Some(320),
+                height: Some(180),
+                is_original: false,
+                lossy: true,
+                quality: Some(80),
+                sort_order: 10,
+                metadata: synctv_core::models::FileVariantMetadata {
+                    width: Some(320),
+                    height: Some(180),
+                    blurhash: Some("LKO2?U%2Tw=w]~RBVZRi};RPxuwH".to_string()),
+                },
+                created_at: now,
+            }],
+            upload_token: Some("private-token".to_string()),
+            ownership_proof: Some("private-proof".to_string()),
+            audio: None,
+        },
+        created_at: now,
+        validated_at: Some(now),
+    }
+}
+
 #[test]
 fn test_media_to_proto_basic() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
-    let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
+    let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
+        &media,
+        true,
+        None,
+        &public_id_codec,
+    ))?;
     let creator_id = media
         .creator_id
         .ok_or_else(|| test_error("media should include creator id"))?;
@@ -919,13 +970,51 @@ fn test_media_to_proto_basic() -> TestResult {
 }
 
 #[test]
+fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let media = make_test_media();
+    let cover = make_test_cover_reference();
+    let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
+        &media,
+        true,
+        media.creator_id,
+        Some(&cover),
+        Some("/api/media/covers/original.jpg"),
+        &public_id_codec,
+    ))?;
+    let proto_cover = proto
+        .cover
+        .ok_or_else(|| test_error("media cover should be present"))?;
+
+    assert_eq!(proto_cover.id, "901");
+    assert_eq!(proto_cover.url, "/api/media/covers/original.jpg");
+    assert_eq!(proto_cover.mime_type, "image/jpeg");
+    assert_eq!(proto_cover.size_bytes, 4096);
+    assert_eq!(proto_cover.width, 1280);
+    assert_eq!(proto_cover.height, 720);
+    let metadata = proto_cover
+        .metadata
+        .ok_or_else(|| test_error("media cover metadata should be present"))?;
+    assert_eq!(metadata.width, Some(1280));
+    assert_eq!(metadata.height, Some(720));
+    assert_eq!(
+        metadata.blurhash.as_deref(),
+        Some("LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+    );
+    assert_eq!(proto_cover.variants.len(), 1);
+    assert_eq!(proto_cover.variants[0].key, "small");
+    assert_eq!(proto_cover.variants[0].url, "/api/files/covers/small.jpg");
+    Ok(())
+}
+
+#[test]
 fn test_media_to_proto_for_owner_includes_source_metadata() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
     let owner_id = media
         .creator_id
         .ok_or_else(|| test_error("media should include creator id"))?;
-    let proto = api_ok(try_media_to_proto_for_viewer(
+    let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
         &media,
         true,
         Some(owner_id),
@@ -959,7 +1048,12 @@ fn test_media_to_proto_direct_media_omits_default_instance_binding() -> TestResu
         1.0,
     )
     .map_err(|error| test_error(error.to_string()))?;
-    let proto = api_ok(try_media_to_proto(&media, &public_id_codec))?;
+    let proto = api_ok(try_media_to_proto_for_viewer_without_cover(
+        &media,
+        true,
+        None,
+        &public_id_codec,
+    ))?;
     assert_eq!(
         proto.source_provider,
         synctv_proto::source_config::SourceProvider::DirectUrl as i32
@@ -1067,7 +1161,13 @@ fn test_playlist_to_proto() -> TestResult {
         version: 0,
     };
 
-    let proto = api_ok(try_playlist_to_proto(&playlist, 10, &public_id_codec))?;
+    let proto = api_ok(try_playlist_to_proto_for_viewer_without_cover(
+        &playlist,
+        10,
+        true,
+        None,
+        &public_id_codec,
+    ))?;
 
     assert_eq!(
         proto.id,
@@ -1081,6 +1181,60 @@ fn test_playlist_to_proto() -> TestResult {
     assert_eq!(proto.parent_id, "");
     assert_eq!(proto.item_count, 10);
     assert!(!proto.is_dynamic);
+    assert_eq!(
+        proto.creator_id,
+        codec_ok(public_id_codec.encode_user_id(UserId::expect_positive(304)))?
+    );
+    Ok(())
+}
+
+#[test]
+fn test_playlist_to_proto_with_cover_includes_cover_payload() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let playlist = synctv_core::models::Playlist {
+        id: PlaylistId::expect_positive(303),
+        room_id: RoomId::expect_positive(301),
+        creator_id: Some(UserId::expect_positive(304)),
+        name: "My Playlist".to_string(),
+        description: String::new(),
+        cover_file_reference_id: Some(901),
+        parent_id: None,
+        position: 0.0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+    let cover = make_test_cover_reference();
+    let proto = api_ok(try_playlist_to_proto_for_viewer_with_cover(
+        &playlist,
+        10,
+        true,
+        playlist.creator_id,
+        Some(&cover),
+        Some("/api/playlist/covers/original.jpg"),
+        &public_id_codec,
+    ))?;
+    let proto_cover = proto
+        .cover
+        .ok_or_else(|| test_error("playlist cover should be present"))?;
+
+    assert_eq!(proto_cover.url, "/api/playlist/covers/original.jpg");
+    let metadata = proto_cover
+        .metadata
+        .ok_or_else(|| test_error("playlist cover metadata should be present"))?;
+    assert_eq!(metadata.width, Some(1280));
+    assert_eq!(metadata.height, Some(720));
+    assert_eq!(
+        metadata.blurhash.as_deref(),
+        Some("LEHV6nWB2yk8pyo0adR*.7kCMdnj")
+    );
+    assert_eq!(proto_cover.variants.len(), 1);
+    assert_eq!(proto_cover.variants[0].key, "small");
+    assert_eq!(proto_cover.variants[0].width, 320);
+    assert_eq!(proto_cover.variants[0].height, 180);
     Ok(())
 }
 
@@ -1107,7 +1261,13 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
         version: 0,
     };
 
-    let proto = api_ok(try_playlist_to_proto(&playlist, 5, &public_id_codec))?;
+    let proto = api_ok(try_playlist_to_proto_for_viewer_without_cover(
+        &playlist,
+        5,
+        true,
+        None,
+        &public_id_codec,
+    ))?;
     let parent_id = playlist
         .parent_id
         .ok_or_else(|| test_error("dynamic playlist should include parent id"))?;
@@ -1149,7 +1309,7 @@ fn test_playlist_to_proto_for_owner_includes_source_config() -> TestResult {
         version: 0,
     };
 
-    let proto = api_ok(try_playlist_to_proto_for_viewer(
+    let proto = api_ok(try_playlist_to_proto_for_viewer_without_cover(
         &playlist,
         5,
         true,
@@ -1184,7 +1344,7 @@ fn test_playlist_to_proto_for_non_owner_hides_source_config() -> TestResult {
         version: 0,
     };
 
-    let proto = api_ok(try_playlist_to_proto_for_viewer(
+    let proto = api_ok(try_playlist_to_proto_for_viewer_without_cover(
         &playlist,
         5,
         true,
@@ -1217,7 +1377,7 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
     };
 
     assert!(matches!(
-        try_playlist_to_proto(&playlist, 5, &public_id_codec),
+        try_playlist_to_proto_for_viewer_without_cover(&playlist, 5, true, None, &public_id_codec),
         Err(ApiError::Internal(message))
             if message.contains("Dynamic playlist")
                 && message.contains("source_config")

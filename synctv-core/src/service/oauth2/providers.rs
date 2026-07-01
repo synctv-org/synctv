@@ -35,11 +35,11 @@ impl OAuth2Service {
     }
 
     pub(super) async fn sync_runtime_providers(&self) -> Result<()> {
-        let Some(settings_registry) = self.settings_registry.as_ref() else {
+        let Some(runtime_settings_store) = self.runtime_settings_store.as_ref() else {
             return Ok(());
         };
 
-        let configs = settings_registry.oauth2_providers.get()?;
+        let configs = runtime_settings_store.oauth2.providers.get()?;
         configs.validate_with_ssrf_guard(&self.ssrf_guard)?;
         let fingerprint = configs.to_string();
         {

@@ -8,21 +8,24 @@ use crate::{
 
 impl PermissionService {
     fn get_global_default_permissions(&self, role: &RoomRole) -> RoomPermissionSet {
-        if let Some(registry) = &self.settings_registry {
+        if let Some(registry) = &self.runtime_settings_store {
             match role {
                 RoomRole::Admin => registry
+                    .permissions
                     .admin_default_permissions
                     .get()
                     .map_or(RoomPermissionSet::default_admin(), |permissions| {
                         permissions.bits()
                     }),
                 RoomRole::Member => registry
+                    .permissions
                     .member_default_permissions
                     .get()
                     .map_or(RoomPermissionSet::default_member(), |permissions| {
                         permissions.bits()
                     }),
                 RoomRole::Guest => registry
+                    .permissions
                     .guest_default_permissions
                     .get()
                     .map_or(RoomPermissionSet::default_guest(), |permissions| {
@@ -65,14 +68,18 @@ impl PermissionService {
     }
 
     pub(super) fn runtime_permission_defaults_strong(&self) -> Result<RuntimePermissionDefaults> {
-        let Some(registry) = &self.settings_registry else {
+        let Some(registry) = &self.runtime_settings_store else {
             return Ok(RuntimePermissionDefaults::compiled());
         };
 
         Ok(RuntimePermissionDefaults {
-            admin: registry.admin_default_permissions.get()?.bits(),
-            member: registry.member_default_permissions.get()?.bits(),
-            guest: registry.guest_default_permissions.get()?.bits(),
+            admin: registry.permissions.admin_default_permissions.get()?.bits(),
+            member: registry
+                .permissions
+                .member_default_permissions
+                .get()?
+                .bits(),
+            guest: registry.permissions.guest_default_permissions.get()?.bits(),
         })
     }
 

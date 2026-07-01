@@ -13,7 +13,7 @@ use crate::{
     models::{oauth2_client::OAuth2Provider, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
-    service::{OAuth2SignupPolicy, SettingsRegistry},
+    service::{OAuth2SignupPolicy, RuntimeSettingsStore},
     Result,
 };
 
@@ -35,15 +35,34 @@ const OAUTH2_STATE_TTL_SECONDS_I64: i64 = 300;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2State {
     pub instance_name: String,
+    pub operation: OAuth2Operation,
     pub redirect_url: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// User ID for bind flow (None for login flow)
-    pub bind_user_id: Option<UserId>,
+    /// Operation-specific user target. Bind uses this as the account receiving
+    /// the provider identity.
+    pub target_user_id: Option<UserId>,
     /// PKCE code verifier (RFC 7636) - stored server-side, sent during token exchange
     pub pkce_verifier: String,
     /// Provider nonce for OIDC ID Token replay protection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuth2Operation {
+    Login,
+    Bind,
+}
+
+impl OAuth2Operation {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Bind => "bind",
+        }
+    }
 }
 
 /// `OAuth2` user info from provider (service layer)
@@ -85,7 +104,7 @@ pub struct OAuth2PendingRegistration {
 pub struct PreparedOAuth2Authorization {
     pub auth_url: String,
     pub state_token: String,
-    pub(super) oauth_state: OAuth2State,
+    pub oauth_state: OAuth2State,
 }
 
 #[derive(Debug, Clone)]
@@ -133,14 +152,14 @@ pub struct OAuth2Service {
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
     /// Allowlist of permitted non-loopback redirect domains.
     allowed_redirect_domains: Arc<Vec<String>>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     providers_fingerprint: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Clone, Default)]
 pub struct OAuth2ServiceRuntime {
     pub allowed_redirect_domains: Vec<String>,
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
 }
 
 impl std::fmt::Debug for OAuth2Service {

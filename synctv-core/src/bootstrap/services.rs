@@ -30,9 +30,9 @@ use crate::{
         FileStorageBackendRegistry, FileStorageService, JwtService, OAuth2Service, PasskeyService,
         PermissionService, PgTokenBlacklistStore, ProvidersManager, RateLimitConfig,
         RemoteProviderManager, RequestRateLimiterService, RoomService, RoomSettingsService,
-        RuntimeEmailConfigProvider, S3CompatibleFileStorageService, S3FileStorageConfig,
-        SettingsRegistry, SettingsService, StreamingPublishKeyService, TieredTokenBlacklistStore,
-        UserNotificationService, UserService,
+        RuntimeEmailConfigProvider, RuntimeSettingsStore, S3CompatibleFileStorageService,
+        S3FileStorageConfig, SettingsService, StreamingPublishKeyService,
+        TieredTokenBlacklistStore, UserNotificationService, UserService,
     },
     Config, SharedStateMode, SharedStateProfile,
 };
@@ -91,8 +91,8 @@ pub struct Services {
     pub passkey_service: Option<Arc<PasskeyService>>,
     /// Settings service
     pub settings_service: Arc<SettingsService>,
-    /// Settings registry with type-safe setting variables
-    pub settings_registry: Arc<SettingsRegistry>,
+    /// Runtime settings store with type-safe setting variables
+    pub runtime_settings_store: Arc<RuntimeSettingsStore>,
     /// Email service backed by runtime SMTP settings.
     pub email_service: Option<Arc<EmailService>>,
     /// Email token service for bind, login, and password reset codes.
@@ -618,19 +618,19 @@ pub async fn init_services_with_options(
     // Wrap settings_service in Arc before creating registry
     let settings_service = Arc::new(settings_service);
 
-    // Initialize Settings registry
-    info!("Initializing Settings registry...");
-    let settings_registry = SettingsRegistry::new_with_ssrf_guard(
+    // Initialize Runtime settings store
+    info!("Initializing Runtime settings store...");
+    let runtime_settings_store = RuntimeSettingsStore::new_with_ssrf_guard(
         settings_service.clone(),
         &config.security.ssrf_guard(),
     );
-    settings_registry.init(settings_cancel.clone())?;
-    info!("Settings registry initialized");
-    let settings_registry = Arc::new(settings_registry);
+    runtime_settings_store.init(settings_cancel.clone())?;
+    info!("Runtime settings store initialized");
+    let runtime_settings_store = Arc::new(runtime_settings_store);
 
     // Initialize Email service. SMTP connection details live in runtime settings
     // and are read lazily when mail is sent.
-    let email_config_provider = RuntimeEmailConfigProvider::new(&settings_registry);
+    let email_config_provider = RuntimeEmailConfigProvider::new(&runtime_settings_store);
     let email_service = Some(Arc::new(EmailService::new(Arc::new(
         email_config_provider,
     ))?));
@@ -669,7 +669,7 @@ pub async fn init_services_with_options(
 
     let oauth2_service = init_oauth2_service(
         &pool,
-        Arc::clone(&settings_registry),
+        Arc::clone(&runtime_settings_store),
         &shared_state_profile,
         options.ssrf_guard.clone(),
     )?;
@@ -759,7 +759,7 @@ pub async fn init_services_with_options(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
         crate::service::permission::PermissionServiceRuntime {
-            settings_registry: Some(Arc::clone(&settings_registry)),
+            runtime_settings_store: Some(Arc::clone(&runtime_settings_store)),
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
             room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
@@ -786,7 +786,7 @@ pub async fn init_services_with_options(
             cache_invalidation: Some(cache_invalidation.clone()),
             refresh_rate_limiter,
             refresh_rate_limit_config: crate::service::user::RefreshRateLimitConfig::default(),
-            settings_registry: Some(Arc::clone(&settings_registry)),
+            runtime_settings_store: Some(Arc::clone(&runtime_settings_store)),
             password_registration_policy_override: None,
             realtime_outbox: options.realtime_outbox.clone(),
             opaque_password_service: opaque_password_service.clone(),
@@ -846,7 +846,7 @@ pub async fn init_services_with_options(
         cache_invalidation: cache_invalidation.clone(),
         brute_force: brute_force.clone(),
         audit_service: Some(Arc::clone(&audit_service)),
-        settings_registry: Arc::clone(&settings_registry),
+        runtime_settings_store: Arc::clone(&runtime_settings_store),
         user_notification_service: Some(Arc::clone(&notification_service)),
         opaque_password_service,
         room_opaque_password_registration_session_store:
@@ -912,7 +912,7 @@ pub async fn init_services_with_options(
             file_storage_service: Arc::new(chat_file_storage),
             audit_service: Some(audit_service.clone()),
             notification_service: (*room_service.notification_service()).clone(),
-            settings_registry: Some(settings_registry.clone()),
+            runtime_settings_store: Some(runtime_settings_store.clone()),
         },
     );
     info!("ChatService initialized");
@@ -936,7 +936,7 @@ pub async fn init_services_with_options(
         oauth2_service,
         passkey_service,
         settings_service,
-        settings_registry,
+        runtime_settings_store,
         email_service,
         email_token_service,
         ws_ticket_service,
@@ -963,7 +963,7 @@ pub async fn init_services_with_options(
 
 fn init_oauth2_service(
     pool: &PgPool,
-    settings_registry: Arc<SettingsRegistry>,
+    runtime_settings_store: Arc<RuntimeSettingsStore>,
     profile: &SharedStateProfile,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
@@ -980,7 +980,7 @@ fn init_oauth2_service(
         matches!(profile.state_mode(), SharedStateMode::SharedRequired),
         crate::service::oauth2::OAuth2ServiceRuntime {
             allowed_redirect_domains: Vec::new(),
-            settings_registry: Some(settings_registry),
+            runtime_settings_store: Some(runtime_settings_store),
         },
     )
     .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
@@ -1038,7 +1038,7 @@ struct RoomServiceBuildArgs {
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
     brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
     audit_service: Option<Arc<AuditService>>,
-    settings_registry: Arc<SettingsRegistry>,
+    runtime_settings_store: Arc<RuntimeSettingsStore>,
     user_notification_service: Option<Arc<UserNotificationService>>,
     opaque_password_service: Arc<crate::service::auth::OpaquePasswordService>,
     room_opaque_password_registration_session_store:
@@ -1147,7 +1147,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
         cache_invalidation,
         brute_force,
         audit_service,
-        settings_registry,
+        runtime_settings_store,
         user_notification_service,
         opaque_password_service,
         room_opaque_password_registration_session_store,
@@ -1164,7 +1164,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
         crate::service::permission::PermissionServiceRuntime {
-            settings_registry: Some(settings_registry.clone()),
+            runtime_settings_store: Some(runtime_settings_store.clone()),
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
             room_settings_repo: Some(RoomSettingsRepo::new(pool.clone())),
@@ -1198,7 +1198,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
                 provider_stores: Some(provider_stores),
                 audit_service,
                 brute_force_service: Some(brute_force),
-                settings_registry: Some(settings_registry),
+                runtime_settings_store: Some(runtime_settings_store),
                 user_notification_service,
                 opaque_password_service,
                 opaque_password_registration_session_store:
@@ -1327,8 +1327,8 @@ mod tests {
         ))
     }
 
-    fn test_settings_registry(pool: &PgPool) -> Arc<SettingsRegistry> {
-        Arc::new(SettingsRegistry::new(Arc::new(SettingsService::new(
+    fn test_runtime_settings_store(pool: &PgPool) -> Arc<RuntimeSettingsStore> {
+        Arc::new(RuntimeSettingsStore::new(Arc::new(SettingsService::new(
             SettingsRepository::new(pool.clone()),
             pool.clone(),
         ))))
@@ -1588,7 +1588,7 @@ mod tests {
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: test_settings_registry(&pool),
+            runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1654,7 +1654,7 @@ mod tests {
             cache_invalidation: cache_invalidation.clone(),
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: test_settings_registry(&pool),
+            runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1699,7 +1699,7 @@ mod tests {
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: test_settings_registry(&pool),
+            runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1738,7 +1738,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "Requires Docker-backed PostgreSQL"]
-    async fn test_services_wiring_applies_settings_registry_to_room_service() {
+    async fn test_services_wiring_applies_runtime_settings_store_to_room_service() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let user_service = test_user_service(&pool);
         let cache_invalidation = test_cache_invalidation();
@@ -1746,7 +1746,7 @@ mod tests {
             SettingsRepository::new(pool.clone()),
             pool.clone(),
         ));
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service));
+        let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
 
         let room_service = build_room_service(RoomServiceBuildArgs {
             pool: pool.clone(),
@@ -1759,7 +1759,7 @@ mod tests {
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: Arc::clone(&settings_registry),
+            runtime_settings_store: Arc::clone(&runtime_settings_store),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1781,10 +1781,10 @@ mod tests {
         })
         .checked("room service should build");
 
-        assert!(room_service.has_settings_registry());
+        assert!(room_service.has_runtime_settings_store());
         assert!(
-            room_service.permission_service().has_settings_registry(),
-            "room permission service must use runtime permission defaults from SettingsRegistry"
+            room_service.permission_service().has_runtime_settings_store(),
+            "room permission service must use runtime permission defaults from RuntimeSettingsStore"
         );
     }
 
@@ -1807,7 +1807,7 @@ mod tests {
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: test_settings_registry(&pool),
+            runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1863,7 +1863,7 @@ mod tests {
             cache_invalidation,
             brute_force: test_room_brute_force(),
             audit_service: None,
-            settings_registry: test_settings_registry(&pool),
+            runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
                 crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
@@ -1950,11 +1950,11 @@ mod tests {
     #[ignore = "Requires Docker-backed PostgreSQL"]
     async fn test_init_oauth2_service_starts_without_runtime_providers() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
-        let settings_registry = test_settings_registry(&pool);
+        let runtime_settings_store = test_runtime_settings_store(&pool);
         let profile = SharedStateProfile::for_cluster_runtime(None, "synctv:", false);
         let service = init_oauth2_service(
             &pool,
-            settings_registry,
+            runtime_settings_store,
             &profile,
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )

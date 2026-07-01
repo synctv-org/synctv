@@ -50,14 +50,14 @@ pub(crate) fn alist_read_routes() -> Router<AppState> {
         request_body = synctv_proto::providers::alist::LoginRequest,
         responses(
             (status = 200, description = "Alist login succeeded", body = synctv_proto::providers::alist::LoginResponse),
-            (status = 400, description = "Invalid login request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid login request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -110,14 +110,14 @@ pub(crate) async fn login(
         request_body = ListRequest,
         responses(
             (status = 200, description = "Alist directory listing", body = synctv_proto::providers::alist::ListResponse),
-            (status = 400, description = "Invalid list request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid list request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -167,14 +167,14 @@ pub(crate) async fn list(
         request_body = SearchRequest,
         responses(
             (status = 200, description = "Alist search results", body = synctv_proto::providers::alist::SearchResponse),
-            (status = 400, description = "Invalid search request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid search request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -224,14 +224,14 @@ pub(crate) async fn search(
         request_body = GetMeRequest,
         responses(
             (status = 200, description = "Alist account info", body = synctv_proto::providers::alist::GetMeResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -281,14 +281,14 @@ pub(crate) async fn me(
         request_body = LogoutRequest,
         responses(
             (status = 200, description = "Alist credential removed", body = synctv_proto::providers::alist::LogoutResponse),
-            (status = 400, description = "Invalid request", body = synctv_proto::client::ApiErrorResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 404, description = "Provider resource not found", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 409, description = "Provider request conflict", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider service unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 404, description = "Provider resource not found", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 409, description = "Provider request conflict", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider service unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])
@@ -326,12 +326,12 @@ pub(crate) async fn logout(
         params(ProviderInstanceQuery),
         responses(
             (status = 200, description = "Saved Alist credentials", body = GetBindsResponse),
-            (status = 401, description = "Authentication required", body = synctv_proto::client::ApiErrorResponse),
-            (status = 400, description = "Invalid provider instance query", body = synctv_proto::client::ApiErrorResponse),
-            (status = 403, description = "Provider access denied", body = synctv_proto::client::ApiErrorResponse),
-            (status = 408, description = "Provider bind request timed out", body = synctv_proto::client::ApiErrorResponse),
-            (status = 429, description = "Rate limited", body = synctv_proto::client::ApiErrorResponse),
-            (status = 503, description = "Provider bind information unavailable", body = synctv_proto::client::ApiErrorResponse)
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 400, description = "Invalid provider instance query", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Provider access denied", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 408, description = "Provider bind request timed out", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 429, description = "Rate limited", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Provider bind information unavailable", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
             ("bearer_auth" = [])

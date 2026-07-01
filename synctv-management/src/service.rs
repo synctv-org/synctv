@@ -32,23 +32,23 @@ use crate::proto::{
     EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
     EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
     EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
-    GetRoomRequest, GetRoomSettingsRequest, GetSettingsGroupRequest, GetSettingsRequest,
-    GetSliceCacheStatsRequest, GetSliceCacheStatsResponse, GetStreamInfoRequest,
-    GetSystemStatsRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
-    KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
-    ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
-    ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
-    ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
-    MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
-    PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    GetRoomRequest, GetRoomSettingsRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+    GetSliceCacheStatsResponse, GetStreamInfoRequest, GetSystemStatsRequest,
+    GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
+    KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
+    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
+    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
+    PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
+    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
     SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
     ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo, SliceCacheNodeFailure,
     SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
     StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
     UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
-    UpdateRoomPasswordRequest, UpdateRoomSettingsRequest, UpdateSettingsRequest,
-    UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+    UpdateUserUsernameRequest, UserRef,
 };
 use crate::source_config::{
     alist_media_source_config, alist_playlist_source_config, bilibili_live_source_config,
@@ -74,46 +74,6 @@ use synctv_proto::{
 
 type ProxySliceCacheClient =
     synctv_proxy::grpc::ProxySliceCacheServiceClient<tonic::transport::Channel>;
-
-fn admin_update_settings(
-    settings: Option<crate::proto::update_settings_request::Settings>,
-) -> Option<admin_proto::update_settings_request::Settings> {
-    settings.map(|settings| match settings {
-        crate::proto::update_settings_request::Settings::Server(settings) => {
-            admin_proto::update_settings_request::Settings::Server(settings)
-        }
-        crate::proto::update_settings_request::Settings::Permissions(settings) => {
-            admin_proto::update_settings_request::Settings::Permissions(settings)
-        }
-        crate::proto::update_settings_request::Settings::Room(settings) => {
-            admin_proto::update_settings_request::Settings::Room(settings)
-        }
-        crate::proto::update_settings_request::Settings::User(settings) => {
-            admin_proto::update_settings_request::Settings::User(settings)
-        }
-        crate::proto::update_settings_request::Settings::Oauth2(settings) => {
-            admin_proto::update_settings_request::Settings::Oauth2(settings)
-        }
-        crate::proto::update_settings_request::Settings::Proxy(settings) => {
-            admin_proto::update_settings_request::Settings::Proxy(settings)
-        }
-        crate::proto::update_settings_request::Settings::Rtmp(settings) => {
-            admin_proto::update_settings_request::Settings::Rtmp(settings)
-        }
-        crate::proto::update_settings_request::Settings::Email(settings) => {
-            admin_proto::update_settings_request::Settings::Email(settings)
-        }
-        crate::proto::update_settings_request::Settings::Webrtc(settings) => {
-            admin_proto::update_settings_request::Settings::Webrtc(settings)
-        }
-        crate::proto::update_settings_request::Settings::Chat(settings) => {
-            admin_proto::update_settings_request::Settings::Chat(settings)
-        }
-        crate::proto::update_settings_request::Settings::Cors(settings) => {
-            admin_proto::update_settings_request::Settings::Cors(settings)
-        }
-    })
-}
 
 const SLICE_CACHE_REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const SLICE_CACHE_REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
@@ -1843,19 +1803,13 @@ impl ManagementService for ManagementServiceImpl {
 
     async fn update_room_settings(
         &self,
-        request: Request<UpdateRoomSettingsRequest>,
-    ) -> Result<Response<admin_proto::UpdateRoomSettingsResponse>, Status> {
+        request: Request<admin_proto::UpdateRoomSettingsRequest>,
+    ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
             .admin_api
-            .update_room_settings(
-                admin_proto::UpdateRoomSettingsRequest {
-                    room_id: req.room_id,
-                    settings: req.settings,
-                },
-                &validated.user_id,
-            )
+            .update_room_settings(req, &validated.user_id)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
@@ -3240,7 +3194,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_settings(
         &self,
         request: Request<GetSettingsRequest>,
-    ) -> Result<Response<admin_proto::GetSettingsResponse>, Status> {
+    ) -> Result<Response<admin_proto::RuntimeSettings>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let response = self
@@ -3251,42 +3205,16 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn get_settings_group(
-        &self,
-        request: Request<GetSettingsGroupRequest>,
-    ) -> Result<Response<admin_proto::GetSettingsGroupResponse>, Status> {
-        let validated = self.check_admin_get_validated(&request)?;
-        let ctx = self.grpc_request_context(&request);
-        let req = request.into_inner();
-        let response = self
-            .admin_api
-            .get_settings_group(
-                admin_proto::GetSettingsGroupRequest { group: req.group },
-                &validated.user_id,
-                &ctx,
-            )
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
-    }
-
     async fn update_settings(
         &self,
-        request: Request<UpdateSettingsRequest>,
-    ) -> Result<Response<admin_proto::UpdateSettingsResponse>, Status> {
+        request: Request<admin_proto::UpdateSettingsRequest>,
+    ) -> Result<Response<admin_proto::RuntimeSettings>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
         let response = self
             .admin_api
-            .update_settings(
-                admin_proto::UpdateSettingsRequest {
-                    group: req.group,
-                    settings: admin_update_settings(req.settings),
-                },
-                &validated.user_id,
-                &ctx,
-            )
+            .update_settings(req, &validated.user_id, &ctx)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

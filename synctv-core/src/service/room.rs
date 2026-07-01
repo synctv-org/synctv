@@ -1,9 +1,9 @@
 //! Room management service (facade)
 //!
-//! `RoomService` is the main entry point for room-related business logic.
+//! `RoomService` is the main entry point for room_creation-related business logic.
 //! It acts as a facade that coordinates between domain sub-services:
 //!
-//! - **Core room CRUD** — create, join, leave, delete rooms (handled here)
+//! - **Core room_creation CRUD** — create, join, leave, delete rooms (handled here)
 //! - **Member management** — delegated to [`MemberService`]
 //! - **Media management** — delegated to [`MediaService`]
 //! - **Playback control** — delegated to [`PlaybackService`]
@@ -163,7 +163,7 @@ pub(super) const MAX_DELETE_TARGETS: usize = 100;
 /// Room service for business logic
 ///
 /// This is the main service that coordinates between domain services.
-/// Core room operations are handled here, while specific domains are delegated.
+/// Core room_creation operations are handled here, while specific domains are delegated.
 #[derive(Clone)]
 pub struct RoomService {
     // Database pool for transactions
@@ -201,14 +201,14 @@ pub struct RoomService {
     /// Optional audit service for logging security-sensitive operations
     audit_service: Option<Arc<AuditService>>,
 
-    /// Optional brute-force protection for room password verification
+    /// Optional brute-force protection for room_creation password verification
     brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
 
-    /// Optional settings registry for reading `create_room_need_review` setting
-    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+    /// Optional runtime settings store for reading `approval_required` setting
+    runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
 
     /// Optional user notification service for sending admin notifications
-    /// (e.g., pending room review alerts)
+    /// (e.g., pending room_creation review alerts)
     user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
 
     opaque_password_service: Arc<OpaquePasswordService>,
@@ -688,17 +688,17 @@ impl RoomService {
         Ok(())
     }
 
-    /// Delete an orphaned room whose creator has been deleted or banned.
+    /// Delete an orphaned room_creation whose creator has been deleted or banned.
     ///
     /// This method allows global admins to clean up rooms that become orphaned
     /// when the creator's account is deleted or banned. The FK constraint
     /// `rooms.created_by REFERENCES users(id) ON DELETE RESTRICT` prevents
     /// user deletion when they have created rooms, so this method provides
-    /// a way to first delete the orphaned room before retrying user deletion.
+    /// a way to first delete the orphaned room_creation before retrying user deletion.
     ///
     /// # Verification
     ///
-    /// This method verifies that the room is truly orphaned by checking:
+    /// This method verifies that the room_creation is truly orphaned by checking:
     /// 1. The room exists and is not already deleted
     /// 2. The creator's user record either:
     /// - Does not exist (hard-deleted), OR
@@ -707,12 +707,12 @@ impl RoomService {
     ///
     /// # Arguments
     ///
-    /// * `room_id` - The room to delete
+    /// * `room_id` - The room_creation to delete
     /// * `admin_user_id` - The admin performing the deletion (for audit log)
     ///
     /// # Errors
     ///
-    /// Returns `Error::InvalidInput` if the room is not actually orphaned
+    /// Returns `Error::InvalidInput` if the room_creation is not actually orphaned
     /// (creator exists and is active). In this case, use `delete_room` instead.
     pub async fn admin_delete_orphaned_room(
         &self,
@@ -941,7 +941,7 @@ impl RoomService {
             .await
     }
 
-    /// Set room password (admin use, bypasses permission checks)
+    /// Set room_creation password (admin use, bypasses permission checks)
     ///
     /// Pass `Some(password)` to set a new password, or `None` to remove it.
     /// When a password is set, all guest members are kicked automatically.
@@ -1071,7 +1071,7 @@ impl RoomService {
         }
     }
 
-    /// Invalidate all caches associated with a room.
+    /// Invalidate all caches associated with a room_creation.
     ///
     /// This method consolidates cache invalidation for:
     /// - Room data (broadcast to other replicas)
@@ -1097,7 +1097,7 @@ impl RoomService {
     /// Best-effort: logs warnings on failure but does not propagate errors,
     /// since cache invalidation is not critical to the mutation itself.
     async fn invalidate_room_caches(&self, room_id: &RoomId) {
-        // Broadcast room invalidation to other replicas (and clear local cache)
+        // Broadcast room_creation invalidation to other replicas (and clear local cache)
         self.notify_room_invalidation(room_id).await;
 
         // Invalidate permission cache (local only)
@@ -1109,7 +1109,7 @@ impl RoomService {
             .await;
     }
 
-    /// Run best-effort post-commit side effects after a room has already been
+    /// Run best-effort post-commit side effects after a room_creation has already been
     /// deleted transactionally elsewhere.
     pub async fn finalize_deleted_room_after_commit(&self, room_id: &RoomId) {
         self.invalidate_room_caches(room_id).await;
@@ -1122,7 +1122,7 @@ impl RoomService {
         }
     }
 
-    /// Run best-effort post-commit side effects after a room became unusable
+    /// Run best-effort post-commit side effects after a room_creation became unusable
     /// because its creator account is no longer active.
     pub async fn finalize_room_owner_inactive_after_commit(&self, room_id: &RoomId) {
         self.invalidate_room_caches(room_id).await;
@@ -1210,8 +1210,8 @@ impl RoomService {
 
     /// Batch delete multiple rooms.
     ///
-    /// Each room is processed individually - if one room fails, others may still succeed.
-    /// Returns per-room results with success/failure status.
+    /// Each room_creation is processed individually - if one room_creation fails, others may still succeed.
+    /// Returns per-room_creation results with success/failure status.
     ///
     /// # Errors
     /// - `InvalidInput` if `room_ids` is empty or exceeds `BATCH_SIZE_LIMIT`

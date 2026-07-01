@@ -23,17 +23,17 @@ impl UserService {
     pub(super) fn email_domain_allowed_by_whitelist(email: &str, whitelist: &str) -> Result<bool> {
         let domain = Self::normalized_email_domain(email)?;
         let allowed_domains =
-            crate::service::SettingsRegistry::normalize_email_whitelist_domains(whitelist);
+            crate::service::RuntimeSettingsStore::normalize_email_whitelist_domains(whitelist);
 
         Ok(allowed_domains.is_empty() || allowed_domains.iter().any(|allowed| allowed == &domain))
     }
 
     pub(super) fn validate_email_whitelist_policy(&self, email: &str) -> Result<()> {
-        let Some(registry) = self.settings_registry.as_ref() else {
+        let Some(registry) = self.runtime_settings_store.as_ref() else {
             return Ok(());
         };
-        if registry.email_whitelist_enabled.get()? {
-            let whitelist = registry.email_whitelist.get()?;
+        if registry.email.whitelist_enabled.get()? {
+            let whitelist = registry.email.whitelist.get()?;
             if !Self::email_domain_allowed_by_whitelist(email, &whitelist)? {
                 return Err(Error::InvalidInput(
                     "Email domain is not allowed for registration".to_string(),

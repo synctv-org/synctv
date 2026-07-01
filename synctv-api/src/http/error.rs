@@ -1,13 +1,11 @@
 // HTTP error handling
 
 use axum::{
+    body::Body,
     http::{header, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
 use std::fmt;
-
-use synctv_proto::client::ApiErrorResponse;
 
 /// Result type for HTTP handlers
 pub type AppResult<T> = Result<T, AppError>;
@@ -15,22 +13,15 @@ pub type AppResult<T> = Result<T, AppError>;
 /// Application error with HTTP status code
 #[derive(Debug)]
 pub struct AppError {
-    pub status: StatusCode,
-    pub message: String,
-    /// Optional application-level error code from `impls::error_codes`.
-    /// When set, this is included in the JSON error response for programmatic handling.
-    pub error_code: Option<i32>,
-    pub retry_after_seconds: Option<u64>,
+    pub api_error: crate::impls::ApiError,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl AppError {
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        let api_error = api_error_from_status(status, message.into());
         Self {
-            status,
-            message: message.into(),
-            error_code: None,
-            retry_after_seconds: None,
+            api_error: crate::api_error_model::sanitized_api_error(&api_error),
             extra_headers: Vec::new(),
         }
     }
@@ -52,15 +43,30 @@ impl AppError {
     }
 
     pub fn too_many_requests_with_retry(message: impl Into<String>, retry_after: u64) -> Self {
-        let mut error = Self::new(StatusCode::TOO_MANY_REQUESTS, message);
-        error.retry_after_seconds = Some(retry_after);
-        error
+        let api_error = crate::impls::ApiError::RateLimitedWithRetry {
+            message: message.into(),
+            retry_after_seconds: retry_after,
+        };
+        Self {
+            api_error: crate::api_error_model::sanitized_api_error(&api_error),
+            extra_headers: Vec::new(),
+        }
     }
 
     #[must_use]
     pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
         self.extra_headers.push((name, value));
         self
+    }
+
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        crate::api_error_model::GoogleApiError::from_api_error(&self.api_error).http_status
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        self.api_error.message()
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
@@ -161,7 +167,7 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> AppError {
 
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.status, self.message)
+        f.write_str(self.api_error.message())
     }
 }
 
@@ -170,48 +176,30 @@ impl std::error::Error for AppError {}
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let Self {
-            status,
-            message,
-            error_code,
-            retry_after_seconds,
+            api_error,
             extra_headers,
         } = self;
-
-        // For server-side failures, sanitize details while preserving retryability /
-        // upstream failure semantics for native clients.
-        let error_message = if status.is_server_error() {
-            tracing::error!(
-                status = status.as_u16(),
-                original_message = %message,
-                error_code = ?error_code,
-                "Server error response"
-            );
-
-            match status {
-                StatusCode::SERVICE_UNAVAILABLE => {
-                    "Service temporarily unavailable. Please try again later.".to_string()
-                }
-                StatusCode::BAD_GATEWAY => "Upstream service error".to_string(),
-                StatusCode::GATEWAY_TIMEOUT => "Upstream service timed out".to_string(),
-                _ => "Internal server error".to_string(),
-            }
-        } else {
-            message
-        };
-
         let request_id = crate::http::middleware::CURRENT_REQUEST_ID
             .try_with(Clone::clone)
             .ok();
+        let google_error = crate::api_error_model::GoogleApiError::from_api_error(&api_error)
+            .with_request_id(request_id.as_deref());
+        let status = google_error.http_status;
+        let body = match google_error.to_protojson_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::error!(%error, "Failed to serialize google.rpc.Status HTTP error");
+                br#"{"code":13,"message":"Internal error"}"#.to_vec()
+            }
+        };
 
-        let body = Json(ApiErrorResponse {
-            error: error_message,
-            status: status.as_u16().into(),
-            code: error_code,
-            request_id,
-        });
-
-        let mut response = (status, body).into_response();
-        if let Some(retry_after_seconds) = retry_after_seconds {
+        let mut response = Response::new(Body::from(body));
+        *response.status_mut() = status;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        if let Some(retry_after_seconds) = google_error.retry_after_seconds {
             if let Ok(value) = HeaderValue::from_str(&retry_after_seconds.to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
             }
@@ -244,7 +232,9 @@ impl From<synctv_core::Error> for AppError {
 impl From<serde_json::Error> for AppError {
     fn from(err: serde_json::Error) -> Self {
         tracing::error!("JSON serialization/deserialization error: {}", err);
-        Self::bad_request("Invalid request data format")
+        Self::from(crate::impls::ApiError::InvalidInput(
+            "Invalid request data format".to_string(),
+        ))
     }
 }
 
@@ -257,7 +247,9 @@ impl From<anyhow::Error> for AppError {
             .collect::<Vec<_>>()
             .join(" | caused by: ");
         tracing::error!("Anyhow error: {chain}");
-        Self::internal_server_error("Internal server error")
+        Self::from(crate::impls::ApiError::Internal(
+            "Internal error".to_string(),
+        ))
     }
 }
 
@@ -265,45 +257,39 @@ impl From<anyhow::Error> for AppError {
 /// status code mapping (no keyword-based heuristics).
 impl From<crate::impls::ApiError> for AppError {
     fn from(err: crate::impls::ApiError) -> Self {
-        use crate::impls::ErrorKind;
-        let error_code = err.code();
-        let msg = err.message().to_string();
-        let mut app_err = match err.classify() {
-            ErrorKind::InvalidArgument => match err {
-                crate::impls::ApiError::RangeNotSatisfiable { total_size } => {
-                    let mut app_error = Self::new(
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        "Requested byte range is not satisfiable",
-                    );
-                    if let Ok(value) =
-                        HeaderValue::from_str(&format!("bytes */{}", total_size.max(0)))
-                    {
-                        app_error = app_error.with_header(header::CONTENT_RANGE, value);
-                    }
-                    app_error
-                }
-                _ => Self::bad_request(msg),
-            },
-            ErrorKind::NotFound => Self::not_found(msg),
-            ErrorKind::Unauthenticated => Self::unauthorized(msg),
-            ErrorKind::PermissionDenied => Self::forbidden(msg),
-            ErrorKind::AlreadyExists | ErrorKind::Conflict => Self::conflict(msg),
-            ErrorKind::RateLimited => {
-                if let Some(retry_after_seconds) = err.retry_after_seconds() {
-                    Self::too_many_requests_with_retry(msg, retry_after_seconds)
-                } else {
-                    Self::too_many_requests(msg)
-                }
-            }
-            ErrorKind::ServiceUnavailable => Self::service_unavailable(),
-            ErrorKind::Timeout => Self::new(StatusCode::GATEWAY_TIMEOUT, msg),
-            ErrorKind::Internal => {
-                tracing::error!("Internal error: {msg}");
-                Self::internal_server_error("Internal error")
-            }
+        let mut app_err = Self {
+            api_error: crate::api_error_model::sanitized_api_error(&err),
+            extra_headers: Vec::new(),
         };
-        app_err.error_code = Some(error_code);
+        if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err {
+            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{}", total_size.max(0))) {
+                app_err = app_err.with_header(header::CONTENT_RANGE, value);
+            }
+        }
         app_err
+    }
+}
+
+fn api_error_from_status(status: StatusCode, message: String) -> crate::impls::ApiError {
+    match status {
+        StatusCode::BAD_REQUEST => crate::impls::ApiError::InvalidInput(message),
+        StatusCode::UNAUTHORIZED => crate::impls::ApiError::Authentication(message),
+        StatusCode::FORBIDDEN => crate::impls::ApiError::Authorization(message),
+        StatusCode::NOT_FOUND => crate::impls::ApiError::NotFound(message),
+        StatusCode::CONFLICT => crate::impls::ApiError::Conflict(message),
+        StatusCode::TOO_MANY_REQUESTS => crate::impls::ApiError::RateLimited(message),
+        StatusCode::SERVICE_UNAVAILABLE => crate::impls::ApiError::ServiceUnavailable(message),
+        StatusCode::BAD_GATEWAY => {
+            tracing::warn!(error = %message, "Hiding upstream bad gateway details from response");
+            crate::impls::ApiError::BadGateway("Upstream service error".to_string())
+        }
+        StatusCode::REQUEST_TIMEOUT => crate::impls::ApiError::RequestTimeout(message),
+        StatusCode::GATEWAY_TIMEOUT => {
+            tracing::warn!(error = %message, "Hiding upstream timeout details from response");
+            crate::impls::ApiError::Timeout("Upstream service timed out".to_string())
+        }
+        status if status.is_server_error() => crate::impls::ApiError::Internal(message),
+        _ => crate::impls::ApiError::InvalidInput(message),
     }
 }
 
@@ -326,6 +312,18 @@ mod tests {
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
+    fn error_info_metadata<'a>(json: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        json["details"]
+            .as_array()?
+            .iter()
+            .find(|detail| {
+                detail["@type"].as_str() == Some("type.googleapis.com/google.rpc.ErrorInfo")
+            })?
+            .get("metadata")?
+            .get(key)?
+            .as_str()
+    }
+
     #[tokio::test]
     async fn test_error_response_includes_request_id() -> TestResult {
         let app = axum::Router::new()
@@ -347,9 +345,12 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["requestId"], "test-req-123");
-        assert_eq!(json["error"], "invalid input");
-        assert_eq!(json["status"], 400);
+        assert_eq!(
+            error_info_metadata(&json, "requestId"),
+            Some("test-req-123")
+        );
+        assert_eq!(json["message"], "invalid input");
+        assert_eq!(json["code"], tonic::Code::InvalidArgument as i32);
         Ok(())
     }
 
@@ -372,11 +373,11 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
         assert!(matches!(
-            json["requestId"].as_str(),
+            error_info_metadata(&json, "requestId"),
             Some(request_id) if !request_id.is_empty()
         ));
-        assert_eq!(json["error"], "resource");
-        assert_eq!(json["status"], 404);
+        assert_eq!(json["message"], "resource");
+        assert_eq!(json["code"], tonic::Code::NotFound as i32);
         Ok(())
     }
 
@@ -403,9 +404,12 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["requestId"], "internal-err-456");
-        assert_eq!(json["error"], "Internal server error");
-        assert_eq!(json["status"], 500);
+        assert_eq!(
+            error_info_metadata(&json, "requestId"),
+            Some("internal-err-456")
+        );
+        assert_eq!(json["message"], "Internal error");
+        assert_eq!(json["code"], tonic::Code::Internal as i32);
         Ok(())
     }
 
@@ -415,9 +419,9 @@ mod tests {
             .route(
                 "/test",
                 axum::routing::get(|| async {
-                    let mut err = AppError::bad_request("test error");
-                    err.error_code = Some(1001);
-                    err
+                    AppError::from(crate::impls::ApiError::Authentication(
+                        "test error".to_string(),
+                    ))
                 }),
             )
             .layer(axum::middleware::from_fn(
@@ -434,60 +438,63 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)?;
 
-        assert_eq!(json["requestId"], "code-test-789");
-        assert_eq!(json["code"], 1001);
-        assert_eq!(json["status"], 400);
+        assert_eq!(
+            error_info_metadata(&json, "requestId"),
+            Some("code-test-789")
+        );
+        assert_eq!(error_info_metadata(&json, "errorCode"), Some("1000"));
+        assert_eq!(json["code"], tonic::Code::Unauthenticated as i32);
         Ok(())
     }
 
     #[test]
     fn test_bad_request() {
         let err = AppError::bad_request("invalid field");
-        assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(err.message, "invalid field");
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.message(), "invalid field");
     }
 
     #[test]
     fn test_unauthorized() {
         let err = AppError::unauthorized("not logged in");
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "not logged in");
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message(), "not logged in");
     }
 
     #[test]
     fn test_forbidden() {
         let err = AppError::forbidden("no access");
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(err.message, "no access");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert_eq!(err.message(), "no access");
     }
 
     #[test]
     fn test_not_found() {
         let err = AppError::not_found("room not found");
-        assert_eq!(err.status, StatusCode::NOT_FOUND);
-        assert_eq!(err.message, "room not found");
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+        assert_eq!(err.message(), "room not found");
     }
 
     #[test]
     fn test_conflict() {
         let err = AppError::conflict("already exists");
-        assert_eq!(err.status, StatusCode::CONFLICT);
-        assert_eq!(err.message, "already exists");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert_eq!(err.message(), "already exists");
     }
 
     #[test]
     fn test_internal_server_error() {
         let err = AppError::internal_server_error("boom");
-        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(err.message, "boom");
+        assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(err.message(), "Internal error");
     }
 
     #[test]
     fn test_missing_authorization_header_helper() {
         let err = AppError::missing_authorization_header();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::MISSING_AUTHORIZATION_HEADER
         );
     }
@@ -495,9 +502,9 @@ mod tests {
     #[test]
     fn test_invalid_authorization_header_helper() {
         let err = AppError::invalid_authorization_header();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::INVALID_AUTHORIZATION_HEADER
         );
     }
@@ -505,9 +512,9 @@ mod tests {
     #[test]
     fn test_invalid_authorization_header_non_utf8_helper() {
         let err = AppError::invalid_authorization_header_non_utf8();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::INVALID_AUTHORIZATION_HEADER_NON_UTF8
         );
     }
@@ -515,9 +522,9 @@ mod tests {
     #[test]
     fn test_invalid_or_expired_token_helper() {
         let err = AppError::invalid_or_expired_token();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
-            err.message,
+            err.message(),
             synctv_common::messages::INVALID_OR_EXPIRED_TOKEN
         );
     }
@@ -525,8 +532,8 @@ mod tests {
     #[test]
     fn test_invalid_or_expired_ticket_helper() {
         let err = AppError::invalid_or_expired_ticket();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert_eq!(err.message, "Invalid or expired ticket");
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(err.message(), "Invalid or expired ticket");
     }
 
     #[test]
@@ -535,65 +542,65 @@ mod tests {
             "Not a member of this room".to_string(),
         ));
 
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert_eq!(err.message, "Not a member of this room");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert_eq!(err.message(), "Not a member of this room");
     }
 
     #[test]
     fn test_invalid_credentials() {
         let err = AppError::invalid_credentials();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert!(err.message.contains("Invalid username or password"));
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.message().contains("Invalid username or password"));
     }
 
     #[test]
     fn test_session_expired() {
         let err = AppError::session_expired();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert!(err.message.contains("expired"));
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.message().contains("expired"));
     }
 
     #[test]
     fn test_token_invalid() {
         let err = AppError::token_invalid();
-        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
-        assert!(err.message.contains("Invalid"));
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.message().contains("Invalid"));
     }
 
     #[test]
     fn test_permission_denied() {
         let err = AppError::permission_denied();
-        assert_eq!(err.status, StatusCode::FORBIDDEN);
-        assert!(err.message.contains("permission"));
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert!(err.message().contains("permission"));
     }
 
     #[test]
     fn test_resource_not_found() {
         let err = AppError::resource_not_found("Room");
-        assert_eq!(err.status, StatusCode::NOT_FOUND);
-        assert_eq!(err.message, "Room not found");
+        assert_eq!(err.status(), StatusCode::NOT_FOUND);
+        assert_eq!(err.message(), "Room not found");
     }
 
     #[test]
     fn test_validation_failed() {
         let err = AppError::validation_failed("email", "must contain @");
-        assert_eq!(err.status, StatusCode::BAD_REQUEST);
-        assert!(err.message.contains("email"));
-        assert!(err.message.contains("must contain @"));
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert!(err.message().contains("email"));
+        assert!(err.message().contains("must contain @"));
     }
 
     #[test]
     fn test_rate_limited() {
         let err = AppError::rate_limited(60);
-        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
-        assert!(err.message.contains("60 seconds"));
+        assert_eq!(err.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(err.message().contains("60 seconds"));
     }
 
     #[test]
     fn test_service_unavailable() {
         let err = AppError::service_unavailable();
-        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(err.message.contains("temporarily unavailable"));
+        assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(err.message().contains("temporarily unavailable"));
     }
 
     #[test]
@@ -618,62 +625,62 @@ mod tests {
     fn test_from_core_not_found() {
         let core_err = synctv_core::Error::NotFound("room".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+        assert_eq!(app_err.status(), StatusCode::NOT_FOUND);
     }
 
     #[test]
     fn test_from_core_already_exists() {
         let core_err = synctv_core::Error::AlreadyExists("user".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::CONFLICT);
+        assert_eq!(app_err.status(), StatusCode::CONFLICT);
     }
 
     #[test]
     fn test_from_core_authentication() {
         let core_err = synctv_core::Error::Authentication("bad token".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(app_err.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[test]
     fn test_from_core_authorization() {
         let core_err = synctv_core::Error::Authorization("denied".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::FORBIDDEN);
+        assert_eq!(app_err.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
     fn test_from_core_invalid_input() {
         let core_err = synctv_core::Error::InvalidInput("bad field".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(app_err.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
     fn test_from_core_rate_limited() {
         let core_err = synctv_core::Error::RateLimited("too fast".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(app_err.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]
     fn test_from_core_service_unavailable() {
         let core_err = synctv_core::Error::ServiceUnavailable("redis unavailable".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(app_err.message.contains("temporarily unavailable"));
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message(), "redis unavailable");
     }
 
     #[test]
     fn test_from_core_internal() {
         let core_err = synctv_core::Error::Internal("something broke".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(app_err.status(), StatusCode::INTERNAL_SERVER_ERROR);
         // Internal error messages should NOT leak to the client
-        assert_eq!(app_err.message, "Internal error");
+        assert_eq!(app_err.message(), "Internal error");
         assert_eq!(
-            app_err.error_code,
-            Some(crate::impls::error_codes::INTERNAL_ERROR)
+            app_err.api_error.code(),
+            crate::impls::error_codes::INTERNAL_ERROR
         );
     }
 
@@ -681,10 +688,10 @@ mod tests {
     fn test_from_core_redis_timeout_internal_uses_api_classifier() {
         let core_err = synctv_core::Error::Internal("Redis timeout: store session".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            app_err.error_code,
-            Some(crate::impls::error_codes::SERVICE_UNAVAILABLE)
+            app_err.api_error.code(),
+            crate::impls::error_codes::SERVICE_UNAVAILABLE
         );
     }
 
@@ -695,9 +702,9 @@ mod tests {
             "redis temporarily unavailable",
         ));
         let app_err = AppError::from(synctv_core::Error::Redis(redis_err));
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(
-            app_err.message.contains("temporarily unavailable"),
+            app_err.message().contains("temporarily unavailable"),
             "redis outages should surface as retryable service unavailability"
         );
     }
@@ -705,9 +712,9 @@ mod tests {
     #[test]
     fn test_from_core_database_maps_to_service_unavailable() {
         let app_err = AppError::from(synctv_core::Error::Database(sqlx::Error::PoolTimedOut));
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(
-            app_err.message.contains("temporarily unavailable"),
+            app_err.message().contains("temporarily unavailable"),
             "database pool exhaustion should surface as retryable service unavailability"
         );
     }
@@ -716,8 +723,8 @@ mod tests {
     fn test_from_core_timeout_maps_to_gateway_timeout() {
         let core_err = synctv_core::Error::Timeout("redis lock renewal timed out".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(app_err.message, "redis lock renewal timed out");
+        assert_eq!(app_err.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(app_err.message(), "redis lock renewal timed out");
     }
 
     #[test]
@@ -726,18 +733,15 @@ mod tests {
             "Authentication service unavailable".to_string(),
         );
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(
-            app_err.message.contains("temporarily unavailable"),
-            "auth backend outages should surface as HTTP 503, not 401"
-        );
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message(), "Authentication service unavailable");
     }
 
     #[test]
     fn test_from_core_optimistic_lock() {
         let core_err = synctv_core::Error::OptimisticLockConflict;
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::CONFLICT);
+        assert_eq!(app_err.status(), StatusCode::CONFLICT);
     }
 
     #[test]
@@ -745,11 +749,11 @@ mod tests {
         let core_err =
             synctv_core::Error::LockConflict("Lock already held: create_room:user1".to_string());
         let app_err = AppError::from(core_err);
-        assert_eq!(app_err.status, StatusCode::CONFLICT);
-        assert_eq!(app_err.message, "Lock already held: create_room:user1");
+        assert_eq!(app_err.status(), StatusCode::CONFLICT);
+        assert_eq!(app_err.message(), "Lock already held: create_room:user1");
         assert_eq!(
-            app_err.error_code,
-            Some(crate::impls::error_codes::CONFLICT)
+            app_err.api_error.code(),
+            crate::impls::error_codes::CONFLICT
         );
     }
 
@@ -759,8 +763,8 @@ mod tests {
             return Err(anyhow::anyhow!("invalid JSON should fail to parse"));
         };
         let app_err = AppError::from(json_err);
-        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(app_err.message, "Invalid request data format");
+        assert_eq!(app_err.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(app_err.message(), "Invalid request data format");
         Ok(())
     }
 
@@ -769,16 +773,16 @@ mod tests {
         let api_err = crate::impls::ApiError::RateLimited("too many requests".to_string());
         let app_err = AppError::from(api_err);
         assert_eq!(
-            app_err.status,
+            app_err.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "ApiError::RateLimited should map to HTTP 429"
         );
-        assert!(app_err.message.contains("too many requests"));
+        assert!(app_err.message().contains("too many requests"));
         assert_eq!(
-            app_err.error_code,
-            Some(crate::impls::error_codes::RESOURCE_EXHAUSTED)
+            app_err.api_error.code(),
+            crate::impls::error_codes::RESOURCE_EXHAUSTED
         );
-        assert_eq!(app_err.retry_after_seconds, None);
+        assert_eq!(app_err.api_error.retry_after_seconds(), None);
     }
 
     #[tokio::test]
@@ -801,13 +805,13 @@ mod tests {
         let api_err = crate::impls::ApiError::ServiceUnavailable("redis unavailable".to_string());
         let app_err = AppError::from(api_err);
         assert_eq!(
-            app_err.status,
+            app_err.status(),
             StatusCode::SERVICE_UNAVAILABLE,
             "ApiError::ServiceUnavailable should map to HTTP 503"
         );
         assert_eq!(
-            app_err.error_code,
-            Some(crate::impls::error_codes::SERVICE_UNAVAILABLE)
+            app_err.api_error.code(),
+            crate::impls::error_codes::SERVICE_UNAVAILABLE
         );
     }
 
@@ -815,9 +819,9 @@ mod tests {
     fn test_from_api_error_timeout() {
         let api_err = crate::impls::ApiError::Timeout("request budget exceeded".to_string());
         let app_err = AppError::from(api_err);
-        assert_eq!(app_err.status, StatusCode::GATEWAY_TIMEOUT);
-        assert_eq!(app_err.message, "request budget exceeded");
-        assert_eq!(app_err.error_code, Some(crate::impls::error_codes::TIMEOUT));
+        assert_eq!(app_err.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(app_err.message(), "request budget exceeded");
+        assert_eq!(app_err.api_error.code(), crate::impls::error_codes::TIMEOUT);
     }
 
     #[test]
@@ -827,7 +831,7 @@ mod tests {
         let api_err = crate::impls::ApiError::from(core_err);
         let app_err = AppError::from(api_err);
         assert_eq!(
-            app_err.status,
+            app_err.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "synctv_core::Error::RateLimited should map to HTTP 429 via ApiError"
         );
@@ -839,8 +843,8 @@ mod tests {
             status: 400,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
-        assert_eq!(app_err.message, "Upstream provider rejected the request.");
+        assert_eq!(app_err.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(app_err.message(), "Upstream provider rejected the request.");
     }
 
     #[test]
@@ -848,11 +852,8 @@ mod tests {
         let app_err = AppError::from(synctv_core::provider::ProviderError::NetworkError(
             "connection refused".to_string(),
         ));
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            app_err.message,
-            "Service temporarily unavailable. Please try again later."
-        );
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message(), "connection refused");
     }
 
     #[test]
@@ -860,11 +861,8 @@ mod tests {
         let app_err = AppError::from(synctv_core::provider::ProviderError::ApiError(
             "upstream provider down".to_string(),
         ));
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            app_err.message,
-            "Service temporarily unavailable. Please try again later."
-        );
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.message(), "upstream provider down");
     }
 
     #[test]
@@ -873,9 +871,9 @@ mod tests {
             status: 404,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::NOT_FOUND);
+        assert_eq!(app_err.status(), StatusCode::NOT_FOUND);
         assert_eq!(
-            app_err.message,
+            app_err.message(),
             synctv_common::messages::PROVIDER_RESOURCE_NOT_FOUND
         );
     }
@@ -886,10 +884,10 @@ mod tests {
             status: 503,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            app_err.message,
-            "Service temporarily unavailable. Please try again later."
+            app_err.message(),
+            "Upstream provider service is temporarily unavailable."
         );
     }
 
@@ -899,10 +897,10 @@ mod tests {
             status: 408,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(app_err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
-            app_err.message,
-            "Service temporarily unavailable. Please try again later."
+            app_err.message(),
+            "Upstream provider service is temporarily unavailable."
         );
     }
 
@@ -912,9 +910,9 @@ mod tests {
             status: 409,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::CONFLICT);
+        assert_eq!(app_err.status(), StatusCode::CONFLICT);
         assert_eq!(
-            app_err.message,
+            app_err.message(),
             "Upstream provider reported a request conflict."
         );
     }
@@ -925,9 +923,9 @@ mod tests {
             status: 429,
             url: "https://provider.example/internal/path?token=secret".to_string(),
         });
-        assert_eq!(app_err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(app_err.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
-            app_err.message,
+            app_err.message(),
             "Upstream provider rate limited the request."
         );
     }

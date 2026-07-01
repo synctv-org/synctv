@@ -408,10 +408,11 @@ impl ResourceObservation {
     }
 
     fn exposes_client_event_cursor(&self) -> bool {
-        matches!(
-            self.resource,
-            ObservedResource::ChatEvents | ObservedResource::ChatPinEvents
-        ) || self.room_resource_cursor_types().is_some()
+        match self.resource {
+            ObservedResource::Playback { .. } => false,
+            ObservedResource::ChatEvents | ObservedResource::ChatPinEvents => true,
+            _ => self.room_resource_cursor_types().is_some(),
+        }
     }
 
     fn evaluation_key(&self) -> ObservationEvaluationKey {
@@ -728,13 +729,9 @@ impl ResourceObserver {
             .resource
             .as_ref()
             .and_then(|resource| match resource {
-                synctv_proto::client::observe_resource::Resource::PlaybackState(observe) => {
-                    observe.after_event_sequence
-                }
-                synctv_proto::client::observe_resource::Resource::Playback(observe) => {
-                    observe.after_event_sequence
-                }
-                synctv_proto::client::observe_resource::Resource::OnlineCount(_)
+                synctv_proto::client::observe_resource::Resource::PlaybackState(_)
+                | synctv_proto::client::observe_resource::Resource::Playback(_)
+                | synctv_proto::client::observe_resource::Resource::OnlineCount(_)
                 | synctv_proto::client::observe_resource::Resource::OnlineEvent(_) => None,
                 synctv_proto::client::observe_resource::Resource::RoomSettings(observe) => {
                     observe.after_event_sequence
@@ -757,11 +754,27 @@ impl ResourceObserver {
             })
     }
 
+    fn requested_playback_state_event_sequence(
+        request: &synctv_proto::client::ObserveResource,
+    ) -> Option<i64> {
+        match request.resource.as_ref()? {
+            synctv_proto::client::observe_resource::Resource::PlaybackState(observe) => {
+                observe.event_sequence
+            }
+            _ => None,
+        }
+    }
+
     fn validate_requested_replay_sequence(
         request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
         if Self::requested_replay_sequence(request).is_some_and(|sequence| sequence < 0) {
             return Err("after_event_sequence must be non-negative".to_string());
+        }
+        if Self::requested_playback_state_event_sequence(request)
+            .is_some_and(|sequence| sequence < 0)
+        {
+            return Err("event_sequence must be non-negative".to_string());
         }
         Ok(())
     }
@@ -773,6 +786,17 @@ impl ResourceObserver {
             debug_assert!(
                 *sequence >= 0,
                 "requested replay sequence must be validated before use"
+            );
+        })
+    }
+
+    fn validated_requested_playback_state_event_sequence(
+        request: &synctv_proto::client::ObserveResource,
+    ) -> Option<i64> {
+        Self::requested_playback_state_event_sequence(request).inspect(|sequence| {
+            debug_assert!(
+                *sequence >= 0,
+                "requested playback state event sequence must be validated before use"
             );
         })
     }
@@ -2196,6 +2220,8 @@ impl ResourceObserver {
             return Ok(());
         }
 
+        let requested_playback_state_sequence =
+            Self::validated_requested_playback_state_event_sequence(request);
         let start_sequence = Self::observation_start_sequence(&observation, request);
         let is_event_only_observation = matches!(
             observation.resource,
@@ -2217,6 +2243,17 @@ impl ResourceObserver {
         let observed_cursor = initial_cursor.clone();
         match self.evaluate_observation(&mut observation).await {
             Ok(mut update) => {
+                let has_latest_playback_state_sequence =
+                    matches!(observation.resource, ObservedResource::PlaybackState)
+                        && requested_playback_state_sequence.is_some_and(|sequence| {
+                            observed_cursor
+                                .as_ref()
+                                .is_some_and(|cursor| sequence == cursor.sequence)
+                        });
+                if has_latest_playback_state_sequence {
+                    update.changed = false;
+                    update.changed_message = None;
+                }
                 if is_event_only_observation {
                     update.changed = false;
                     update.changed_message = None;
@@ -3325,14 +3362,14 @@ mod tests {
     }
 
     #[test]
-    fn playback_exposes_client_event_cursor() {
+    fn playback_hides_client_event_cursor() {
         let observation = playback_observation();
 
-        assert!(observation.exposes_client_event_cursor());
+        assert!(!observation.exposes_client_event_cursor());
     }
 
     #[test]
-    fn playback_observation_uses_requested_event_sequence() {
+    fn playback_observation_ignores_requested_event_sequence() {
         let observation = playback_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),
@@ -3340,18 +3377,14 @@ mod tests {
             resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
                 synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
-                    after_event_sequence: Some(42),
                 },
             )),
         };
 
-        assert_eq!(
-            ResourceObserver::requested_replay_sequence(&request),
-            Some(42)
-        );
+        assert_eq!(ResourceObserver::requested_replay_sequence(&request), None);
         assert_eq!(
             ResourceObserver::observation_start_sequence(&observation, &request),
-            42
+            0
         );
     }
 
@@ -3415,7 +3448,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_observation_starts_from_current_playback_cursor() {
+    fn playback_observation_starts_from_current_snapshot() {
         let observation = playback_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback".to_string(),
@@ -3423,7 +3456,6 @@ mod tests {
             resource: Some(synctv_proto::client::observe_resource::Resource::Playback(
                 synctv_proto::client::ObservePlayback {
                     playback_client_profile: None,
-                    after_event_sequence: None,
                 },
             )),
         };
@@ -3440,23 +3472,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_requested_replay_sequence_rejects_negative_room_resource_cursor() {
+    fn playback_state_observation_has_event_cursor_without_replay_sequence() {
+        let observation = playback_state_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback-state".to_string(),
             delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
             resource: Some(
                 synctv_proto::client::observe_resource::Resource::PlaybackState(
                     synctv_proto::client::ObservePlaybackState {
-                        after_event_sequence: Some(-1),
+                        event_sequence: None,
                     },
                 ),
             ),
         };
 
-        assert!(matches!(
-            ResourceObserver::validate_requested_replay_sequence(&request),
-            Err(message) if message.contains("after_event_sequence")
-        ));
+        assert_eq!(ResourceObserver::requested_replay_sequence(&request), None);
+        assert!(observation.exposes_client_event_cursor());
     }
 
     #[test]
@@ -3480,7 +3511,27 @@ mod tests {
     }
 
     #[test]
-    fn observation_start_sequence_uses_validated_room_resource_cursor() {
+    fn validate_requested_replay_sequence_rejects_negative_playback_state_sequence() {
+        let request = synctv_proto::client::ObserveResource {
+            observe_id: "playback-state".to_string(),
+            delivery_mode: ResourceDeliveryMode::PushSnapshot as i32,
+            resource: Some(
+                synctv_proto::client::observe_resource::Resource::PlaybackState(
+                    synctv_proto::client::ObservePlaybackState {
+                        event_sequence: Some(-1),
+                    },
+                ),
+            ),
+        };
+
+        assert!(matches!(
+            ResourceObserver::validate_requested_replay_sequence(&request),
+            Err(message) if message.contains("event_sequence")
+        ));
+    }
+
+    #[test]
+    fn playback_state_observation_starts_from_current_snapshot() {
         let observation = playback_state_observation();
         let request = synctv_proto::client::ObserveResource {
             observe_id: "playback-state".to_string(),
@@ -3488,7 +3539,7 @@ mod tests {
             resource: Some(
                 synctv_proto::client::observe_resource::Resource::PlaybackState(
                     synctv_proto::client::ObservePlaybackState {
-                        after_event_sequence: Some(42),
+                        event_sequence: Some(42),
                     },
                 ),
             ),
@@ -3496,7 +3547,11 @@ mod tests {
 
         assert_eq!(
             ResourceObserver::observation_start_sequence(&observation, &request),
-            42
+            0
+        );
+        assert_eq!(
+            ResourceObserver::requested_playback_state_event_sequence(&request),
+            Some(42)
         );
     }
 

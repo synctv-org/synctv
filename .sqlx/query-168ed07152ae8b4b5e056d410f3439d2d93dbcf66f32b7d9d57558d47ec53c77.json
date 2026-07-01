@@ -1,11 +1,11 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT rcr.id AS \"id: RoomId\",\n                   rcr.requested_by AS \"requested_by: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name,\n                   rcr.description,\n                   rc.id AS \"category_id: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   rcr.status AS \"status: ReviewStatus\",\n                   rcr.requested_at,\n                   rcr.reviewed_at,\n                   rcr.reviewed_by AS \"reviewed_by: UserId\",\n                   rcr.rejection_reason\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            LEFT JOIN room_categories rc ON rc.id = rcr.category_id\n            WHERE rcr.id = $1\n            ",
+  "query": "\n            SELECT rcr.id AS \"id!: RoomId\",\n                   rcr.requested_by AS \"requested_by!: UserId\",\n                   COALESCE(u.username, '') AS \"requested_by_username!\",\n                   rcr.name AS \"name!\",\n                   rcr.description AS \"description!\",\n                   rc.id AS \"category_id: RoomCategoryId\",\n                   rc.key AS \"category_key?\",\n                   rc.name AS \"category_name?\",\n                   rc.description AS \"category_description?\",\n                   rc.sort_order AS \"category_sort_order?\",\n                   rc.is_enabled AS \"category_is_enabled?\",\n                   rc.created_at AS \"category_created_at?\",\n                   rc.updated_at AS \"category_updated_at?\",\n                   rcr.status AS \"status!: ReviewStatus\",\n                   rcr.requested_at AS \"requested_at!\",\n                   rcr.reviewed_at AS \"reviewed_at?\",\n                   rcr.reviewed_by AS \"reviewed_by?: UserId\",\n                   rcr.rejection_reason AS \"rejection_reason?\"\n            FROM room_creation_requests rcr\n            LEFT JOIN users u ON u.id = rcr.requested_by\n            LEFT JOIN room_categories rc ON rc.id = rcr.category_id\n            WHERE rcr.id = $1\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id: RoomId",
+        "name": "id!: RoomId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "requested_by: UserId",
+        "name": "requested_by!: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -33,7 +33,7 @@
       },
       {
         "ordinal": 3,
-        "name": "name",
+        "name": "name!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -44,7 +44,7 @@
       },
       {
         "ordinal": 4,
-        "name": "description",
+        "name": "description!",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -143,7 +143,7 @@
       },
       {
         "ordinal": 13,
-        "name": "status: ReviewStatus",
+        "name": "status!: ReviewStatus",
         "type_info": "Int2",
         "origin": {
           "Table": {
@@ -154,7 +154,7 @@
       },
       {
         "ordinal": 14,
-        "name": "requested_at",
+        "name": "requested_at!",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -165,7 +165,7 @@
       },
       {
         "ordinal": 15,
-        "name": "reviewed_at",
+        "name": "reviewed_at?",
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
@@ -176,7 +176,7 @@
       },
       {
         "ordinal": 16,
-        "name": "reviewed_by: UserId",
+        "name": "reviewed_by?: UserId",
         "type_info": "Int8",
         "origin": {
           "Table": {
@@ -187,7 +187,7 @@
       },
       {
         "ordinal": 17,
-        "name": "rejection_reason",
+        "name": "rejection_reason?",
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -203,11 +203,9 @@
       ]
     },
     "nullable": [
-      false,
-      false,
+      true,
+      true,
       null,
-      false,
-      false,
       true,
       true,
       true,
@@ -216,12 +214,14 @@
       true,
       true,
       true,
-      false,
-      false,
+      true,
+      true,
+      true,
+      true,
       true,
       true,
       true
     ]
   },
-  "hash": "fd2504aed31538af697eee6e74e82f7f195626b6ef577579bbacf4a34342fe93"
+  "hash": "168ed07152ae8b4b5e056d410f3439d2d93dbcf66f32b7d9d57558d47ec53c77"
 }

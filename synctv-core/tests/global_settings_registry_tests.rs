@@ -1,4 +1,4 @@
-//! Global settings registry integration tests.
+//! Global runtime settings store integration tests.
 
 use synctv_core::service::global_settings::*;
 use synctv_core_testing::{err, ok};
@@ -141,22 +141,33 @@ async fn test_email_enabled_update_requires_complete_email_config() {
         service.initialize().await,
         "settings service should initialize",
     );
-    let registry = SettingsRegistry::new(service.clone());
+    let registry = RuntimeSettingsStore::new(service.clone());
     ok(
         registry.init(tokio_util::sync::CancellationToken::new()),
-        "settings registry should init",
+        "runtime settings store should init",
     );
 
+    let mut settings = ok(
+        registry.runtime_settings(),
+        "runtime settings snapshot should load",
+    );
+    settings.email.enabled = true;
+
     let error = err(
-        service.update("email.enabled", "true".to_string()).await,
+        registry.persist_runtime_settings(&settings).await,
         "email.enabled=true must reject incomplete SMTP settings",
     );
     assert!(
-        error.to_string().contains("email.smtp_host"),
+        error
+            .to_string()
+            .contains(synctv_core::service::EmailSmtpHostSetting::KEY),
         "expected missing smtp_host validation error, got: {error:?}"
     );
     assert!(
-        service.get("email.enabled").await.is_err(),
+        service
+            .get(synctv_core::service::EmailEnabledSetting::KEY)
+            .await
+            .is_err(),
         "failed update must not persist email.enabled"
     );
 }
@@ -178,33 +189,31 @@ async fn test_email_enabled_batch_update_accepts_complete_email_config() {
         service.initialize().await,
         "settings service should initialize",
     );
-    let registry = SettingsRegistry::new(service.clone());
+    let registry = RuntimeSettingsStore::new(service.clone());
     ok(
         registry.init(tokio_util::sync::CancellationToken::new()),
-        "settings registry should init",
+        "runtime settings store should init",
     );
 
+    let mut settings = ok(
+        registry.runtime_settings(),
+        "runtime settings snapshot should load",
+    );
+    settings.email.enabled = true;
+    settings.email.smtp_host = "smtp.example.com".to_string();
+    settings.email.smtp_port = 587;
+    settings.email.from_email = "noreply@example.com".to_string();
+
     ok(
-        service
-            .update_batch([
-                ("email.enabled".to_string(), "true".to_string()),
-                (
-                    "email.smtp_host".to_string(),
-                    "smtp.example.com".to_string(),
-                ),
-                ("email.smtp_port".to_string(), "587".to_string()),
-                (
-                    "email.from_email".to_string(),
-                    "noreply@example.com".to_string(),
-                ),
-            ])
-            .await,
+        registry.persist_runtime_settings(&settings).await,
         "complete enabled email settings should persist",
     );
 
     assert_eq!(
         ok(
-            service.get("email.enabled").await,
+            service
+                .get(synctv_core::service::EmailEnabledSetting::KEY)
+                .await,
             "email.enabled should load"
         )
         .value,

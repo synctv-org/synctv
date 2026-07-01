@@ -463,7 +463,7 @@ use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
     ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig,
     RemoteProviderManager, RequestRateLimiterService, RoomService as CoreRoomService,
-    SettingsRegistry, SettingsService, UserService as CoreUserService,
+    RuntimeSettingsStore, SettingsService, UserService as CoreUserService,
 };
 use synctv_core::Config;
 use synctv_proto::admin::admin_service_server::AdminServiceServer;
@@ -495,7 +495,7 @@ pub struct GrpcServerConfig<'a> {
     pub user_provider_credential_repository:
         Arc<synctv_core::repository::UserProviderCredentialRepository>,
     pub settings_service: Arc<SettingsService>,
-    pub settings_registry: Option<Arc<SettingsRegistry>>,
+    pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub email_service: Option<Arc<EmailService>>,
     pub email_token_service: Option<Arc<EmailTokenService>>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
@@ -552,7 +552,7 @@ struct FallbackHttpAppStateDeps {
     oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
     settings_service: Arc<SettingsService>,
-    settings_registry: Option<Arc<SettingsRegistry>>,
+    runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     email_service: Option<Arc<EmailService>>,
     email_token_service: Option<Arc<EmailTokenService>>,
     ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
@@ -614,7 +614,7 @@ async fn build_fallback_http_app_state(
             oauth2_service: deps.oauth2_service,
             passkey_service: deps.passkey_service,
             settings_service: Some(deps.settings_service),
-            settings_registry: deps.settings_registry,
+            runtime_settings_store: deps.runtime_settings_store,
             email_service: deps.email_service,
             email_token_service: deps.email_token_service,
             publish_key_service: deps.publish_key_service,
@@ -662,7 +662,7 @@ async fn build_axum_router_with_health(
         provider_instance_manager,
         user_provider_credential_repository,
         settings_service,
-        settings_registry,
+        runtime_settings_store,
         email_service,
         email_token_service,
         ws_ticket_service,
@@ -712,7 +712,7 @@ async fn build_axum_router_with_health(
             oauth2_service: oauth2_service.clone(),
             passkey_service: passkey_service.clone(),
             settings_service: settings_service.clone(),
-            settings_registry: settings_registry.clone(),
+            runtime_settings_store: runtime_settings_store.clone(),
             email_service: email_service.clone(),
             email_token_service: email_token_service.clone(),
             ws_ticket_service: ws_ticket_service.clone(),
@@ -1341,7 +1341,7 @@ mod tests {
         user::{UserServiceDependencies, UserServiceRuntimeOptions},
         AuditService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
         PermissionService, RateLimitConfig, RateLimiter, RemoteProviderManager,
-        RequestRateLimiterService, RoomService, RoomSettingsService, SettingsRegistry,
+        RequestRateLimiterService, RoomService, RoomSettingsService, RuntimeSettingsStore,
         SettingsService, UserService,
     };
     use synctv_core_testing::{
@@ -1434,7 +1434,7 @@ mod tests {
                 file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service,
                 notification_service: NotificationService::default(),
-                settings_registry: None,
+                runtime_settings_store: None,
             },
         )))
     }
@@ -1474,7 +1474,7 @@ mod tests {
                     "test-secret-key-for-grpc-chat-watch-minimum-32-chars",
                 )?,
                 live_streaming_infrastructure: None,
-                settings_registry: None,
+                runtime_settings_store: None,
                 public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
                 chat_service: Some(chat_service),
                 provider_stores: Arc::new(
@@ -1516,7 +1516,7 @@ mod tests {
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
         settings_service: Arc<SettingsService>,
-        settings_registry: Arc<SettingsRegistry>,
+        runtime_settings_store: Arc<RuntimeSettingsStore>,
         provider_instance_manager: Arc<RemoteProviderManager>,
         credential_repo: Arc<UserProviderCredentialRepository>,
         audit_service: Arc<AuditService>,
@@ -1548,7 +1548,7 @@ mod tests {
             SettingsRepository::new(pool.clone()),
             pool.clone(),
         ));
-        let settings_registry = Arc::new(SettingsRegistry::new(settings_service.clone()));
+        let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service.clone()));
         let provider_instance_manager =
             synctv_core_testing::create_empty_provider_instance_manager();
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
@@ -1561,7 +1561,7 @@ mod tests {
             user_service,
             room_service,
             settings_service,
-            settings_registry,
+            runtime_settings_store,
             provider_instance_manager,
             credential_repo,
             audit_service: Arc::new(audit_service),
@@ -1782,7 +1782,7 @@ mod tests {
             oauth2_service: None,
             passkey_service: None,
             settings_service: context.settings_service,
-            settings_registry: Some(context.settings_registry),
+            runtime_settings_store: Some(context.runtime_settings_store),
             email_service: None,
             email_token_service: None,
             ws_ticket_service: ws_ticket_service.clone(),

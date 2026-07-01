@@ -95,11 +95,13 @@ tonic-prost.workspace = true
 tonic-web.workspace = true
 tonic-reflection.workspace = true
 tonic-health.workspace = true
+tonic-types.workspace = true
 prost.workspace = true
 opaque-ke.workspace = true
 sha2_010.workspace = true
 prost-types.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
+pbjson-types.workspace = true
 
 # HTTP
 axum.workspace = true

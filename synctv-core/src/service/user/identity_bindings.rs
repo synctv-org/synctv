@@ -72,10 +72,10 @@ impl UserService {
     pub(crate) fn active_oauth2_provider_keys(
         &self,
     ) -> Result<HashSet<(String, crate::models::OAuth2Provider)>> {
-        let Some(registry) = self.settings_registry.as_ref() else {
+        let Some(registry) = self.runtime_settings_store.as_ref() else {
             return Ok(HashSet::new());
         };
-        let configs = registry.oauth2_providers.get()?;
+        let configs = registry.oauth2.providers.get()?;
         configs
             .0
             .iter()

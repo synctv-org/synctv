@@ -179,7 +179,6 @@ pub(crate) fn room_settings_from_proto(
             settings.guest_removed_permissions,
         ),
     };
-    settings.validate().map_err(crate::impls::ApiError::from)?;
     Ok(settings)
 }
 
@@ -249,9 +248,7 @@ pub(crate) fn apply_room_settings_patch_from_proto(
     if let Some(value) = patch.guest_removed_permissions {
         typed_patch.guest_removed_permissions = Some(GuestRemovedPermissions::new(value));
     }
-    settings
-        .apply_patch(typed_patch)
-        .map_err(crate::impls::ApiError::from)?;
+    settings.merge_patch(typed_patch);
     Ok(settings)
 }
 

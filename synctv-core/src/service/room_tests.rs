@@ -23,6 +23,10 @@ fn err<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str
     }
 }
 
+fn validate_room_settings(settings: &RoomSettings) -> crate::Result<()> {
+    crate::models::SettingsValidationContext::with_strict_policy(|ctx| settings.validate(ctx))
+}
+
 fn validate_room_name(name: &str) -> crate::Result<()> {
     crate::validation::RoomNameValidator::new()
         .validate(name)
@@ -158,7 +162,7 @@ fn test_settings_validate_permissions_guest_escalation_is_rejected() {
         guest_added_permissions: GuestAddedPermissions(1 << 21),
         ..RoomSettings::default()
     };
-    let result = settings.validate();
+    let result = validate_room_settings(&settings);
     assert!(result.is_err());
     match err(result, "guest permission escalation should fail") {
         Error::InvalidInput(msg) => {
@@ -174,7 +178,7 @@ fn test_settings_validate_permissions_member_escalation_is_rejected() {
         member_added_permissions: MemberAddedPermissions(1 << 21),
         ..RoomSettings::default()
     };
-    let result = settings.validate();
+    let result = validate_room_settings(&settings);
     assert!(result.is_err());
     match err(result, "member permission escalation should fail") {
         Error::InvalidInput(msg) => {
@@ -224,7 +228,7 @@ fn test_settings_validate_permissions_within_limits_is_ok() {
         guest_added_permissions: GuestAddedPermissions(RoomGuestPermissionBits::USE_WEBRTC),
         ..RoomSettings::default()
     };
-    assert!(settings.validate().is_ok());
+    assert!(validate_room_settings(&settings).is_ok());
 }
 
 #[test]

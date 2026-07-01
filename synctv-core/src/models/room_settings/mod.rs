@@ -3,7 +3,7 @@
 use crate::models::permission::{
     RoomAdminPermissionBits, RoomGuestPermissionBits, RoomMemberPermissionBits, RoomPermissionSet,
 };
-use crate::{Error, Result};
+use crate::{models::SettingsValidationContext, Error, Result};
 
 /// Core trait for room settings
 ///
@@ -19,15 +19,19 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
     fn value_mut(&mut self) -> &mut Self::Value;
 
     /// Validate the setting value (override for custom validation)
-    fn validate(&self) -> Result<()> {
+    fn validate(&self, _ctx: &SettingsValidationContext<'_>) -> Result<()> {
         Ok(())
     }
 
     /// Validate this setting with access to the complete room settings object.
     ///
     /// This is where cross-field rules owned by one concrete setting live.
-    fn validate_in_settings(&self, _settings: &RoomSettings) -> Result<()> {
-        self.validate()
+    fn validate_in_settings(
+        &self,
+        _settings: &RoomSettings,
+        ctx: &SettingsValidationContext<'_>,
+    ) -> Result<()> {
+        self.validate(ctx)
     }
 }
 
@@ -35,10 +39,10 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
 #[macro_export]
 macro_rules! room_setting {
     ($name:ident, $ty:ty, $key:expr, $default:expr) => {
-        $crate::room_setting!(@impl $name, $ty, $key, $default, |_v: &$ty| -> $crate::Result<()> { Ok(()) }, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings| -> $crate::Result<()> { _this.validate() });
+        $crate::room_setting!(@impl $name, $ty, $key, $default, |_v: &$ty, _ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { Ok(()) }, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings, ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { _this.validate(ctx) });
     };
     ($name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr) => {
-        $crate::room_setting!(@impl $name, $ty, $key, $default, $validator, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings| -> $crate::Result<()> { _this.validate() });
+        $crate::room_setting!(@impl $name, $ty, $key, $default, $validator, |_this: &$name, _settings: &$crate::models::room_settings::RoomSettings, ctx: &$crate::models::SettingsValidationContext<'_>| -> $crate::Result<()> { _this.validate(ctx) });
     };
     ($name:ident, $ty:ty, $key:expr, $default:expr, $validator:expr, $settings_validator:expr) => {
         $crate::room_setting!(@impl $name, $ty, $key, $default, $validator, $settings_validator);
@@ -57,9 +61,12 @@ macro_rules! room_setting {
             }
 
             /// Validate the parsed value (custom validator from macro invocation).
-            fn validate_value(v: &$ty) -> $crate::Result<()> {
+            fn validate_value(
+                v: &$ty,
+                ctx: &$crate::models::SettingsValidationContext<'_>,
+            ) -> $crate::Result<()> {
                 let validator = $validator;
-                validator(v)
+                validator(v, ctx)
             }
         }
 
@@ -74,16 +81,20 @@ macro_rules! room_setting {
                 &mut self.0
             }
 
-            fn validate(&self) -> $crate::Result<()> {
-                $name::validate_value(&self.0)
+            fn validate(
+                &self,
+                ctx: &$crate::models::SettingsValidationContext<'_>,
+            ) -> $crate::Result<()> {
+                $name::validate_value(&self.0, ctx)
             }
 
             fn validate_in_settings(
                 &self,
                 settings: &$crate::models::room_settings::RoomSettings,
+                ctx: &$crate::models::SettingsValidationContext<'_>,
             ) -> $crate::Result<()> {
                 let validator = $settings_validator;
-                validator(self, settings)
+                validator(self, settings, ctx)
             }
 
         }
@@ -104,15 +115,21 @@ room_setting!(AllowAutoJoin, bool, "allowAutoJoin", true);
 /// Maximum allowed value for `max_members` setting (used in validator below)
 const MAX_MEMBERS_LIMIT: u64 = 10_000;
 
-room_setting!(MaxMembers, u64, "maxMembers", 100, |v: &u64| {
-    if *v > MAX_MEMBERS_LIMIT {
-        Err(crate::Error::InvalidInput(format!(
-            "max_members cannot exceed {MAX_MEMBERS_LIMIT}"
-        )))
-    } else {
-        Ok(())
+room_setting!(
+    MaxMembers,
+    u64,
+    "maxMembers",
+    100,
+    |v: &u64, _ctx: &SettingsValidationContext<'_>| {
+        if *v > MAX_MEMBERS_LIMIT {
+            Err(crate::Error::InvalidInput(format!(
+                "max_members cannot exceed {MAX_MEMBERS_LIMIT}"
+            )))
+        } else {
+            Ok(())
+        }
     }
-});
+);
 
 impl MaxMembers {
     /// Maximum allowed value for `max_members` setting
@@ -124,54 +141,60 @@ room_setting!(
     u64,
     "adminAddedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &AdminAddedPermissions, settings: &RoomSettings| settings
-        .validate_admin_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &AdminAddedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_admin_permission_bits()
 );
 room_setting!(
     AdminRemovedPermissions,
     u64,
     "adminRemovedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &AdminRemovedPermissions, settings: &RoomSettings| settings
-        .validate_admin_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &AdminRemovedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_admin_permission_bits()
 );
 room_setting!(
     MemberAddedPermissions,
     u64,
     "memberAddedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &MemberAddedPermissions, settings: &RoomSettings| settings
-        .validate_member_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &MemberAddedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_member_permission_bits()
 );
 room_setting!(
     MemberRemovedPermissions,
     u64,
     "memberRemovedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &MemberRemovedPermissions, settings: &RoomSettings| settings
-        .validate_member_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &MemberRemovedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_member_permission_bits()
 );
 room_setting!(
     GuestAddedPermissions,
     u64,
     "guestAddedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &GuestAddedPermissions, settings: &RoomSettings| settings
-        .validate_guest_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &GuestAddedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_guest_permission_bits()
 );
 room_setting!(
     GuestRemovedPermissions,
     u64,
     "guestRemovedPermissions",
     0,
-    |_v: &u64| Ok(()),
-    |_this: &GuestRemovedPermissions, settings: &RoomSettings| settings
-        .validate_guest_permission_bits()
+    |_v: &u64, _ctx: &SettingsValidationContext<'_>| Ok(()),
+    |_this: &GuestRemovedPermissions,
+     settings: &RoomSettings,
+     _ctx: &SettingsValidationContext<'_>| settings.validate_guest_permission_bits()
 );
 
 use crate::models::room::AutoPlaySettings;
@@ -202,7 +225,7 @@ impl RoomSetting for AutoPlay {
         &mut self.value
     }
 
-    fn validate(&self) -> Result<()> {
+    fn validate(&self, _ctx: &SettingsValidationContext<'_>) -> Result<()> {
         if self.value.delay > 86_400 {
             return Err(Error::InvalidInput(
                 "autoPlay.delay cannot exceed 86400 seconds".to_string(),
@@ -293,62 +316,76 @@ impl<'r> Decode<'r, Postgres> for RoomSettings {
 impl RoomSettings {
     /// Validate all room setting fields. Each concrete setting owns its own
     /// value-level and whole-settings validation.
-    pub fn validate(&self) -> Result<()> {
-        self.allow_guest_join.validate_in_settings(self)?;
-        self.max_members.validate_in_settings(self)?;
-        self.require_approval.validate_in_settings(self)?;
-        self.allow_auto_join.validate_in_settings(self)?;
-        self.chat_enabled.validate_in_settings(self)?;
-        self.auto_play.validate_in_settings(self)?;
-        self.admin_added_permissions.validate_in_settings(self)?;
-        self.admin_removed_permissions.validate_in_settings(self)?;
-        self.member_added_permissions.validate_in_settings(self)?;
-        self.member_removed_permissions.validate_in_settings(self)?;
-        self.guest_added_permissions.validate_in_settings(self)?;
-        self.guest_removed_permissions.validate_in_settings(self)
+    pub fn validate(&self, ctx: &SettingsValidationContext<'_>) -> Result<()> {
+        self.allow_guest_join.validate_in_settings(self, ctx)?;
+        self.max_members.validate_in_settings(self, ctx)?;
+        self.require_approval.validate_in_settings(self, ctx)?;
+        self.allow_auto_join.validate_in_settings(self, ctx)?;
+        self.chat_enabled.validate_in_settings(self, ctx)?;
+        self.auto_play.validate_in_settings(self, ctx)?;
+        self.admin_added_permissions
+            .validate_in_settings(self, ctx)?;
+        self.admin_removed_permissions
+            .validate_in_settings(self, ctx)?;
+        self.member_added_permissions
+            .validate_in_settings(self, ctx)?;
+        self.member_removed_permissions
+            .validate_in_settings(self, ctx)?;
+        self.guest_added_permissions
+            .validate_in_settings(self, ctx)?;
+        self.guest_removed_permissions
+            .validate_in_settings(self, ctx)
     }
 
-    pub fn apply_patch(&mut self, patch: RoomSettingsPatch) -> Result<()> {
+    pub fn apply_patch(
+        &mut self,
+        patch: RoomSettingsPatch,
+        ctx: &SettingsValidationContext<'_>,
+    ) -> Result<()> {
         let mut next = self.clone();
-        if let Some(value) = patch.allow_guest_join {
-            next.allow_guest_join = value;
-        }
-        if let Some(value) = patch.max_members {
-            next.max_members = value;
-        }
-        if let Some(value) = patch.require_approval {
-            next.require_approval = value;
-        }
-        if let Some(value) = patch.allow_auto_join {
-            next.allow_auto_join = value;
-        }
-        if let Some(value) = patch.chat_enabled {
-            next.chat_enabled = value;
-        }
-        if let Some(value) = patch.auto_play {
-            next.auto_play = value;
-        }
-        if let Some(value) = patch.admin_added_permissions {
-            next.admin_added_permissions = value;
-        }
-        if let Some(value) = patch.admin_removed_permissions {
-            next.admin_removed_permissions = value;
-        }
-        if let Some(value) = patch.member_added_permissions {
-            next.member_added_permissions = value;
-        }
-        if let Some(value) = patch.member_removed_permissions {
-            next.member_removed_permissions = value;
-        }
-        if let Some(value) = patch.guest_added_permissions {
-            next.guest_added_permissions = value;
-        }
-        if let Some(value) = patch.guest_removed_permissions {
-            next.guest_removed_permissions = value;
-        }
-        next.validate()?;
+        next.merge_patch(patch);
+        next.validate(ctx)?;
         *self = next;
         Ok(())
+    }
+
+    pub fn merge_patch(&mut self, patch: RoomSettingsPatch) {
+        if let Some(value) = patch.allow_guest_join {
+            self.allow_guest_join = value;
+        }
+        if let Some(value) = patch.max_members {
+            self.max_members = value;
+        }
+        if let Some(value) = patch.require_approval {
+            self.require_approval = value;
+        }
+        if let Some(value) = patch.allow_auto_join {
+            self.allow_auto_join = value;
+        }
+        if let Some(value) = patch.chat_enabled {
+            self.chat_enabled = value;
+        }
+        if let Some(value) = patch.auto_play {
+            self.auto_play = value;
+        }
+        if let Some(value) = patch.admin_added_permissions {
+            self.admin_added_permissions = value;
+        }
+        if let Some(value) = patch.admin_removed_permissions {
+            self.admin_removed_permissions = value;
+        }
+        if let Some(value) = patch.member_added_permissions {
+            self.member_added_permissions = value;
+        }
+        if let Some(value) = patch.member_removed_permissions {
+            self.member_removed_permissions = value;
+        }
+        if let Some(value) = patch.guest_added_permissions {
+            self.guest_added_permissions = value;
+        }
+        if let Some(value) = patch.guest_removed_permissions {
+            self.guest_removed_permissions = value;
+        }
     }
 
     /// Get effective permissions for Admin role
@@ -429,16 +466,25 @@ mod tests {
         }
     }
 
+    fn with_context<R>(f: impl FnOnce(&SettingsValidationContext<'_>) -> R) -> R {
+        SettingsValidationContext::with_strict_policy(f)
+    }
+
     #[test]
     fn test_apply_typed_patch() {
         let mut settings = RoomSettings::default();
         assert!(settings.chat_enabled.0);
 
         ok(
-            settings.apply_patch(RoomSettingsPatch {
-                chat_enabled: Some(ChatEnabled(false)),
-                max_members: Some(MaxMembers(42)),
-                ..Default::default()
+            with_context(|ctx| {
+                settings.apply_patch(
+                    RoomSettingsPatch {
+                        chat_enabled: Some(ChatEnabled(false)),
+                        max_members: Some(MaxMembers(42)),
+                        ..Default::default()
+                    },
+                    ctx,
+                )
             }),
             "typed room settings patch should apply",
         );
@@ -449,9 +495,14 @@ mod tests {
     #[test]
     fn test_apply_typed_patch_validates_final_settings() {
         let mut settings = RoomSettings::default();
-        let result = settings.apply_patch(RoomSettingsPatch {
-            max_members: Some(MaxMembers(MaxMembers::MAX + 1)),
-            ..Default::default()
+        let result = with_context(|ctx| {
+            settings.apply_patch(
+                RoomSettingsPatch {
+                    max_members: Some(MaxMembers(MaxMembers::MAX + 1)),
+                    ..Default::default()
+                },
+                ctx,
+            )
         });
         assert!(result.is_err());
     }
@@ -502,32 +553,39 @@ mod tests {
 
     #[test]
     fn max_members_validation_accepts_zero_and_limit() {
-        assert!(RoomSettings {
-            max_members: MaxMembers(0),
-            ..Default::default()
-        }
-        .validate()
-        .is_ok());
-        assert!(RoomSettings {
-            max_members: MaxMembers(MaxMembers::MAX),
-            ..Default::default()
-        }
-        .validate()
-        .is_ok());
-        assert!(RoomSettings {
-            max_members: MaxMembers(MaxMembers::MAX + 1),
-            ..Default::default()
-        }
-        .validate()
-        .is_err());
+        with_context(|ctx| {
+            assert!(RoomSettings {
+                max_members: MaxMembers(0),
+                ..Default::default()
+            }
+            .validate(ctx)
+            .is_ok());
+            assert!(RoomSettings {
+                max_members: MaxMembers(MaxMembers::MAX),
+                ..Default::default()
+            }
+            .validate(ctx)
+            .is_ok());
+            assert!(RoomSettings {
+                max_members: MaxMembers(MaxMembers::MAX + 1),
+                ..Default::default()
+            }
+            .validate(ctx)
+            .is_err());
+        });
     }
 
     #[test]
     fn apply_to_max_members_rejects_over_limit() {
         let mut settings = RoomSettings::default();
-        let result = settings.apply_patch(RoomSettingsPatch {
-            max_members: Some(MaxMembers(99999)),
-            ..Default::default()
+        let result = with_context(|ctx| {
+            settings.apply_patch(
+                RoomSettingsPatch {
+                    max_members: Some(MaxMembers(99999)),
+                    ..Default::default()
+                },
+                ctx,
+            )
         });
         assert!(result.is_err());
         assert_eq!(settings.max_members.0, 100);
@@ -540,7 +598,7 @@ mod tests {
             ..RoomSettings::default()
         };
 
-        let result = settings.validate();
+        let result = with_context(|ctx| settings.validate(ctx));
 
         assert!(result.is_err());
     }

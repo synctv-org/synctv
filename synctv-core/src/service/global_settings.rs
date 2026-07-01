@@ -20,7 +20,7 @@
 //!
 //! ```
 
-use crate::models::room_settings::MaxMembers;
+use crate::models::{room_settings::MaxMembers, SettingsValidationContext};
 use crate::service::email::{EmailConfig, EmailConfigProvider};
 use crate::service::{
     settings_vars::{Setting, SettingChangeReceiver, SettingsStorage},
@@ -350,7 +350,7 @@ impl OAuth2ProvidersSetting {
         Self(
             Setting::new(Self::KEY, storage, OAuth2ProviderConfigs::default()).with_validator(
                 move |configs: &OAuth2ProviderConfigs| {
-                    configs.validate_with_ssrf_guard(&ssrf_guard)
+                    configs.validate(&SettingsValidationContext::new(&ssrf_guard))
                 },
             ),
         )
@@ -1123,7 +1123,12 @@ impl RuntimeSettingsStore {
     }
 
     pub fn validate_runtime_settings(&self, settings: &RuntimeSettings) -> crate::Result<()> {
-        settings.validate_with_ssrf_guard(&self.ssrf_guard)
+        settings.validate(&self.validation_context())
+    }
+
+    #[must_use]
+    pub fn validation_context(&self) -> SettingsValidationContext<'_> {
+        SettingsValidationContext::new(&self.ssrf_guard)
     }
 
     pub async fn persist_runtime_settings(
@@ -1229,6 +1234,14 @@ mod tests {
         }
     }
 
+    fn validate_settings(settings: &RuntimeSettings) -> crate::Result<()> {
+        SettingsValidationContext::with_strict_policy(|ctx| settings.validate(ctx))
+    }
+
+    fn validate_configs(configs: &OAuth2ProviderConfigs) -> crate::Result<()> {
+        SettingsValidationContext::with_strict_policy(|ctx| configs.validate(ctx))
+    }
+
     #[test]
     fn test_public_settings_registration_defaults_are_closed() {
         let settings = PublicSettings::defaults();
@@ -1303,7 +1316,7 @@ mod tests {
         settings.permissions.guest_default_permissions =
             r#"["view_media_resources","chat"]"#.parse().expect("valid names");
 
-        let error = settings.validate().expect_err("unsafe guest default");
+        let error = validate_settings(&settings).expect_err("unsafe guest default");
         assert!(
             error.to_string().contains("guest-safe permissions"),
             "unexpected error: {error}"
@@ -1311,7 +1324,7 @@ mod tests {
 
         settings.permissions.guest_default_permissions =
             r#"["view_member_list","use_webrtc"]"#.parse().expect("valid names");
-        assert!(settings.validate().is_ok());
+        assert!(validate_settings(&settings).is_ok());
     }
 
     #[test]
@@ -1322,13 +1335,13 @@ mod tests {
         settings.email.whitelist_enabled = true;
         settings.email.whitelist_domains =
             vec!["example.com".to_string(), "team.example.org".to_string()];
-        assert!(settings.validate().is_ok());
+        assert!(validate_settings(&settings).is_ok());
 
         settings.email.whitelist_domains = vec!["alice@example.com".to_string()];
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         settings.email.whitelist_domains = vec!["example".to_string()];
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
     }
 
     #[test]
@@ -1337,21 +1350,21 @@ mod tests {
             .runtime_settings()
             .expect("runtime settings should load");
         settings.room_creation.max_rooms_per_user = 0;
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         settings.room_creation.max_rooms_per_user = 1001;
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         settings.room_creation.max_rooms_per_user = 10;
         settings.room_defaults.default_max_members = 0;
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         settings.room_defaults.default_max_members = 100;
         settings.room_defaults.default_max_chat_messages = 10_001;
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         settings.room_defaults.default_max_chat_messages = 500;
-        assert!(settings.validate().is_ok());
+        assert!(validate_settings(&settings).is_ok());
     }
 
     #[tokio::test]
@@ -1454,21 +1467,21 @@ mod tests {
                 .parse(),
             "OAuth2 provider configs should parse",
         );
-        assert!(configs.validate().is_ok());
+        assert!(validate_configs(&configs).is_ok());
 
         let dotted: OAuth2ProviderConfigs = ok(
             r#"{"github.enterprise-1":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
-        assert!(dotted.validate().is_err());
+        assert!(validate_configs(&dotted).is_err());
 
         let invalid: OAuth2ProviderConfigs = ok(
             r#"{"bad/name":{"type":"github","enableSignup":true,"clientId":"id","clientSecret":"secret","redirectUrl":"https://app.example.com/cb"}}"#
                 .parse(),
             "OAuth2 provider configs should parse",
         );
-        assert!(invalid.validate().is_err());
+        assert!(validate_configs(&invalid).is_err());
     }
 
     #[test]
@@ -1497,7 +1510,7 @@ mod tests {
             .expect("runtime settings should load");
         settings.oauth2.providers = OAuth2ProviderConfigs(providers);
 
-        assert!(settings.validate().is_err());
+        assert!(validate_settings(&settings).is_err());
 
         let guard = synctv_common::ssrf::SsrfGuard::builder()
             .allow_private_network_targets(true)
@@ -1516,7 +1529,7 @@ mod tests {
             r#"{"github":{"type":"github","enableSignup":true,"clientId":"id"}}"#.parse(),
             "OAuth2 provider configs should parse",
         );
-        assert!(invalid_config.validate().is_err());
+        assert!(validate_configs(&invalid_config).is_err());
     }
 
     #[test]

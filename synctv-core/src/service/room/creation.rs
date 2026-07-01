@@ -515,7 +515,7 @@ impl RoomService {
         } = command;
         let password_enabled = password.is_some();
         let room_settings = initial_room_settings(settings);
-        room_settings.validate()?;
+        self.validate_room_settings(&room_settings)?;
         let (category_id, label_ids) = self
             .resolve_enabled_room_taxonomy(category_id, &label_ids)
             .await?;

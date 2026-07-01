@@ -1,6 +1,9 @@
 use crate::{
     cache::{CacheDomain, ConsistencyCoordinator, VersionFenceReservation},
-    models::{AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings, UserId},
+    models::{
+        AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings,
+        SettingsValidationContext, UserId,
+    },
     service::optimistic_retry,
     Error, Result,
 };
@@ -29,8 +32,7 @@ impl RoomService {
             )
             .await?;
 
-        // Validate permission escalation
-        settings.validate()?;
+        self.validate_room_settings(&settings)?;
 
         // Verify room exists
         self.room_repo
@@ -232,7 +234,7 @@ impl RoomService {
         settings: &RoomSettings,
         outbox_event_factory: Option<RealtimeOutboxSettingsEventFactory>,
     ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        settings.validate()?;
+        SettingsValidationContext::with_strict_policy(|ctx| settings.validate(ctx))?;
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock(
@@ -333,7 +335,7 @@ impl RoomService {
             )
             .await?;
 
-        settings.validate()?;
+        self.validate_room_settings(&settings)?;
 
         self.room_repo
             .get_by_id(&room_id)
@@ -624,5 +626,18 @@ impl RoomService {
             "",
         )
         .await
+    }
+}
+
+impl RoomService {
+    fn validate_settings(&self, settings: &RoomSettings) -> Result<()> {
+        if let Some(runtime_settings_store) = self.runtime_settings_store.as_ref() {
+            return settings.validate(&runtime_settings_store.validation_context());
+        }
+        SettingsValidationContext::with_strict_policy(|ctx| settings.validate(ctx))
+    }
+
+    pub(super) fn validate_room_settings(&self, settings: &RoomSettings) -> Result<()> {
+        self.validate_settings(settings)
     }
 }

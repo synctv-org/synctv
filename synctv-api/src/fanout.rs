@@ -34,24 +34,13 @@ impl PreparedRoomSettingsFanout {
     pub fn settings_outbox_factory(&self) -> RealtimeOutboxSettingsEventFactory {
         let prepared = self.clone();
         Arc::new(move |settings: &RoomSettings, version| {
-            let event = room_settings_event_with_settings_and_version(
-                prepared.event(),
-                settings.clone(),
-                version,
-            );
+            let event =
+                room_settings_event_with_settings_and_version(prepared.event(), settings, version);
             prepared
                 .realtime_fanout
                 .outbox_event(&event)
                 .map_err(synctv_core::Error::Internal)
         })
-    }
-
-    #[must_use]
-    pub fn with_version(&self, version: i64) -> synctv_core::Result<Self> {
-        Self::from_event(
-            room_settings_event_with_version(self.event(), version),
-            self.realtime_fanout.clone(),
-        )
     }
 
     pub fn with_settings_and_version(
@@ -60,7 +49,7 @@ impl PreparedRoomSettingsFanout {
         version: i64,
     ) -> synctv_core::Result<Self> {
         Self::from_event(
-            room_settings_event_with_settings_and_version(self.event(), settings.clone(), version),
+            room_settings_event_with_settings_and_version(self.event(), settings, version),
             self.realtime_fanout.clone(),
         )
     }
@@ -81,8 +70,6 @@ pub trait RoomSettingsFanoutService: Send + Sync {
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
-        settings: RoomSettings,
-        version: i64,
     ) -> synctv_core::Result<PreparedRoomSettingsFanout>;
 
     fn publish_prepared_after_outbox_commit(&self, prepared: PreparedRoomSettingsFanout);
@@ -116,16 +103,14 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
         room_id: &RoomId,
         actor_user_id: &UserId,
         actor_username: &str,
-        settings: RoomSettings,
-        version: i64,
     ) -> synctv_core::Result<PreparedRoomSettingsFanout> {
         let event = RealtimeEvent::RoomSettingsChanged {
             event_id: synctv_common::snanoid!(16),
             room_id: *room_id,
             user_id: *actor_user_id,
             username: actor_username.to_string(),
-            settings,
-            version,
+            settings: RoomSettings::default(),
+            version: 0,
             timestamp: chrono::Utc::now(),
         };
         PreparedRoomSettingsFanout::from_event(event, self.realtime_fanout.clone())
@@ -136,21 +121,9 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
     }
 }
 
-fn room_settings_event_with_version(event: &RealtimeEvent, version: i64) -> RealtimeEvent {
-    room_settings_event_with_optional_settings(event, None, version)
-}
-
 fn room_settings_event_with_settings_and_version(
     event: &RealtimeEvent,
-    settings: RoomSettings,
-    version: i64,
-) -> RealtimeEvent {
-    room_settings_event_with_optional_settings(event, Some(settings), version)
-}
-
-fn room_settings_event_with_optional_settings(
-    event: &RealtimeEvent,
-    new_settings: Option<RoomSettings>,
+    settings: &RoomSettings,
     version: i64,
 ) -> RealtimeEvent {
     match event {
@@ -159,7 +132,7 @@ fn room_settings_event_with_optional_settings(
             room_id,
             user_id,
             username,
-            settings,
+            settings: _,
             timestamp,
             ..
         } => RealtimeEvent::RoomSettingsChanged {
@@ -167,7 +140,7 @@ fn room_settings_event_with_optional_settings(
             room_id: *room_id,
             user_id: *user_id,
             username: username.clone(),
-            settings: new_settings.unwrap_or_else(|| settings.clone()),
+            settings: settings.clone(),
             version,
             timestamp: *timestamp,
         },
@@ -217,16 +190,15 @@ mod tests {
             event_service.clone(),
         ));
 
-        let prepared = core_ok(service.prepare_settings_changed(
-            &room_id(),
-            &user_id(),
-            "tester",
-            synctv_core::models::RoomSettings {
-                chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
-                ..Default::default()
-            },
-            11,
-        ))?;
+        let prepared = core_ok(service.prepare_settings_changed(&room_id(), &user_id(), "tester"))?
+            .with_settings_and_version(
+                &synctv_core::models::RoomSettings {
+                    chat_enabled: synctv_core::models::room_settings::ChatEnabled(false),
+                    ..Default::default()
+                },
+                11,
+            )
+            .map_err(|error| test_error(error.to_string()))?;
         service.publish_prepared_after_outbox_commit(prepared);
 
         assert_eq!(event_service.broadcast_calls.load(Ordering::SeqCst), 0);
@@ -241,13 +213,7 @@ mod tests {
         let service = default_room_settings_fanout_service(
             crate::realtime_fanout::disabled_realtime_fanout_service(),
         );
-        let prepared = core_ok(service.prepare_settings_changed(
-            &room_id(),
-            &user_id(),
-            "tester",
-            synctv_core::models::RoomSettings::default(),
-            0,
-        ))?;
+        let prepared = core_ok(service.prepare_settings_changed(&room_id(), &user_id(), "tester"))?;
         let original_event_id = prepared.event().event_id().to_string();
 
         let prepared = prepared

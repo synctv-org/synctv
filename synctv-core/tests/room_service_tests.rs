@@ -2566,16 +2566,32 @@ async fn test_max_members_enforces_capacity_and_zero_unlimited() {
 async fn test_max_members_cannot_exceed_10000() {
     use synctv_core::models::room_settings::{MaxMembers, RoomSettings, RoomSettingsPatch};
 
-    let result = RoomSettings::default().apply_patch(RoomSettingsPatch {
-        max_members: Some(MaxMembers(10001)),
-        ..Default::default()
-    });
+    let result = {
+        let mut settings = RoomSettings::default();
+        synctv_core::models::SettingsValidationContext::with_strict_policy(|ctx| {
+            settings.apply_patch(
+                RoomSettingsPatch {
+                    max_members: Some(MaxMembers(10001)),
+                    ..Default::default()
+                },
+                ctx,
+            )
+        })
+    };
     assert!(result.is_err(), "max_members > 10000 should be rejected");
 
-    let result = RoomSettings::default().apply_patch(RoomSettingsPatch {
-        max_members: Some(MaxMembers(10000)),
-        ..Default::default()
-    });
+    let result = {
+        let mut settings = RoomSettings::default();
+        synctv_core::models::SettingsValidationContext::with_strict_policy(|ctx| {
+            settings.apply_patch(
+                RoomSettingsPatch {
+                    max_members: Some(MaxMembers(10000)),
+                    ..Default::default()
+                },
+                ctx,
+            )
+        })
+    };
     assert!(result.is_ok(), "max_members = 10000 should be accepted");
 }
 

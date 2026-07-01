@@ -1060,13 +1060,9 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let settings = validate_update_room_settings_request(&req, current_settings)?;
         let username = self.user_username_for_event(&uid).await?;
-        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
-            &rid,
-            &uid,
-            &username,
-            settings.clone(),
-            0,
-        )?;
+        let prepared_settings_fanout = self
+            .room_settings_fanout
+            .prepare_settings_changed(&rid, &uid, &username)?;
         let snapshot = self
             .room_service
             .set_settings_with_outbox(
@@ -1234,19 +1230,9 @@ impl ClientApiImpl {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let username = self.user_username_for_event(&uid).await?;
-        let default_settings = synctv_core::models::RoomSettings::default();
-        let (_, current_version) = self
-            .room_service
-            .get_room_settings_with_version(&rid)
-            .await
-            .map_err(ApiError::from)?;
-        let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
-            &rid,
-            &uid,
-            &username,
-            default_settings,
-            current_version + 1,
-        )?;
+        let prepared_settings_fanout = self
+            .room_settings_fanout
+            .prepare_settings_changed(&rid, &uid, &username)?;
         let snapshot = self
             .room_service
             .reset_room_settings_with_outbox(
@@ -1258,7 +1244,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version)?,
+                prepared_settings_fanout
+                    .with_settings_and_version(&snapshot.settings, snapshot.version)?,
             );
         self.room_cache_fanout.publish_invalidation(&rid);
 

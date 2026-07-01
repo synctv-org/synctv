@@ -5,6 +5,7 @@ use tracing::info;
 
 use crate::{
     models::oauth2_client::OAuth2Provider,
+    models::SettingsValidationContext,
     oauth2::Provider as OAuth2ProviderTrait,
     service::{oauth2::OAuth2ProviderEntry, oauth2::OAuth2Service, OAuth2SignupPolicy},
     Error, Result,
@@ -40,7 +41,7 @@ impl OAuth2Service {
         };
 
         let configs = runtime_settings_store.oauth2.providers.get()?;
-        configs.validate_with_ssrf_guard(&self.ssrf_guard)?;
+        configs.validate(&SettingsValidationContext::new(&self.ssrf_guard))?;
         let fingerprint = configs.to_string();
         {
             let cached = self.providers_fingerprint.read().await;

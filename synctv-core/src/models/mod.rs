@@ -133,6 +133,7 @@ pub mod source_config;
 pub mod source_config_convert;
 pub mod user;
 pub mod user_preferences;
+pub mod validation;
 
 pub use audit::{AuditAction, AuditDetails, AuditTargetType, AuditUpdatedFields};
 pub use chat::{
@@ -258,6 +259,7 @@ pub use user::{
 pub use user_preferences::{
     UserAuthFactors, UserNotificationPreferences, UserPreferences, UserPreferencesUpdate,
 };
+pub use validation::SettingsValidationContext;
 
 #[cfg(test)]
 mod tests {

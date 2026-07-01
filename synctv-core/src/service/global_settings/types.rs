@@ -462,13 +462,9 @@ impl OAuth2ProviderConfigs {
             .unwrap_or_default()
     }
 
-    pub fn validate(&self) -> crate::Result<()> {
-        self.validate_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
-    }
-
-    pub fn validate_with_ssrf_guard(
+    pub fn validate(
         &self,
-        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+        ctx: &crate::models::SettingsValidationContext<'_>,
     ) -> crate::Result<()> {
         for (instance_name, provider_config) in &self.0 {
             validate_oauth2_instance_name(instance_name)?;
@@ -479,7 +475,7 @@ impl OAuth2ProviderConfigs {
                     "OAuth2 provider '{instance_name}' uses unsupported type '{provider_type}'"
                 )));
             }
-            crate::oauth2::providers::provider_registry(ssrf_guard.clone())
+            crate::oauth2::providers::provider_registry(ctx.ssrf_guard.clone())
                 .create_provider(provider_type, &provider_config.config)
                 .map_err(|error| {
                     crate::Error::InvalidInput(format!(
@@ -549,15 +545,11 @@ pub struct RuntimeSettings {
 }
 
 impl RuntimeSettings {
-    pub fn validate(&self) -> crate::Result<()> {
-        self.validate_with_ssrf_guard(&synctv_common::ssrf::SsrfGuard::strict_policy())
-    }
-
-    pub fn validate_with_ssrf_guard(
+    pub fn validate(
         &self,
-        ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+        ctx: &crate::models::SettingsValidationContext<'_>,
     ) -> crate::Result<()> {
-        validate_all_runtime_settings(self, ssrf_guard)
+        validate_all_runtime_settings(self, ctx)
     }
 }
 
@@ -978,16 +970,13 @@ pub struct CorsRuntimeSettings {
 
 fn validate_all_runtime_settings(
     settings: &RuntimeSettings,
-    ssrf_guard: &synctv_common::ssrf::SsrfGuard,
+    ctx: &crate::models::SettingsValidationContext<'_>,
 ) -> crate::Result<()> {
     validate_room_defaults_settings(&settings.room_defaults)?;
     validate_permission_settings(&settings.permissions)?;
     validate_room_policy_settings(&settings.room_creation)?;
     validate_user_settings(&settings.user, &settings.email)?;
-    settings
-        .oauth2
-        .providers
-        .validate_with_ssrf_guard(ssrf_guard)?;
+    settings.oauth2.providers.validate(ctx)?;
     validate_proxy_settings(&settings.proxy);
     validate_rtmp_settings(&settings.rtmp);
     validate_email_settings(&settings.email)?;

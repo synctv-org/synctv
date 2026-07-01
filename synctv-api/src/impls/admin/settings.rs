@@ -743,9 +743,9 @@ impl AdminApiImpl {
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
         let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let admin_username = admin_actor.username;
-        let (current_settings, current_version) = self
+        let current_settings = self
             .room_service
-            .get_room_settings_with_version(&rid)
+            .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
         let settings = apply_room_settings_patch_from_proto(
@@ -769,8 +769,6 @@ impl AdminApiImpl {
             &rid,
             admin_user_id,
             &admin_username,
-            settings.clone(),
-            current_version + 1,
         )?;
         let snapshot = self
             .room_service
@@ -784,7 +782,8 @@ impl AdminApiImpl {
 
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version)?,
+                prepared_settings_fanout
+                    .with_settings_and_version(&snapshot.settings, snapshot.version)?,
             );
         self.publish_room_cache_invalidation(&rid);
 
@@ -807,17 +806,10 @@ impl AdminApiImpl {
         let default_settings = synctv_core::models::RoomSettings::default();
         let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let admin_username = admin_actor.username;
-        let (_, current_version) = self
-            .room_service
-            .get_room_settings_with_version(&rid)
-            .await
-            .map_err(ApiError::from)?;
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             admin_user_id,
             &admin_username,
-            default_settings.clone(),
-            current_version + 1,
         )?;
         let snapshot = self
             .room_service
@@ -836,7 +828,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)?;
         self.room_settings_fanout
             .publish_prepared_after_outbox_commit(
-                prepared_settings_fanout.with_version(snapshot.version)?,
+                prepared_settings_fanout
+                    .with_settings_and_version(&snapshot.settings, snapshot.version)?,
             );
         self.publish_room_cache_invalidation(&rid);
 

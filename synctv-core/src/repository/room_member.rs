@@ -39,6 +39,8 @@ struct RoomMemberWithUserRow {
     room_id: RoomId,
     user_id: UserId,
     username: String,
+    remark_name: String,
+    display_tag: String,
     role: RoomRole,
     added_permissions: i64,
     removed_permissions: i64,
@@ -48,7 +50,7 @@ struct RoomMemberWithUserRow {
     is_active: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct RoomMemberRow {
     room_id: RoomId,
     user_id: UserId,
@@ -57,6 +59,8 @@ struct RoomMemberRow {
     removed_permissions: i64,
     admin_added_permissions: i64,
     admin_removed_permissions: i64,
+    remark_name: String,
+    display_tag: String,
     joined_at: chrono::DateTime<chrono::Utc>,
     version: i64,
 }
@@ -435,9 +439,9 @@ impl RoomMemberRepository {
             r#"INSERT INTO room_members (
                 room_id, user_id, role,
                 added_permissions, removed_permissions,
-                joined_at, version
+                remark_name, display_tag, joined_at, version
              )
-             SELECT $1, $2, $3, $4, $5, $6,
+             SELECT $1, $2, $3, $4, $5, $6, $7, $8,
                     COALESCE((
                         SELECT version + 1
                         FROM room_member_versions
@@ -458,6 +462,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             member.room_id as RoomId,
@@ -465,6 +471,8 @@ impl RoomMemberRepository {
             member.role as RoomRole,
             permission_bits_to_i64(member.added_permissions)?,
             permission_bits_to_i64(member.removed_permissions)?,
+            member.remark_name.as_str(),
+            member.display_tag.as_str(),
             member.joined_at,
         )
         .fetch_optional(&mut *conn)
@@ -613,9 +621,9 @@ impl RoomMemberRepository {
             r#"INSERT INTO room_members (
                 room_id, user_id, role,
                 added_permissions, removed_permissions,
-                joined_at, version
+                remark_name, display_tag, joined_at, version
              )
-             SELECT $1, $2, $3, $4, $5, $6,
+             SELECT $1, $2, $3, $4, $5, $6, $7, $8,
                     COALESCE((
                         SELECT version + 1
                         FROM room_member_versions
@@ -636,6 +644,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             member.room_id as RoomId,
@@ -643,6 +653,8 @@ impl RoomMemberRepository {
             member.role as RoomRole,
             permission_bits_to_i64(member.added_permissions)?,
             permission_bits_to_i64(member.removed_permissions)?,
+            member.remark_name.as_str(),
+            member.display_tag.as_str(),
             member.joined_at,
         )
         .fetch_optional(&mut **tx)
@@ -843,6 +855,8 @@ impl RoomMemberRepository {
                       rm.removed_permissions,
                       rm.admin_added_permissions,
                       rm.admin_removed_permissions,
+                      rm.remark_name,
+                      rm.display_tag,
                       rm.joined_at,
                       rm.version
                FROM room_members rm
@@ -888,6 +902,8 @@ impl RoomMemberRepository {
                       rm.removed_permissions,
                       rm.admin_added_permissions,
                       rm.admin_removed_permissions,
+                      rm.remark_name,
+                      rm.display_tag,
                       rm.joined_at,
                       rm.version
                FROM room_members rm
@@ -915,7 +931,9 @@ impl RoomMemberRepository {
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at,
                 TRUE AS "is_active!",
-                u.username
+                u.username,
+                rm.remark_name,
+                rm.display_tag
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = $1
@@ -984,6 +1002,10 @@ impl RoomMemberRepository {
         if let Some(pattern) = &search_pattern {
             count_builder.push(" AND (u.username ILIKE ");
             count_builder.push_bind(pattern);
+            count_builder.push(" ESCAPE '\\' OR rm.remark_name ILIKE ");
+            count_builder.push_bind(pattern);
+            count_builder.push(" ESCAPE '\\' OR rm.display_tag ILIKE ");
+            count_builder.push_bind(pattern);
             count_builder.push(" ESCAPE '\\' OR rm.user_id::text ILIKE ");
             count_builder.push_bind(pattern);
             count_builder.push(" ESCAPE '\\')");
@@ -1004,7 +1026,9 @@ impl RoomMemberRepository {
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at,
                 TRUE AS is_active,
-                u.username
+                u.username,
+                rm.remark_name,
+                rm.display_tag
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = ",
@@ -1015,6 +1039,10 @@ impl RoomMemberRepository {
         list_builder.push(" AND u.deleted_at IS NULL");
         if let Some(pattern) = &search_pattern {
             list_builder.push(" AND (u.username ILIKE ");
+            list_builder.push_bind(pattern);
+            list_builder.push(" ESCAPE '\\' OR rm.remark_name ILIKE ");
+            list_builder.push_bind(pattern);
+            list_builder.push(" ESCAPE '\\' OR rm.display_tag ILIKE ");
             list_builder.push_bind(pattern);
             list_builder.push(" ESCAPE '\\' OR rm.user_id::text ILIKE ");
             list_builder.push_bind(pattern);
@@ -1058,7 +1086,9 @@ impl RoomMemberRepository {
                 rm.admin_added_permissions, rm.admin_removed_permissions,
                 rm.joined_at,
                 TRUE AS "is_active!",
-                u.username
+                u.username,
+                rm.remark_name,
+                rm.display_tag
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
              WHERE rm.room_id = $1
@@ -1110,6 +1140,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1147,6 +1179,65 @@ impl RoomMemberRepository {
         .await
     }
 
+    pub async fn update_display_info_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        remark_name: Option<&str>,
+        display_tag: Option<&str>,
+        executor: E,
+    ) -> Result<RoomMember>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let member = sqlx::query_as!(
+            RoomMemberRow,
+            r#"UPDATE room_members
+             SET remark_name = COALESCE($3, remark_name),
+                 display_tag = COALESCE($4, display_tag),
+                 version = version + 1
+             WHERE room_id = $1 AND user_id = $2
+             RETURNING room_id as "room_id: RoomId",
+                       user_id as "user_id: UserId",
+                       role as "role: RoomRole",
+                       added_permissions,
+                       removed_permissions,
+                       admin_added_permissions,
+                       admin_removed_permissions,
+                       remark_name,
+                       display_tag,
+                       joined_at,
+                       version"#,
+            room_id as &RoomId,
+            user_id as &UserId,
+            remark_name,
+            display_tag,
+        )
+        .fetch_optional(executor)
+        .await?
+        .map(Self::typed_row_to_member)
+        .transpose()?;
+
+        member.ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))
+    }
+
+    pub async fn update_display_info(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        remark_name: Option<&str>,
+        display_tag: Option<&str>,
+    ) -> Result<RoomMember> {
+        self.update_display_info_with_executor(
+            room_id,
+            user_id,
+            remark_name,
+            display_tag,
+            &self.pool,
+        )
+        .await
+    }
+
     /// Update member role inside an existing transaction with optimistic locking.
     pub async fn update_role_with_version_executor(
         &self,
@@ -1169,6 +1260,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1215,6 +1308,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1288,6 +1383,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             update.room_id as &RoomId,
@@ -1380,6 +1477,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1428,6 +1527,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             update.room_id as &RoomId,
@@ -1517,6 +1618,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1565,6 +1668,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             update.room_id as &RoomId,
@@ -1607,6 +1712,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1645,6 +1752,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1691,6 +1800,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1733,6 +1844,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1771,6 +1884,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1817,6 +1932,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1859,6 +1976,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1897,6 +2016,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1943,6 +2064,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -1985,6 +2108,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -2023,6 +2148,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -2069,6 +2196,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -2112,6 +2241,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -2158,6 +2289,8 @@ impl RoomMemberRepository {
                        removed_permissions,
                        admin_added_permissions,
                        admin_removed_permissions,
+                       remark_name,
+                       display_tag,
                        joined_at,
                        version"#,
             room_id as &RoomId,
@@ -2583,7 +2716,9 @@ impl RoomMemberRepository {
                 rm.role AS "role: RoomRole",
                 rm.added_permissions, rm.removed_permissions,
                 rm.admin_added_permissions, rm.admin_removed_permissions,
-                rm.joined_at,
+                rm.remark_name,
+                      rm.display_tag,
+                      rm.joined_at,
                 u.username,
                 TRUE AS "is_active!"
              FROM room_members rm
@@ -2737,6 +2872,8 @@ impl RoomMemberRepository {
                 row.admin_removed_permissions,
                 "admin_removed_permissions",
             )?,
+            remark_name: row.remark_name,
+            display_tag: row.display_tag,
             joined_at: row.joined_at,
             is_online: false,
             is_active: row.is_active,
@@ -2765,6 +2902,8 @@ impl RoomMemberRepository {
                 row.admin_removed_permissions,
                 "admin_removed_permissions",
             )?,
+            remark_name: row.remark_name,
+            display_tag: row.display_tag,
             joined_at: row.joined_at,
             version: row.version,
         })

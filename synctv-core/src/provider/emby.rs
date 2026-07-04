@@ -1822,9 +1822,9 @@ impl EmbyProvider {
         url.set_query(None);
         url.set_fragment(None);
         {
-            let mut segments = url
-                .path_segments_mut()
-                .map_err(|_| ProviderError::InvalidUrl("Invalid Emby host URL path".to_string()))?;
+            let mut segments = url.path_segments_mut().map_err(|()| {
+                ProviderError::InvalidUrl("Invalid Emby host URL path".to_string())
+            })?;
             segments
                 .push("Items")
                 .push(item_id)

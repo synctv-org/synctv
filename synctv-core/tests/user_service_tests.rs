@@ -726,6 +726,8 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
+            remark_name: String::new(),
+            display_tag: String::new(),
             joined_at: Utc::now(),
             version: 0,
         })

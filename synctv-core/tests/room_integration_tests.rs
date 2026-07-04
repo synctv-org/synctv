@@ -325,6 +325,8 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
+        remark_name: String::new(),
+        display_tag: String::new(),
         joined_at: Utc::now(),
         version: 0,
     };

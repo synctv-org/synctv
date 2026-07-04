@@ -194,6 +194,14 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
             "/rooms/{roomId}/members/{userId}",
             patch(update_member_permissions).delete(kick_member),
         )
+        .route(
+            "/rooms/{roomId}/members/{userId}/remark-name",
+            patch(update_member_remark_name),
+        )
+        .route(
+            "/rooms/{roomId}/members/{userId}/display-tag",
+            patch(update_member_display_tag),
+        )
         .route("/rooms/{roomId}/ban", post(ban_room))
         .route("/rooms/{roomId}/unban", post(unban_room))
         .route(
@@ -1606,7 +1614,7 @@ pub(crate) async fn get_room_members(
         params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::AddMemberRequest,
         responses(
-            (status = 200, description = "Room member added", body = admin::AddMemberResponse),
+            (status = 200, description = "Room member added", body = synctv_proto::common::RoomMember),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -1618,7 +1626,7 @@ pub(crate) async fn add_member(
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(mut req): Json<admin::AddMemberRequest>,
-) -> AppResult<Json<admin::AddMemberResponse>> {
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1645,7 +1653,7 @@ pub(crate) async fn add_member(
         ),
         request_body = admin::UpdateMemberPermissionsRequest,
         responses(
-            (status = 200, description = "Room member permissions updated", body = admin::UpdateMemberPermissionsResponse),
+            (status = 200, description = "Room member permissions updated", body = synctv_proto::common::RoomMember),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -1657,7 +1665,7 @@ pub(crate) async fn update_member_permissions(
     State(state): State<AppState>,
     Path(path): Path<RoomMemberTargetPath>,
     Json(mut req): Json<admin::UpdateMemberPermissionsRequest>,
-) -> AppResult<Json<admin::UpdateMemberPermissionsResponse>> {
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
     req.room_id = path.room_id;
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
@@ -1666,6 +1674,86 @@ pub(crate) async fn update_member_permissions(
         require_admin_api,
         move |api, validated, rctx| async move {
             api.update_member_permissions(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/admin/rooms/{roomId}/members/{userId}/remark-name",
+        tag = "Admin",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
+        ),
+        request_body = admin::UpdateMemberRemarkNameRequest,
+        responses(
+            (status = 200, description = "Room member remark name updated", body = synctv_proto::common::RoomMember),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_member_remark_name(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomMemberTargetPath>,
+    Json(mut req): Json<admin::UpdateMemberRemarkNameRequest>,
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
+    req.room_id = path.room_id;
+    req.user_id = path.user_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.update_member_remark_name(req, &validated.user_id, &rctx)
+                .await
+        },
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/admin/rooms/{roomId}/members/{userId}/display-tag",
+        tag = "Admin",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
+        ),
+        request_body = admin::UpdateMemberDisplayTagRequest,
+        responses(
+            (status = 200, description = "Room member display tag updated", body = synctv_proto::common::RoomMember),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+pub(crate) async fn update_member_display_tag(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomMemberTargetPath>,
+    Json(mut req): Json<admin::UpdateMemberDisplayTagRequest>,
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
+    req.room_id = path.room_id;
+    req.user_id = path.user_id;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            api.update_member_display_tag(req, &validated.user_id, &rctx)
                 .await
         },
     )

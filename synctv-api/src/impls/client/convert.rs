@@ -1819,6 +1819,8 @@ pub(crate) fn try_room_member_to_proto_with_permissions(
         room_id: encode_room_id_for_proto(member.room_id, public_id_codec)?,
         user_id: encode_user_id_for_proto(member.user_id, public_id_codec)?,
         username: member.username.clone(),
+        remark_name: member.remark_name.clone(),
+        display_tag: member.display_tag.clone(),
         role: room_role_to_proto(member.role),
         permissions: permissions.0,
         added_permissions: member.added_permissions,

@@ -275,12 +275,12 @@ async fn test_client_member_approval_api_contracts() {
                 user_id: add_target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
         )
         .await
-        .unwrap()
-        .member
-        .expect("add_member response member");
+        .unwrap();
     assert_eq!(added.user_id, add_target_public_id);
     assert_eq!(
         added.role,
@@ -401,14 +401,14 @@ async fn test_admin_member_approval_api_contracts() {
                 user_id: public_id_codec().encode_user_id(add_target.id).unwrap(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
             &root_admin.id,
             &synctv_api::AdminRequestContext::default(),
         )
         .await
-        .unwrap()
-        .member
-        .expect("admin add_member response member");
+        .unwrap();
     assert_eq!(
         added.user_id,
         public_id_codec().encode_user_id(add_target.id).unwrap()
@@ -757,6 +757,8 @@ async fn test_add_member_resolves_existing_room_join_review() {
                 user_id: target_public_id.clone(),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
         )
         .await

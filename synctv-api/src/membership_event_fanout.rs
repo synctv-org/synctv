@@ -54,6 +54,8 @@ impl PreparedPermissionChangedFanout {
                 room_id: snapshot.room_id,
                 target_user_id: snapshot.target_user_id,
                 target_username: snapshot.target_username.clone(),
+                target_remark_name: snapshot.target_remark_name.clone(),
+                target_display_tag: snapshot.target_display_tag.clone(),
                 changed_by: snapshot.changed_by,
                 changed_by_username: snapshot.changed_by_username.clone(),
                 role_changed: snapshot.role_changed,
@@ -112,6 +114,8 @@ impl PreparedUserLeftFanout {
                 room_id: snapshot.room_id,
                 user_id: snapshot.user_id,
                 username: snapshot.username.clone(),
+                remark_name: snapshot.remark_name.clone(),
+                display_tag: snapshot.display_tag.clone(),
                 role: snapshot.role,
                 timestamp: chrono::Utc::now(),
             };
@@ -221,6 +225,8 @@ mod tests {
             room_id: room_id(),
             target_user_id,
             target_username: "target-user".to_string(),
+            target_remark_name: String::new(),
+            target_display_tag: String::new(),
             changed_by,
             changed_by_username: "actor-user".to_string(),
             role_changed: false,
@@ -295,6 +301,8 @@ mod tests {
             room_id: room_id(),
             user_id: user_id("target"),
             username: "target-user".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Admin as i32,
         })?;
         assert!(!event.enqueue_outbox);

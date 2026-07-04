@@ -37,6 +37,8 @@ async fn test_critical_events_high_priority() {
         room_id,
         target_user_id: user_id,
         target_username: "listener".to_string(),
+        target_remark_name: String::new(),
+        target_display_tag: String::new(),
         changed_by: UserId::expect_positive(10_000_027),
         changed_by_username: "admin".to_string(),
         role_changed: false,

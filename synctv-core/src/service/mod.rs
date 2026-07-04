@@ -177,18 +177,20 @@ pub(crate) use room::{
     soft_delete_room_and_cleanup_in_tx,
 };
 pub use room::{
-    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
-    ClientResourceAvailability, CreateRoomCoverUploadSession, CreateRoomWithTaxonomyRequest,
-    DeleteEntriesPlan, DeleteEntriesRequest, KickMemberOutboxOptions, MemberPermissionPatch,
-    MemberResourceCleanupResult, PermissionChangedOutboxSnapshot,
-    RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate,
-    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
-    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
-    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge, RoomService,
-    RoomServiceOptions, UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot,
-    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    AddMemberWithOutboxRequest, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
+    AuthorizedAdminActor, ClientResourceAvailability, CreateRoomCoverUploadSession,
+    CreateRoomWithTaxonomyRequest, DeleteEntriesPlan, DeleteEntriesRequest,
+    KickMemberOutboxOptions, MemberPermissionPatch, MemberResourceCleanupResult,
+    PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
+    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate, RoomOpaqueLoginStartChallenge,
+    RoomOpaquePasswordLoginSession, RoomOpaquePasswordLoginSessionStore,
+    RoomOpaquePasswordRegistrationSession, RoomOpaquePasswordRegistrationSessionStore,
+    RoomOpaqueRegistrationStartChallenge, RoomService, RoomServiceOptions,
+    UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
+    UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
+    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
 pub use settings::SettingsService;

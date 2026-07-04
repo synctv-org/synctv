@@ -104,17 +104,16 @@ async fn opaque_room_login(
         )
         .map_err(|_| synctv_api::ApiError::Authentication("Authentication failed".into()))?;
 
-    client_api
-        .finish_room_password_login_with_control(
-            user_id,
-            None,
-            synctv_proto::client::FinishRoomPasswordLoginRequest {
-                session_id: challenge.session_id,
-                credential_finalization: client_finish.message.serialize().to_vec(),
-            },
-            Some(client_ip),
-        )
-        .await
+    Box::pin(client_api.finish_room_password_login_with_control(
+        user_id,
+        None,
+        synctv_proto::client::FinishRoomPasswordLoginRequest {
+            session_id: challenge.session_id,
+            credential_finalization: client_finish.message.serialize().to_vec(),
+        },
+        Some(client_ip),
+    ))
+    .await
 }
 
 async fn start_opaque_room_login(
@@ -180,17 +179,16 @@ async fn finish_opaque_room_login(
     login: PendingOpaqueRoomLogin,
     client_ip: &str,
 ) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::ApiError> {
-    client_api
-        .finish_room_password_login_with_control(
-            user_id,
-            None,
-            synctv_proto::client::FinishRoomPasswordLoginRequest {
-                session_id: login.session_id,
-                credential_finalization: login.credential_finalization,
-            },
-            Some(client_ip),
-        )
-        .await
+    Box::pin(client_api.finish_room_password_login_with_control(
+        user_id,
+        None,
+        synctv_proto::client::FinishRoomPasswordLoginRequest {
+            session_id: login.session_id,
+            credential_finalization: login.credential_finalization,
+        },
+        Some(client_ip),
+    ))
+    .await
 }
 
 fn make_client_api(
@@ -415,18 +413,17 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         )
         .expect("client OPAQUE login finish should succeed");
 
-    let error = client_api
-        .finish_room_password_login_with_control(
-            &joining_user.id,
-            Some(&room_b_public_id),
-            synctv_proto::client::FinishRoomPasswordLoginRequest {
-                session_id: challenge.session_id,
-                credential_finalization: client_finish.message.serialize().to_vec(),
-            },
-            Some("192.168.1.101"),
-        )
-        .await
-        .expect_err("room password login session must be bound to one room");
+    let error = Box::pin(client_api.finish_room_password_login_with_control(
+        &joining_user.id,
+        Some(&room_b_public_id),
+        synctv_proto::client::FinishRoomPasswordLoginRequest {
+            session_id: challenge.session_id,
+            credential_finalization: client_finish.message.serialize().to_vec(),
+        },
+        Some("192.168.1.101"),
+    ))
+    .await
+    .expect_err("room password login session must be bound to one room");
     assert!(
         matches!(error, synctv_api::ApiError::InvalidInput(ref message)
             if message.contains("does not match room")),
@@ -596,18 +593,28 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
     }
 
     for attempt in 0..5 {
-        let err = finish_opaque_room_login(&client_api, &member.id, logins.remove(0), client_ip)
-            .await
-            .unwrap_err();
+        let err = Box::pin(finish_opaque_room_login(
+            &client_api,
+            &member.id,
+            logins.remove(0),
+            client_ip,
+        ))
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains("Authentication failed"),
             "wrong password finish {attempt} should count as an authentication failure: {err}"
         );
     }
 
-    let err = finish_opaque_room_login(&client_api, &member.id, logins.remove(0), client_ip)
-        .await
-        .expect_err("preissued session must be blocked after room password lockout");
+    let err = Box::pin(finish_opaque_room_login(
+        &client_api,
+        &member.id,
+        logins.remove(0),
+        client_ip,
+    ))
+    .await
+    .expect_err("preissued session must be blocked after room password lockout");
     let msg = err.to_string();
     assert!(
         msg.contains("Too many failed") || msg.contains("locked") || msg.contains("try again"),

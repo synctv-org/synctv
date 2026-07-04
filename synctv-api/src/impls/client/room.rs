@@ -620,8 +620,7 @@ impl ClientApiImpl {
         req: synctv_proto::client::JoinRoomRequest,
         client_ip: Option<&str>,
     ) -> Result<synctv_proto::client::JoinRoomResponse, ApiError> {
-        self.join_room_with_control(user_id, room_id, req, client_ip, None)
-            .await
+        Box::pin(self.join_room_with_control(user_id, room_id, req, client_ip, None)).await
     }
 
     pub async fn join_room_with_control(
@@ -636,6 +635,8 @@ impl ClientApiImpl {
 
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
+        let remark_name = crate::impls::normalize_member_remark_name(&req.remark_name);
+        let display_tag = crate::impls::normalize_member_display_tag(&req.display_tag);
         let password = if req.password.is_empty() {
             None
         } else {
@@ -694,6 +695,8 @@ impl ClientApiImpl {
                 rid,
                 uid,
                 password,
+                remark_name,
+                display_tag,
                 Some(prepared_membership_fanout.outbox_factory()),
             )
             .await

@@ -1,0 +1,155 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                rm.room_id AS \"room_id: RoomId\",\n                rm.user_id AS \"user_id: UserId\",\n                rm.role AS \"role: RoomRole\",\n                rm.added_permissions, rm.removed_permissions,\n                rm.admin_added_permissions, rm.admin_removed_permissions,\n                rm.joined_at,\n                TRUE AS \"is_active!\",\n                u.username,\n                rm.remark_name,\n                rm.display_tag\n             FROM room_members rm\n             JOIN users u ON rm.user_id = u.id\n             WHERE rm.room_id = $1\n\t               AND NOT EXISTS (\n\t                   SELECT 1 FROM room_member_kick_cooldowns rmkc\n\t                   WHERE rmkc.room_id = rm.room_id\n\t                     AND rmkc.user_id = rm.user_id\n\t                     AND rmkc.ends_at > CURRENT_TIMESTAMP\n\t               )\n\t               AND u.deleted_at IS NULL\n             ORDER BY rm.joined_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "joined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "is_active!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "username",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "remark_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "remark_name"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "display_tag",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "display_tag"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "92ed8a87ed143c1b97cd92833f15e74de76d4a427b9f705cd37163ac36e3c053"
+}

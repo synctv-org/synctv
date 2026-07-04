@@ -141,15 +141,14 @@ pub async fn join_room(
             EndpointRateLimitCategory::Write,
             EndpointRateLimitScope::RoomJoin,
             move |request_control, authenticated| async move {
-                client_api
-                    .join_room_with_control(
-                        &authenticated.user_id,
-                        &room_id,
-                        req,
-                        client_ip.as_deref(),
-                        Some(&request_control),
-                    )
-                    .await
+                Box::pin(client_api.join_room_with_control(
+                    &authenticated.user_id,
+                    &room_id,
+                    req,
+                    client_ip.as_deref(),
+                    Some(&request_control),
+                ))
+                .await
             },
         )
         .await?;

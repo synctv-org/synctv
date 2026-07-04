@@ -189,6 +189,8 @@ pub(in crate::cli) struct HumanRoomMember {
     room_id: String,
     user_id: String,
     username: String,
+    remark_name: String,
+    display_tag: String,
     role: String,
     permissions: u64,
     permission_names: Vec<String>,
@@ -579,12 +581,6 @@ pub(in crate::cli) struct HumanRoomMembersResponse<T> {
     total: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanMemberResponse<T> {
-    member: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1156,6 +1152,8 @@ impl ToHuman for synctv_proto::common::RoomMember {
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
+            remark_name: self.remark_name.clone(),
+            display_tag: self.display_tag.clone(),
             role: humanize_room_member_role(i64::from(self.role))
                 .unwrap_or_else(|| self.role.to_string()),
             permissions: self.permissions,
@@ -1825,26 +1823,6 @@ impl ToHuman for synctv_proto::client::SearchChatMessagesResponse {
             messages: self.messages.to_human(),
             next_cursor: self.next_cursor.clone(),
             event_cursor: self.event_cursor.clone(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::UpdateMemberPermissionsResponse {
-    type Human = HumanMemberResponse<HumanRoomMember>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanMemberResponse {
-            member: self.member.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::AddMemberResponse {
-    type Human = HumanMemberResponse<HumanRoomMember>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanMemberResponse {
-            member: self.member.to_human(),
         }
     }
 }

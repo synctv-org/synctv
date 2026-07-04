@@ -1,0 +1,149 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rm.room_id as \"room_id: RoomId\",\n                      rm.user_id as \"user_id: UserId\",\n                      rm.role as \"role: RoomRole\",\n                      rm.added_permissions,\n                      rm.removed_permissions,\n                      rm.admin_added_permissions,\n                      rm.admin_removed_permissions,\n                      rm.remark_name,\n                      rm.display_tag,\n                      rm.joined_at,\n                      rm.version\n               FROM room_members rm\n               WHERE rm.room_id = $1 AND rm.user_id = $2\n                 AND NOT EXISTS (\n                     SELECT 1 FROM room_member_kick_cooldowns rmkc\n                     WHERE rmkc.room_id = rm.room_id\n                       AND rmkc.user_id = rm.user_id\n                       AND rmkc.ends_at > CURRENT_TIMESTAMP\n                 )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id: RoomId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "room_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "role: RoomRole",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "admin_added_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_added_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "admin_removed_permissions",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "admin_removed_permissions"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "remark_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "remark_name"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "display_tag",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "display_tag"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "joined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "room_members",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "34b84b661bfc8b5f11864a62bacdb1ddcf1c0f7bc85748b47400f149c050bf5c"
+}

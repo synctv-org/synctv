@@ -506,6 +506,8 @@ mod tests {
             room_id: room_id(),
             user_id: user_id(),
             username: "User".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             permissions: synctv_core::models::RoomPermissionSet::default_member(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             added_permissions: synctv_core::models::RoomPermissionSet(0),
@@ -520,6 +522,8 @@ mod tests {
             room_id: room_id(),
             user_id: user_id(),
             username: "User".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             timestamp: Utc::now(),
         };

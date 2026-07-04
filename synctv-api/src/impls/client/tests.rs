@@ -1143,6 +1143,8 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         room_id: RoomId::expect_positive(301),
         user_id: UserId::expect_positive(304),
         username: "alice".to_string(),
+        remark_name: "Alice Remark".to_string(),
+        display_tag: "VIP".to_string(),
         role,
         status: MemberStatus::Active,
         added_permissions: 0,

@@ -10,9 +10,8 @@ use synctv_core::Config;
 // Use synctv_proto for all gRPC types to avoid duplication
 use synctv_proto::admin::admin_service_server::AdminService;
 use synctv_proto::admin::{
-    AddAdminRequest, AddAdminResponse, AddMemberRequest, AddMemberResponse,
-    ApproveRoomCreationReviewRequest, ApproveRoomCreationReviewResponse,
-    ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
+    AddAdminRequest, AddAdminResponse, AddMemberRequest, ApproveRoomCreationReviewRequest,
+    ApproveRoomCreationReviewResponse, ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
     ApproveUserRegistrationReviewRequest, ApproveUserRegistrationReviewResponse, BanRoomRequest,
     BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
     BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
@@ -37,14 +36,15 @@ use synctv_proto::admin::{
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
     SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
     UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateContentReportStatusRequest,
-    UpdateContentReportStatusResponse, UpdateMemberPermissionsRequest,
-    UpdateMemberPermissionsResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
-    UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest, UpdateRoomTaxonomyResponse,
-    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
-    UpdateUserUsernameResponse, UpsertRoomCategoryRequest, UpsertRoomCategoryResponse,
-    UpsertRoomLabelRequest, UpsertRoomLabelResponse,
+    UpdateContentReportStatusResponse, UpdateMemberDisplayTagRequest,
+    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdateRoomPasswordRequest,
+    UpdateRoomPasswordResponse, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
+    UpdateRoomTaxonomyResponse, UpdateSettingsRequest, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserRoleResponse,
+    UpdateUserUsernameRequest, UpdateUserUsernameResponse, UpsertRoomCategoryRequest,
+    UpsertRoomCategoryResponse, UpsertRoomLabelRequest, UpsertRoomLabelResponse,
 };
+use synctv_proto::common::RoomMember;
 
 use crate::impls::AdminApiImpl;
 
@@ -554,7 +554,7 @@ impl AdminService for AdminServiceImpl {
     async fn add_member(
         &self,
         request: Request<AddMemberRequest>,
-    ) -> Result<Response<AddMemberResponse>, Status> {
+    ) -> Result<Response<RoomMember>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.add_member(req, &validated.user_id, &ctx).await
         })
@@ -564,9 +564,31 @@ impl AdminService for AdminServiceImpl {
     async fn update_member_permissions(
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
-    ) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
+    ) -> Result<Response<RoomMember>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.update_member_permissions(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn update_member_remark_name(
+        &self,
+        request: Request<UpdateMemberRemarkNameRequest>,
+    ) -> Result<Response<RoomMember>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_member_remark_name(req, &validated.user_id, &ctx)
+                .await
+        })
+        .await
+    }
+
+    async fn update_member_display_tag(
+        &self,
+        request: Request<UpdateMemberDisplayTagRequest>,
+    ) -> Result<Response<RoomMember>, Status> {
+        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            api.update_member_display_tag(req, &validated.user_id, &ctx)
                 .await
         })
         .await

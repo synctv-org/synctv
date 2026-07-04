@@ -13,6 +13,7 @@ DEV_STACK_WAIT_SERVICES ?= $(DEV_STACK_SERVICES) rustfs-init openlist-init emby-
 DEV_WAIT_TIMEOUT ?= 120
 DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
+DEV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
 
 DEV_DATA_DIR := $(CURDIR)/.dev-data
 DEV_SOCKET := $(DEV_DATA_DIR)/run/synctv.sock
@@ -65,7 +66,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-db dev-redis dev-open dev-smoke
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-db dev-redis dev-open dev-smoke sqlx-prepare nextest clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -236,6 +237,15 @@ dev-shell: dev-up ## Open a shell with SyncTV development environment variables.
 
 dev-migrate: dev-up ## Run database migrations against the local PostgreSQL container.
 	SYNCTV_DATABASE_URL="$(DEV_DATABASE_URL)" cargo run -p synctv --bin synctv -- db migrate
+
+sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
+	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx prepare --workspace -- --all-targets
+
+nextest: dev-up ## Run the full workspace nextest suite, including ignored tests.
+	DATABASE_URL="$(DEV_DATABASE_URL)" cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
+
+clippy: ## Run Clippy fixes across all workspace targets.
+	cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

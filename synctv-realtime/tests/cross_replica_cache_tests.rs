@@ -175,6 +175,8 @@ async fn test_cross_replica_permission_changed() {
             room_id,
             target_user_id: UserId::expect_positive(10_000_038),
             target_username: "target_user".to_string(),
+            target_remark_name: String::new(),
+            target_display_tag: String::new(),
             role_changed: true,
             new_permissions: synctv_core::models::RoomPermissionSet(
                 synctv_core::models::RoomPermissionSet::default_member().0

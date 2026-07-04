@@ -30,6 +30,16 @@ pub(super) fn required_realtime_text(
     Ok(trimmed.to_string())
 }
 
+fn optional_realtime_text(value: &str, field_name: &str, max_len: usize) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.len() > max_len || trimmed.chars().any(char::is_control) {
+        return Err(format!(
+            "Realtime {field_name} must be at most {max_len} non-control characters"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 pub(crate) fn room_member_event_to_proto(
     event: &synctv_realtime::sync::RealtimeEvent,
     public_id_codec: &crate::public_id::PublicIdCodec,
@@ -55,6 +65,8 @@ pub(crate) fn room_member_event_to_proto(
             room_id,
             user_id,
             username,
+            remark_name,
+            display_tag,
             permissions,
             role,
             added_permissions,
@@ -68,10 +80,15 @@ pub(crate) fn room_member_event_to_proto(
             let room_id = encode_room(*room_id)?;
             let user_id = encode_user(*user_id)?;
             let validated_username = required_realtime_text(username, "user username", 50)?;
+            let validated_remark_name = optional_realtime_text(remark_name, "member remark", 64)?;
+            let validated_display_tag =
+                optional_realtime_text(display_tag, "member display tag", 16)?;
             let member = synctv_proto::common::RoomMember {
                 room_id: room_id.clone(),
                 user_id: user_id.clone(),
                 username: validated_username,
+                remark_name: validated_remark_name,
+                display_tag: validated_display_tag,
                 role: validated_room_member_role(*role)?,
                 permissions: permissions.0,
                 added_permissions: added_permissions.0,
@@ -87,6 +104,8 @@ pub(crate) fn room_member_event_to_proto(
                 room_id,
                 kind: RoomMemberEventKind::Joined as i32,
                 username: member.username.clone(),
+                remark_name: member.remark_name.clone(),
+                display_tag: member.display_tag.clone(),
                 user_id,
                 guest_id: String::new(),
                 member: Some(member),
@@ -114,6 +133,8 @@ pub(crate) fn room_member_event_to_proto(
                 room_id: room_id.clone(),
                 user_id: guest_id.clone(),
                 username: validated_username,
+                remark_name: String::new(),
+                display_tag: String::new(),
                 role: validated_room_member_role(*role)?,
                 permissions: permissions.0,
                 added_permissions: 0,
@@ -129,6 +150,8 @@ pub(crate) fn room_member_event_to_proto(
                 room_id,
                 kind: RoomMemberEventKind::Joined as i32,
                 username: member.username.clone(),
+                remark_name: member.remark_name.clone(),
+                display_tag: String::new(),
                 user_id: String::new(),
                 guest_id,
                 member: Some(member),
@@ -143,6 +166,8 @@ pub(crate) fn room_member_event_to_proto(
             room_id,
             user_id,
             username,
+            remark_name,
+            display_tag,
             timestamp,
             ..
         } => synctv_proto::client::RoomMemberEvent {
@@ -153,6 +178,8 @@ pub(crate) fn room_member_event_to_proto(
             user_id: encode_user(*user_id)?,
             guest_id: String::new(),
             username: required_realtime_text(username, "user username", 50)?,
+            remark_name: optional_realtime_text(remark_name, "member remark", 64)?,
+            display_tag: optional_realtime_text(display_tag, "member display tag", 16)?,
             actor_user_id: String::new(),
             reason: String::new(),
             occurred_at: timestamp.timestamp(),
@@ -172,6 +199,8 @@ pub(crate) fn room_member_event_to_proto(
             user_id: String::new(),
             guest_id: required_realtime_text(guest_id, "guest id", 128)?,
             username: required_realtime_text(username, "guest username", 64)?,
+            remark_name: String::new(),
+            display_tag: String::new(),
             actor_user_id: String::new(),
             reason: String::new(),
             occurred_at: timestamp.timestamp(),
@@ -182,6 +211,8 @@ pub(crate) fn room_member_event_to_proto(
             room_id,
             target_user_id,
             target_username,
+            target_remark_name,
+            target_display_tag,
             changed_by,
             new_permissions,
             role,
@@ -198,10 +229,16 @@ pub(crate) fn room_member_event_to_proto(
             let user_id = encode_user(*target_user_id)?;
             let validated_username =
                 required_realtime_text(target_username, "target username", 50)?;
+            let validated_remark_name =
+                optional_realtime_text(target_remark_name, "member remark", 64)?;
+            let validated_display_tag =
+                optional_realtime_text(target_display_tag, "member display tag", 16)?;
             let member = synctv_proto::common::RoomMember {
                 room_id: room_id.clone(),
                 user_id: user_id.clone(),
                 username: validated_username,
+                remark_name: validated_remark_name,
+                display_tag: validated_display_tag,
                 role: validated_room_member_role(*role)?,
                 permissions: new_permissions.0,
                 added_permissions: added_permissions.0,
@@ -217,6 +254,8 @@ pub(crate) fn room_member_event_to_proto(
                 room_id,
                 kind: RoomMemberEventKind::PermissionChanged as i32,
                 username: member.username.clone(),
+                remark_name: member.remark_name.clone(),
+                display_tag: member.display_tag.clone(),
                 user_id,
                 guest_id: String::new(),
                 member: Some(member),
@@ -240,6 +279,8 @@ pub(crate) fn room_member_event_to_proto(
             user_id: encode_user(*user_id)?,
             guest_id: String::new(),
             username: String::new(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             actor_user_id: String::new(),
             reason: required_realtime_text(reason, "kick reason", 500)?,
             occurred_at: timestamp.timestamp(),
@@ -294,6 +335,7 @@ pub(crate) fn online_event_to_proto(
             username,
             role,
             timestamp,
+            ..
         } => synctv_proto::client::OnlineEvent {
             event_id: event_id.clone(),
             room_id: encode_room(*room_id)?,

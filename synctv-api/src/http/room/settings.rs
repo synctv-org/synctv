@@ -105,14 +105,13 @@ pub async fn finish_room_password_login(
             EndpointRateLimitCategory::Write,
             EndpointRateLimitScope::RoomJoin,
             move |_request_control, authenticated| async move {
-                client_api
-                    .finish_room_password_login_with_control(
-                        &authenticated.user_id,
-                        Some(&room_id),
-                        req,
-                        client_ip.as_deref(),
-                    )
-                    .await
+                Box::pin(client_api.finish_room_password_login_with_control(
+                    &authenticated.user_id,
+                    Some(&room_id),
+                    req,
+                    client_ip.as_deref(),
+                ))
+                .await
             },
         )
         .await?;

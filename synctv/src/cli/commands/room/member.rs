@@ -12,6 +12,10 @@ pub enum RoomMemberSubcommand {
     List(RoomMembersArgs),
     /// Add an existing user as an active room member using a management override
     Add(RoomMemberAddArgs),
+    /// Update a room member's remark name
+    SetRemarkName(RoomMemberSetRemarkNameArgs),
+    /// Update a room member's short display tag
+    SetDisplayTag(RoomMemberSetDisplayTagArgs),
     /// Update a room member's role or permission bitmasks
     SetPermissions(RoomMemberSetPermissionsArgs),
     /// Kick a room member
@@ -206,6 +210,36 @@ pub struct RoomMemberAddArgs {
 
     #[arg(long)]
     pub notify: bool,
+
+    #[arg(long)]
+    pub remark_name: Option<String>,
+
+    #[arg(long)]
+    pub display_tag: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomMemberSetRemarkNameArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+
+    #[arg(long)]
+    pub remark_name: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomMemberSetDisplayTagArgs {
+    #[command(flatten)]
+    pub room: RoomScopedRemoteArgs,
+
+    #[command(flatten)]
+    pub user: UserRefArgs,
+
+    #[arg(long)]
+    pub display_tag: String,
 }
 
 #[derive(Debug, Args)]

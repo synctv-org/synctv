@@ -472,6 +472,8 @@ mod tests {
             room_id: "room-abc".into(),
             user_id: "user-123".into(),
             username: "alice".into(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             role: crate::common::RoomMemberRole::Admin.into(),
             permissions: 0xFF,
             added_permissions: 0x0F,
@@ -626,10 +628,14 @@ mod tests {
             event_id: "evt-123".into(),
             room_id: "room-abc".into(),
             kind: crate::client::RoomMemberEventKind::Joined.into(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             member: Some(crate::common::RoomMember {
                 room_id: "room-abc".into(),
                 user_id: "user-123".into(),
                 username: "member".into(),
+                remark_name: String::new(),
+                display_tag: String::new(),
                 role: crate::common::RoomMemberRole::Member.into(),
                 permissions: 0xFF00,
                 added_permissions: 0,
@@ -1730,6 +1736,8 @@ mod tests {
         let request = crate::client::JoinRoomRequest {
             room_id: String::new(),
             password: String::new(),
+            remark_name: String::new(),
+            display_tag: String::new(),
         };
 
         let error = validation_error_text(&crate::validate(&request).unwrap_err());

@@ -65,6 +65,14 @@ const LIVESTREAM_REQUEST_FAILED_MESSAGE: &str = "Live streaming request failed";
 const UPSTREAM_PROVIDER_UNAVAILABLE_MESSAGE: &str =
     "Upstream provider service is temporarily unavailable.";
 
+pub(crate) fn normalize_member_remark_name(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().to_string()
+}
+
+pub(crate) fn normalize_member_display_tag(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().to_string()
+}
+
 #[derive(Debug)]
 struct DisabledProviderAccessService;
 

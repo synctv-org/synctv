@@ -1081,6 +1081,14 @@ fn register_all_routes() -> Router<AppState> {
                     axum::routing::patch(room_extra::set_member_permissions),
                 )
                 .route(
+                    "/api/rooms/{roomId}/members/{userId}/remark-name",
+                    axum::routing::patch(room_extra::update_member_remark_name),
+                )
+                .route(
+                    "/api/rooms/{roomId}/members/{userId}/display-tag",
+                    axum::routing::patch(room_extra::update_member_display_tag),
+                )
+                .route(
                     "/api/rooms/{roomId}/reports",
                     get(room::list_room_content_reports).post(room::report_content),
                 )

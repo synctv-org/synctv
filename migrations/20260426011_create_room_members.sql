@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS room_members (
     admin_removed_permissions BIGINT NOT NULL DEFAULT 0
         CHECK (admin_removed_permissions >= 0),
 
+    remark_name VARCHAR(64) NOT NULL DEFAULT '',
+    display_tag VARCHAR(16) NOT NULL DEFAULT '',
+
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     version BIGINT NOT NULL DEFAULT 0,

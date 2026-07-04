@@ -102,11 +102,13 @@ service RoomService {
   rpc ListRoomStreams(ListRoomStreamsRequest) returns (ListRoomStreamsResponse);
   rpc GetRoomStreamInfo(GetRoomStreamInfoRequest) returns (GetRoomStreamInfoResponse);
   rpc KickRoomStream(KickRoomStreamRequest) returns (KickRoomStreamResponse);
-  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
+  rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
   rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
   rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
   rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
-  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
+  rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
   rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
 
   // Real-time Messaging (room-scoped)
@@ -1129,6 +1131,8 @@ message JoinRoomRequest {
     pattern: "^room_[A-Za-z0-9]+$"
   }];
   string password = 2 [(buf.validate.field).string = {max_len: 128}];
+  string remark_name = 3 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 4 [(buf.validate.field).string = {max_len: 16}];
 }
 
 message JoinRoomResponse {
@@ -1478,10 +1482,8 @@ message AddMemberRequest {
   }];
   synctv.common.RoomMemberRole role = 2; // Defaults to MEMBER when unspecified
   bool notify = 3; // Best-effort invitation/announcement to the target user
-}
-
-message AddMemberResponse {
-  synctv.common.RoomMember member = 1;
+  string remark_name = 4 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 5 [(buf.validate.field).string = {max_len: 16}];
 }
 
 message RoomJoinReview {
@@ -1549,6 +1551,24 @@ message RejectRoomJoinReviewResponse {
   bool success = 2;
 }
 
+message UpdateMemberRemarkNameRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string remark_name = 2 [(buf.validate.field).string = {max_len: 64}];
+}
+
+message UpdateMemberDisplayTagRequest {
+  string user_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string display_tag = 2 [(buf.validate.field).string = {max_len: 16}];
+}
+
 message UpdateMemberPermissionsRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1565,10 +1585,6 @@ message UpdateMemberPermissionsRequest {
   uint64 removed_permissions = 4;
   uint64 admin_added_permissions = 5;
   uint64 admin_removed_permissions = 6;
-}
-
-message UpdateMemberPermissionsResponse {
-  synctv.common.RoomMember member = 1;
 }
 
 message KickMemberRequest {
@@ -3406,6 +3422,8 @@ message RoomMemberEvent {
   string reason = 9;
   int64 occurred_at = 10;
   int64 sequence = 11;
+  string remark_name = 12;
+  string display_tag = 13;
 }
 
 message HeartbeatMessage {

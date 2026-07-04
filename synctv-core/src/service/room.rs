@@ -138,13 +138,15 @@ pub use creation::CreateRoomWithTaxonomyRequest;
 pub use taxonomy::RoomCategoryUpdate;
 mod types;
 pub use types::{
-    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, AuthorizedAdminActor,
-    ClearPlaylistResult, ClientResourceAvailability, CreateRoomCoverUploadSession,
-    DeleteEntriesPlan, DeleteEntriesRequest, DeleteEntriesResult, KickMemberOutboxOptions,
-    MemberPermissionPatch, MemberResourceCleanupResult, PermissionChangedOutboxSnapshot,
-    RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMemberResourceCleanupEventFactory,
-    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
-    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomServiceOptions,
+    AddMemberWithOutboxRequest, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
+    AuthorizedAdminActor, ClearPlaylistResult, ClientResourceAvailability,
+    CreateRoomCoverUploadSession, DeleteEntriesPlan, DeleteEntriesRequest, DeleteEntriesResult,
+    KickMemberOutboxOptions, MemberPermissionPatch, MemberResourceCleanupResult,
+    PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
+    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxPermissionChangedEventFactory,
+    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
+    RealtimeOutboxUserLeftEventFactory, RoomServiceOptions,
+    UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
     UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot,
 };
 pub(crate) use types::{EntryDeletionImpact, RoomCleanupImpact};

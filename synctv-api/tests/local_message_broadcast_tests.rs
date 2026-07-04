@@ -196,6 +196,8 @@ async fn test_local_realtime_manager_supports_room_operations() {
         room_id,
         user_id,
         username: "user1".to_string(),
+        remark_name: String::new(),
+        display_tag: String::new(),
         permissions: RoomPermissionSet(0),
         role: 2,
         added_permissions: RoomPermissionSet(0),

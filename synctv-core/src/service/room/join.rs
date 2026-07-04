@@ -20,6 +20,16 @@ pub(super) enum RoomPasswordJoinProof {
 const ROOM_JOIN_PENDING_LOCK_NS: i32 = 20_260_419;
 const ROOM_JOIN_REQUEST_PENDING: ReviewStatus = ReviewStatus::Pending;
 
+struct JoinRoomExecution {
+    room: Room,
+    settings: RoomSettings,
+    room_id: RoomId,
+    user_id: UserId,
+    remark_name: String,
+    display_tag: String,
+    outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
 impl RoomService {
     /// Join a room.
     pub async fn join_room(
@@ -28,8 +38,15 @@ impl RoomService {
         user_id: UserId,
         password: Option<String>,
     ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
-        self.join_room_with_outbox(room_id, user_id, password, None)
-            .await
+        self.join_room_with_outbox(
+            room_id,
+            user_id,
+            password,
+            String::new(),
+            String::new(),
+            None,
+        )
+        .await
     }
 
     pub async fn join_room_with_outbox(
@@ -37,14 +54,23 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         password: Option<String>,
+        remark_name: String,
+        display_tag: String,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
         let proof = password.map_or(
             RoomPasswordJoinProof::None,
             RoomPasswordJoinProof::Plaintext,
         );
-        self.join_room_with_password_proof(room_id, user_id, proof, outbox_event_factory)
-            .await
+        self.join_room_with_password_proof(
+            room_id,
+            user_id,
+            proof,
+            remark_name,
+            display_tag,
+            outbox_event_factory,
+        )
+        .await
     }
 
     pub(super) async fn join_room_with_password_proof(
@@ -52,6 +78,8 @@ impl RoomService {
         room_id: RoomId,
         user_id: UserId,
         password_proof: RoomPasswordJoinProof,
+        remark_name: String,
+        display_tag: String,
         outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
     ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
         tracing::info!(
@@ -106,6 +134,8 @@ impl RoomService {
             let lock_key = format!("join_room:{room_id}:{user_id}");
             return crate::service::with_coordination_lock(lock.as_ref(), &lock_key, 10, || {
                 let password_proof = password_proof.clone();
+                let remark_name = remark_name.clone();
+                let display_tag = display_tag.clone();
                 let outbox_event_factory = outbox_event_factory.clone();
                 async move {
                     let fresh_ctx = self
@@ -148,26 +178,30 @@ impl RoomService {
                         &password_proof,
                     )?;
 
-                    self.do_join_room(
-                        fresh_ctx.room,
-                        fresh_ctx.settings,
+                    self.do_join_room(JoinRoomExecution {
+                        room: fresh_ctx.room,
+                        settings: fresh_ctx.settings,
                         room_id,
                         user_id,
+                        remark_name,
+                        display_tag,
                         outbox_event_factory,
-                    )
+                    })
                     .await
                 }
             })
             .await;
         }
 
-        self.do_join_room(
-            ctx.room,
-            ctx.settings,
+        self.do_join_room(JoinRoomExecution {
+            room: ctx.room,
+            settings: ctx.settings,
             room_id,
             user_id,
+            remark_name,
+            display_tag,
             outbox_event_factory,
-        )
+        })
         .await
     }
 
@@ -215,12 +249,17 @@ impl RoomService {
 
     async fn do_join_room(
         &self,
-        room: Room,
-        settings: RoomSettings,
-        room_id: RoomId,
-        user_id: UserId,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        request: JoinRoomExecution,
     ) -> Result<(Room, RoomMember, Vec<RoomMemberWithUser>)> {
+        let JoinRoomExecution {
+            room,
+            settings,
+            room_id,
+            user_id,
+            remark_name,
+            display_tag,
+            outbox_event_factory,
+        } = request;
         if let Some(existing_member) = self.member_repo.get(&room_id, &user_id).await? {
             tracing::debug!(
                 room_id = %room_id,
@@ -252,7 +291,9 @@ impl RoomService {
         }
 
         let options = AddMemberOptions::new().with_max_members(settings.max_members.0);
-        let member = RoomMember::new(room_id, user_id, RoomRole::Member);
+        let mut member = RoomMember::new(room_id, user_id, RoomRole::Member);
+        member.remark_name = remark_name;
+        member.display_tag = display_tag;
         let username = self.actor_username_required(&user_id).await?;
         let mut tx = self.pool.begin().await?;
         let created_member = match self
@@ -383,8 +424,7 @@ impl RoomService {
         }
 
         tx.commit().await?;
-        let pending = RoomMember::new(*room_id, *user_id, role);
-        Ok(pending)
+        Ok(RoomMember::new(*room_id, *user_id, role))
     }
 
     pub(super) async fn load_pending_join_request_by_id_for_update(

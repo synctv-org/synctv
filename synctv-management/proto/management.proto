@@ -46,8 +46,10 @@ service ManagementService {
     rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.UpdateRoomTaxonomyResponse);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
     rpc SearchChatMessages(SearchChatMessagesRequest) returns (synctv.client.SearchChatMessagesResponse);
-    rpc AddMember(AddMemberRequest) returns (synctv.client.AddMemberResponse);
-    rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.client.UpdateMemberPermissionsResponse);
+    rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+    rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
     rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
@@ -457,6 +459,20 @@ message AddMemberRequest {
     UserRef user = 2;
     synctv.common.RoomMemberRole role = 3;
     bool notify = 4;
+    string remark_name = 5;
+    string display_tag = 6;
+}
+
+message UpdateMemberRemarkNameRequest {
+    string room_id = 1;
+    UserRef user = 2;
+    string remark_name = 3;
+}
+
+message UpdateMemberDisplayTagRequest {
+    string room_id = 1;
+    UserRef user = 2;
+    string display_tag = 3;
 }
 
 message UpdateMemberPermissionsRequest {

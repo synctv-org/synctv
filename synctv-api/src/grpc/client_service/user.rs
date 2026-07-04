@@ -660,15 +660,14 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |request_control, authenticated| async move {
-                    client_api
-                        .join_room_with_control(
-                            &authenticated.user_id,
-                            &room_id,
-                            req,
-                            client_ip.as_deref(),
-                            Some(&request_control),
-                        )
-                        .await
+                    Box::pin(client_api.join_room_with_control(
+                        &authenticated.user_id,
+                        &room_id,
+                        req,
+                        client_ip.as_deref(),
+                        Some(&request_control),
+                    ))
+                    .await
                 },
             )
             .await
@@ -719,14 +718,13 @@ impl UserService for ClientServiceImpl {
                 &metadata,
                 EndpointRateLimitCategory::Write,
                 move |_request_control, authenticated| async move {
-                    client_api
-                        .finish_room_password_login_with_control(
-                            &authenticated.user_id,
-                            None,
-                            req,
-                            client_ip.as_deref(),
-                        )
-                        .await
+                    Box::pin(client_api.finish_room_password_login_with_control(
+                        &authenticated.user_id,
+                        None,
+                        req,
+                        client_ip.as_deref(),
+                    ))
+                    .await
                 },
             )
             .await

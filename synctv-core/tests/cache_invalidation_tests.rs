@@ -778,6 +778,8 @@ async fn test_cache_invalidation_after_commit() {
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
+            remark_name: String::new(),
+            display_tag: String::new(),
             joined_at: chrono::Utc::now(),
             version: 0,
         })

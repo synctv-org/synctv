@@ -235,6 +235,8 @@ pub struct RoomMember {
     pub removed_permissions: u64,
     pub admin_added_permissions: u64,
     pub admin_removed_permissions: u64,
+    pub remark_name: String,
+    pub display_tag: String,
     pub joined_at: DateTime<Utc>,
     pub version: i64,
 }
@@ -251,6 +253,8 @@ impl RoomMember {
             removed_permissions: 0,
             admin_added_permissions: 0,
             admin_removed_permissions: 0,
+            remark_name: String::new(),
+            display_tag: String::new(),
             joined_at: Utc::now(),
             version: 0,
         }
@@ -330,6 +334,8 @@ pub struct RoomMemberWithUser {
     pub removed_permissions: u64,
     pub admin_added_permissions: u64,
     pub admin_removed_permissions: u64,
+    pub remark_name: String,
+    pub display_tag: String,
     pub joined_at: DateTime<Utc>,
     pub is_online: bool,
     pub is_active: bool,
@@ -347,6 +353,8 @@ impl RoomMemberWithUser {
             removed_permissions: self.removed_permissions,
             admin_added_permissions: self.admin_added_permissions,
             admin_removed_permissions: self.admin_removed_permissions,
+            remark_name: self.remark_name.clone(),
+            display_tag: self.display_tag.clone(),
             joined_at: self.joined_at,
             version: 0,
         };

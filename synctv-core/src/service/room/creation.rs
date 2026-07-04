@@ -437,8 +437,15 @@ impl RoomService {
         password: Option<String>,
         settings: Option<RoomSettings>,
     ) -> Result<(Room, RoomMember)> {
-        self.create_room_with_outbox(name, description, created_by, password, settings, None)
-            .await
+        Box::pin(self.create_room_with_outbox(
+            name,
+            description,
+            created_by,
+            password,
+            settings,
+            None,
+        ))
+        .await
     }
 
     pub async fn create_room_with_outbox(

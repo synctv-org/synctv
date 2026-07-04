@@ -46,9 +46,9 @@ use crate::proto::{
     ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo, SliceCacheNodeFailure,
     SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
     StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
-    UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
-    UpdateUserUsernameRequest, UserRef,
+    UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
+    UpdatePlaybackStateRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
+    UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
 use crate::source_config::{
     alist_media_source_config, alist_playlist_source_config, bilibili_live_source_config,
@@ -65,7 +65,7 @@ use synctv_core::models::{UserId, UserRole as CoreUserRole};
 use synctv_core::service::UserService;
 use synctv_core::Config;
 use synctv_proto::{
-    admin as admin_proto, client as client_proto,
+    admin as admin_proto, client as client_proto, common as common_proto,
     providers::{
         alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
         emby as emby_proto, rtmp as rtmp_proto,
@@ -1703,7 +1703,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_member(
         &self,
         request: Request<AddMemberRequest>,
-    ) -> Result<Response<client_proto::AddMemberResponse>, Status> {
+    ) -> Result<Response<common_proto::RoomMember>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1716,21 +1716,69 @@ impl ManagementService for ManagementServiceImpl {
                     user_id,
                     role: req.role,
                     notify: req.notify,
+                    remark_name: req.remark_name,
+                    display_tag: req.display_tag,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
             .map_err(map_api_error)?;
-        Ok(Response::new(client_proto::AddMemberResponse {
-            member: response.member,
-        }))
+        Ok(Response::new(response))
+    }
+
+    async fn update_member_remark_name(
+        &self,
+        request: Request<UpdateMemberRemarkNameRequest>,
+    ) -> Result<Response<common_proto::RoomMember>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let response = self
+            .admin_api
+            .update_member_remark_name(
+                admin_proto::UpdateMemberRemarkNameRequest {
+                    room_id: req.room_id,
+                    user_id,
+                    remark_name: req.remark_name,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn update_member_display_tag(
+        &self,
+        request: Request<UpdateMemberDisplayTagRequest>,
+    ) -> Result<Response<common_proto::RoomMember>, Status> {
+        let validated = self.check_admin_get_validated(&request)?;
+        let ctx = self.grpc_request_context(&request);
+        let req = request.into_inner();
+        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let response = self
+            .admin_api
+            .update_member_display_tag(
+                admin_proto::UpdateMemberDisplayTagRequest {
+                    room_id: req.room_id,
+                    user_id,
+                    display_tag: req.display_tag,
+                },
+                &validated.user_id,
+                &ctx,
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 
     async fn update_member_permissions(
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
-    ) -> Result<Response<client_proto::UpdateMemberPermissionsResponse>, Status> {
+    ) -> Result<Response<common_proto::RoomMember>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1752,11 +1800,7 @@ impl ManagementService for ManagementServiceImpl {
             )
             .await
             .map_err(map_api_error)?;
-        Ok(Response::new(
-            client_proto::UpdateMemberPermissionsResponse {
-                member: response.member,
-            },
-        ))
+        Ok(Response::new(response))
     }
 
     async fn kick_member(

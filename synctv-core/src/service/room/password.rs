@@ -176,6 +176,8 @@ impl RoomService {
             RoomPasswordJoinProof::OpaqueVerified {
                 expected_version: session.expected_password_version,
             },
+            String::new(),
+            String::new(),
             outbox_event_factory,
         )
         .await

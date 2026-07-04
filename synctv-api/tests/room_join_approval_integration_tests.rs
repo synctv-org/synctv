@@ -130,6 +130,8 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
             synctv_proto::client::JoinRoomRequest {
                 room_id: room_id.clone(),
                 password: String::new(),
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
             None,
         )

@@ -4052,6 +4052,102 @@ fn cli_parses_room_member_permissions_subcommand() {
 }
 
 #[test]
+fn cli_parses_room_member_add_display_fields() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "member",
+        "add",
+        "--room-id",
+        "room-1",
+        "alice",
+        "--role",
+        "admin",
+        "--notify",
+        "--remark-name",
+        "Alice",
+        "--display-tag",
+        "mod",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Member(RoomMemberCommand {
+                    command: RoomMemberSubcommand::Add(args),
+                }),
+        }) => {
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.user.username.as_deref(), Some("alice"));
+            assert_eq!(args.role, CliRoomMemberRole::Admin);
+            assert!(args.notify);
+            assert_eq!(args.remark_name.as_deref(), Some("Alice"));
+            assert_eq!(args.display_tag.as_deref(), Some("mod"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_member_set_remark_name_subcommand() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "member",
+        "set-remark-name",
+        "--room-id",
+        "room-1",
+        "--user-id",
+        "user-9",
+        "--remark-name",
+        "Alice",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Member(RoomMemberCommand {
+                    command: RoomMemberSubcommand::SetRemarkName(args),
+                }),
+        }) => {
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.user.username, None);
+            assert_eq!(args.user.user_id.as_deref(), Some("user-9"));
+            assert_eq!(args.remark_name, "Alice");
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_room_member_set_display_tag_subcommand() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "room",
+        "member",
+        "set-display-tag",
+        "--room-id",
+        "room-1",
+        "--user-id",
+        "user-9",
+        "--display-tag",
+        "mod",
+    ]);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Member(RoomMemberCommand {
+                    command: RoomMemberSubcommand::SetDisplayTag(args),
+                }),
+        }) => {
+            assert_eq!(args.room.room_id, "room-1");
+            assert_eq!(args.user.username, None);
+            assert_eq!(args.user.user_id.as_deref(), Some("user-9"));
+            assert_eq!(args.display_tag, "mod");
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_parses_room_member_permission_names() {
     let cli = Cli::parse_from([
         "synctv",
@@ -5082,6 +5178,8 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             room_id: "room-1".into(),
             user_id: "user-1".into(),
             username: "root".into(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Creator as i32,
             permissions: RoomAdminPermissionBits::CHAT
                 | RoomAdminPermissionBits::VIEW_MEDIA_RESOURCES,
@@ -5301,6 +5399,8 @@ fn render_human_output_includes_room_members_snapshot_version() {
             room_id: "room-1".into(),
             user_id: "user-1".into(),
             username: "alice".into(),
+            remark_name: "Alice".into(),
+            display_tag: "mod".into(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
             permissions: 7,
             added_permissions: 0,
@@ -5320,6 +5420,8 @@ fn render_human_output_includes_room_members_snapshot_version() {
     assert_eq!(rendered["version"], "members-v7");
     assert_eq!(rendered["total"], 1);
     assert_eq!(rendered["members"][0]["username"], "alice");
+    assert_eq!(rendered["members"][0]["remarkName"], "Alice");
+    assert_eq!(rendered["members"][0]["displayTag"], "mod");
 }
 
 #[test]

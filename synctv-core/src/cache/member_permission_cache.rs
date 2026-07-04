@@ -100,6 +100,8 @@ impl CachedMemberPermissionSource {
             removed_permissions: self.removed_permissions,
             admin_added_permissions: self.admin_added_permissions,
             admin_removed_permissions: self.admin_removed_permissions,
+            remark_name: String::new(),
+            display_tag: String::new(),
             joined_at: chrono::Utc::now(),
             version: self.version,
         }

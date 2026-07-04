@@ -5,8 +5,9 @@ use hex::encode as hex_encode;
 use sha2::{Digest, Sha256};
 use synctv_core::models::{ReviewRequestId, ReviewStatus, UserId};
 use synctv_core::service::{
-    MemberPermissionPatch, RoomJoinReviewListQuery, RoomJoinReviewRecord,
-    UpdateMemberWithOutboxRequest,
+    AddMemberWithOutboxRequest, MemberPermissionPatch, RoomJoinReviewListQuery,
+    RoomJoinReviewRecord, UpdateMemberDisplayTagWithOutboxRequest,
+    UpdateMemberRemarkNameWithOutboxRequest, UpdateMemberWithOutboxRequest,
 };
 
 use super::convert::{
@@ -28,6 +29,10 @@ pub(crate) fn compute_room_members_response_version(
         hasher.update(member.user_id.as_bytes());
         hasher.update([0]);
         hasher.update(member.username.as_bytes());
+        hasher.update([0]);
+        hasher.update(member.remark_name.as_bytes());
+        hasher.update([0]);
+        hasher.update(member.display_tag.as_bytes());
         hasher.update([0]);
         hasher.update(member.role.to_le_bytes());
         hasher.update(member.permissions.to_le_bytes());
@@ -346,12 +351,14 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::AddMemberRequest,
-    ) -> Result<synctv_proto::client::AddMemberResponse, ApiError> {
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let synctv_proto::client::AddMemberRequest {
             user_id: target_user_id,
             role,
             notify,
+            remark_name,
+            display_tag,
         } = req;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -362,6 +369,8 @@ impl ClientApiImpl {
         } else {
             proto_role_to_assignable_room_role(role)?
         };
+        let remark_name = crate::impls::normalize_member_remark_name(remark_name);
+        let display_tag = crate::impls::normalize_member_display_tag(display_tag);
 
         let target_presence = self
             .presence_service
@@ -376,14 +385,16 @@ impl ClientApiImpl {
             );
         let member = self
             .room_service
-            .add_member_with_outbox(
-                rid,
-                uid,
-                target_uid,
+            .add_member_with_outbox(AddMemberWithOutboxRequest {
+                room_id: rid,
+                actor_id: uid,
+                target_user_id: target_uid,
                 role,
+                remark_name,
+                display_tag,
                 notify,
-                Some(prepared_membership_fanout.outbox_factory()),
-            )
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
             .await
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
@@ -393,6 +404,8 @@ impl ClientApiImpl {
             room_id: member.room_id,
             user_id: member.user_id,
             username,
+            remark_name: member.remark_name.clone(),
+            display_tag: member.display_tag.clone(),
             role: member.role,
             status: member.status,
             added_permissions: member.added_permissions,
@@ -413,13 +426,11 @@ impl ClientApiImpl {
             .permission_service()
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
-        Ok(synctv_proto::client::AddMemberResponse {
-            member: Some(try_room_member_to_proto_with_permissions(
-                &member_with_user,
-                permissions,
-                &self.public_id_codec,
-            )?),
-        })
+        try_room_member_to_proto_with_permissions(
+            &member_with_user,
+            permissions,
+            &self.public_id_codec,
+        )
     }
 
     pub async fn approve_room_join_review(
@@ -470,6 +481,8 @@ impl ClientApiImpl {
             room_id: member.room_id,
             user_id: member.user_id,
             username,
+            remark_name: member.remark_name.clone(),
+            display_tag: member.display_tag.clone(),
             role: member.role,
             status: member.status,
             added_permissions: member.added_permissions,
@@ -556,7 +569,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdateMemberPermissionsRequest,
-    ) -> Result<synctv_proto::client::UpdateMemberPermissionsResponse, ApiError> {
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let synctv_proto::client::UpdateMemberPermissionsRequest {
             user_id: target_user_id,
@@ -680,6 +693,8 @@ impl ClientApiImpl {
             room_id: member.room_id,
             user_id: member.user_id,
             username,
+            remark_name: member.remark_name.clone(),
+            display_tag: member.display_tag.clone(),
             role: member.role,
             status: member.status,
             added_permissions: member.added_permissions,
@@ -702,13 +717,161 @@ impl ClientApiImpl {
             .permission_service()
             .effective_member_with_user_permissions(&member_with_user, &room_settings);
 
-        Ok(synctv_proto::client::UpdateMemberPermissionsResponse {
-            member: Some(try_room_member_to_proto_with_permissions(
-                &member_with_user,
-                permissions,
-                &self.public_id_codec,
-            )?),
-        })
+        try_room_member_to_proto_with_permissions(
+            &member_with_user,
+            permissions,
+            &self.public_id_codec,
+        )
+    }
+
+    pub async fn update_member_remark_name(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::UpdateMemberRemarkNameRequest,
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let synctv_proto::client::UpdateMemberRemarkNameRequest {
+            user_id: target_user_id,
+            remark_name,
+        } = req;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
+        let remark_name = crate::impls::normalize_member_remark_name(remark_name);
+
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        let member = self
+            .room_service
+            .update_member_remark_name_with_outbox(UpdateMemberRemarkNameWithOutboxRequest {
+                room_id: rid,
+                actor_id: uid,
+                target_user_id: target_uid,
+                remark_name,
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+
+        let username = required_member_username(self, &target_uid).await?;
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            remark_name: member.remark_name.clone(),
+            display_tag: member.display_tag.clone(),
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online: target_presence.is_online,
+            is_active: true,
+        };
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let permissions = self
+            .room_service
+            .permission_service()
+            .effective_member_with_user_permissions(&member_with_user, &room_settings);
+
+        try_room_member_to_proto_with_permissions(
+            &member_with_user,
+            permissions,
+            &self.public_id_codec,
+        )
+    }
+
+    pub async fn update_member_display_tag(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::UpdateMemberDisplayTagRequest,
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let synctv_proto::client::UpdateMemberDisplayTagRequest {
+            user_id: target_user_id,
+            display_tag,
+        } = req;
+        let uid = *user_id;
+        let rid = self.parse_room_id(room_id)?;
+        let target_uid =
+            crate::impls::proto_validated_user_id(target_user_id, &self.public_id_codec)?;
+        let display_tag = crate::impls::normalize_member_display_tag(display_tag);
+
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        let member = self
+            .room_service
+            .update_member_display_tag_with_outbox(UpdateMemberDisplayTagWithOutboxRequest {
+                room_id: rid,
+                actor_id: uid,
+                target_user_id: target_uid,
+                display_tag,
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+
+        let username = required_member_username(self, &target_uid).await?;
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            remark_name: member.remark_name.clone(),
+            display_tag: member.display_tag.clone(),
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online: target_presence.is_online,
+            is_active: true,
+        };
+        let room_settings = self
+            .room_service
+            .get_room_settings(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let permissions = self
+            .room_service
+            .permission_service()
+            .effective_member_with_user_permissions(&member_with_user, &room_settings);
+
+        try_room_member_to_proto_with_permissions(
+            &member_with_user,
+            permissions,
+            &self.public_id_codec,
+        )
     }
 
     pub async fn kick_member(

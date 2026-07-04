@@ -88,6 +88,8 @@ message RoomMember {
   int64 joined_at = 10;
   bool is_online = 11;
   int32 connection_count = 12;
+  string remark_name = 13;
+  string display_tag = 14;
 }
 
 message NodeConnectionCount {

@@ -76,6 +76,8 @@ fn test_permission_changed_is_critical() {
         room_id,
         target_user_id,
         target_username: "test_target".to_string(),
+        target_remark_name: String::new(),
+        target_display_tag: String::new(),
         changed_by,
         changed_by_username: "admin".to_string(),
         role_changed: false,
@@ -124,6 +126,8 @@ fn test_user_left_is_critical() {
         user_id,
         room_id,
         username: "test_user".to_string(),
+        remark_name: String::new(),
+        display_tag: String::new(),
         role: 2,
         timestamp: chrono::Utc::now(),
     };

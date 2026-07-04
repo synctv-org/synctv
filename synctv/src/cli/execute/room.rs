@@ -272,6 +272,36 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         user: Some(args.user.to_management_proto()?),
                         role: args.role.to_proto(),
                         notify: args.notify,
+                        remark_name: args.remark_name.unwrap_or_default(),
+                        display_tag: args.display_tag.unwrap_or_default(),
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
+            RoomMemberSubcommand::SetRemarkName(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "update room member remark name",
+                    update_member_remark_name,
+                    management_proto::UpdateMemberRemarkNameRequest {
+                        room_id: args.room.room_id,
+                        user: Some(args.user.to_management_proto()?),
+                        remark_name: args.remark_name,
+                    }
+                )?;
+                args.room.remote.print_output(&response)
+            }
+            RoomMemberSubcommand::SetDisplayTag(args) => {
+                let session = connect_remote_access(&args.room.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "update room member display tag",
+                    update_member_display_tag,
+                    management_proto::UpdateMemberDisplayTagRequest {
+                        room_id: args.room.room_id,
+                        user: Some(args.user.to_management_proto()?),
+                        display_tag: args.display_tag,
                     }
                 )?;
                 args.room.remote.print_output(&response)

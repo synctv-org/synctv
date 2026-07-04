@@ -151,6 +151,8 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
+        remark_name: String::new(),
+        display_tag: String::new(),
         joined_at: chrono::Utc::now(),
         version: 0,
     };

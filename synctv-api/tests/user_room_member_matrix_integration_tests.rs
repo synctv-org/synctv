@@ -224,6 +224,8 @@ async fn test_add_member_rejects_banned_user_status() {
                 user_id: banned_user_public_id,
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
         )
         .await
@@ -558,9 +560,7 @@ async fn test_update_member_permissions_requires_admin_override_fields_for_admin
             },
         )
         .await
-        .unwrap()
-        .member
-        .expect("updated member");
+        .unwrap();
 
     assert_eq!(
         updated.role,
@@ -1247,6 +1247,8 @@ async fn test_join_room_rejects_banned_rooms() {
             synctv_proto::client::JoinRoomRequest {
                 room_id: public_id_codec().encode_room_id(room.id).unwrap(),
                 password: String::new(),
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
             None,
         )

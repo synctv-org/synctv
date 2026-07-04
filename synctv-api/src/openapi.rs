@@ -440,7 +440,6 @@ pub struct GoogleRpcStatusSchema {
             client::ResetRoomSettingsResponse,
             client::KickMemberResponse,
             client::UpdateMemberPermissionsRequest,
-            client::UpdateMemberPermissionsResponse,
             client::RoomJoinReview,
             client::ListRoomJoinReviewsRequest,
             client::ListRoomJoinReviewsResponse,

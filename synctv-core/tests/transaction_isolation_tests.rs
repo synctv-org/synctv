@@ -114,6 +114,8 @@ fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
+        remark_name: String::new(),
+        display_tag: String::new(),
         joined_at: chrono::Utc::now(),
         version: 0,
     }

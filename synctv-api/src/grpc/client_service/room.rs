@@ -56,7 +56,7 @@ impl RoomService for ClientServiceImpl {
     async fn add_member(
         &self,
         request: Request<AddMemberRequest>,
-    ) -> Result<Response<AddMemberResponse>, Status> {
+    ) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
         members::add_member(self, request).await
     }
 
@@ -84,8 +84,22 @@ impl RoomService for ClientServiceImpl {
     async fn update_member_permissions(
         &self,
         request: Request<UpdateMemberPermissionsRequest>,
-    ) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
+    ) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
         members::update_member_permissions(self, request).await
+    }
+
+    async fn update_member_remark_name(
+        &self,
+        request: Request<UpdateMemberRemarkNameRequest>,
+    ) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
+        members::update_member_remark_name(self, request).await
+    }
+
+    async fn update_member_display_tag(
+        &self,
+        request: Request<UpdateMemberDisplayTagRequest>,
+    ) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
+        members::update_member_display_tag(self, request).await
     }
 
     async fn kick_member(

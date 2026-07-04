@@ -1685,6 +1685,8 @@ async fn join_room_http(
         synctv_proto::client::JoinRoomRequest {
             room_id: room_id.to_string(),
             password: password.to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
         },
         bearer,
     )
@@ -3967,7 +3969,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
     assert_eq!(
-        member_permissions["member"]["role"].as_i64(),
+        member_permissions["role"].as_i64(),
         Some(synctv_proto::common::RoomMemberRole::Admin as i64)
     );
 
@@ -6653,6 +6655,8 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
         synctv_proto::client::JoinRoomRequest {
             room_id: room_id.clone(),
             password: "RoomPass12345!".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
         },
         &member_token,
     )

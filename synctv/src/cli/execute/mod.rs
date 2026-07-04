@@ -266,6 +266,12 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::Member(command) => match &mut command.command {
             RoomMemberSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
             RoomMemberSubcommand::Add(args) => merge_room_scoped_remote_args(&mut args.room, root),
+            RoomMemberSubcommand::SetRemarkName(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
+            RoomMemberSubcommand::SetDisplayTag(args) => {
+                merge_room_scoped_remote_args(&mut args.room, root);
+            }
             RoomMemberSubcommand::SetPermissions(args) => {
                 merge_room_scoped_remote_args(&mut args.room, root);
             }

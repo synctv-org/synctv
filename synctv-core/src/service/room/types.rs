@@ -55,6 +55,8 @@ pub struct PermissionChangedOutboxSnapshot {
     pub room_id: RoomId,
     pub target_user_id: UserId,
     pub target_username: String,
+    pub target_remark_name: String,
+    pub target_display_tag: String,
     pub changed_by: UserId,
     pub changed_by_username: String,
     pub role_changed: bool,
@@ -71,6 +73,8 @@ pub struct UserLeftOutboxSnapshot {
     pub room_id: RoomId,
     pub user_id: UserId,
     pub username: String,
+    pub remark_name: String,
+    pub display_tag: String,
     pub role: i32,
 }
 
@@ -80,6 +84,19 @@ pub struct AdminAddMemberWithOutboxRequest<'a> {
     pub actor_username: &'a str,
     pub target_user_id: UserId,
     pub role: RoomRole,
+    pub remark_name: String,
+    pub display_tag: String,
+    pub notify: bool,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+pub struct AddMemberWithOutboxRequest {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub target_user_id: UserId,
+    pub role: RoomRole,
+    pub remark_name: String,
+    pub display_tag: String,
     pub notify: bool,
     pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
 }
@@ -99,6 +116,22 @@ pub struct UpdateMemberWithOutboxRequest {
     pub target_user_id: UserId,
     pub role: Option<RoomRole>,
     pub permissions: MemberPermissionPatch,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+pub struct UpdateMemberRemarkNameWithOutboxRequest {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub target_user_id: UserId,
+    pub remark_name: String,
+    pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+}
+
+pub struct UpdateMemberDisplayTagWithOutboxRequest {
+    pub room_id: RoomId,
+    pub actor_id: UserId,
+    pub target_user_id: UserId,
+    pub display_tag: String,
     pub outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
 }
 

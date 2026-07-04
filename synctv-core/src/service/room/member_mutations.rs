@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    cleanup_member_resources_in_tx, AdminAddMemberWithOutboxRequest,
+    cleanup_member_resources_in_tx, AddMemberWithOutboxRequest, AdminAddMemberWithOutboxRequest,
     AdminRejectJoinRequestWithOutbox, RealtimeOutboxMemberResourceCleanupEventFactory,
     RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxUserLeftEventFactory, RoomService,
 };
@@ -28,6 +28,16 @@ fn rejection_notification(reason: Option<&str>) -> String {
     }
 }
 
+struct AddActiveMemberTxRequest<'a> {
+    room_id: &'a RoomId,
+    target_user_id: &'a UserId,
+    role: RoomRole,
+    remark_name: String,
+    display_tag: String,
+    reviewed_by: Option<&'a UserId>,
+    require_pending_review: bool,
+}
+
 impl RoomService {
     async fn active_member_add_options(&self, room_id: &RoomId) -> Result<AddMemberOptions> {
         let room_settings = self.room_settings_repo.get(room_id).await?;
@@ -37,18 +47,25 @@ impl RoomService {
     async fn add_active_member_and_resolve_join_review_tx(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        room_id: &RoomId,
-        target_user_id: &UserId,
-        role: RoomRole,
-        reviewed_by: Option<&UserId>,
-        require_pending_review: bool,
+        request: AddActiveMemberTxRequest<'_>,
     ) -> Result<RoomMember> {
+        let AddActiveMemberTxRequest {
+            room_id,
+            target_user_id,
+            role,
+            remark_name,
+            display_tag,
+            reviewed_by,
+            require_pending_review,
+        } = request;
         self.ensure_target_user_can_join_now_tx(tx, target_user_id)
             .await?;
         Self::ensure_room_can_admit_member_now_tx(tx, room_id, target_user_id).await?;
 
         let mut member = RoomMember::new(*room_id, *target_user_id, role);
         member.status = MemberStatus::Active;
+        member.remark_name = remark_name;
+        member.display_tag = display_tag;
         let options = self.active_member_add_options(room_id).await?;
         let created = self
             .member_repo
@@ -202,19 +219,33 @@ impl RoomService {
         role: RoomRole,
         notify: bool,
     ) -> Result<RoomMember> {
-        self.add_member_with_outbox(room_id, actor_id, target_user_id, role, notify, None)
-            .await
+        self.add_member_with_outbox(AddMemberWithOutboxRequest {
+            room_id,
+            actor_id,
+            target_user_id,
+            role,
+            remark_name: String::new(),
+            display_tag: String::new(),
+            notify,
+            outbox_event_factory: None,
+        })
+        .await
     }
 
     pub async fn add_member_with_outbox(
         &self,
-        room_id: RoomId,
-        actor_id: UserId,
-        target_user_id: UserId,
-        role: RoomRole,
-        notify: bool,
-        outbox_event_factory: Option<RealtimeOutboxPermissionChangedEventFactory>,
+        request: AddMemberWithOutboxRequest,
     ) -> Result<RoomMember> {
+        let AddMemberWithOutboxRequest {
+            room_id,
+            actor_id,
+            target_user_id,
+            role,
+            remark_name,
+            display_tag,
+            notify,
+            outbox_event_factory,
+        } = request;
         let room = self
             .room_repo
             .get_by_id(&room_id)
@@ -244,11 +275,15 @@ impl RoomService {
         let created = self
             .add_active_member_and_resolve_join_review_tx(
                 &mut tx,
-                &room_id,
-                &target_user_id,
-                role,
-                Some(&actor_id),
-                false,
+                AddActiveMemberTxRequest {
+                    room_id: &room_id,
+                    target_user_id: &target_user_id,
+                    role,
+                    remark_name,
+                    display_tag,
+                    reviewed_by: Some(&actor_id),
+                    require_pending_review: false,
+                },
             )
             .await?;
         let snapshot = self
@@ -488,6 +523,8 @@ impl RoomService {
             actor_username,
             target_user_id,
             role,
+            remark_name: String::new(),
+            display_tag: String::new(),
             notify,
             outbox_event_factory: None,
         })
@@ -504,6 +541,8 @@ impl RoomService {
             actor_username,
             target_user_id,
             role,
+            remark_name,
+            display_tag,
             notify,
             outbox_event_factory,
         } = request;
@@ -519,11 +558,15 @@ impl RoomService {
         let created = self
             .add_active_member_and_resolve_join_review_tx(
                 &mut tx,
-                &room_id,
-                &target_user_id,
-                role,
-                Some(&actor_id),
-                false,
+                AddActiveMemberTxRequest {
+                    room_id: &room_id,
+                    target_user_id: &target_user_id,
+                    role,
+                    remark_name,
+                    display_tag,
+                    reviewed_by: Some(&actor_id),
+                    require_pending_review: false,
+                },
             )
             .await?;
         let snapshot = self

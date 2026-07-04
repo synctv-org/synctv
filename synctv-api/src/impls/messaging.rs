@@ -1677,6 +1677,8 @@ impl StreamMessageHandler {
                 room_id: self.room_id,
                 user_id: self.user_id,
                 username: self.username.clone(),
+                remark_name: String::new(),
+                display_tag: String::new(),
                 permissions,
                 role: role_proto,
                 added_permissions,
@@ -1874,6 +1876,8 @@ impl StreamMessageHandler {
                 room_id: self.room_id,
                 user_id: self.user_id,
                 username: self.username.clone(),
+                remark_name: String::new(),
+                display_tag: String::new(),
                 role,
                 timestamp: chrono::Utc::now(),
             }

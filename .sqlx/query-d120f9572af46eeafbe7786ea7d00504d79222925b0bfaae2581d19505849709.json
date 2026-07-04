@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, user_id as \"user_id: UserId\", provider, server_id,\n                   provider_instance_name, credential_data as \"credential_data!: StoredProviderCredential\",\n                   expires_at, created_at, updated_at\n            FROM user_media_provider_credentials\n            WHERE user_id = $1\n            ORDER BY created_at DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id: UserId",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "server_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "server_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "provider_instance_name",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "provider_instance_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "credential_data!: StoredProviderCredential",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "credential_data"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_media_provider_credentials",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "d120f9572af46eeafbe7786ea7d00504d79222925b0bfaae2581d19505849709"
+}

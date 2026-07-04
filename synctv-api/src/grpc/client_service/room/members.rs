@@ -96,7 +96,7 @@ pub(super) async fn kick_room_stream(
 pub(super) async fn add_member(
     service: &ClientServiceImpl,
     request: Request<AddMemberRequest>,
-) -> Result<Response<AddMemberResponse>, Status> {
+) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -188,7 +188,7 @@ pub(super) async fn reject_room_join_review(
 pub(super) async fn update_member_permissions(
     service: &ClientServiceImpl,
     request: Request<UpdateMemberPermissionsRequest>,
-) -> Result<Response<UpdateMemberPermissionsResponse>, Status> {
+) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -200,6 +200,52 @@ pub(super) async fn update_member_permissions(
             move |authenticated| async move {
                 client_api
                     .update_member_permissions(&authenticated.user_id, room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn update_member_remark_name(
+    service: &ClientServiceImpl,
+    request: Request<UpdateMemberRemarkNameRequest>,
+) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_member_remark_name(&authenticated.user_id, room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn update_member_display_tag(
+    service: &ClientServiceImpl,
+    request: Request<UpdateMemberDisplayTagRequest>,
+) -> Result<Response<synctv_proto::common::RoomMember>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_member_display_tag(&authenticated.user_id, room_id.as_str(), req)
                     .await
             },
         )

@@ -21,7 +21,7 @@ use crate::impls::EndpointRateLimitCategory;
         ),
         request_body = synctv_proto::client::AddMemberRequest,
         responses(
-            (status = 200, description = "Member added", body = synctv_proto::client::AddMemberResponse),
+            (status = 200, description = "Member added", body = synctv_proto::common::RoomMember),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
@@ -36,7 +36,7 @@ pub async fn add_member(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<synctv_proto::client::AddMemberRequest>,
-) -> AppResult<Json<synctv_proto::client::AddMemberResponse>> {
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
     let room_id = path.room_id;
     let request_meta = request_meta.0;
     let client_api = state.shared_api_runtime.client_api.clone();
@@ -261,7 +261,7 @@ pub async fn kick_member(
         ),
         request_body = synctv_proto::client::UpdateMemberPermissionsRequest,
         responses(
-            (status = 200, description = "Member permissions updated", body = synctv_proto::client::UpdateMemberPermissionsResponse),
+            (status = 200, description = "Member permissions updated", body = synctv_proto::common::RoomMember),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
@@ -276,7 +276,7 @@ pub async fn set_member_permissions(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMemberTargetPathRequest>,
     Json(mut req): Json<synctv_proto::client::UpdateMemberPermissionsRequest>,
-) -> AppResult<Json<synctv_proto::client::UpdateMemberPermissionsResponse>> {
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
     let synctv_proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
     req.user_id = user_id;
     let request_meta = request_meta.0;
@@ -290,6 +290,104 @@ pub async fn set_member_permissions(
             move |authenticated| async move {
                 client_api
                     .update_member_permissions(&authenticated.user_id, &room_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{roomId}/members/{userId}/remark-name",
+        tag = "Room Member",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
+        ),
+        request_body = synctv_proto::client::UpdateMemberRemarkNameRequest,
+        responses(
+            (status = 200, description = "Member remark name updated", body = synctv_proto::common::RoomMember),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn update_member_remark_name(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomMemberTargetPathRequest>,
+    Json(mut req): Json<synctv_proto::client::UpdateMemberRemarkNameRequest>,
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
+    let synctv_proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
+    req.user_id = user_id;
+    let request_meta = request_meta.0;
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let resp = state
+        .shared_api_runtime
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_member_remark_name(&authenticated.user_id, &room_id, req)
+                    .await
+            },
+        )
+        .await
+        .map_err(crate::http::error::map_api_error)?;
+    Ok(Json(resp))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        patch,
+        path = "/api/rooms/{roomId}/members/{userId}/display-tag",
+        tag = "Room Member",
+        params(
+            ("roomId" = String, Path, description = "Room ID"),
+            ("userId" = String, Path, description = "Target user ID")
+        ),
+        request_body = synctv_proto::client::UpdateMemberDisplayTagRequest,
+        responses(
+            (status = 200, description = "Member display tag updated", body = synctv_proto::common::RoomMember),
+            (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(
+            ("bearer_auth" = [])
+        )
+    )
+)]
+pub async fn update_member_display_tag(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<synctv_proto::client::RoomMemberTargetPathRequest>,
+    Json(mut req): Json<synctv_proto::client::UpdateMemberDisplayTagRequest>,
+) -> AppResult<Json<synctv_proto::common::RoomMember>> {
+    let synctv_proto::client::RoomMemberTargetPathRequest { room_id, user_id } = path;
+    req.user_id = user_id;
+    let request_meta = request_meta.0;
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let resp = state
+        .shared_api_runtime
+        .client_api
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            move |authenticated| async move {
+                client_api
+                    .update_member_display_tag(&authenticated.user_id, &room_id, req)
                     .await
             },
         )

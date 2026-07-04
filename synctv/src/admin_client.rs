@@ -369,13 +369,14 @@ mod tests {
         SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
         StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
         TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-        UpdateMemberPermissionsRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+        UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
+        UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
         UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
     };
     #[cfg(unix)]
     use synctv_proto::{
-        admin as admin_proto, client as client_proto,
+        admin as admin_proto, client as client_proto, common as common_proto,
         providers::{
             alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
             emby as emby_proto, rtmp as rtmp_proto,
@@ -756,14 +757,25 @@ mod tests {
         async fn add_member(
             &self,
             _: Request<AddMemberRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMemberResponse>, Status> {
+        ) -> std::result::Result<Response<common_proto::RoomMember>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn update_member_remark_name(
+            &self,
+            _: Request<UpdateMemberRemarkNameRequest>,
+        ) -> std::result::Result<Response<common_proto::RoomMember>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn update_member_display_tag(
+            &self,
+            _: Request<UpdateMemberDisplayTagRequest>,
+        ) -> std::result::Result<Response<common_proto::RoomMember>, Status> {
             unavailable_test_management_response()
         }
         async fn update_member_permissions(
             &self,
             _: Request<UpdateMemberPermissionsRequest>,
-        ) -> std::result::Result<Response<client_proto::UpdateMemberPermissionsResponse>, Status>
-        {
+        ) -> std::result::Result<Response<common_proto::RoomMember>, Status> {
             unavailable_test_management_response()
         }
         async fn kick_member(

@@ -1026,6 +1026,8 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() -
                 user_id: public_user_id(&admin_api, target.id),
                 role: synctv_proto::common::RoomMemberRole::Member as i32,
                 notify: false,
+                remark_name: String::new(),
+                display_tag: String::new(),
             },
             &global_admin.id,
             &RequestContext::default(),
@@ -1033,9 +1035,7 @@ async fn test_admin_add_member_publishes_permission_changed_membership_event() -
         .await
         .map_err(|error| test_error(format!("{error:?}")))?;
 
-    let member = response
-        .member
-        .ok_or_else(|| test_error("member should be returned"))?;
+    let member = response;
     assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         fanout.take_calls(),
@@ -1097,9 +1097,7 @@ async fn test_admin_update_member_permissions_publishes_membership_event() -> Te
         .await
         .map_err(|error| test_error(format!("{error:?}")))?;
 
-    let member = response
-        .member
-        .ok_or_else(|| test_error("member should be returned"))?;
+    let member = response;
     assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         fanout.take_calls(),
@@ -1168,9 +1166,7 @@ async fn test_admin_member_response_uses_room_permission_overrides() -> TestResu
         .await
         .map_err(|error| test_error(format!("{error:?}")))?;
 
-    let member = response
-        .member
-        .ok_or_else(|| test_error("member should be returned"))?;
+    let member = response;
     assert!(
         synctv_core::models::RoomPermissionSet::default_member()
             .has(synctv_core::models::RoomPermission::CREATE_MEDIA_RESOURCE),
@@ -2053,6 +2049,8 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         room_id: RoomId::expect_positive(110_002),
         user_id: UserId::expect_positive(110_003),
         username: "testmember".to_string(),
+        remark_name: "Test Member".to_string(),
+        display_tag: "VIP".to_string(),
         role,
         status: MemberStatus::Active,
         added_permissions: 0,
@@ -3632,7 +3630,7 @@ async fn test_update_member_permissions_bypasses_room_creator_constraint_for_glo
             .await,
     )?;
 
-    let member = some_value(response.member, "updated member response")?;
+    let member = response;
     assert_eq!(member.user_id, public_user_id(&admin_api, target.id));
     assert_eq!(
         member.role,

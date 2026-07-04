@@ -2,6 +2,7 @@ use synctv_core::{
     models::{AuditDetails, ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
     service::{
         AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, RoomCategoryUpdate,
+        UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
     },
 };
 
@@ -40,6 +41,8 @@ fn room_member_with_user(
         room_id: member.room_id,
         user_id: member.user_id,
         username,
+        remark_name: member.remark_name.clone(),
+        display_tag: member.display_tag.clone(),
         role: member.role,
         status: member.status,
         added_permissions: member.added_permissions,
@@ -520,13 +523,15 @@ impl AdminApiImpl {
         req: synctv_proto::admin::AddMemberRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::AddMemberResponse, ApiError> {
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let synctv_proto::admin::AddMemberRequest {
             room_id,
             user_id,
             role,
             notify,
+            remark_name,
+            display_tag,
         } = req;
         let actor = self.require_admin_actor(admin_user_id).await?;
         let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
@@ -536,6 +541,8 @@ impl AdminApiImpl {
         } else {
             proto_role_to_assignable_room_role(role)?
         };
+        let remark_name = crate::impls::normalize_member_remark_name(remark_name);
+        let display_tag = crate::impls::normalize_member_display_tag(display_tag);
         let target_presence = self
             .presence_service
             .user_room_stats_fresh(target_uid, rid)
@@ -555,6 +562,8 @@ impl AdminApiImpl {
                 actor_username: &actor.username,
                 target_user_id: target_uid,
                 role,
+                remark_name,
+                display_tag,
                 notify,
                 outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
             })
@@ -581,9 +590,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::AddMemberResponse {
-            member: Some(self.admin_room_member_to_proto(&member_with_user).await?),
-        })
+        self.admin_room_member_to_proto(&member_with_user).await
     }
 
     pub(super) async fn approve_room_join_request(
@@ -718,7 +725,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::UpdateMemberPermissionsRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::UpdateMemberPermissionsResponse, ApiError> {
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let synctv_proto::admin::UpdateMemberPermissionsRequest {
             room_id,
@@ -809,9 +816,125 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::UpdateMemberPermissionsResponse {
-            member: Some(self.admin_room_member_to_proto(&member_with_user).await?),
-        })
+        self.admin_room_member_to_proto(&member_with_user).await
+    }
+
+    pub async fn update_member_remark_name(
+        &self,
+        req: synctv_proto::admin::UpdateMemberRemarkNameRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let synctv_proto::admin::UpdateMemberRemarkNameRequest {
+            room_id,
+            user_id,
+            remark_name,
+        } = req;
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
+        let remark_name = crate::impls::normalize_member_remark_name(remark_name);
+
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        let updated_member = self
+            .room_service
+            .admin_update_member_remark_name_with_outbox(UpdateMemberRemarkNameWithOutboxRequest {
+                room_id: rid,
+                actor_id: *admin_user_id,
+                target_user_id: target_uid,
+                remark_name,
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+
+        let username = self.load_member_response_username(&target_uid).await?;
+        let member_with_user = room_member_with_user(&updated_member, username, &target_presence);
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::models::AuditAction::MemberPermissionUpdated,
+            synctv_core::models::AuditTargetType::Member,
+            Some(target_uid.to_string()),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                ..Default::default()
+            },
+            ctx,
+        )
+        .await;
+
+        self.admin_room_member_to_proto(&member_with_user).await
+    }
+
+    pub async fn update_member_display_tag(
+        &self,
+        req: synctv_proto::admin::UpdateMemberDisplayTagRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<synctv_proto::common::RoomMember, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let synctv_proto::admin::UpdateMemberDisplayTagRequest {
+            room_id,
+            user_id,
+            display_tag,
+        } = req;
+        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
+        let target_uid = crate::impls::proto_validated_user_id(user_id, &self.public_id_codec)?;
+        let display_tag = crate::impls::normalize_member_display_tag(display_tag);
+
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(target_uid, rid)
+            .await
+            .map_err(ApiError::from)?;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        let updated_member = self
+            .room_service
+            .admin_update_member_display_tag_with_outbox(UpdateMemberDisplayTagWithOutboxRequest {
+                room_id: rid,
+                actor_id: *admin_user_id,
+                target_user_id: target_uid,
+                display_tag,
+                outbox_event_factory: Some(prepared_membership_fanout.outbox_factory()),
+            })
+            .await
+            .map_err(ApiError::from)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+
+        let username = self.load_member_response_username(&target_uid).await?;
+        let member_with_user = room_member_with_user(&updated_member, username, &target_presence);
+
+        self.log_admin_action(
+            admin_user_id,
+            synctv_core::models::AuditAction::MemberPermissionUpdated,
+            synctv_core::models::AuditTargetType::Member,
+            Some(target_uid.to_string()),
+            AuditDetails {
+                room_id: Some(rid.to_string()),
+                ..Default::default()
+            },
+            ctx,
+        )
+        .await;
+
+        self.admin_room_member_to_proto(&member_with_user).await
     }
 
     pub async fn kick_member(

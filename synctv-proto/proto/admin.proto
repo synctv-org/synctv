@@ -57,8 +57,10 @@ service AdminService {
   rpc BanRoom(BanRoomRequest) returns (BanRoomResponse);
   rpc UnbanRoom(UnbanRoomRequest) returns (UnbanRoomResponse);
   rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
-  rpc AddMember(AddMemberRequest) returns (AddMemberResponse);
-  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (UpdateMemberPermissionsResponse);
+  rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
+  rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
   rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
   rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
   rpc UpsertRoomCategory(UpsertRoomCategoryRequest) returns (UpsertRoomCategoryResponse);
@@ -1275,10 +1277,36 @@ message AddMemberRequest {
   }];
   synctv.common.RoomMemberRole role = 3;
   bool notify = 4;
+  string remark_name = 5 [(buf.validate.field).string = {max_len: 64}];
+  string display_tag = 6 [(buf.validate.field).string = {max_len: 16}];
 }
 
-message AddMemberResponse {
-  synctv.common.RoomMember member = 1;
+message UpdateMemberRemarkNameRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string remark_name = 3 [(buf.validate.field).string = {max_len: 64}];
+}
+
+message UpdateMemberDisplayTagRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+  string user_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^usr_[A-Za-z0-9]+$"
+  }];
+  string display_tag = 3 [(buf.validate.field).string = {max_len: 16}];
 }
 
 message UpdateMemberPermissionsRequest {
@@ -1297,10 +1325,6 @@ message UpdateMemberPermissionsRequest {
   uint64 removed_permissions = 5;
   uint64 admin_added_permissions = 6;
   uint64 admin_removed_permissions = 7;
-}
-
-message UpdateMemberPermissionsResponse {
-  synctv.common.RoomMember member = 1;
 }
 
 message KickMemberRequest {

@@ -102,6 +102,10 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         user_id: UserId,
         username: String,
+        #[serde(default)]
+        remark_name: String,
+        #[serde(default)]
+        display_tag: String,
         permissions: RoomPermissionSet,
         role: i32, // RoomMemberRole as i32 for serde compatibility
         #[serde(default)]
@@ -135,6 +139,10 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         user_id: UserId,
         username: String,
+        #[serde(default)]
+        remark_name: String,
+        #[serde(default)]
+        display_tag: String,
         #[serde(default)]
         role: i32,
         timestamp: DateTime<Utc>,
@@ -239,6 +247,10 @@ pub enum RealtimeEvent {
         room_id: RoomId,
         target_user_id: UserId,
         target_username: String,
+        #[serde(default)]
+        target_remark_name: String,
+        #[serde(default)]
+        target_display_tag: String,
         changed_by: UserId,
         changed_by_username: String,
         #[serde(default)]
@@ -874,6 +886,8 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_140),
             user_id: UserId::expect_positive(10_000_141),
             username: "testuser".to_string(),
+            remark_name: String::new(),
+            display_tag: String::new(),
             permissions: RoomPermissionSet(0),
             role: 2, // Member role
             added_permissions: RoomPermissionSet(0),

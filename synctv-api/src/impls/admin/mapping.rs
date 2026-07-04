@@ -385,6 +385,8 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
                 ApiError::Internal(format!("Failed to encode room member user id: {error}"))
             })?,
         username: member.username.clone(),
+        remark_name: member.remark_name.clone(),
+        display_tag: member.display_tag.clone(),
         role: crate::impls::client::room_role_to_proto(member.role),
         permissions: permissions.0,
         added_permissions: member.added_permissions,

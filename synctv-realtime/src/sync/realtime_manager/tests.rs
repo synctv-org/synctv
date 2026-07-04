@@ -269,6 +269,8 @@ async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime(
         room_id,
         user_id,
         username: "leaver".to_string(),
+        remark_name: String::new(),
+        display_tag: String::new(),
         role: i32::from(synctv_core::models::RoomRole::Member),
         timestamp: Utc::now(),
     };
@@ -1347,6 +1349,8 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() -> Te
         room_id,
         user_id,
         username: "publish-only".to_string(),
+        remark_name: String::new(),
+        display_tag: String::new(),
         role: i32::from(synctv_core::models::RoomRole::Member),
         timestamp: Utc::now(),
     };

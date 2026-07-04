@@ -63,28 +63,161 @@ struct UserProviderCredentialRow {
     provider: i16,
     server_id: String,
     provider_instance_name: Option<String>,
-    credential_data: EncryptedProviderCredential,
+    credential_data: StoredProviderCredential,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(transparent)]
-struct EncryptedProviderCredential(serde_json::Value);
+struct EncryptedCredentialValue(String);
 
-impl EncryptedProviderCredential {
-    fn as_json_value(&self) -> &serde_json::Value {
-        &self.0
+impl EncryptedCredentialValue {
+    fn encrypt_json(
+        encryption: Option<&CredentialEncryption>,
+        value: &serde_json::Value,
+    ) -> Result<Self> {
+        let encrypted = match encryption {
+            Some(enc) => enc.encrypt(value),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before storing provider credentials"
+                    .to_string(),
+            )),
+        }?;
+        Ok(Self(encrypted))
     }
 
     #[cfg(test)]
-    fn from_json_value_for_test(value: serde_json::Value) -> Self {
-        Self(value)
+    fn from_string_for_test(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    fn encrypt_string(encryption: Option<&CredentialEncryption>, value: &str) -> Result<Self> {
+        Self::encrypt_json(encryption, &serde_json::Value::String(value.to_string()))
+    }
+
+    fn decrypt_json(&self, encryption: Option<&CredentialEncryption>) -> Result<serde_json::Value> {
+        match encryption {
+            Some(enc) => enc.decrypt(&self.0),
+            None => Err(crate::Error::Internal(
+                "Credential encryption must be configured before reading provider credentials"
+                    .to_string(),
+            )),
+        }
+    }
+
+    fn decrypt_string(&self, encryption: Option<&CredentialEncryption>) -> Result<String> {
+        let value = self.decrypt_json(encryption)?;
+        match value {
+            serde_json::Value::String(value) => Ok(value),
+            other => Err(crate::Error::Internal(format!(
+                "Decrypted credential field must be a string, got {other}."
+            ))),
+        }
     }
 }
 
-impl sqlx::Type<sqlx::Postgres> for EncryptedProviderCredential {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum StoredProviderCredential {
+    #[serde(rename = "bilibili")]
+    Bilibili { cookies: EncryptedCredentialValue },
+    #[serde(rename = "alist")]
+    Alist {
+        host: String,
+        username: String,
+        password: EncryptedCredentialValue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        otp_secret: Option<EncryptedCredentialValue>,
+    },
+    #[serde(rename = "emby")]
+    Emby {
+        host: String,
+        api_key: EncryptedCredentialValue,
+        emby_user_id: String,
+    },
+}
+
+impl StoredProviderCredential {
+    fn encrypt_from_domain(
+        encryption: Option<&CredentialEncryption>,
+        data: &ProviderCredential,
+    ) -> Result<Self> {
+        match data {
+            ProviderCredential::Bilibili { cookies } => Ok(Self::Bilibili {
+                cookies: EncryptedCredentialValue::encrypt_json(
+                    encryption,
+                    &serde_json::to_value(cookies)?,
+                )?,
+            }),
+            ProviderCredential::Alist {
+                host,
+                username,
+                password,
+                otp_secret,
+            } => Ok(Self::Alist {
+                host: host.clone(),
+                username: username.clone(),
+                password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
+                otp_secret: otp_secret
+                    .as_deref()
+                    .map(|value| EncryptedCredentialValue::encrypt_string(encryption, value))
+                    .transpose()?,
+            }),
+            ProviderCredential::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => Ok(Self::Emby {
+                host: host.clone(),
+                api_key: EncryptedCredentialValue::encrypt_string(encryption, api_key)?,
+                emby_user_id: emby_user_id.clone(),
+            }),
+        }
+    }
+
+    fn decrypt_to_domain(
+        &self,
+        encryption: Option<&CredentialEncryption>,
+    ) -> Result<ProviderCredential> {
+        match self {
+            Self::Bilibili { cookies } => Ok(ProviderCredential::Bilibili {
+                cookies: serde_json::from_value(cookies.decrypt_json(encryption)?)?,
+            }),
+            Self::Alist {
+                host,
+                username,
+                password,
+                otp_secret,
+            } => Ok(ProviderCredential::Alist {
+                host: host.clone(),
+                username: username.clone(),
+                password: password.decrypt_string(encryption)?,
+                otp_secret: otp_secret
+                    .as_ref()
+                    .map(|value| value.decrypt_string(encryption))
+                    .transpose()?,
+            }),
+            Self::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => Ok(ProviderCredential::Emby {
+                host: host.clone(),
+                api_key: api_key.decrypt_string(encryption)?,
+                emby_user_id: emby_user_id.clone(),
+            }),
+        }
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for StoredProviderCredential {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
         <sqlx::types::Json<Self> as sqlx::Type<sqlx::Postgres>>::type_info()
     }
@@ -94,7 +227,7 @@ impl sqlx::Type<sqlx::Postgres> for EncryptedProviderCredential {
     }
 }
 
-impl sqlx::Encode<'_, sqlx::Postgres> for EncryptedProviderCredential {
+impl sqlx::Encode<'_, sqlx::Postgres> for StoredProviderCredential {
     fn encode_by_ref(
         &self,
         buf: &mut sqlx::postgres::PgArgumentBuffer,
@@ -103,7 +236,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for EncryptedProviderCredential {
     }
 }
 
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for EncryptedProviderCredential {
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for StoredProviderCredential {
     fn decode(
         value: sqlx::postgres::PgValueRef<'r>,
     ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -670,32 +803,15 @@ impl UserProviderCredentialRepository {
     fn encrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
         data: &ProviderCredential,
-    ) -> Result<EncryptedProviderCredential> {
-        let value = serde_json::to_value(data)?;
-        let encrypted = match encryption {
-            Some(enc) => enc.encrypt_to_value(&value),
-            None => Err(crate::Error::Internal(
-                "Credential encryption must be configured before storing provider credentials"
-                    .to_string(),
-            )),
-        }?;
-        Ok(EncryptedProviderCredential(encrypted))
+    ) -> Result<StoredProviderCredential> {
+        StoredProviderCredential::encrypt_from_domain(encryption, data)
     }
 
     fn decrypt_credential_with(
         encryption: Option<&CredentialEncryption>,
-        data: &EncryptedProviderCredential,
+        data: &StoredProviderCredential,
     ) -> Result<ProviderCredential> {
-        match encryption {
-            Some(enc) => {
-                let value = enc.decrypt_value(&data.0)?;
-                serde_json::from_value(value).map_err(crate::Error::from)
-            }
-            None => Err(crate::Error::Internal(
-                "Credential encryption must be configured before reading provider credentials"
-                    .to_string(),
-            )),
-        }
+        data.decrypt_to_domain(encryption)
     }
 
     /// Create a new repository without encryption
@@ -716,11 +832,11 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    fn encrypt_credential(&self, data: &ProviderCredential) -> Result<EncryptedProviderCredential> {
+    fn encrypt_credential(&self, data: &ProviderCredential) -> Result<StoredProviderCredential> {
         Self::encrypt_credential_with(self.encryption.as_ref(), data)
     }
 
-    fn decrypt_credential(&self, data: &EncryptedProviderCredential) -> Result<ProviderCredential> {
+    fn decrypt_credential(&self, data: &StoredProviderCredential) -> Result<ProviderCredential> {
         Self::decrypt_credential_with(self.encryption.as_ref(), data)
     }
 
@@ -788,7 +904,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1
@@ -808,7 +924,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE id = $1
@@ -835,7 +951,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
@@ -864,7 +980,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
@@ -891,7 +1007,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
@@ -911,7 +1027,8 @@ impl UserProviderCredentialRepository {
         &self,
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
-        let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_json = sqlx::types::Json(&stored_data);
         let provider_code = provider_type_code(&credential.provider)?;
 
         let created = sqlx::query_as!(
@@ -921,14 +1038,14 @@ impl UserProviderCredentialRepository {
             (user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, user_id as "user_id: UserId", provider, server_id,
-                      provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                      provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data.as_json_value(),
+            stored_json as _,
             credential.expires_at,
         )
         .fetch_one(&self.pool)
@@ -945,7 +1062,8 @@ impl UserProviderCredentialRepository {
         &self,
         credential: &UserProviderCredential,
     ) -> Result<UserProviderCredential> {
-        let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_json = sqlx::types::Json(&stored_data);
         let provider_code = provider_type_code(&credential.provider)?;
 
         let upserted = sqlx::query_as!(
@@ -961,14 +1079,14 @@ impl UserProviderCredentialRepository {
                 expires_at = EXCLUDED.expires_at,
                 updated_at = NOW()
             RETURNING id, user_id as "user_id: UserId", provider, server_id,
-                      provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                      provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                       expires_at, created_at, updated_at
             "#,
             credential.user_id as UserId,
             provider_code,
             credential.server_id.as_str(),
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data.as_json_value(),
+            stored_json as _,
             credential.expires_at,
         )
         .fetch_one(&self.pool)
@@ -979,7 +1097,8 @@ impl UserProviderCredentialRepository {
 
     /// Update an existing user credential (encrypts before storage)
     pub async fn update(&self, credential: &UserProviderCredential) -> Result<()> {
-        let encrypted_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_data = self.encrypt_credential(&credential.credential_data)?;
+        let stored_json = sqlx::types::Json(&stored_data);
 
         let result = sqlx::query!(
             r"
@@ -989,7 +1108,7 @@ impl UserProviderCredentialRepository {
             ",
             credential.id,
             normalize_provider_instance_name(credential.provider_instance_name.as_deref()),
-            encrypted_data.as_json_value(),
+            stored_json as _,
             credential.expires_at,
         )
         .execute(&self.pool)
@@ -1048,7 +1167,7 @@ impl UserProviderCredentialRepository {
             UserProviderCredentialRow,
             r#"
             SELECT id, user_id as "user_id: UserId", provider, server_id,
-                   provider_instance_name, credential_data as "credential_data!: EncryptedProviderCredential",
+                   provider_instance_name, credential_data as "credential_data!: StoredProviderCredential",
                    expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE expires_at IS NOT NULL AND expires_at <= NOW()

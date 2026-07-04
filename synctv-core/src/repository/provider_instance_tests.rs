@@ -2,7 +2,6 @@ use super::*;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{ProviderCredential, SortDirection};
 use crate::test_helpers::{err, ok};
-use serde_json::json;
 
 fn order_by_sql(query: &ProviderInstanceListQuery) -> String {
     let mut builder = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
@@ -64,17 +63,67 @@ async fn test_user_provider_credential_repo_rejects_plaintext_json_when_encrypti
     let err = err(
         UserProviderCredentialRepository::decrypt_credential_with(
             Some(&encryption),
-            &super::EncryptedProviderCredential::from_json_value_for_test(json!({
-                "token": "plaintext"
-            })),
+            &super::StoredProviderCredential::Bilibili {
+                cookies: super::EncryptedCredentialValue::from_string_for_test(
+                    r#"{"SESSDATA":"plaintext"}"#,
+                ),
+            },
         ),
         "plaintext credential should fail",
     );
     assert!(
         err.to_string()
-            .contains("Credential value must be an encrypted string"),
+            .contains("Credential data must be an encrypted string"),
         "unexpected error: {err}"
     );
+}
+
+#[tokio::test]
+async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() {
+    let encryption = ok(CredentialEncryption::new(&[11u8; 32]), "encryption key");
+    let credential = ProviderCredential::Alist {
+        host: "https://alist.example.com".to_string(),
+        username: "alice".to_string(),
+        password: "secret-password".to_string(),
+        otp_secret: Some("otp-secret".to_string()),
+    };
+
+    let stored = ok(
+        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        "credential should encrypt",
+    );
+    let stored_json = ok(
+        serde_json::to_value(&stored).map_err(crate::Error::from),
+        "stored credential should serialize",
+    );
+
+    assert_eq!(stored_json["type"], "alist");
+    assert_eq!(stored_json["host"], "https://alist.example.com");
+    assert_eq!(stored_json["username"], "alice");
+    assert!(stored_json["password"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("enc:")));
+    assert!(stored_json["otpSecret"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("enc:")));
+
+    let decrypted = ok(
+        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        "stored credential should decrypt",
+    );
+    let ProviderCredential::Alist {
+        host,
+        username,
+        password,
+        otp_secret,
+    } = decrypted
+    else {
+        panic!("expected alist credential");
+    };
+    assert_eq!(host, "https://alist.example.com");
+    assert_eq!(username, "alice");
+    assert_eq!(password, "secret-password");
+    assert_eq!(otp_secret.as_deref(), Some("otp-secret"));
 }
 
 #[tokio::test]
@@ -159,7 +208,9 @@ async fn test_user_provider_credential_repo_requires_encryption_for_reads() {
     let err = err(
         UserProviderCredentialRepository::decrypt_credential_with(
             None,
-            &super::EncryptedProviderCredential::from_json_value_for_test(json!("enc:placeholder")),
+            &super::StoredProviderCredential::Bilibili {
+                cookies: super::EncryptedCredentialValue::from_string_for_test("enc:placeholder"),
+            },
         ),
         "encrypted credential should require encryption",
     );

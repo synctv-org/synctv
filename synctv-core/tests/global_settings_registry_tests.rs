@@ -1,6 +1,6 @@
 //! Global runtime settings store integration tests.
 
-use synctv_core::service::global_settings::*;
+use synctv_core::service::*;
 use synctv_core_testing::{err, ok};
 
 #[test]

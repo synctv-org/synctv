@@ -64,13 +64,22 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                 management_proto::AddDirectUrlMediaRequest {
                     actor: Some(args.actor.to_management_proto()?),
                     room_id: args.room.room_id,
-                    source_config: Some(
-                        synctv_core::models::DirectUrlMediaSourceConfig::single(
-                            args.url,
-                            Default::default(),
-                        )
-                        .into(),
-                    ),
+                    source_config: Some(synctv_proto::source_config::DirectUrlMediaSourceConfig {
+                        medias: vec![synctv_proto::source_config::DirectUrlMediaResourceConfig {
+                            name: String::new(),
+                            url: args.url,
+                            headers: Default::default(),
+                            format: String::new(),
+                        }],
+                        default_media_index: Some(0),
+                        subtitles: Vec::new(),
+                        default_subtitle_index: None,
+                        danmakus: Vec::new(),
+                        default_danmaku_index: None,
+                        is_live: Some(false),
+                        duration_seconds: None,
+                        prefer_proxy: Some(false),
+                    }),
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
                     name: args.name.unwrap_or_default(),

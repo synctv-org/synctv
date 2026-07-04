@@ -8,7 +8,7 @@ use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileObjectDownload,
-        FileObjectMetadata, FileRangeRequest, FileReferenceTarget,
+        FileObjectKind, FileObjectMetadata, FileRangeRequest, FileReferenceTarget,
         FileUploadOwnershipProofMetadata, FileUploadSession, FileUploadSessionCreateResult,
         FileUploadSessionKind, GetFileObject, NewStoredFile, StoreFileUpload,
         StoreFileUploadResult,
@@ -18,26 +18,25 @@ use crate::{
         UpsertFileUploadSessionPart,
     },
     service::file_storage::{
-        attach_file_ownership_proof_token, attach_prepared_file_urls, collect_file_object_download,
-        constant_time_eq, database_file_namespace_base_path, database_file_object_url,
-        decode_database_file_object_key, encode_database_file_object_key, file_object_key,
-        file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
-        file_upload_token_for_object_key, mark_upload_session_ownership_proof_verified,
-        media_processing::attach_variants_to_files, new_public_file_id, payload_len_i64,
-        process_file_variants_for_object, register_upload_session_reference,
-        strip_internal_file_metadata, upload_manifest_is_single_object,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
-        upload_session_is_single_object, upload_session_metadata,
-        upload_session_metadata_with_manifest, upload_session_object_metadata,
-        upload_session_parts_progress, upload_session_policy, upload_session_progress,
-        upload_session_public_file_id, validate_create_file_upload_session,
-        validate_database_file_read_token, validate_database_file_upload_token,
-        validate_file_mime_type, validate_file_reuse_grant, validate_file_upload_token_context,
-        validate_session_file_for_storage, validate_stored_files, validate_upload_range,
-        validated_upload_manifest, CreateFileReuseGrant, DatabaseFileStorageCompressionConfig,
-        DatabaseFileStorageService, FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin,
-        FileStorageContext, FileStorageService, UploadSessionMetadataInput,
-        ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
+        attach_file_ownership_proof_token, collect_file_object_download, constant_time_eq,
+        database_file_namespace_base_path, decode_file_object_key, encode_file_object_key,
+        file_object_access, file_object_key, file_ownership_proof_digest,
+        file_part_manifest_digest, file_reuse_grant, file_upload_token_for_object_key,
+        mark_upload_session_ownership_proof_verified, media_processing::attach_variants_to_files,
+        new_file_id, payload_len_i64, process_file_variants_for_object,
+        register_upload_session_reference, strip_internal_file_metadata,
+        upload_manifest_is_single_object, upload_manifest_parts_from_metadata, upload_media_type,
+        upload_session_file_id, upload_session_is_multipart, upload_session_is_single_object,
+        upload_session_metadata, upload_session_metadata_with_manifest,
+        upload_session_object_metadata, upload_session_parts_progress, upload_session_policy,
+        upload_session_progress, validate_create_file_upload_session, validate_file_mime_type,
+        validate_file_object_read_token, validate_file_reuse_grant, validate_file_upload_token,
+        validate_file_upload_token_context, validate_session_file_for_storage,
+        validate_stored_files, validate_upload_range, validated_upload_manifest,
+        CreateFileReuseGrant, DatabaseFileStorageCompressionConfig, DatabaseFileStorageService,
+        FileObjectReader, FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext,
+        FileStorageService, UploadSessionMetadataInput, ValidatedFileReuseGrant,
+        FILE_UPLOAD_EXPIRES_SECONDS, FILE_UPLOAD_TOKEN_HEADER,
         MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES,
     },
     Error, Result,
@@ -96,8 +95,8 @@ impl DatabaseFileStorageService {
         object_key: &str,
         range: Option<FileRangeRequest>,
     ) -> Result<Vec<u8>> {
-        let encoded_object_key = encode_database_file_object_key(object_key);
-        let read_token = super::database_file_read_token(
+        let encoded_object_key = encode_file_object_key(object_key);
+        let read_token = super::file_object_read_token(
             &self.storage_backend,
             object_key,
             &self.upload_token_secret,
@@ -115,8 +114,8 @@ impl DatabaseFileStorageService {
     }
 
     async fn object_download(&self, request: GetFileObject) -> Result<FileObjectDownload> {
-        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        validate_database_file_read_token(
+        let object_key = decode_file_object_key(&request.encoded_object_key)?;
+        validate_file_object_read_token(
             &self.storage_backend,
             &object_key,
             &request.read_token,
@@ -157,7 +156,7 @@ impl DatabaseFileStorageService {
             created_at: object.created_at,
         };
         // Stream part-by-part so large database-backed downloads do not require
-        // buffering the whole requested range before HTTP/gRPC starts sending.
+        // buffering the whole requested range before the response stream starts.
         let stream = futures::stream::iter(parts)
             .then(move |part| async move { database_part_chunk(part, read_range).await })
             .boxed();
@@ -502,21 +501,25 @@ impl FileStorageService for DatabaseFileStorageService {
         &self.storage_backend
     }
 
+    fn supports_reuse_grants(&self) -> bool {
+        true
+    }
+
     fn repository(&self) -> Option<Arc<FileStorageRepository>> {
         Some(self.repository.clone())
     }
 
-    fn object_url(
+    fn file_object_access(
         &self,
         storage_backend: &str,
         object_key: &str,
-        database_object_route_prefix: &str,
-    ) -> Result<Option<String>> {
+        object_kind: crate::models::FileObjectKind,
+    ) -> Result<Option<crate::models::FileObjectAccess>> {
         if storage_backend != self.storage_backend {
             return Ok(None);
         }
-        database_file_object_url(
-            database_object_route_prefix,
+        file_object_access(
+            object_kind,
             storage_backend,
             object_key,
             &self.upload_token_secret,
@@ -537,9 +540,9 @@ impl FileStorageService for DatabaseFileStorageService {
         }
         let (plan, content_manifest_sha256) =
             validated_upload_manifest(request.size_bytes, max_size_bytes, &request.parts)?;
-        let public_file_id = new_public_file_id();
+        let file_id = new_file_id();
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
-            public_file_id: &public_file_id,
+            file_id: &file_id,
             user_id: request.user_id,
             storage_scope: &request.storage_scope,
             client_file_id: request.client_file_id.as_deref(),
@@ -570,10 +573,16 @@ impl FileStorageService for DatabaseFileStorageService {
                 ));
             }
             let mut file = NewStoredFile {
-                id: public_file_id,
+                id: file_id,
                 filename: request.filename.clone(),
                 storage_backend: self.storage_backend.clone(),
                 object_key: existing.object_key.clone(),
+                object_access: Some(file_object_access(
+                    request.policy.object_kind,
+                    &self.storage_backend,
+                    &existing.object_key,
+                    &self.upload_token_secret,
+                )?),
                 url: None,
                 mime_type: Some(existing.mime_type),
                 size_bytes: Some(existing.size_bytes),
@@ -607,11 +616,12 @@ impl FileStorageService for DatabaseFileStorageService {
             .await?;
             return Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
                 file,
-                encoded_object_key: encode_database_file_object_key(&existing.object_key),
+                encoded_object_key: encode_file_object_key(&existing.object_key),
                 upload_required: false,
                 ownership_proof_required: true,
                 ownership_proof_nonce: Some(nonce),
                 ownership_proof_ranges: ranges,
+                upload_object_access: None,
                 upload_url: None,
                 upload_method: None,
                 upload_headers: Default::default(),
@@ -648,17 +658,17 @@ impl FileStorageService for DatabaseFileStorageService {
             file_object_key(
                 &database_file_namespace_base_path(&request.policy.storage_namespace),
                 "sessions",
-                &public_file_id,
+                &file_id,
                 &request.mime_type,
             )
         };
-        let public_file_id = if let Some(existing) = existing_session.as_ref() {
-            upload_session_public_file_id(&existing.metadata)?
+        let file_id = if let Some(existing) = existing_session.as_ref() {
+            upload_session_file_id(&existing.metadata)?
         } else {
-            public_file_id
+            file_id
         };
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
-            public_file_id: &public_file_id,
+            file_id: &file_id,
             user_id: request.user_id,
             storage_scope: &request.storage_scope,
             client_file_id: request.client_file_id.as_deref(),
@@ -679,10 +689,11 @@ impl FileStorageService for DatabaseFileStorageService {
         };
 
         let mut file = NewStoredFile {
-            id: public_file_id,
+            id: file_id,
             filename: request.filename,
             storage_backend: self.storage_backend.clone(),
             object_key: object_key.clone(),
+            object_access: None,
             url: None,
             mime_type: Some(request.mime_type),
             size_bytes: Some(request.size_bytes),
@@ -700,8 +711,8 @@ impl FileStorageService for DatabaseFileStorageService {
             Some(&content_manifest_sha256),
         )?;
         file.metadata.upload_token = Some(upload_token);
-        file.url = Some(database_file_object_url(
-            &request.policy.database_object_route_prefix,
+        file.object_access = Some(file_object_access(
+            request.policy.object_kind,
             &self.storage_backend,
             &file.object_key,
             &self.upload_token_secret,
@@ -777,20 +788,21 @@ impl FileStorageService for DatabaseFileStorageService {
         if let Some(token) = file.metadata.upload_token.as_deref() {
             upload_headers.insert(FILE_UPLOAD_TOKEN_HEADER.to_string(), token.to_string());
         }
-        let object_url = database_file_object_url(
-            &request.policy.database_object_route_prefix,
+        let upload_object_access = file_object_access(
+            request.policy.object_kind,
             &self.storage_backend,
             &upload_session_key,
             &self.upload_token_secret,
         )?;
         Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
             file,
-            encoded_object_key: encode_database_file_object_key(&upload_session_key),
+            encoded_object_key: encode_file_object_key(&upload_session_key),
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            upload_url: Some(object_url),
+            upload_object_access: Some(upload_object_access),
+            upload_url: None,
             upload_method: Some("PUT".to_string()),
             upload_headers,
             expires_at: Some(expires_at),
@@ -850,12 +862,12 @@ impl FileStorageService for DatabaseFileStorageService {
                 ));
             }
         }
-        attach_prepared_file_urls(self, &mut files, context.database_object_route_prefix)?;
+        super::attach_prepared_file_object_access(self, &mut files, context.object_kind)?;
         attach_variants_to_files(
             self,
             self.repository.as_ref(),
             &mut files,
-            context.database_object_route_prefix,
+            context.object_kind,
         )
         .await?;
         Ok(files)
@@ -961,7 +973,7 @@ impl FileStorageService for DatabaseFileStorageService {
             .delete_object(&self.storage_backend, &session.upload_session_key)
             .await?;
         let (_, reference_id) =
-            super::upload_session_reference_target(session.metadata.public_file_id.as_str());
+            super::upload_session_reference_target(session.metadata.file_id.as_str());
         if !reference_id.is_empty() {
             self.repository
                 .release_reference(
@@ -1010,8 +1022,8 @@ impl FileStorageService for DatabaseFileStorageService {
                 "file upload part must be between 1 and {MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES} bytes"
             )));
         }
-        let upload_session_key = decode_database_file_object_key(&encoded_object_key)?;
-        let payload = validate_database_file_upload_token(
+        let upload_session_key = decode_file_object_key(&encoded_object_key)?;
+        let payload = validate_file_upload_token(
             &self.storage_backend,
             &upload_token,
             &upload_session_key,
@@ -1204,8 +1216,8 @@ impl FileStorageService for DatabaseFileStorageService {
         &self,
         request: CompleteFileUploadSession,
     ) -> Result<CompleteFileUploadSessionResult> {
-        let decoded_object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        let payload = validate_database_file_upload_token(
+        let decoded_object_key = decode_file_object_key(&request.encoded_object_key)?;
+        let payload = validate_file_upload_token(
             &self.storage_backend,
             &request.upload_token,
             &decoded_object_key,
@@ -1412,13 +1424,13 @@ impl FileStorageService for DatabaseFileStorageService {
                 self.storage_backend
             )));
         }
-        let read_token = super::database_file_read_token(
+        let read_token = super::file_object_read_token(
             &self.storage_backend,
             object_key,
             &self.upload_token_secret,
         )?;
         self.get_object(GetFileObject {
-            encoded_object_key: encode_database_file_object_key(object_key),
+            encoded_object_key: encode_file_object_key(object_key),
             read_token,
             range: None,
         })
@@ -1549,7 +1561,7 @@ impl FileStorageService for DatabaseFileStorageService {
         &self,
         storage_backend: &str,
         object_key: &str,
-        database_object_route_prefix: &str,
+        object_kind: FileObjectKind,
         upload_policy: &crate::models::FileUploadPolicy,
     ) -> Result<Vec<crate::models::FileObjectVariant>> {
         if storage_backend != self.storage_backend {
@@ -1560,7 +1572,7 @@ impl FileStorageService for DatabaseFileStorageService {
             self.repository.clone(),
             storage_backend,
             object_key,
-            database_object_route_prefix,
+            object_kind,
             upload_policy,
         )
         .await

@@ -4,11 +4,11 @@ use synctv_common::ExecutionControl;
 
 use crate::{
     models::{User, UserAuthFactors, UserId},
-    service::{auth::TokenAuthContext, user::UserService},
+    service::{TokenAuthContext, UserService},
     Error, Result,
 };
 
-use crate::service::user::session_types::{
+use super::super::session_types::{
     AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
     SensitiveVerificationSession, SENSITIVE_VERIFICATION_PASSWORD_BRUTE_FORCE_PREFIX,
     SENSITIVE_VERIFICATION_SESSION_TTL_SECS, SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64,

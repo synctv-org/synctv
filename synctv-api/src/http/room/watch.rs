@@ -12,10 +12,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
 use super::super::websocket::RealtimeTransportFormat;
-use super::query::{parse_watch_delivery_mode, watch_after_event_sequence};
+use super::query::{
+    parse_watch_delivery_mode, watch_after_event_sequence, WatchPlaylistItemsQuery, WatchQuery,
+};
 use super::request_metadata;
 use super::{AppResult, AppState, RequestMetadata};
-use super::{WatchPlaylistItemsQuery, WatchQuery};
 use crate::impls::messaging::{
     MessageSender, RealtimeJoinError, ResourceWatchSession, ResourceWatchSessionConfig,
 };
@@ -229,7 +230,6 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
         sender,
         playback_service: state.shared_api_runtime.client_api.clone(),
         playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
-        room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),
         room_settings_snapshot_service:
             crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
                 state.room_service.clone(),

@@ -130,7 +130,67 @@ pub struct CleanupService {
     leader_check: Arc<dyn LeaderCheck>,
     /// Optional runtime settings store for dynamic `chat_max_messages_per_room`
     runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    resource_tasks: CleanupResourceTasks,
+}
+
+#[derive(Clone)]
+struct CleanupResourceTasks {
+    pool: PgPool,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
+}
+
+impl CleanupResourceTasks {
+    fn new(pool: PgPool, file_storage_service: Option<Arc<dyn FileStorageService>>) -> Self {
+        Self {
+            pool,
+            file_storage_service,
+        }
+    }
+
+    async fn cleanup_expired_file_references(&self) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_expired_file_references(&self.pool, storage)
+            .await
+            .internal_with_err("Failed to cleanup expired file references")
+    }
+
+    async fn cleanup_unreferenced_files(&self, retention_seconds: u64) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_unreferenced_file_objects(&self.pool, storage, retention_seconds)
+            .await
+            .internal_with_err("Failed to cleanup unreferenced file objects")
+    }
+
+    async fn cleanup_expired_file_upload_sessions(&self) -> Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage)
+            .await
+            .internal_with_err("Failed to cleanup expired file upload sessions")
+    }
+
+    async fn cleanup_chat_messages(
+        &self,
+        keep_count: i64,
+        activity_window_minutes: i32,
+    ) -> Result<u64> {
+        cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            self.file_storage_service.as_ref(),
+            cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
+                keep_count,
+                activity_window_minutes,
+            },
+            super::FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "per-room cap purge",
+        )
+        .await
+    }
 }
 
 impl CleanupService {
@@ -156,11 +216,14 @@ impl CleanupService {
         options: CleanupServiceOptions,
     ) -> Self {
         Self {
+            resource_tasks: CleanupResourceTasks::new(
+                pool.clone(),
+                options.file_storage_service.clone(),
+            ),
             pool,
             config,
             leader_check,
             runtime_settings_store: options.runtime_settings_store,
-            file_storage_service: options.file_storage_service,
         }
     }
 
@@ -641,51 +704,28 @@ impl CleanupService {
     }
 
     async fn cleanup_expired_file_references(&self) -> Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        cleanup_ops::cleanup_expired_file_references(&self.pool, storage)
-            .await
-            .internal_with_err("Failed to cleanup expired file references")
+        self.resource_tasks.cleanup_expired_file_references().await
     }
 
     async fn cleanup_unreferenced_files(&self) -> Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        cleanup_ops::cleanup_unreferenced_file_objects(
-            &self.pool,
-            storage,
-            self.config.unreferenced_file_retention_seconds,
-        )
-        .await
-        .internal_with_err("Failed to cleanup unreferenced file objects")
+        self.resource_tasks
+            .cleanup_unreferenced_files(self.config.unreferenced_file_retention_seconds)
+            .await
     }
 
     async fn cleanup_expired_file_upload_sessions(&self) -> Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage)
+        self.resource_tasks
+            .cleanup_expired_file_upload_sessions()
             .await
-            .internal_with_err("Failed to cleanup expired file upload sessions")
     }
 
     /// Cleanup chat messages exceeding per-room cap
     ///
     /// Processes rooms with messages within the last 90 days in bounded batches.
     async fn cleanup_chat_messages(&self, keep_count: i64) -> Result<u64> {
-        cleanup_ops::cleanup_chat_messages_with_files(
-            &self.pool,
-            self.file_storage_service.as_ref(),
-            cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
-                keep_count,
-                activity_window_minutes: CHAT_CAP_ACTIVITY_WINDOW_MINUTES,
-            },
-            super::FileStorageCleanupOrigin::ReferenceCapExceeded,
-            "per-room cap purge",
-        )
-        .await
+        self.resource_tasks
+            .cleanup_chat_messages(keep_count, CHAT_CAP_ACTIVITY_WINDOW_MINUTES)
+            .await
     }
 
     /// Start the periodic cleanup background task
@@ -707,7 +747,7 @@ impl CleanupService {
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
             runtime_settings_store: self.runtime_settings_store.clone(),
-            file_storage_service: self.file_storage_service.clone(),
+            resource_tasks: self.resource_tasks.clone(),
         };
 
         crate::spawn::spawn_monitored("data_cleanup", async move {

@@ -322,7 +322,7 @@ pub async fn upload_user_avatar_object(
 ) -> AppResult<Response> {
     let upload_token = super::required_header_str(
         &headers,
-        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        synctv_core::service::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::optional_header_str(&headers, &header::CONTENT_TYPE)?;

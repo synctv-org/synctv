@@ -31,7 +31,7 @@ pub const ROOM_NAME_MAX: usize = 100;
 /// Maximum room description length enforced by the domain/service layer.
 pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
-/// Maximum media display name length enforced by API/domain validation.
+/// Maximum media display name length enforced by request/domain validation.
 pub const MEDIA_NAME_MAX: usize = 500;
 
 // Reserved usernames — prevent phishing/impersonation attacks

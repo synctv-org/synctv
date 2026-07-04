@@ -10,7 +10,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::rate_limit::{RateLimitError, RateLimiter};
+use synctv_core::service::{RateLimitError, RateLimiter};
 
 /// Admin rate limit constants (must match the values in RequestRateLimitConfig::default())
 const ADMIN_MAX_REQUESTS: u32 = 30;

@@ -3,7 +3,9 @@
 //! Adapter that calls `AlistProviderClient` to implement `MediaProvider` trait.
 //! `ProviderClient` abstracts local/remote implementation, so `MediaProvider` doesn't need to know.
 
+use super::upstream_transport::alist as alist_upstream;
 use super::{
+    access::{AlistAccess, AlistBinding},
     provider_client::{
         create_remote_alist_client, AlistClientArc, AlistClientExt, AlistFileInfo,
         AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview, ProviderClientManager,
@@ -19,11 +21,18 @@ use crate::models::media::{
     PlaybackMetadata, PlaybackProxyResource, PlaybackProxyResourceMetadata, PlaybackSubtitle,
     PlaybackSubtitleProvider,
 };
-use crate::models::{AlistMediaSourceConfig, AlistPlaylistSourceConfig, MediaSourceConfig};
+use crate::models::{
+    normalize_provider_instance_name, validate_provider_instance_name, AlistMediaSourceConfig,
+    AlistPlaylistSourceConfig, MediaSourceConfig, ProviderCredential, UserId,
+    UserProviderCredential,
+};
+use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
 use chrono::Utc;
+use hmac::{Hmac, KeyInit, Mac};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -32,12 +41,74 @@ use std::time::Duration;
 const LIST_PAGE_SIZE: usize = 50;
 const SHUFFLE_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
+const ALIST_PASSWORD_HASH_SALT: &str = "https://github.com/alist-org/alist";
 
 fn alist_headers() -> HashMap<String, String> {
     HashMap::from([(
         "User-Agent".to_string(),
         synctv_media_providers::PROVIDER_USER_AGENT.to_string(),
     )])
+}
+
+fn alist_login_request(req: AlistLoginRequest) -> alist_upstream::LoginReq {
+    let credential = match req.credential {
+        AlistLoginCredential::Password(password) => {
+            alist_upstream::login_req::Credential::Password(password)
+        }
+        AlistLoginCredential::HashedPassword(hashed_password) => {
+            alist_upstream::login_req::Credential::HashedPassword(hashed_password)
+        }
+    };
+    alist_upstream::LoginReq {
+        host: req.host,
+        username: req.username,
+        credential: Some(credential),
+        otp_code: req.otp_code,
+    }
+}
+
+fn alist_list_request(req: AlistListRequest) -> alist_upstream::FsListReq {
+    alist_upstream::FsListReq {
+        host: req.host,
+        token: req.token,
+        path: req.path,
+        password: req.password,
+        page: req.page,
+        per_page: req.per_page,
+        refresh: req.refresh,
+    }
+}
+
+fn alist_search_request(req: &AlistSearchRequest) -> alist_upstream::FsSearchReq {
+    alist_upstream::FsSearchReq {
+        host: req.host.clone(),
+        token: req.token.clone(),
+        parent: req.parent.clone(),
+        keywords: req.keywords.clone(),
+        scope: req.scope,
+        page: req.page,
+        per_page: req.per_page,
+        password: req.password.clone(),
+    }
+}
+
+fn alist_search_fallback_list_request(req: &AlistSearchRequest) -> alist_upstream::FsListReq {
+    alist_upstream::FsListReq {
+        host: req.host.clone(),
+        token: req.token.clone(),
+        path: req.parent.clone(),
+        password: req.password.clone(),
+        page: req.page.max(1),
+        per_page: req.per_page.max(1),
+        refresh: false,
+    }
+}
+
+fn alist_me_request(req: AlistMeRequest) -> alist_upstream::MeReq {
+    alist_upstream::MeReq {
+        host: req.host,
+        token: req.token,
+    }
 }
 
 fn alist_modified_to_i64(value: u64) -> Result<i64, ProviderError> {
@@ -364,11 +435,145 @@ fn related_file_path(parent_path: &str, name: &str) -> Option<String> {
 pub struct AlistProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
+    credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AlistLoginCredential {
+    Password(String),
+    HashedPassword(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistLoginRequest {
+    pub host: String,
+    pub username: String,
+    pub credential: AlistLoginCredential,
+    pub otp_code: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistPersistedLoginResponse {
+    pub token: String,
+    pub server_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistPersistLoginCredentialRequest {
+    pub user_id: UserId,
+    pub host: String,
+    pub username: String,
+    pub password: String,
+    pub password_is_hashed: bool,
+    pub otp_secret: Option<String>,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistLoginAndPersistRequest {
+    pub user_id: UserId,
+    pub host: String,
+    pub username: String,
+    pub password: Option<String>,
+    pub hashed_password: Option<String>,
+    pub otp_code: String,
+    pub otp_secret: Option<String>,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistBind {
+    pub id: i64,
+    pub server_id: String,
+    pub host: String,
+    pub username: String,
+    pub created_at: i64,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistListRequest {
+    pub host: String,
+    pub token: String,
+    pub path: String,
+    pub password: String,
+    pub page: u64,
+    pub per_page: u64,
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistListItem {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub modified: u64,
+    pub sign: String,
+    pub thumb: String,
+    pub item_type: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistListResponse {
+    pub content: Vec<AlistListItem>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistSearchRequest {
+    pub host: String,
+    pub token: String,
+    pub parent: String,
+    pub keywords: String,
+    pub scope: u64,
+    pub page: u64,
+    pub per_page: u64,
+    pub password: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistSearchItem {
+    pub parent: String,
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub item_type: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistSearchResponse {
+    pub content: Vec<AlistSearchItem>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistMeRequest {
+    pub host: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistMeResponse {
+    pub username: String,
+    pub base_path: String,
 }
 
 impl AlistProvider {
     /// Provider type name constant.
     pub const NAME: &'static str = "alist";
+
+    #[must_use]
+    pub fn credential_server_id_for_instance(
+        host: &str,
+        provider_instance_name: Option<&str>,
+    ) -> String {
+        match normalize_provider_instance_name(provider_instance_name) {
+            Some(instance_name) => hex::encode(Sha256::digest(
+                format!("{host}\n{instance_name}").as_bytes(),
+            )),
+            None => hex::encode(Sha256::digest(host.as_bytes())),
+        }
+    }
 
     /// Create a new `AlistProvider` with `RemoteProviderManager`
     pub fn new(
@@ -377,6 +582,7 @@ impl AlistProvider {
         Ok(Self {
             provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -388,7 +594,26 @@ impl AlistProvider {
         Self {
             provider_instance_manager,
             client_manager,
+            credential_repo: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_credential_repo(
+        &self,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            provider_instance_manager: self.provider_instance_manager.clone(),
+            client_manager: self.client_manager.clone(),
+            credential_repo: Some(credential_repo),
+        }
+    }
+
+    fn credential_repo(&self) -> Result<&UserProviderCredentialRepository, ProviderError> {
+        self.credential_repo.as_deref().ok_or_else(|| {
+            ProviderError::Internal("Alist credential repository is not configured".to_string())
+        })
     }
 
     #[cfg(test)]
@@ -397,6 +622,7 @@ impl AlistProvider {
             provider_instance_manager:
                 crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -435,74 +661,433 @@ impl AlistProvider {
         .to_string()
     }
 
-    /// Login to Alist
-    ///
-    /// Login to Alist and return a token string.
-    ///
-    /// Takes grpc-generated `LoginReq` and returns token string
     pub async fn login_with_context(
         &self,
-        req: synctv_media_providers::grpc::alist::LoginReq,
+        req: AlistLoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
     ) -> Result<String, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.login(req).await.map_err(std::convert::Into::into)
+        client
+            .login(alist_login_request(req))
+            .await
+            .map_err(std::convert::Into::into)
     }
 
-    /// List Alist directory
-    ///
-    /// Takes grpc-generated `FsListReq` and returns `FsListResp`
+    #[must_use]
+    pub fn hash_password_for_storage(password: &str) -> String {
+        hex::encode(Sha256::digest(
+            format!("{password}-{ALIST_PASSWORD_HASH_SALT}").as_bytes(),
+        ))
+    }
+
+    pub fn resolve_login_credential(
+        password: Option<&str>,
+        hashed_password: Option<&str>,
+    ) -> Result<(String, bool), ProviderError> {
+        match (password, hashed_password) {
+            (Some(password), None) => {
+                if password.trim().is_empty() {
+                    return Err(ProviderError::InvalidConfig(
+                        "Alist login password must not be empty".to_string(),
+                    ));
+                }
+
+                Ok((password.to_string(), false))
+            }
+            (None, Some(hashed_password)) => {
+                if hashed_password.trim().is_empty() {
+                    return Err(ProviderError::InvalidConfig(
+                        "Alist login hashed_password must not be empty".to_string(),
+                    ));
+                }
+
+                Ok((hashed_password.to_string(), true))
+            }
+            _ => Err(ProviderError::InvalidConfig(
+                "Alist login requires exactly one credential".to_string(),
+            )),
+        }
+    }
+
+    pub fn otp_code_from_secret(otp_secret: Option<&str>) -> Result<String, ProviderError> {
+        otp_secret.map_or_else(
+            || Ok(String::new()),
+            |secret| Self::current_otp_code(secret).map_err(ProviderError::InvalidConfig),
+        )
+    }
+
+    pub fn normalize_otp_secret(otp_secret: Option<String>) -> Option<String> {
+        otp_secret.and_then(|otp_secret| {
+            let trimmed = otp_secret.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            if trimmed
+                .get(..10)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("otpauth://"))
+            {
+                return url::Url::parse(trimmed).ok().and_then(|url| {
+                    url.query_pairs()
+                        .find(|(key, _)| key.eq_ignore_ascii_case("secret"))
+                        .map(|(_, value)| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                });
+            }
+
+            Some(trimmed.to_string())
+        })
+    }
+
+    pub fn current_otp_code(otp_secret: &str) -> Result<String, String> {
+        Self::otp_code_at_timestamp(otp_secret, Utc::now().timestamp())
+    }
+
+    pub fn otp_code_at_timestamp(otp_secret: &str, timestamp: i64) -> Result<String, String> {
+        let secret = Self::normalize_otp_secret(Some(otp_secret.to_string()))
+            .ok_or_else(|| "Alist OTP secret must not be empty".to_string())?;
+        let key = decode_base32_secret(&secret)?;
+        if key.is_empty() {
+            return Err("Alist OTP secret must not decode to an empty key".to_string());
+        }
+
+        let counter = u64::try_from(timestamp.max(0) / 30)
+            .map_err(|_| "Invalid Alist OTP timestamp".to_string())?;
+        let mut mac = Hmac::<Sha1>::new_from_slice(&key)
+            .map_err(|_| "Invalid Alist OTP secret key".to_string())?;
+        mac.update(&counter.to_be_bytes());
+        let digest = mac.finalize().into_bytes();
+        let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+        let binary = ((u32::from(digest[offset]) & 0x7f) << 24)
+            | (u32::from(digest[offset + 1]) << 16)
+            | (u32::from(digest[offset + 2]) << 8)
+            | u32::from(digest[offset + 3]);
+
+        Ok(format!("{:06}", binary % 1_000_000))
+    }
+
+    pub fn resolve_login_otp_code(
+        otp_code: &str,
+        otp_secret: Option<&str>,
+    ) -> Result<String, ProviderError> {
+        let trimmed_code = otp_code.trim();
+        if !trimmed_code.is_empty() {
+            return Ok(trimmed_code.to_string());
+        }
+
+        Self::otp_code_from_secret(otp_secret)
+    }
+
+    pub async fn persist_login_credential(
+        &self,
+        request: AlistPersistLoginCredentialRequest,
+    ) -> Result<String, ProviderError> {
+        let provider_instance_name = request.provider_instance_name.as_deref();
+        let server_id =
+            Self::credential_server_id_for_instance(&request.host, provider_instance_name);
+        let stored_password = if request.password_is_hashed {
+            request.password
+        } else {
+            Self::hash_password_for_storage(&request.password)
+        };
+        let credential_data = ProviderCredential::Alist {
+            host: request.host,
+            username: request.username,
+            password: stored_password,
+            otp_secret: request.otp_secret,
+        };
+        let now = Utc::now();
+        let credential = UserProviderCredential {
+            id: 0,
+            user_id: request.user_id,
+            provider: Self::NAME.to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: provider_instance_name.map(ToString::to_string),
+            credential_data,
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.credential_repo()?
+            .upsert_by_user_provider_server(&credential)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to persist alist credential: {error}"))
+            })?;
+
+        Ok(server_id)
+    }
+
+    pub async fn login_and_persist_with_context(
+        &self,
+        request: AlistLoginAndPersistRequest,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<AlistPersistedLoginResponse, ProviderError> {
+        let (password, hashed) = Self::resolve_login_credential(
+            request.password.as_deref(),
+            request.hashed_password.as_deref(),
+        )?;
+        let otp_secret = Self::normalize_otp_secret(request.otp_secret);
+        let otp_code = Self::resolve_login_otp_code(&request.otp_code, otp_secret.as_deref())?;
+        let provider_instance_name = request.provider_instance_name.as_deref();
+
+        let token = self
+            .login_with_context(
+                AlistLoginRequest {
+                    host: request.host.clone(),
+                    username: request.username.clone(),
+                    credential: if hashed {
+                        AlistLoginCredential::HashedPassword(password.clone())
+                    } else {
+                        AlistLoginCredential::Password(password.clone())
+                    },
+                    otp_code,
+                },
+                provider_instance_name,
+                request_context,
+            )
+            .await?;
+        let server_id = self
+            .persist_login_credential(AlistPersistLoginCredentialRequest {
+                user_id: request.user_id,
+                host: request.host,
+                username: request.username,
+                password,
+                password_is_hashed: hashed,
+                otp_secret,
+                provider_instance_name: request.provider_instance_name,
+            })
+            .await?;
+
+        Ok(AlistPersistedLoginResponse { token, server_id })
+    }
+
+    pub async fn delete_credential(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+    ) -> Result<bool, ProviderError> {
+        let Some(existing) = self
+            .credential_repo()?
+            .get_by_provider_and_server(user_id, Self::NAME, server_id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query alist credential: {error}"))
+            })?
+        else {
+            return Ok(false);
+        };
+
+        self.credential_repo()?
+            .delete(existing.id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to delete alist credential: {error}"))
+            })?;
+        Ok(true)
+    }
+
+    pub async fn list_binds(
+        &self,
+        user_id: UserId,
+        provider_instance_name: Option<&str>,
+    ) -> Result<Vec<AlistBind>, ProviderError> {
+        let requested_instance_name = match normalize_provider_instance_name(provider_instance_name)
+        {
+            Some(instance_name) => {
+                validate_provider_instance_name(instance_name)
+                    .map_err(ProviderError::InvalidConfig)?;
+                Some(instance_name)
+            }
+            None => None,
+        };
+        let credentials = self
+            .credential_repo()?
+            .get_readable_by_provider(user_id, Self::NAME)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query alist credentials: {error}"))
+            })?;
+
+        credentials
+            .into_iter()
+            .filter(|credential| {
+                requested_instance_name.is_none_or(|requested| {
+                    normalize_provider_instance_name(credential.provider_instance_name.as_deref())
+                        == Some(requested)
+                })
+            })
+            .map(|credential| {
+                let ProviderCredential::Alist { host, username, .. } = credential.credential_data
+                else {
+                    return Err(ProviderError::InvalidCredentialType);
+                };
+                let host = host.trim();
+                let username = username.trim();
+                if host.is_empty() || username.is_empty() {
+                    return Err(ProviderError::InvalidConfig(format!(
+                        "Alist credential {} has empty bind fields",
+                        credential.id
+                    )));
+                }
+
+                Ok(AlistBind {
+                    id: credential.id,
+                    server_id: credential.server_id,
+                    host: host.to_string(),
+                    username: username.to_string(),
+                    created_at: credential.created_at.timestamp(),
+                    provider_instance_name: credential.provider_instance_name,
+                })
+            })
+            .collect()
+    }
+
+    pub fn binding_from_stored_credential(
+        user_id: UserId,
+        server_id: &str,
+        credential: ProviderCredential,
+        credential_revision: String,
+        stored_provider_instance_name: Option<String>,
+        requested_provider_instance_name: Option<&str>,
+    ) -> Result<AlistBinding, ProviderError> {
+        let provider_instance_name = requested_provider_instance_name
+            .map(std::string::ToString::to_string)
+            .or(stored_provider_instance_name);
+        match credential {
+            ProviderCredential::Alist { host, .. } => Ok(AlistBinding {
+                host,
+                server_id: server_id.to_string(),
+                credential_owner_id: user_id.to_string(),
+                credential_revision,
+                provider_instance_name,
+            }),
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
+    }
+
+    pub fn access_from_session(
+        user_id: UserId,
+        server_id: &str,
+        credential_revision: String,
+        provider_instance_name: Option<String>,
+        host: String,
+        token: String,
+    ) -> AlistAccess {
+        AlistAccess {
+            host,
+            token,
+            server_id: server_id.to_string(),
+            credential_owner_id: user_id.to_string(),
+            credential_revision,
+            provider_instance_name,
+        }
+    }
+
+    pub async fn login_access_from_stored_credential(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+        credential: ProviderCredential,
+        credential_revision: String,
+        provider_instance_name: Option<String>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<AlistAccess, ProviderError> {
+        let ProviderCredential::Alist {
+            host,
+            username,
+            password,
+            otp_secret,
+        } = credential
+        else {
+            return Err(ProviderError::InvalidCredentialType);
+        };
+        let otp_code = Self::otp_code_from_secret(otp_secret.as_deref())?;
+        let token = self
+            .login_with_context(
+                AlistLoginRequest {
+                    host: host.clone(),
+                    username,
+                    credential: AlistLoginCredential::HashedPassword(password),
+                    otp_code,
+                },
+                provider_instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+
+        Ok(Self::access_from_session(
+            user_id,
+            server_id,
+            credential_revision,
+            provider_instance_name,
+            host,
+            token,
+        ))
+    }
+
     pub async fn fs_list_with_context(
         &self,
-        req: synctv_media_providers::grpc::alist::FsListReq,
+        req: AlistListRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::alist::FsListResp, ProviderError> {
+    ) -> Result<AlistListResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.fs_list(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .fs_list(alist_list_request(req))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(AlistListResponse {
+            content: resp
+                .content
+                .into_iter()
+                .map(|item| AlistListItem {
+                    name: item.name,
+                    size: item.size,
+                    is_dir: item.is_dir,
+                    modified: item.modified,
+                    sign: item.sign,
+                    thumb: item.thumb,
+                    item_type: item.r#type,
+                })
+                .collect(),
+            total: resp.total,
+        })
     }
 
     /// Search Alist files and directories.
     pub async fn fs_search_with_context(
         &self,
-        req: synctv_media_providers::grpc::alist::FsSearchReq,
+        req: AlistSearchRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
+    ) -> Result<AlistSearchResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        match client.fs_search(req.clone()).await {
-            Ok(resp) => Ok(resp),
+        let provider_req = alist_search_request(&req);
+        let resp = match client.fs_search(provider_req.clone()).await {
+            Ok(resp) => Ok(Self::alist_search_response_from_provider(resp)),
             Err(error) if is_alist_search_unavailable(&error) => {
                 Self::fs_search_fallback_to_listing(client, req).await
             }
             Err(error) => Err(error.into()),
-        }
+        };
+        resp
     }
 
     async fn fs_search_fallback_to_listing(
         client: AlistClientArc,
-        req: synctv_media_providers::grpc::alist::FsSearchReq,
-    ) -> Result<synctv_media_providers::grpc::alist::FsSearchResp, ProviderError> {
-        use synctv_media_providers::grpc::alist::fs_search_resp::FsSearchContent;
-        use synctv_media_providers::grpc::alist::{FsListReq, FsSearchResp};
-
+        req: AlistSearchRequest,
+    ) -> Result<AlistSearchResponse, ProviderError> {
         let list_resp = client
-            .fs_list(FsListReq {
-                host: req.host,
-                token: req.token,
-                path: req.parent.clone(),
-                password: req.password,
-                page: req.page.max(1),
-                per_page: req.per_page.max(1),
-                refresh: false,
-            })
+            .fs_list(alist_search_fallback_list_request(&req))
             .await
             .map_err(ProviderError::from)?;
 
@@ -514,34 +1099,57 @@ impl AlistProvider {
                 2 => !item.is_dir,
                 _ => true,
             })
-            .map(|item| FsSearchContent {
+            .map(|item| AlistSearchItem {
                 parent: req.parent.clone(),
                 name: item.name,
                 is_dir: item.is_dir,
                 size: item.size,
-                r#type: item.r#type,
+                item_type: item.r#type,
             })
             .collect::<Vec<_>>();
 
-        Ok(FsSearchResp {
+        Ok(AlistSearchResponse {
             total: usize_to_u64(content.len(), "Alist search fallback total")?,
             content,
         })
     }
 
-    /// Get Alist user info
-    ///
-    /// Takes grpc-generated `MeReq` and returns `MeResp`
+    fn alist_search_response_from_provider(
+        resp: alist_upstream::FsSearchResp,
+    ) -> AlistSearchResponse {
+        AlistSearchResponse {
+            content: resp
+                .content
+                .into_iter()
+                .map(|item| AlistSearchItem {
+                    parent: item.parent,
+                    name: item.name,
+                    is_dir: item.is_dir,
+                    size: item.size,
+                    item_type: item.r#type,
+                })
+                .collect(),
+            total: resp.total,
+        }
+    }
+
     pub async fn me_with_context(
         &self,
-        req: synctv_media_providers::grpc::alist::MeReq,
+        req: AlistMeRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::alist::MeResp, ProviderError> {
+    ) -> Result<AlistMeResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.me(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .me(alist_me_request(req))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(AlistMeResponse {
+            username: resp.username,
+            base_path: resp.base_path,
+        })
     }
 
     fn encode_target(relative_path: &str) -> Result<crate::models::ProviderTarget, ProviderError> {
@@ -576,6 +1184,37 @@ impl AlistProvider {
     }
 }
 
+fn decode_base32_secret(secret: &str) -> Result<Vec<u8>, String> {
+    let mut buffer = 0_u32;
+    let mut bits = 0_u8;
+    let mut decoded = Vec::new();
+
+    for ch in secret.chars() {
+        if ch == '=' || ch.is_whitespace() {
+            continue;
+        }
+
+        let value = match ch.to_ascii_uppercase() {
+            'A'..='Z' => u32::from(ch.to_ascii_uppercase()) - u32::from('A'),
+            '2'..='7' => u32::from(ch) - u32::from('2') + 26,
+            _ => return Err("Alist OTP secret must be RFC 4648 base32".to_string()),
+        };
+
+        buffer = (buffer << 5) | value;
+        bits += 5;
+
+        if bits >= 8 {
+            bits -= 8;
+            let byte = u8::try_from((buffer >> bits) & 0xff)
+                .map_err(|_| "Invalid Alist OTP base32 byte".to_string())?;
+            decoded.push(byte);
+            buffer &= (1_u32 << bits) - 1;
+        }
+    }
+
+    Ok(decoded)
+}
+
 /// Resolved Alist configuration with credentials ready for API calls.
 struct ResolvedAlistBinding {
     path: String,
@@ -590,6 +1229,53 @@ struct ResolvedAlistConfig {
     path: String,
     password: Option<String>,
     provider_instance_name: Option<String>,
+}
+
+fn alist_fs_get_request(config: &ResolvedAlistConfig, path: String) -> alist_upstream::FsGetReq {
+    alist_upstream::FsGetReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        path,
+        password: config.password.clone().unwrap_or_default(),
+        headers: alist_headers(),
+    }
+}
+
+fn alist_resolved_list_request(
+    config: &ResolvedAlistConfig,
+    path: String,
+    page: u64,
+    per_page: u64,
+    refresh: bool,
+) -> alist_upstream::FsListReq {
+    alist_upstream::FsListReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        path,
+        password: config.password.clone().unwrap_or_default(),
+        page,
+        per_page,
+        refresh,
+    }
+}
+
+fn alist_resolved_search_request(
+    config: &ResolvedAlistConfig,
+    parent: String,
+    keywords: String,
+    page: u64,
+    per_page: u64,
+) -> alist_upstream::FsSearchReq {
+    alist_upstream::FsSearchReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        parent,
+        keywords,
+        scope: 0,
+        page,
+        per_page,
+        password: config.password.clone().unwrap_or_default(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -769,13 +1455,7 @@ impl AlistProvider {
                 continue;
             };
 
-            let request = synctv_media_providers::grpc::alist::FsGetReq {
-                host: config.host.clone(),
-                token: config.token.clone(),
-                path,
-                password: config.password.clone().unwrap_or_default(),
-                headers: alist_headers(),
-            };
+            let request = alist_fs_get_request(config, path);
 
             if let Ok(subtitle_info) = client.fs_get(request).await {
                 related.raw_url = subtitle_info.raw_url;
@@ -799,14 +1479,8 @@ impl AlistProvider {
             .get_client_with_context(config.provider_instance_name.as_deref(), request_context)
             .await?;
 
-        // Build proto request
-        let request = synctv_media_providers::grpc::alist::FsGetReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            path: config.path.clone(),
-            password: config.password.clone().unwrap_or_default(),
-            headers: alist_headers(),
-        };
+        // Build upstream request
+        let request = alist_fs_get_request(config, config.path.clone());
 
         // Call client (trait method - implementation handles local/remote)
         let fs_get_data = client.fs_get(request).await?;
@@ -1386,7 +2060,6 @@ impl DynamicFolder for AlistProvider {
 
         let page = usize_to_u64(query.page.max(1), "Alist page")?;
         let per_page = usize_to_u64(query.page_size.max(1), "Alist page size")?;
-        let password = resolved.password.clone().unwrap_or_default();
         let search = query
             .search
             .as_deref()
@@ -1395,16 +2068,13 @@ impl DynamicFolder for AlistProvider {
 
         let items: Vec<DirectoryItem> = if let Some(keywords) = search {
             let search_resp = client
-                .fs_search(synctv_media_providers::grpc::alist::FsSearchReq {
-                    host: resolved.host.clone(),
-                    token: resolved.token.clone(),
-                    parent: full_path.clone(),
-                    keywords: keywords.to_string(),
-                    scope: 0,
+                .fs_search(alist_resolved_search_request(
+                    &resolved,
+                    full_path.clone(),
+                    keywords.to_string(),
                     page,
                     per_page,
-                    password,
-                })
+                ))
                 .await?;
 
             search_resp
@@ -1439,15 +2109,13 @@ impl DynamicFolder for AlistProvider {
                 .collect::<Result<Vec<_>, ProviderError>>()?
         } else {
             let list_resp = client
-                .fs_list(synctv_media_providers::grpc::alist::FsListReq {
-                    host: resolved.host.clone(),
-                    token: resolved.token.clone(),
-                    path: full_path.clone(),
-                    password,
+                .fs_list(alist_resolved_list_request(
+                    &resolved,
+                    full_path.clone(),
                     page,
                     per_page,
-                    refresh: query.refresh,
-                })
+                    query.refresh,
+                ))
                 .await?;
 
             list_resp
@@ -1472,7 +2140,9 @@ impl DynamicFolder for AlistProvider {
                         thumbnail: if file_item.thumb.is_empty() {
                             None
                         } else {
-                            Some(file_item.thumb)
+                            Some(crate::provider::DirectoryItemThumbnail::Url(
+                                file_item.thumb,
+                            ))
                         },
                         description: None,
                         modified_at: Some(alist_modified_to_i64(file_item.modified)?),
@@ -1794,5 +2464,38 @@ impl DynamicFolder for AlistProvider {
         }
 
         Ok(segments)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlistProvider;
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> TestResult<T> {
+        result.map_err(|error| anyhow::anyhow!("{context}: {error}"))
+    }
+
+    #[test]
+    fn otp_code_matches_rfc6238_sha1_vector_truncated_to_six_digits() -> TestResult {
+        let code = ok(
+            AlistProvider::otp_code_at_timestamp("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 59),
+            "RFC test vector secret should decode",
+        )?;
+
+        assert_eq!(code, "287082");
+        Ok(())
+    }
+
+    #[test]
+    fn otp_secret_normalization_accepts_otpauth_uri() {
+        assert_eq!(
+            AlistProvider::normalize_otp_secret(Some(
+                "otpauth://totp/Alist:admin?secret=JBSWY3DPEHPK3PXP&issuer=Alist".to_string()
+            ))
+            .as_deref(),
+            Some("JBSWY3DPEHPK3PXP")
+        );
     }
 }

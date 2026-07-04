@@ -1,11 +1,7 @@
 use std::sync::Arc;
 
 use synctv_core::models::{MediaId, RoomId, UserId};
-use synctv_core::service::{
-    auth::JwtService,
-    publish_key::{PublishKeyService, RedisJtiStore},
-    JtiStore,
-};
+use synctv_core::service::{JtiStore, JwtService, PublishKeyService, RedisJtiStore};
 use synctv_core_testing::{
     ok, redis_connection_manager, start_redis_with_client, test_redis_key_prefix,
 };

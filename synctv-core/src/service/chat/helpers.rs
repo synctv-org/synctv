@@ -449,6 +449,14 @@ pub(super) fn attach_chat_attachment_reuse_grants(
     viewer_user_id: UserId,
     attachments: &mut [ChatAttachment],
 ) -> Result<()> {
+    if !storage.supports_reuse_grants() {
+        for attachment in attachments {
+            attachment.reuse_token = None;
+            attachment.reuse_expires_at = None;
+        }
+        return Ok(());
+    }
+
     for attachment in attachments {
         let expires_at = Utc::now() + Duration::seconds(CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS);
         let storage_scope = chat_file_storage_scope(attachment.room_id, viewer_user_id);

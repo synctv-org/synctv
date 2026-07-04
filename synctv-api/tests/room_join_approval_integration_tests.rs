@@ -13,8 +13,7 @@ use synctv_core::{
     },
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Config,
 };
@@ -58,11 +57,11 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-) -> synctv_api::impls::ClientApiImpl {
+) -> synctv_api::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
-    synctv_api::impls::ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+    synctv_api::ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -72,7 +71,7 @@ fn make_client_api(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -122,7 +121,7 @@ async fn test_join_room_response_exposes_pending_membership_contract() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .join_room(

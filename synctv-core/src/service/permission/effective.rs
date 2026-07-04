@@ -1,10 +1,9 @@
 use crate::{
     models::{RoomMember, RoomMemberWithUser, RoomPermissionSet, RoomRole, RoomSettings},
-    service::permission::{
-        EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults,
-    },
     Result,
 };
+
+use super::{EffectivePermissionCalculator, PermissionService, RuntimePermissionDefaults};
 
 impl PermissionService {
     fn get_global_default_permissions(&self, role: &RoomRole) -> RoomPermissionSet {

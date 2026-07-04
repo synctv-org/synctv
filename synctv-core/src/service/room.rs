@@ -10,10 +10,10 @@
 //! - **Permissions** — delegated to [`PermissionService`]
 //! - **Chat** — uses [`ChatRepository`] directly (thin layer)
 //!
-//! The API layer (synctv-api) should call `RoomService` for operations that
-//! span multiple sub-services or require transaction coordination. For
-//! domain-specific operations, the API layer can also access sub-services
-//! directly via the accessor methods (`member_service()`, `media_service()`, etc.).
+//! Callers should use `RoomService` for operations that span multiple
+//! sub-services or require transaction coordination. For domain-specific
+//! operations, callers can access sub-services directly via the accessor
+//! methods (`member_service()`, `media_service()`, etc.).
 //!
 //! # Cache Invalidation Patterns
 //!
@@ -85,17 +85,10 @@ use crate::{
         RoomSettingsRepository, RoomTaxonomyRepository,
     },
     service::{
-        audit::AuditService,
-        auth::OpaquePasswordService,
-        media::MediaService,
-        member::MemberService,
-        notification::NotificationService,
-        permission::{PermissionService, PermissionWriteFence},
-        playback::PlaybackService,
-        playlist::PlaylistService,
-        room_settings::RoomSettingsService,
-        user::UserService,
-        FileStorageCleanupOrigin,
+        audit::AuditService, media::MediaService, member::MemberService,
+        notification::NotificationService, room_settings::RoomSettingsService, user::UserService,
+        FileStorageCleanupOrigin, OpaquePasswordService, PermissionService, PermissionWriteFence,
+        PlaybackService, PlaylistService,
     },
     Error, Result,
 };
@@ -170,7 +163,7 @@ pub struct RoomService {
     pool: PgPool,
 
     // Optional distributed lock (requires Redis, used in multi-replica mode)
-    distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
+    distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
 
     // Core repositories
     room_repo: RoomRepository,
@@ -202,7 +195,7 @@ pub struct RoomService {
     audit_service: Option<Arc<AuditService>>,
 
     /// Optional brute-force protection for room_creation password verification
-    brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
+    brute_force_service: Option<Arc<dyn crate::service::BruteForceProtectionService>>,
 
     /// Optional runtime settings store for reading `approval_required` setting
     runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
@@ -876,9 +869,7 @@ impl RoomService {
         media_id: Option<MediaId>,
         playlist_id: Option<PlaylistId>,
         target: Option<ProviderTarget>,
-        outbox_event_factory: Option<
-            crate::service::playback::RealtimeOutboxPlaybackStateEventFactory,
-        >,
+        outbox_event_factory: Option<crate::service::RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
             .admin_switch_with_outbox(
@@ -917,9 +908,7 @@ impl RoomService {
         &self,
         room_id: RoomId,
         actor: &AuthorizedAdminActor,
-        outbox_event_factory: Option<
-            crate::service::playback::RealtimeOutboxPlaybackStateEventFactory,
-        >,
+        outbox_event_factory: Option<crate::service::RealtimeOutboxPlaybackStateEventFactory>,
     ) -> Result<RoomPlaybackState> {
         self.playback_service
             .admin_reset_with_outbox(room_id, *actor.user_id(), outbox_event_factory)
@@ -929,7 +918,7 @@ impl RoomService {
     pub async fn admin_update_playback_as_request(
         &self,
         actor: &AuthorizedAdminActor,
-        request: crate::service::playback::PlaybackStateUpdateRequest,
+        request: crate::service::PlaybackStateUpdateRequest,
     ) -> Result<RoomPlaybackState> {
         if request.actor_user_id != *actor.user_id() {
             return Err(Error::Authorization(
@@ -1256,64 +1245,154 @@ pub(crate) fn validate_kick_cooldown_seconds(cooldown_seconds: i64) -> Result<()
     Ok(())
 }
 
-async fn has_room_permission_in_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    permission_service: &PermissionService,
-    room_id: &RoomId,
-    user_id: &UserId,
-    permission: RoomPermission,
-) -> Result<bool> {
-    let row = sqlx::query!(
-        r#"
-        SELECT rm.role,
-               rm.added_permissions,
-               rm.removed_permissions,
-               rm.admin_added_permissions,
-               rm.admin_removed_permissions,
-               rs.settings AS "settings?: RoomSettings"
-        FROM room_members rm
-        LEFT JOIN room_settings rs
-          ON rs.room_id = rm.room_id
-        WHERE rm.room_id = $1
-          AND rm.user_id = $2
-          AND NOT EXISTS (
-              SELECT 1
-              FROM room_member_kick_cooldowns rmkc
-              WHERE rmkc.room_id = rm.room_id
-                AND rmkc.user_id = rm.user_id
-                AND rmkc.ends_at > CURRENT_TIMESTAMP
-          )
-        FOR UPDATE OF rm
-        "#,
-        room_id.as_i64(),
-        user_id.as_i64()
-    )
-    .fetch_optional(&mut **tx)
-    .await?;
-
-    let Some(row) = row else {
-        return Ok(false);
-    };
-
-    let role = RoomRole::try_from(i32::from(row.role))
-        .map_err(|error| Error::Internal(format!("Invalid room member role: {error}")))?;
-    if role == RoomRole::Creator {
-        return Ok(true);
+impl RoomService {
+    fn permission_tx_checker(&self) -> RoomPermissionTxChecker<'_> {
+        RoomPermissionTxChecker {
+            permission_service: &self.permission_service,
+        }
     }
 
-    let settings = row.settings.unwrap_or_default();
+    async fn has_room_permission_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: RoomPermission,
+    ) -> Result<bool> {
+        self.permission_tx_checker()
+            .has_room_permission_in_tx(tx, room_id, user_id, permission)
+            .await
+    }
 
-    let mut member = RoomMember::new(*room_id, *user_id, role);
-    member.added_permissions = permission_bits_from_signed(row.added_permissions)?;
-    member.removed_permissions = permission_bits_from_signed(row.removed_permissions)?;
-    member.admin_added_permissions = permission_bits_from_signed(row.admin_added_permissions)?;
-    member.admin_removed_permissions = permission_bits_from_signed(row.admin_removed_permissions)?;
+    async fn ensure_actor_has_room_permission_now_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        permission: RoomPermission,
+    ) -> Result<()> {
+        self.permission_tx_checker()
+            .ensure_actor_has_room_permission_now_tx(tx, room_id, actor_id, permission)
+            .await
+    }
+}
 
-    let permissions = permission_service
-        .effective_permission_calculator()
-        .effective_for_member(&member, &settings);
+struct RoomPermissionTxChecker<'a> {
+    permission_service: &'a PermissionService,
+}
 
-    Ok(permissions.has(permission))
+impl RoomPermissionTxChecker<'_> {
+    async fn has_room_permission_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        user_id: &UserId,
+        permission: RoomPermission,
+    ) -> Result<bool> {
+        let row = sqlx::query!(
+            r#"
+            SELECT rm.role,
+                   rm.added_permissions,
+                   rm.removed_permissions,
+                   rm.admin_added_permissions,
+                   rm.admin_removed_permissions,
+                   rs.settings AS "settings?: RoomSettings"
+            FROM room_members rm
+            LEFT JOIN room_settings rs
+              ON rs.room_id = rm.room_id
+            WHERE rm.room_id = $1
+              AND rm.user_id = $2
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM room_member_kick_cooldowns rmkc
+                  WHERE rmkc.room_id = rm.room_id
+                    AND rmkc.user_id = rm.user_id
+                    AND rmkc.ends_at > CURRENT_TIMESTAMP
+            )
+            FOR UPDATE OF rm
+            "#,
+            room_id.as_i64(),
+            user_id.as_i64()
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(false);
+        };
+
+        let role = RoomRole::try_from(i32::from(row.role))
+            .map_err(|error| Error::Internal(format!("Invalid room member role: {error}")))?;
+        if role == RoomRole::Creator {
+            return Ok(true);
+        }
+
+        let settings = row.settings.unwrap_or_default();
+
+        let mut member = RoomMember::new(*room_id, *user_id, role);
+        member.added_permissions = permission_bits_from_signed(row.added_permissions)?;
+        member.removed_permissions = permission_bits_from_signed(row.removed_permissions)?;
+        member.admin_added_permissions = permission_bits_from_signed(row.admin_added_permissions)?;
+        member.admin_removed_permissions =
+            permission_bits_from_signed(row.admin_removed_permissions)?;
+
+        let permissions = self
+            .permission_service
+            .effective_permission_calculator()
+            .effective_for_member(&member, &settings);
+
+        Ok(permissions.has(permission))
+    }
+
+    async fn ensure_actor_has_room_permission_now_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        room_id: &RoomId,
+        actor_id: &UserId,
+        permission: RoomPermission,
+    ) -> Result<()> {
+        let room_state = sqlx::query!(
+            r"
+            SELECT closed_at,
+                   EXISTS (
+                       SELECT 1
+                       FROM room_bans rb
+                       WHERE rb.room_id = rooms.id
+                         AND rb.revoked_at IS NULL
+                         AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
+                   ) AS is_banned
+            FROM rooms
+            WHERE id = $1
+              AND deleted_at IS NULL
+            FOR UPDATE
+            ",
+            room_id as &RoomId,
+        )
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        let is_banned = room_state
+            .is_banned
+            .ok_or_else(|| Error::Internal("Room ban EXISTS query returned NULL".to_string()))?;
+        if is_banned {
+            return Err(Error::Authorization("Room is banned".to_string()));
+        }
+        if room_state.closed_at.is_some() {
+            return Err(Error::Authorization("Room is not active".to_string()));
+        }
+
+        if !self
+            .has_room_permission_in_tx(tx, room_id, actor_id, permission)
+            .await?
+        {
+            return Err(Error::Authorization(
+                synctv_common::messages::PERMISSION_DENIED.to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 async fn has_active_room_membership_in_tx(
@@ -1347,53 +1426,6 @@ async fn has_active_room_membership_in_tx(
     Ok(exists)
 }
 
-async fn ensure_actor_has_room_permission_now_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    permission_service: &PermissionService,
-    room_id: &RoomId,
-    actor_id: &UserId,
-    permission: RoomPermission,
-) -> Result<()> {
-    let room_state = sqlx::query!(
-        r"
-        SELECT closed_at,
-               EXISTS (
-                   SELECT 1
-                   FROM room_bans rb
-                   WHERE rb.room_id = rooms.id
-                     AND rb.revoked_at IS NULL
-                     AND (rb.ends_at IS NULL OR rb.ends_at > CURRENT_TIMESTAMP)
-               ) AS is_banned
-        FROM rooms
-        WHERE id = $1
-          AND deleted_at IS NULL
-        FOR UPDATE
-        ",
-        room_id as &RoomId,
-    )
-    .fetch_optional(&mut **tx)
-    .await?
-    .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
-
-    let is_banned = room_state
-        .is_banned
-        .ok_or_else(|| Error::Internal("Room ban EXISTS query returned NULL".to_string()))?;
-    if is_banned {
-        return Err(Error::Authorization("Room is banned".to_string()));
-    }
-    if room_state.closed_at.is_some() {
-        return Err(Error::Authorization("Room is not active".to_string()));
-    }
-
-    if !has_room_permission_in_tx(tx, permission_service, room_id, actor_id, permission).await? {
-        return Err(Error::Authorization(
-            synctv_common::messages::PERMISSION_DENIED.to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
 fn permission_bits_from_signed(bits: i64) -> Result<u64> {
     u64::try_from(bits).map_err(|error| {
         Error::Internal(format!(
@@ -1408,8 +1440,8 @@ fn effective_room_permissions_from_base(
     member: &RoomMember,
     global_default: crate::models::RoomPermissionSet,
 ) -> crate::models::RoomPermissionSet {
-    let calculator = crate::service::permission::EffectivePermissionCalculator::new(
-        crate::service::permission::RuntimePermissionDefaults {
+    let calculator = crate::service::EffectivePermissionCalculator::new(
+        crate::service::RuntimePermissionDefaults {
             admin: global_default,
             member: global_default,
             guest: global_default,

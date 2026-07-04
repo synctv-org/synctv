@@ -10,9 +10,7 @@ use crate::impls::client::convert::{
     try_media_to_proto_for_viewer_with_cover, try_playlist_path_node_to_proto,
     try_playlist_to_proto_for_viewer_with_cover,
 };
-use crate::impls::client::media::{
-    build_move_media_fanout_plan, prepare_delete_entries_outbox_fanout,
-};
+use crate::impls::client::media::{prepare_delete_entries_outbox_fanout, MoveMediaFanoutPlanner};
 use crate::impls::source_provider::proto_source_provider_filter;
 
 use super::{
@@ -32,10 +30,10 @@ impl AdminApiImpl {
         let cover = self
             .load_admin_file_reference(media.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.admin_stored_file_reference_url(
+                self.admin_stored_file_reference_access(
                     file,
                     &synctv_core::service::media_cover_upload_policy(),
                 )
@@ -47,7 +45,7 @@ impl AdminApiImpl {
             is_available,
             media.creator_id,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -61,10 +59,10 @@ impl AdminApiImpl {
         let cover = self
             .load_admin_file_reference(playlist.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.admin_stored_file_reference_url(
+                self.admin_stored_file_reference_access(
                     file,
                     &synctv_core::service::playlist_cover_upload_policy(),
                 )
@@ -77,7 +75,7 @@ impl AdminApiImpl {
             is_available,
             playlist.creator_id,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -95,27 +93,20 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
     }
 
-    fn admin_stored_file_reference_url(
+    fn admin_stored_file_reference_access(
         &self,
         file: &synctv_core::models::StoredFileReference,
         policy: &synctv_core::models::FileUploadPolicy,
-    ) -> Result<Option<String>, ApiError> {
-        let Some(storage) = self
-            .user_service
-            .file_storage_service()
-            .or_else(|| self.room_service.file_storage_service())
-            .or_else(|| self.room_service.playlist_service().file_storage_service())
-            .or_else(|| self.room_service.media_service().file_storage_service())
-        else {
+    ) -> Result<Option<crate::impls::stored_files::StoredFileObjectAccess>, ApiError> {
+        let Some(storage) = crate::impls::stored_files::first_file_storage([
+            self.user_service.file_storage_service(),
+            self.room_service.file_storage_service(),
+            self.room_service.playlist_service().file_storage_service(),
+            self.room_service.media_service().file_storage_service(),
+        ]) else {
             return Ok(None);
         };
-        storage
-            .object_url(
-                &file.storage_backend,
-                &file.object_key,
-                &policy.database_object_route_prefix,
-            )
-            .map_err(ApiError::from)
+        crate::impls::stored_files::stored_file_reference_access(storage.as_ref(), file, policy)
     }
 
     pub async fn get_playlist(
@@ -393,7 +384,7 @@ impl AdminApiImpl {
             .admin_delete_entries_as_with_outbox(
                 rid,
                 &actor,
-                synctv_core::service::room::DeleteEntriesRequest {
+                synctv_core::service::DeleteEntriesRequest {
                     playlist_ids: vec![playlist_id],
                     media_ids: Vec::new(),
                     force,
@@ -614,15 +605,6 @@ impl AdminApiImpl {
 
             let page = page_i32_to_usize(req.page)?;
             let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-            let public_credential_owner_id = playlist
-                .creator_id
-                .map(|creator_id| self.public_id_codec.encode_user_id(creator_id))
-                .transpose()
-                .map_err(|error| {
-                    ApiError::Internal(format!(
-                        "Failed to encode credential owner public id: {error}"
-                    ))
-                })?;
             let items = self
                 .room_service
                 .media_service()
@@ -639,7 +621,6 @@ impl AdminApiImpl {
                         ),
                         refresh: req.refresh,
                     },
-                    public_credential_owner_id.as_deref(),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -647,14 +628,19 @@ impl AdminApiImpl {
             let dynamic_items = items
                 .into_iter()
                 .map(|item| {
-                    use synctv_core::provider::ItemType;
+                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
                     let item_type = match item.item_type {
                         ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
                     };
 
                     let thumbnail = match item.thumbnail {
-                        Some(thumbnail) => {
+                        Some(DirectoryItemThumbnail::Url(thumbnail)) => Some(thumbnail),
+                        Some(DirectoryItemThumbnail::Emby {
+                            server_id,
+                            credential_owner_id,
+                            item_id,
+                        }) => {
                             let public_room_id =
                                 self.public_id_codec.encode_room_id(rid).map_err(|error| {
                                     ApiError::Internal(format!(
@@ -669,8 +655,21 @@ impl AdminApiImpl {
                                         "Failed to encode user public id: {error}"
                                     ))
                                 })?;
+                            let public_credential_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode credential owner public id: {error}"
+                                    ))
+                                })?;
+                            let thumbnail = crate::emby_thumbnail_urls::emby_thumbnail_url(
+                                &server_id,
+                                &public_credential_owner_id,
+                                &item_id,
+                            );
                             Some(
-                                crate::http::providers::emby::sign_emby_thumbnail_url(
+                                crate::emby_thumbnail_urls::sign_emby_thumbnail_url(
                                     &thumbnail,
                                     &public_room_id,
                                     &public_user_id,
@@ -974,9 +973,9 @@ impl AdminApiImpl {
             crate::impls::client::media::build_move_media_request(req, &self.public_id_codec)?;
         let actor = self.require_admin_actor(admin_user_id).await?;
 
-        let media_fanout_plan =
-            build_move_media_fanout_plan(self.room_service.media_service(), &rid, &service_req)
-                .await?;
+        let media_fanout_plan = MoveMediaFanoutPlanner::new(self.room_service.media_service())
+            .build(&rid, &service_req)
+            .await?;
 
         let prepared_outbox_fanout = self.media_fanout.prepare_move_outbox_fanout(
             rid,

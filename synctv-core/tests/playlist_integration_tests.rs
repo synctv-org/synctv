@@ -10,7 +10,7 @@ use synctv_core::{
         UserRole, UserStatus,
     },
     repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
-    service::room::DeleteEntriesRequest,
+    service::DeleteEntriesRequest,
 };
 use synctv_core_testing::{create_test_pool, create_test_room_service};
 use synctv_core_testing::{TestOptionExt, TestResultExt};

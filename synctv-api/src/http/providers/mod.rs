@@ -7,13 +7,13 @@
 //!
 //! Playback-provider routes live under `/api/playback-providers`.
 
-pub mod alist;
-pub mod bilibili;
-pub mod common;
-pub mod emby;
-pub mod live;
-pub mod playback_provider;
-pub mod rtmp;
+pub(crate) mod alist;
+pub(crate) mod bilibili;
+pub(crate) mod common;
+pub(crate) mod emby;
+pub(crate) mod live;
+pub(crate) mod playback_provider;
+pub(crate) mod rtmp;
 
 #[cfg(test)]
 use axum::http::header;
@@ -22,8 +22,8 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode},
 };
 
-use synctv_core::provider::playback_transport::PlaybackTransportAction;
 use synctv_core::provider::ExecutionControl;
+use synctv_core::provider::PlaybackTransportAction;
 
 use crate::{
     http::{AppError, AppState},

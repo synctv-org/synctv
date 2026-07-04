@@ -128,32 +128,12 @@ impl std::fmt::Display for RoomStatus {
     }
 }
 
-impl TryFrom<synctv_proto::common::RoomStatus> for RoomStatus {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::RoomStatus) -> Result<Self, Self::Error> {
-        match value {
-            synctv_proto::common::RoomStatus::Active => Ok(Self::Active),
-            synctv_proto::common::RoomStatus::Closed => Ok(Self::Closed),
-            synctv_proto::common::RoomStatus::Unspecified => {
-                Err(format!("Unknown room status: {}", value as i32))
-            }
-        }
-    }
-}
-
-impl From<RoomStatus> for synctv_proto::common::RoomStatus {
-    fn from(value: RoomStatus) -> Self {
-        match value {
-            RoomStatus::Active => Self::Active,
-            RoomStatus::Closed => Self::Closed,
-        }
-    }
-}
-
 impl From<RoomStatus> for i32 {
     fn from(value: RoomStatus) -> Self {
-        synctv_proto::common::RoomStatus::from(value) as Self
+        match value {
+            RoomStatus::Active => 1,
+            RoomStatus::Closed => 2,
+        }
     }
 }
 
@@ -161,9 +141,11 @@ impl TryFrom<i32> for RoomStatus {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::RoomStatus::try_from(value)
-            .map_err(|_| format!("Unknown room status: {value}"))?;
-        Self::try_from(proto)
+        match value {
+            1 => Ok(Self::Active),
+            2 => Ok(Self::Closed),
+            _ => Err(format!("Unknown room status: {value}")),
+        }
     }
 }
 
@@ -506,20 +488,14 @@ mod tests {
     }
 
     #[test]
-    fn room_status_proto_conversions_reject_unspecified_input() {
+    fn room_status_i32_conversions_reject_unknown_input() {
+        assert_eq!(i32::from(RoomStatus::Active), 1);
         assert_eq!(
-            i32::from(RoomStatus::Active),
-            synctv_proto::common::RoomStatus::Active as i32
-        );
-        assert_eq!(
-            ok(
-                RoomStatus::try_from(synctv_proto::common::RoomStatus::Closed),
-                "closed room status should convert"
-            ),
+            ok(RoomStatus::try_from(2), "closed room status should convert"),
             RoomStatus::Closed
         );
-        assert!(RoomStatus::try_from(synctv_proto::common::RoomStatus::Unspecified).is_err());
         assert!(RoomStatus::try_from(0).is_err());
+        assert!(RoomStatus::try_from(3).is_err());
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use synctv_core::models::{MediaSourceConfig, RoomId, RoomPlaybackState, SourceProvider, UserId};
-use synctv_core::provider::store::{ProviderStore, ProviderStoreExt, ProviderStoreResolver};
 use synctv_core::provider::{MediaProvider, PlaybackResult, ProviderContext};
+use synctv_core::provider::{ProviderStore, ProviderStoreExt, ProviderStoreResolver};
 use synctv_core::service::{ProvidersManager, RoomService};
 
 use super::ClientApiImpl;
@@ -592,24 +592,9 @@ impl ProviderPlaybackLifecycleApi for AdminApiImpl {
         session: &'a ProviderPlaybackSession,
         room_id: RoomId,
     ) -> Result<ProviderContext<'a>, ApiError> {
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(session.actor_user_id)
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to encode user public id: {error}"))
-            })?;
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(room_id)
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to encode room public id: {error}"))
-            })?;
-
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(session.actor_user_id)
-            .with_public_user_id(public_user_id)
             .with_room_id(room_id)
-            .with_public_room_id(public_room_id)
             .with_playback_client_profile(None);
         if let Some(credential_owner_id) = session.credential_owner_id {
             ctx = ctx.with_credential_owner_id(credential_owner_id);
@@ -640,7 +625,7 @@ mod tests {
 
     use async_trait::async_trait;
     use synctv_core::models::{MediaSourceConfig, RoomId};
-    use synctv_core::provider::store::ProviderStoreResolver;
+    use synctv_core::provider::ProviderStoreResolver;
     use synctv_core::provider::{
         PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, ProviderStoreRegistry,
     };
@@ -837,16 +822,14 @@ mod tests {
             username_cache,
             token_blacklist,
             synctv_core::cache::KeyBuilder::new("lifecycle"),
-            synctv_core::service::auth::BruteForceProtection::in_memory(
-                "lifecycle:brute:".to_string(),
-            ),
+            synctv_core::service::BruteForceProtection::in_memory("lifecycle:brute:".to_string()),
         ));
         let room_service = Arc::new(
             synctv_core::service::RoomService::new_with_providers_and_options(
                 pool.clone(),
                 (*user_service).clone(),
                 Arc::new(providers_manager),
-                synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(pool),
+                synctv_core::service::RoomServiceOptions::test_defaults_with_settings(pool),
             )
             .checked("room service should build"),
         );
@@ -865,7 +848,7 @@ mod tests {
                 .checked("test jwt service"),
                 live_streaming_infrastructure: None,
                 runtime_settings_store: None,
-                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
                 chat_service: None,
                 provider_stores: stores,
                 email_api: None,

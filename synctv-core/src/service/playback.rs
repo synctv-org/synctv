@@ -19,10 +19,7 @@ use crate::{
         realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
         RoomPlaybackStateRepository,
     },
-    service::{
-        media::BackendPlaybackRequest, media::MediaService, permission::PermissionService,
-        UserService,
-    },
+    service::{media::BackendPlaybackRequest, media::MediaService, PermissionService, UserService},
     Error, Result,
 };
 use rand::prelude::IteratorRandom;

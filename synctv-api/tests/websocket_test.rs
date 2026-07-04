@@ -8,7 +8,7 @@
 //! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (`TestInfra`)
 
 #![allow(clippy::unwrap_used)]
-use synctv_api::http::websocket::AuthMethod;
+use synctv_api::AuthMethod;
 use synctv_proto::client::WebSocketConnectRequest;
 
 async fn wait_for_condition<F>(timeout: std::time::Duration, mut check: F)
@@ -98,7 +98,7 @@ mod auth_method {
 
 mod proto_codec {
     use prost::Message;
-    use synctv_api::impls::messaging::ProtoCodec;
+    use synctv_api::ProtoCodec;
     use synctv_proto::client::{server_message, HeartbeatAck, ServerMessage};
 
     #[test]
@@ -193,9 +193,9 @@ mod ticket_types {
 mod jwt_auth {
     use std::sync::Arc;
     use synctv_core::models::id::UserId;
-    use synctv_core::service::auth::jwt::JwtService;
-    use synctv_core::service::auth::JwtValidator;
-    use synctv_core::service::auth::TokenCredentialBinding;
+    use synctv_core::service::JwtService;
+    use synctv_core::service::JwtValidator;
+    use synctv_core::service::TokenCredentialBinding;
 
     // Use a 32+ character secret for testing
     const TEST_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
@@ -306,7 +306,7 @@ mod jwt_auth {
         let token = svc.sign_access_token(&user_id, 0).unwrap();
         let header = format!("Bearer {token}");
 
-        let claims = validator.validate_http(&header).unwrap();
+        let claims = validator.validate_authorization_header(&header).unwrap();
         assert_eq!(claims.sub, user_id.to_string());
     }
 
@@ -318,7 +318,7 @@ mod jwt_auth {
         let token = svc.sign_access_token(&user_id, 0).unwrap();
 
         // Without "Bearer " prefix
-        assert!(validator.validate_http(&token).is_err());
+        assert!(validator.validate_authorization_header(&token).is_err());
     }
 
     #[test]
@@ -375,7 +375,7 @@ mod jwt_auth {
 // Full integration tests require a running database instance.
 
 mod rate_limiter {
-    use synctv_core::service::rate_limit::RateLimiter;
+    use synctv_core::service::RateLimiter;
 
     #[tokio::test]
     async fn test_in_memory_allows_within_limit() {
@@ -507,7 +507,7 @@ mod health_types {
 
 mod ws_auth_scenarios {
     use axum::http::StatusCode;
-    use synctv_api::http::error::AppError;
+    use synctv_api::AppError;
 
     #[test]
     fn test_missing_all_auth_methods() {
@@ -554,13 +554,13 @@ mod websocket_e2e {
     use tokio::task::JoinHandle;
     use tokio_tungstenite::tungstenite;
 
-    use synctv_api::http::websocket::websocket_handler;
-    use synctv_api::impls::messaging::ProtoCodec;
+    use synctv_api::websocket_handler;
+    use synctv_api::ProtoCodec;
     use synctv_core::cache::UsernameCache;
     use synctv_core::models::id::{RoomId, UserId};
-    use synctv_core::service::auth::jwt::JwtService;
-    use synctv_core::service::rate_limit::RateLimiter;
-    use synctv_core::service::user::UserServiceRuntimeOptions;
+    use synctv_core::service::JwtService;
+    use synctv_core::service::RateLimiter;
+    use synctv_core::service::UserServiceRuntimeOptions;
     // Security checks (password version, user status) handled by SecurityPipeline
     use synctv_core::service::{RoomService, UserService};
     use synctv_core::SharedStateProfile;
@@ -690,31 +690,25 @@ mod websocket_e2e {
         );
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
-            synctv_core::service::chat::ChatRuntime {
+            synctv_core::service::ChatRuntime {
                 rate_limiter: chat_rate_limiter,
                 rate_limit_config,
                 content_filter,
             },
-            synctv_core::service::chat::ChatDependencies {
+            synctv_core::service::ChatDependencies {
                 permission_service,
                 room_settings_service,
                 user_service: Arc::new(UserService::new_for_tests(
                     pool,
                     JwtService::new(TEST_JWT_SECRET).expect("JwtService"),
                     username_cache,
-                    Arc::new(
-                        synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                            10_000, 3600, 86400,
-                        ),
-                    ),
+                    Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+                        10_000, 3600, 86400,
+                    )),
                     synctv_core::cache::KeyBuilder::new("test_chat"),
-                    synctv_core::service::auth::BruteForceProtection::in_memory(
-                        "test_chat:".to_string(),
-                    ),
+                    synctv_core::service::BruteForceProtection::in_memory("test_chat:".to_string()),
                 )),
-                file_storage_service: Arc::new(
-                    synctv_core::service::DisabledFileStorageService,
-                ),
+                file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
                 audit_service: None,
                 notification_service: synctv_core::service::NotificationService::default(),
                 runtime_settings_store: None,
@@ -838,30 +832,24 @@ mod websocket_e2e {
         let key_builder = synctv_core::cache::KeyBuilder::new(redis_key_prefix.clone());
 
         // BruteForceProtection with Redis backend
-        let brute_force = synctv_core::service::auth::BruteForceProtection::new_with_config(
+        let brute_force = synctv_core::service::BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn.clone(),
-                    50_000,
-                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-                ),
-            ),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn.clone(),
-                    100_000,
-                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-                ),
-            ),
+            Arc::new(synctv_core::service::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                50_000,
+                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+            )),
+            Arc::new(synctv_core::service::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                100_000,
+                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+            )),
             synctv_core::service::BruteForceConfig::default(),
         );
 
         // Token blacklist with in-memory backend (sufficient for tests)
         let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
-            synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore::new(
-                10_000, 3600, 86400,
-            ),
+            synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
         );
 
         let user_service = UserService::new_with_runtime(
@@ -878,7 +866,7 @@ mod websocket_e2e {
                         need_review: false,
                     },
                 ),
-                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+                ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
             },
         );
         let user_service = Arc::new(user_service);
@@ -963,37 +951,190 @@ mod websocket_e2e {
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )
         .expect("provider set should build");
+        let shared_provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> =
+            Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
+                "test:provider:",
+            ));
+        let provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService> =
+            Arc::new(
+                synctv_core::provider::CachedProviderAccessService::new(
+                    user_provider_credential_repo.clone(),
+                    providers.alist.clone(),
+                )
+                .with_store(shared_provider_stores.load("credentials")),
+            );
+        let playback_transport_services =
+            Arc::new(synctv_core::provider::PlaybackTransportServices {
+                room_service: room_service.clone(),
+                permission_service: room_service.permission_service().clone(),
+                credential_encryption: None,
+                credential_repo: user_provider_credential_repo.clone(),
+                provider_access_service: provider_access_service.clone(),
+            });
+        let playback_provider_deps = synctv_core::service::PlaybackProviderServiceDeps {
+            providers: providers.clone(),
+            provider_stores: shared_provider_stores.clone(),
+            playback_transport_services: playback_transport_services.clone(),
+            provider_access_service: provider_access_service.clone(),
+        };
+        let alist_playback_provider_service = Arc::new(
+            synctv_core::service::AlistPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let bilibili_playback_provider_service =
+            Arc::new(synctv_core::service::BilibiliPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let direct_url_playback_provider_service =
+            Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
+                playback_provider_deps.clone(),
+            ));
+        let emby_playback_provider_service = Arc::new(
+            synctv_core::service::EmbyPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let rtmp_playback_provider_service = Arc::new(
+            synctv_core::service::RtmpPlaybackProviderService::new(playback_provider_deps.clone()),
+        );
+        let live_proxy_playback_provider_service = Arc::new(
+            synctv_core::service::LiveProxyPlaybackProviderService::new(playback_provider_deps),
+        );
 
         let mut config_inner = synctv_core::Config::default();
         config_inner.server.cors_allowed_origins = cors_allowed_origins;
         let config = Arc::new(config_inner);
+        let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
+            128,
+            60,
+            300,
+            "test:user:".to_string(),
+        ));
+        let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new_with_runtime(
+            user_service.clone(),
+            synctv_core::service::SecurityPipelineRuntime {
+                user_cache: Some(user_cache.clone()),
+                token_blacklist: user_service.token_blacklist_store(),
+                key_builder: user_service.key_builder().clone(),
+            },
+        ));
+        let jwt_validator = Arc::new(synctv_core::service::JwtValidator::new(Arc::new(
+            jwt_service.clone(),
+        )));
+        let public_id_codec = Arc::new(
+            synctv_api::PublicIdCodec::from_config(&config.external_ids)
+                .expect("test public ID codec should build"),
+        );
+        let request_executor = Arc::new(synctv_api::RequestExecutor::new(
+            config.clone(),
+            jwt_validator.clone(),
+            security_pipeline.clone(),
+            rate_limiter.clone(),
+        ));
+        let audit_service = {
+            let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
+            Arc::new(audit_svc)
+        };
+        let provider_common_api = Arc::new(synctv_api::ProviderCommonApiImpl::new_with_runtime(
+            provider_instance_manager.clone(),
+            user_service.clone(),
+            audit_service.clone(),
+            synctv_api::ProviderCommonApiRuntime {
+                providers_manager: providers_manager.clone(),
+                request_executor: request_executor.clone(),
+            },
+        ));
+        let provider_api_runtime = synctv_api::ProviderApiRuntime {
+            access_service: provider_access_service.clone(),
+            event_service: realtime_manager.clone(),
+        };
+        let bilibili_api = Arc::new(
+            synctv_api::BilibiliApiImpl::new_with_runtime(
+                &providers.bilibili,
+                user_provider_credential_repo.clone(),
+                b"test-secret-key-for-websocket-tests-minimum-32-chars",
+                provider_api_runtime.clone(),
+            )
+            .expect("test Bilibili API should build"),
+        );
+        let alist_api = Arc::new(synctv_api::AlistApiImpl::new_with_runtime(
+            &providers.alist,
+            user_provider_credential_repo.clone(),
+            provider_api_runtime.clone(),
+        ));
+        let emby_api = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
+            &providers.emby,
+            user_provider_credential_repo.clone(),
+            provider_api_runtime,
+        ));
 
         let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
         let chat_service =
             build_test_chat_service(&pool, username_cache_for_chat, chat_rate_limit_config);
+        let shared_proxy_signing_key = Arc::new(
+            synctv_api::ProxySigningKey::try_derive_from(
+                b"test-proxy-signing-key-minimum-32-bytes!!",
+            )
+            .expect("test proxy signing key should derive"),
+        );
+        let client_api = Arc::new(synctv_api::ClientApiImpl::new_with_runtime(
+            synctv_api::ClientApiConfig {
+                user_service: user_service.clone(),
+                read_pool: None,
+                room_service: room_service.clone(),
+                connection_service: connection_manager.clone(),
+                config: config.clone(),
+                publish_key_service: None,
+                jwt_service: jwt_service.clone(),
+                live_streaming_infrastructure: None,
+                runtime_settings_store: None,
+                public_id_codec: public_id_codec.clone(),
+                chat_service: Some(chat_service.clone()),
+                provider_stores: shared_provider_stores.clone(),
+                email_api: None,
+                passkey_service: None,
+            },
+            synctv_api::ClientApiRuntime::new_with_services(synctv_api::ClientApiRuntimeServices {
+                realtime_fanout: synctv_api::disabled_realtime_fanout_service(),
+                realtime_event_service: realtime_manager.clone(),
+                redis_runtime: None,
+                builtin_stun_url: None,
+                webrtc_status:
+                    synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
+                provider_access_service: provider_access_service.clone(),
+                signing_key: shared_proxy_signing_key.clone(),
+                presence_service: presence_service.clone(),
+                jwt_validator: jwt_validator.clone(),
+                request_executor: request_executor.clone(),
+                ws_ticket_service: ws_ticket_service.clone(),
+                playback_duration_probe: None,
+            }),
+        ));
 
-        let router_config = synctv_api::http::RouterConfig {
+        let router_config = synctv_api::RouterConfig {
             config,
             user_service: user_service.clone(),
             read_pool: None,
-            user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
-                128,
-                60,
-                300,
-                "test:user:".to_string(),
-            )),
+            user_cache,
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
+            provider_access_service,
             providers: providers.clone(),
             event_service: realtime_manager.clone(),
             connection_manager,
             presence_service,
             jwt_service: jwt_service.clone(),
-            realtime_fanout_service: synctv_api::realtime_fanout::disabled_realtime_fanout_service(
-            ),
+            jwt_validator,
+            security_pipeline,
+            public_id_codec,
+            request_executor,
+            metrics_access_controller: Arc::new(synctv_api::MetricsAccessController::new()),
+            client_api,
+            admin_api: None,
+            email_api: None,
+            notification_api: None,
+            oauth2_api: None,
+            realtime_fanout_service: synctv_api::disabled_realtime_fanout_service(),
             oauth2_service: None,
             passkey_service: None,
             settings_service: None,
@@ -1003,24 +1144,24 @@ mod websocket_e2e {
             publish_key_service: None,
             notification_service: None,
             chat_service: Some(chat_service.clone()),
-            audit_service: {
-                let (audit_svc, _audit_handle) =
-                    synctv_core::service::AuditService::new(pool.clone());
-                Arc::new(audit_svc)
-            },
+            audit_service,
             live_streaming_infrastructure: None,
             rate_limiter,
             ws_ticket_service: ws_ticket_service.clone(),
             redis_runtime: None,
-            shared_provider_stores: Arc::new(
-                synctv_core::provider::store::ProviderStoreRegistry::local_only("test:provider:"),
-            ),
-            shared_proxy_signing_key: Arc::new(
-                synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-                    b"test-proxy-signing-key-minimum-32-bytes!!",
-                )
-                .expect("test proxy signing key should derive"),
-            ),
+            shared_provider_stores,
+            playback_transport_services,
+            alist_playback_provider_service,
+            bilibili_playback_provider_service,
+            direct_url_playback_provider_service,
+            emby_playback_provider_service,
+            rtmp_playback_provider_service,
+            live_proxy_playback_provider_service,
+            provider_common_api,
+            bilibili_api,
+            alist_api,
+            emby_api,
+            shared_proxy_signing_key,
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
             credential_encryption: None,
@@ -1036,7 +1177,7 @@ mod websocket_e2e {
             )
             .expect("proxy HTTP client should build for tests"),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
-            heartbeat_schedule: synctv_api::impls::HeartbeatSchedule::fixed(
+            heartbeat_schedule: synctv_api::HeartbeatSchedule::fixed(
                 std::time::Duration::from_millis(400),
                 std::time::Duration::from_millis(100),
             ),
@@ -1044,7 +1185,7 @@ mod websocket_e2e {
             playback_duration_probe: None,
         };
 
-        let state = synctv_api::http::create_app_state_from_config(router_config)
+        let state = synctv_api::create_app_state_from_config(router_config)
             .expect("test HTTP app state should build");
 
         let app = axum::Router::new()
@@ -1111,25 +1252,25 @@ mod websocket_e2e {
             .create_room(room_name.to_string(), String::new(), *user_id, None, None)
             .await
             .expect("create room");
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(room.id)
             .expect("room id should encode")
     }
 
     pub(super) fn decode_test_room_id(room_id: &str) -> synctv_core::models::RoomId {
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .decode_room_id(room_id)
             .expect("test room id should decode")
     }
 
     fn encode_test_user_id(user_id: &UserId) -> String {
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .encode_user_id(*user_id)
             .expect("test user id should encode")
     }
 
     fn encode_test_media_id(media_id: &synctv_core::models::MediaId) -> String {
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .encode_media_id(*media_id)
             .expect("test media id should encode")
     }

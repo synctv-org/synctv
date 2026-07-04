@@ -123,7 +123,7 @@ pub fn request_metadata<T>(
 
 #[must_use]
 pub const fn grpc_unary_request_timeout() -> std::time::Duration {
-    synctv_core::resilience::timeout::GRPC_CALL_TIMEOUT
+    synctv_core::resilience::timeout::REMOTE_TRANSPORT_CALL_TIMEOUT
 }
 
 #[cfg(test)]

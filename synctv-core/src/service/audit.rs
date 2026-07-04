@@ -130,11 +130,50 @@ struct AuditRecord {
 /// Records audit logs for security-relevant actions. Events are buffered in
 /// memory and flushed to the database in batches for performance.
 pub struct AuditService {
-    pool: PgPool,
+    writer: AuditLogWriter,
     /// Sender half of the buffered channel (None when running without background task)
     sender: Option<mpsc::Sender<AuditRecord>>,
     /// Counter of dropped events (channel full)
     dropped_count: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct AuditLogWriter {
+    pool: PgPool,
+}
+
+impl AuditLogWriter {
+    fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    async fn write_single(&self, record: &AuditRecord) -> Result<()> {
+        sqlx::query!(
+            r"
+            INSERT INTO audit_logs (
+                actor_id, actor_username, action, target_type, target_id,
+                details, ip_address, user_agent, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ",
+            parse_actor_id_for_storage(&record.actor_id),
+            record.actor_username,
+            record.action.as_i16(),
+            record.target_type.as_i16(),
+            record.target_id.as_deref(),
+            &record.details as _,
+            record.ip_address.as_deref(),
+            record.user_agent.as_deref(),
+            record.created_at
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn flush_batch(&self, buffer: &mut Vec<AuditRecord>, dropped_count: &AtomicUsize) {
+        flush_batch(&self.pool, buffer, dropped_count).await;
+    }
 }
 
 impl AuditService {
@@ -164,10 +203,11 @@ impl AuditService {
         let (tx, rx) = mpsc::channel(capacity);
         let dropped_count = Arc::new(AtomicUsize::new(0));
 
-        let handle = AuditFlushHandle::spawn(pool.clone(), rx, Arc::clone(&dropped_count));
+        let writer = AuditLogWriter::new(pool);
+        let handle = AuditFlushHandle::spawn(writer.clone(), rx, Arc::clone(&dropped_count));
 
         let service = Self {
-            pool,
+            writer,
             sender: Some(tx),
             dropped_count,
         };
@@ -182,7 +222,7 @@ impl AuditService {
     #[must_use]
     pub fn new_unbuffered(pool: PgPool) -> Self {
         Self {
-            pool,
+            writer: AuditLogWriter::new(pool),
             sender: None,
             dropped_count: Arc::new(AtomicUsize::new(0)),
         }
@@ -226,7 +266,7 @@ impl AuditService {
                     action = %action_str,
                     "Audit buffer full, falling back to synchronous DB write"
                 );
-                if let Err(db_err) = Self::write_single(&self.pool, &record).await {
+                if let Err(db_err) = self.writer.write_single(&record).await {
                     self.dropped_count.fetch_add(1, Ordering::Relaxed);
                     tracing::error!(
                         actor_id = %actor_id,
@@ -248,9 +288,8 @@ impl AuditService {
         }
 
         // Unbuffered mode: write directly to DB
-        Self::write_single(
-            &self.pool,
-            &AuditRecord {
+        self.writer
+            .write_single(&AuditRecord {
                 actor_id: actor_id.clone(),
                 actor_username: actor_username.clone(),
                 action,
@@ -260,9 +299,8 @@ impl AuditService {
                 ip_address: ip_address.clone(),
                 user_agent: user_agent.clone(),
                 created_at,
-            },
-        )
-        .await?;
+            })
+            .await?;
 
         tracing::debug!(
             actor_id = %actor_id,
@@ -270,30 +308,6 @@ impl AuditService {
             target_type = %target_str,
             "Audit log recorded"
         );
-
-        Ok(())
-    }
-
-    async fn write_single(pool: &PgPool, record: &AuditRecord) -> Result<()> {
-        sqlx::query!(
-            r"
-            INSERT INTO audit_logs (
-                actor_id, actor_username, action, target_type, target_id,
-                details, ip_address, user_agent, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ",
-            parse_actor_id_for_storage(&record.actor_id),
-            record.actor_username,
-            record.action.as_i16(),
-            record.target_type.as_i16(),
-            record.target_id.as_deref(),
-            &record.details as _,
-            record.ip_address.as_deref(),
-            record.user_agent.as_deref(),
-            record.created_at
-        )
-        .execute(pool)
-        .await?;
 
         Ok(())
     }
@@ -468,7 +482,7 @@ pub struct AuditFlushHandle {
 
 impl AuditFlushHandle {
     fn spawn(
-        pool: PgPool,
+        writer: AuditLogWriter,
         mut rx: mpsc::Receiver<AuditRecord>,
         dropped_count: Arc<AtomicUsize>,
     ) -> Self {
@@ -488,12 +502,12 @@ impl AuditFlushHandle {
                                        if let Some(record) = maybe_record {
                                            buffer.push(record);
                                            if buffer.len() >= FLUSH_BATCH_SIZE {
-                                               flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                               writer.flush_batch(&mut buffer, &dropped_count).await;
                                            }
                                        } else {
                 // Channel closed, flush remaining and exit
                                            if !buffer.is_empty() {
-                                               flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                               writer.flush_batch(&mut buffer, &dropped_count).await;
                                            }
                                            tracing::info!("Audit flush task: channel closed, exiting");
                                            return;
@@ -502,7 +516,7 @@ impl AuditFlushHandle {
                 // Periodic flush
                                    _ = interval.tick() => {
                                        if !buffer.is_empty() {
-                                           flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                           writer.flush_batch(&mut buffer, &dropped_count).await;
                                        }
                                    }
                 // Graceful shutdown signal
@@ -513,7 +527,7 @@ impl AuditFlushHandle {
                                            buffer.push(record);
                                        }
                                        if !buffer.is_empty() {
-                                           flush_batch(&pool, &mut buffer, &dropped_count).await;
+                                           writer.flush_batch(&mut buffer, &dropped_count).await;
                                        }
                                        tracing::info!("Audit flush task: graceful shutdown complete");
                                        return;

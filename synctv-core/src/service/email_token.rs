@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use crate::{
     models::UserId,
     repository::EmailTokenRepository,
-    service::rate_limit::{RateLimitError, RequestRateLimiterService},
+    service::{RateLimitError, RequestRateLimiterService},
     Error, Result,
 };
 
@@ -458,7 +458,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_check_generate_token_rate_limit_blocks_without_database_write() {
-        let limiter = Arc::new(crate::service::rate_limit::RateLimiter::local_only(
+        let limiter = Arc::new(crate::service::RateLimiter::local_only(
             "email_token_check:".to_string(),
         ));
         let config = EmailTokenRateLimitConfig {

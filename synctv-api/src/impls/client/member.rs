@@ -107,7 +107,7 @@ fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> 
 
 fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
     Ok(synctv_proto::client::RoomJoinReview {
         id: public_id_codec
@@ -765,7 +765,7 @@ impl ClientApiImpl {
                 uid,
                 target_uid,
                 kick_cooldown_seconds,
-                synctv_core::service::room::KickMemberOutboxOptions {
+                synctv_core::service::KickMemberOutboxOptions {
                     permission_changed: Some(prepared_membership_fanout.outbox_factory()),
                     cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
                     lifecycle: Some(lifecycle_outbox_event),

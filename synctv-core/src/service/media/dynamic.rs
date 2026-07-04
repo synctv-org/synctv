@@ -6,9 +6,10 @@ use crate::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, MediaProvider,
         NextPlayItem, ProviderContext,
     },
-    service::media::MediaService,
     Error, Result,
 };
+
+use super::MediaService;
 
 pub(super) struct PreparedDynamicPlaylist {
     pub(super) playlist: Playlist,
@@ -82,7 +83,6 @@ impl MediaService {
         prepared: &'a PreparedDynamicPlaylist,
         user_id: Option<&'a UserId>,
         fallback_credential_owner_id: Option<&'a UserId>,
-        public_credential_owner_id: Option<&'a str>,
     ) -> ProviderContext<'a> {
         let credential_owner_id = prepared
             .playlist
@@ -94,7 +94,6 @@ impl MediaService {
             user_id,
             &prepared.playlist.room_id,
             credential_owner_id,
-            public_credential_owner_id,
             prepared.playlist.provider_instance_name.as_deref(),
         )
     }
@@ -106,15 +105,10 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-        public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(
-            &prepared,
-            Some(&admin_user_id),
-            Some(&admin_user_id),
-            public_credential_owner_id,
-        );
+        let ctx =
+            self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
 
         prepared
             .dynamic_folder()?
@@ -131,12 +125,8 @@ impl MediaService {
         target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(
-            &prepared,
-            Some(&admin_user_id),
-            Some(&admin_user_id),
-            None,
-        );
+        let ctx =
+            self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
 
         prepared
             .dynamic_folder()?
@@ -152,7 +142,6 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-        public_credential_owner_id: Option<&str>,
     ) -> Result<Vec<DirectoryItem>> {
         self.permission_service
             .check_permission(
@@ -163,12 +152,7 @@ impl MediaService {
             .await?;
 
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(
-            &prepared,
-            Some(&user_id),
-            Some(&user_id),
-            public_credential_owner_id,
-        );
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
             .dynamic_folder()?
@@ -185,7 +169,7 @@ impl MediaService {
         target: Option<&crate::models::ProviderTarget>,
     ) -> Result<Vec<DynamicBrowsePathSegment>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
             .dynamic_folder()?
@@ -202,7 +186,7 @@ impl MediaService {
         target: &crate::models::ProviderTarget,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id), None);
+        let ctx = self.dynamic_playlist_context(&prepared, Some(&user_id), Some(&user_id));
 
         prepared
             .dynamic_folder()?
@@ -219,7 +203,7 @@ impl MediaService {
         play_mode: crate::models::PlayMode,
     ) -> Result<Option<NextPlayItem>> {
         let prepared = self.prepare_dynamic_playlist(room_id, playlist_id).await?;
-        let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
+        let ctx = self.dynamic_playlist_context(&prepared, None, None);
 
         prepared
             .dynamic_folder()?

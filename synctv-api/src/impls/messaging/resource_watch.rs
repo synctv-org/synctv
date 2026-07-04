@@ -8,7 +8,6 @@ use synctv_realtime::sync::{ConnectionId, RealtimeEvent, SharedRealtimeEvent};
 
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
-use crate::impls::room_members_snapshot::RoomMembersSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
 use crate::runtime::RealtimeEventService;
 use synctv_proto::client::ObserveResource;
@@ -16,10 +15,7 @@ use synctv_realtime::sync::ConnectionRuntime;
 
 use super::event_policy::{watch_admin_event_matches, watch_disconnect_signal_matches};
 use super::identity::{classify_realtime_join_error_message, RealtimeJoinError, RealtimePrincipal};
-use super::membership::{
-    guest_admission_denial_reason, probe_realtime_membership_access_with_room,
-    RealtimeMembershipAccess,
-};
+use super::membership::{RealtimeMembershipAccess, RealtimeMembershipProbe};
 use super::resource_observer::{ResourceObserver, ResourceObserverParams};
 use super::MessageSender;
 
@@ -57,11 +53,10 @@ pub struct ResourceWatchSessionConfig {
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<OnlinePresenceService>,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub playback_service: Arc<dyn PlaybackService>,
     pub playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
-    pub room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
     pub room_settings_snapshot_service: Arc<dyn RoomSettingsSnapshotService>,
 }
 
@@ -74,7 +69,7 @@ pub struct ResourceWatchSession {
     chat_service: Option<Arc<ChatService>>,
     event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn ConnectionRuntime>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     resource_observer: Arc<ResourceObserver>,
 }
 
@@ -97,7 +92,6 @@ impl ResourceWatchSession {
             sender,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service: _,
             room_settings_snapshot_service,
         } = config;
         let user_id = principal.connection_user_id();
@@ -108,6 +102,7 @@ impl ResourceWatchSession {
             actor: principal.room_actor(room_id),
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
+            chat_service: chat_service.clone(),
             presence_service: Arc::clone(&presence_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender,
@@ -129,14 +124,6 @@ impl ResourceWatchSession {
             public_id_codec,
             resource_observer: observer,
         }
-    }
-
-    pub async fn run(
-        self,
-        observe: ObserveResource,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> Result<(), String> {
-        self.prepare(&observe).await?.run(cancel_token).await
     }
 
     pub async fn prepare(
@@ -232,10 +219,10 @@ impl ResourceWatchSession {
             return Err(RealtimeJoinError::from(error));
         }
 
-        if let Some(chat_service) = chat_replay_service {
+        if chat_replay_service.is_some() {
             if let Err(error) = self
                 .resource_observer
-                .replay_chat_events_after(&chat_service, observe)
+                .replay_chat_events_after(observe)
                 .await
             {
                 self.event_service.unsubscribe(self.connection_id.as_str());
@@ -446,7 +433,8 @@ impl ResourceWatchSession {
         if self.principal.is_guest() {
             return self.ensure_guest_admission_for_action().await;
         }
-        match probe_realtime_membership_access_with_room(&self.room_service, &room, &self.user_id)
+        match RealtimeMembershipProbe::new(&self.room_service)
+            .probe_realtime_membership_access_with_room(&room, &self.user_id)
             .await
         {
             Ok(RealtimeMembershipAccess::Allowed(_)) => Ok(()),
@@ -456,13 +444,9 @@ impl ResourceWatchSession {
     }
 
     async fn ensure_guest_admission_for_action(&self) -> Result<(), String> {
-        match guest_admission_denial_reason(
-            &self.room_service,
-            &self.room_id,
-            &self.user_id,
-            &self.principal,
-        )
-        .await
+        match RealtimeMembershipProbe::new(&self.room_service)
+            .guest_admission_denial_reason(&self.room_id, &self.user_id, &self.principal)
+            .await
         {
             Ok(Some(reason)) => Err(reason),
             Ok(None) => Ok(()),

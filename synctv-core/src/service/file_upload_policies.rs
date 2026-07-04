@@ -1,4 +1,4 @@
-use crate::models::FileUploadPolicy;
+use crate::models::{FileObjectKind, FileUploadPolicy};
 
 pub const MAX_CHAT_ATTACHMENT_SIZE_BYTES: i64 = 50 * 1024 * 1024;
 pub const MAX_USER_AVATAR_SIZE_BYTES: i64 = 5 * 1024 * 1024;
@@ -36,6 +36,7 @@ const CHAT_ATTACHMENT_MIME_TYPES: &[&str] = &[
 #[derive(Clone, Copy)]
 struct FileUploadPolicySpec<'a> {
     kind: &'a str,
+    object_kind: FileObjectKind,
     max_size_bytes: i64,
     max_width: Option<i32>,
     max_height: Option<i32>,
@@ -46,12 +47,12 @@ struct FileUploadPolicySpec<'a> {
     allowed_mime_prefixes: &'a [&'a str],
     allowed_mime_types: &'a [&'a str],
     storage_namespace: &'a str,
-    database_object_route_prefix: &'a str,
 }
 
 fn policy_from_spec(spec: FileUploadPolicySpec<'_>) -> FileUploadPolicy {
     FileUploadPolicy {
         kind: spec.kind.to_string(),
+        object_kind: spec.object_kind,
         max_size_bytes: spec.max_size_bytes,
         max_width: spec.max_width,
         max_height: spec.max_height,
@@ -70,20 +71,20 @@ fn policy_from_spec(spec: FileUploadPolicySpec<'_>) -> FileUploadPolicy {
             .map(|mime_type| (*mime_type).to_string())
             .collect(),
         storage_namespace: spec.storage_namespace.to_string(),
-        database_object_route_prefix: spec.database_object_route_prefix.to_string(),
     }
 }
 
 fn typed_image_policy(
     kind: &str,
+    object_kind: FileObjectKind,
     max_size_bytes: i64,
     max_width: i32,
     max_height: i32,
     storage_namespace: &str,
-    database_object_route_prefix: &str,
 ) -> FileUploadPolicy {
     policy_from_spec(FileUploadPolicySpec {
         kind,
+        object_kind,
         max_size_bytes,
         max_width: Some(max_width),
         max_height: Some(max_height),
@@ -94,7 +95,6 @@ fn typed_image_policy(
         allowed_mime_prefixes: &[],
         allowed_mime_types: COVER_IMAGE_MIME_TYPES,
         storage_namespace,
-        database_object_route_prefix,
     })
 }
 
@@ -102,6 +102,7 @@ fn typed_image_policy(
 pub fn chat_attachment_upload_policy() -> FileUploadPolicy {
     policy_from_spec(FileUploadPolicySpec {
         kind: "chat_attachment",
+        object_kind: FileObjectKind::ChatAttachment,
         max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
         max_width: Some(MAX_CHAT_ATTACHMENT_IMAGE_WIDTH),
         max_height: Some(MAX_CHAT_ATTACHMENT_IMAGE_HEIGHT),
@@ -112,7 +113,6 @@ pub fn chat_attachment_upload_policy() -> FileUploadPolicy {
         allowed_mime_prefixes: &["image/", "audio/", "video/"],
         allowed_mime_types: CHAT_ATTACHMENT_MIME_TYPES,
         storage_namespace: "chat/attachments",
-        database_object_route_prefix: "/api/chat/attachment-objects",
     })
 }
 
@@ -120,11 +120,11 @@ pub fn chat_attachment_upload_policy() -> FileUploadPolicy {
 pub fn user_avatar_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
         "user_avatar",
+        FileObjectKind::UserAvatar,
         MAX_USER_AVATAR_SIZE_BYTES,
         MAX_USER_AVATAR_WIDTH,
         MAX_USER_AVATAR_HEIGHT,
         "users/avatars",
-        "/api/user/avatar-objects",
     )
 }
 
@@ -132,11 +132,11 @@ pub fn user_avatar_upload_policy() -> FileUploadPolicy {
 pub fn media_cover_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
         "media_cover",
+        FileObjectKind::MediaCover,
         MAX_MEDIA_COVER_SIZE_BYTES,
         MAX_COVER_IMAGE_WIDTH,
         MAX_COVER_IMAGE_HEIGHT,
         "media/covers",
-        "/api/media/cover-objects",
     )
 }
 
@@ -144,11 +144,11 @@ pub fn media_cover_upload_policy() -> FileUploadPolicy {
 pub fn room_cover_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
         "room_cover",
+        FileObjectKind::RoomCover,
         MAX_ROOM_COVER_SIZE_BYTES,
         MAX_COVER_IMAGE_WIDTH,
         MAX_COVER_IMAGE_HEIGHT,
         "rooms/covers",
-        "/api/room/cover-objects",
     )
 }
 
@@ -156,11 +156,11 @@ pub fn room_cover_upload_policy() -> FileUploadPolicy {
 pub fn playlist_cover_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
         "playlist_cover",
+        FileObjectKind::PlaylistCover,
         MAX_PLAYLIST_COVER_SIZE_BYTES,
         MAX_COVER_IMAGE_WIDTH,
         MAX_COVER_IMAGE_HEIGHT,
         "playlists/covers",
-        "/api/playlist/cover-objects",
     )
 }
 

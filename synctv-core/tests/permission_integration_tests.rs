@@ -11,7 +11,7 @@ use synctv_core::{
         RoomRole, SignupMethod, User, UserId, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, UserRepository},
-    service::permission::PermissionService,
+    service::PermissionService,
 };
 use synctv_core_testing::{create_test_pool, ok};
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RuntimeSetting {
     pub key: String,
-    /// Rust field matches the database column; JSON/API keeps the shorter `group` name.
+    /// Rust field matches the database column; serialized output keeps the shorter `group` name.
     #[serde(rename = "group")]
     pub group_name: String,
     pub value: String,

@@ -1,9 +1,8 @@
 //! Database initialization
 
 use anyhow::Result;
-use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, PgPool};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::Level;
@@ -308,25 +307,6 @@ const fn pg_client_min_messages_for_level(level: Level) -> &'static str {
     }
 }
 
-/// Acquire a dedicated connection for migration/DDL style work with
-/// `statement_timeout` disabled for the lifetime of that session.
-///
-/// Normal OLTP queries should continue using the main pool with bounded
-/// `statement_timeout`. This helper is only for startup/schema management work
-/// that can legitimately exceed the request-path timeout budget.
-pub async fn acquire_unbounded_ddl_connection(pool: &PgPool) -> Result<PoolConnection<Postgres>> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for DDL: {e}"))?;
-
-    conn.execute("SET statement_timeout = 0")
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to disable statement_timeout for DDL: {e}"))?;
-
-    Ok(conn)
-}
-
 /// Mask credentials in a database URL for safe logging.
 /// Turns `postgres://user:pass@host:5432/db` into `postgres://***:***@host:5432/db`
 ///
@@ -342,6 +322,7 @@ fn mask_database_url(url: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::LoggingConfig;
+    use crate::service::partitioning::acquire_unbounded_ddl_connection;
     use crate::test_helpers::{TestOptionExt, TestResultExt};
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;

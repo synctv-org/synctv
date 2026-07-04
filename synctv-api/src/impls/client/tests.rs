@@ -10,8 +10,8 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 
-fn test_public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn test_public_id_codec() -> crate::public_id::PublicIdCodec {
+    crate::public_id::PublicIdCodec::plain()
 }
 
 type TestResult<T = ()> = anyhow::Result<T>;
@@ -612,6 +612,38 @@ fn test_user_to_proto_no_email() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn test_user_public_view_avatar_url_falls_back_to_object_access() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let user = make_test_user(UserRole::User, UserStatus::Active);
+    let avatar_access = crate::impls::stored_files::StoredFileObjectAccess::object_access(
+        synctv_core::models::FileObjectAccess {
+            object_kind: synctv_core::models::FileObjectKind::UserAvatar,
+            encoded_object_key: "encoded-avatar".to_string(),
+            read_token: "read-avatar".to_string(),
+        },
+    );
+
+    let proto = api_ok(try_user_public_view_to_proto(
+        &user,
+        Some(&avatar_access),
+        &public_id_codec,
+    ))?;
+
+    assert_eq!(
+        proto.avatar_url,
+        "/api/user/avatar-objects/encoded-avatar?token=read-avatar"
+    );
+    let object_access = proto
+        .avatar_access
+        .ok_or_else(|| test_error("avatar access should be present"))?;
+    assert_eq!(
+        object_access.object_kind,
+        synctv_proto::client::FileObjectAccessKind::UserAvatar as i32
+    );
+    Ok(())
+}
+
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
     synctv_core::models::Room {
         id: RoomId::expect_positive(201),
@@ -906,6 +938,7 @@ fn make_test_cover_reference() -> synctv_core::models::StoredFileReference {
                 group_id: "fg_cover".to_string(),
                 variant_key: "small".to_string(),
                 label: "Small".to_string(),
+                object_access: None,
                 url: Some("/api/files/covers/small.jpg".to_string()),
                 mime_type: "image/jpeg".to_string(),
                 size_bytes: 1024,
@@ -974,12 +1007,15 @@ fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
     let public_id_codec = test_public_id_codec();
     let media = make_test_media();
     let cover = make_test_cover_reference();
+    let cover_access = crate::impls::stored_files::StoredFileObjectAccess::external_url(
+        "/api/media/covers/original.jpg",
+    );
     let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
         &media,
         true,
         media.creator_id,
         Some(&cover),
-        Some("/api/media/covers/original.jpg"),
+        Some(&cover_access),
         &public_id_codec,
     ))?;
     let proto_cover = proto
@@ -1004,6 +1040,46 @@ fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
     assert_eq!(proto_cover.variants.len(), 1);
     assert_eq!(proto_cover.variants[0].key, "small");
     assert_eq!(proto_cover.variants[0].url, "/api/files/covers/small.jpg");
+    Ok(())
+}
+
+#[test]
+fn test_media_to_proto_with_object_access_cover_includes_structured_access() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let media = make_test_media();
+    let cover = make_test_cover_reference();
+    let cover_access = crate::impls::stored_files::StoredFileObjectAccess::object_access(
+        synctv_core::models::FileObjectAccess {
+            object_kind: synctv_core::models::FileObjectKind::MediaCover,
+            encoded_object_key: "encoded-cover".to_string(),
+            read_token: "read-cover".to_string(),
+        },
+    );
+    let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
+        &media,
+        true,
+        media.creator_id,
+        Some(&cover),
+        Some(&cover_access),
+        &public_id_codec,
+    ))?;
+    let proto_cover = proto
+        .cover
+        .ok_or_else(|| test_error("media cover should be present"))?;
+    let object_access = proto_cover
+        .object_access
+        .ok_or_else(|| test_error("object access should be present"))?;
+
+    assert_eq!(
+        proto_cover.url,
+        "/api/media/cover-objects/encoded-cover?token=read-cover"
+    );
+    assert_eq!(
+        object_access.object_kind,
+        synctv_proto::client::FileObjectAccessKind::MediaCover as i32
+    );
+    assert_eq!(object_access.encoded_object_key, "encoded-cover");
+    assert_eq!(object_access.read_token, "read-cover");
     Ok(())
 }
 
@@ -1208,13 +1284,16 @@ fn test_playlist_to_proto_with_cover_includes_cover_payload() -> TestResult {
         version: 0,
     };
     let cover = make_test_cover_reference();
+    let cover_access = crate::impls::stored_files::StoredFileObjectAccess::external_url(
+        "/api/playlist/covers/original.jpg",
+    );
     let proto = api_ok(try_playlist_to_proto_for_viewer_with_cover(
         &playlist,
         10,
         true,
         playlist.creator_id,
         Some(&cover),
-        Some("/api/playlist/covers/original.jpg"),
+        Some(&cover_access),
         &public_id_codec,
     ))?;
     let proto_cover = proto

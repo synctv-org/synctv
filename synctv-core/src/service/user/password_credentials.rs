@@ -3,7 +3,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{User, UserId},
     repository::PasswordCredentialMaterial,
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

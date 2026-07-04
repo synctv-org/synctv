@@ -474,8 +474,9 @@ pub(super) struct ResourceObserver {
     actor: RoomActor,
     connection_id: String,
     room_service: Arc<RoomService>,
+    chat_service: Option<Arc<ChatService>>,
     presence_service: Arc<OnlinePresenceService>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     pub(super) room_hub: Arc<MediaResourceHub>,
     playback_service: Arc<dyn PlaybackService>,
@@ -492,8 +493,9 @@ pub(super) struct ResourceObserverParams {
     pub(super) actor: RoomActor,
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
+    pub(super) chat_service: Option<Arc<ChatService>>,
     pub(super) presence_service: Arc<OnlinePresenceService>,
-    pub(super) public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub(super) public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
     pub(super) playback_service: Arc<dyn PlaybackService>,
     pub(super) playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -508,6 +510,7 @@ impl ResourceObserver {
             actor,
             connection_id,
             room_service,
+            chat_service,
             presence_service,
             public_id_codec,
             sender,
@@ -524,6 +527,7 @@ impl ResourceObserver {
             actor,
             connection_id,
             room_service,
+            chat_service,
             presence_service,
             public_id_codec,
             sender,
@@ -2306,7 +2310,6 @@ impl ResourceObserver {
 
     pub(super) async fn replay_chat_events_after(
         self: &Arc<Self>,
-        chat_service: &ChatService,
         request: &synctv_proto::client::ObserveResource,
     ) -> Result<(), String> {
         let Some(synctv_proto::client::observe_resource::Resource::ChatEvents(_)) =
@@ -2317,6 +2320,9 @@ impl ResourceObserver {
         let observe_id = request.observe_id.trim();
         let Some(mut after_event_sequence) = Self::validated_requested_replay_sequence(request)
         else {
+            return Ok(());
+        };
+        let Some(chat_service) = self.chat_service.as_ref() else {
             return Ok(());
         };
         if !observe_id.is_empty() {

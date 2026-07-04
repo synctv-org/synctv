@@ -2,7 +2,7 @@ use webauthn_rs::prelude::Passkey;
 
 use crate::{
     models::{OpaquePasswordRecord, ReviewStatus, SignupMethod, User, UserId, UserStatus},
-    service::user::UserService,
+    service::UserService,
     Error, InternalExt, Result,
 };
 

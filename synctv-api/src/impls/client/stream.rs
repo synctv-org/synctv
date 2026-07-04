@@ -42,7 +42,7 @@ pub(crate) fn build_room_streams_request(
 pub(crate) fn build_room_streams_response(
     media_ids: Vec<MediaId>,
     req: &ListRoomStreamsRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<ListRoomStreamsResponse, ApiError> {
     let mut media_ids: Vec<String> = media_ids
         .into_iter()
@@ -89,7 +89,7 @@ pub(crate) fn live_streaming_unavailable_error() -> ApiError {
 
 pub(crate) async fn fetch_stream_info(
     infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     room_id: &str,
     media_id: &str,
 ) -> Result<GetRoomStreamInfoResponse, ApiError> {
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn build_room_streams_response_applies_search_sort_and_pagination() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
         let media_ids = vec![
             synctv_core::models::MediaId::expect_positive(201),
             synctv_core::models::MediaId::expect_positive(202),

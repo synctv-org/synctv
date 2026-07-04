@@ -39,7 +39,7 @@ use super::ApiError;
 pub struct OAuth2ApiImpl {
     pub oauth2_service: Arc<OAuth2Service>,
     pub user_service: Arc<UserService>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
 }
 
 struct UnlinkProviderPlan {
@@ -68,6 +68,12 @@ impl OAuth2ApiImpl {
             OAuth2Provider::Feishu => OAuth2ProviderType::Oauth2ProviderTypeFeishu,
             OAuth2Provider::Gitee => OAuth2ProviderType::Oauth2ProviderTypeGitee,
         }) as i32
+    }
+
+    pub(crate) fn oauth2_provider_name_to_proto(provider: &str) -> Result<i32, ApiError> {
+        let provider = OAuth2Provider::from_str_name(provider)
+            .ok_or_else(|| ApiError::InvalidInput("Invalid OAuth2 provider type".to_string()))?;
+        Ok(Self::oauth2_provider_to_proto(&provider))
     }
 
     fn proto_oauth2_provider(value: i32) -> Result<OAuth2Provider, ApiError> {
@@ -348,7 +354,7 @@ impl OAuth2ApiImpl {
     pub fn new(
         oauth2_service: Arc<OAuth2Service>,
         user_service: Arc<UserService>,
-        public_id_codec: Arc<synctv_core::PublicIdCodec>,
+        public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     ) -> Self {
         Self {
             oauth2_service,
@@ -679,7 +685,7 @@ impl OAuth2ApiImpl {
         } else {
             match self
                 .oauth2_service
-                .find_or_create_and_link(&self.user_service, &provider_instance_name, &user_info)
+                .find_or_create_and_link(&provider_instance_name, &user_info)
                 .await
                 .map_err(|error| {
                     let api_error = ApiError::from(error);
@@ -973,7 +979,7 @@ pub struct LinkedProviderInfo {
 fn user_to_oauth2_user_info(
     user: &User,
     email: Option<&str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<OAuth2UserInfo, ApiError> {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 

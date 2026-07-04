@@ -19,6 +19,7 @@ use synctv_proto::client;
 
 #[derive(utoipa::ToSchema)]
 #[schema(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct GoogleRpcStatusSchema {
     pub code: i32,
     pub message: String,

@@ -7,15 +7,14 @@ use crate::{
         KickCooldownInsert, MemberPermissionExactVersionUpdate,
         MemberRolePermissionExactVersionUpdate,
     },
-    service::{member::AdminMemberUpdate, optimistic_retry, permission::PermissionWriteFence},
+    service::{optimistic_retry, AdminMemberUpdate, PermissionWriteFence},
     Error, Result,
 };
 
 use super::{
-    cleanup_member_resources_in_tx, ensure_actor_has_room_permission_now_tx,
-    validate_kick_cooldown_seconds, KickMemberOutboxOptions, MemberPermissionPatch,
-    PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory, RoomService,
-    UpdateMemberWithOutboxRequest,
+    cleanup_member_resources_in_tx, validate_kick_cooldown_seconds, KickMemberOutboxOptions,
+    MemberPermissionPatch, PermissionChangedOutboxSnapshot,
+    RealtimeOutboxPermissionChangedEventFactory, RoomService, UpdateMemberWithOutboxRequest,
 };
 
 /// Helper struct for apply_permission_write_with_fence parameters
@@ -83,9 +82,8 @@ impl RoomService {
             "Permission update failed after maximum retry attempts",
             || async {
                 let mut tx = self.pool.begin().await?;
-                ensure_actor_has_room_permission_now_tx(
+                self.ensure_actor_has_room_permission_now_tx(
                     &mut tx,
-                    &self.permission_service,
                     &room_id,
                     &granter_id,
                     crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,
@@ -377,9 +375,8 @@ impl RoomService {
         }
 
         let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
+        self.ensure_actor_has_room_permission_now_tx(
             &mut tx,
-            &self.permission_service,
             &room_id,
             &kicker_id,
             crate::models::RoomPermission::KICK_MEMBER,
@@ -857,9 +854,8 @@ impl RoomService {
 
         let mut tx = self.pool.begin().await?;
         if apply_permission_update {
-            ensure_actor_has_room_permission_now_tx(
+            self.ensure_actor_has_room_permission_now_tx(
                 &mut tx,
-                &self.permission_service,
                 &room_id,
                 &actor_id,
                 crate::models::RoomPermission::SET_MEMBER_PERMISSIONS,

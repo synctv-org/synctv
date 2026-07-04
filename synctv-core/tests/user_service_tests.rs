@@ -21,14 +21,12 @@ use synctv_core::{
         WebAuthnCredentialRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService, OpaquePasswordService},
-        local_passkey_session_store,
-        permission::PermissionServiceRuntime,
-        user::UserServiceRuntimeOptions,
-        AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        InMemoryTokenBlacklistStore, PasskeyService, PermissionService, RuntimeSettingsStore,
-        SecurityPipeline, SecurityPipelineRuntime, SensitiveVerificationOutcome, SettingsService,
-        TokenAuthContext, UserService,
+        local_passkey_session_store, AccountRegistrationOutcome, AuthFactorMethod,
+        AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
+        OpaquePasswordService, PasskeyService, PermissionService, PermissionServiceRuntime,
+        RuntimeSettingsStore, SecurityPipeline, SecurityPipelineRuntime,
+        SensitiveVerificationOutcome, SettingsService, TokenAuthContext, UserService,
+        UserServiceRuntimeOptions,
     },
     Config, Error,
 };
@@ -67,7 +65,7 @@ fn create_user_service_with_runtime(
 
     UserService::new_with_brute_force_service_and_runtime(
         pool,
-        synctv_core::service::user::UserServiceDependencies {
+        synctv_core::service::UserServiceDependencies {
             jwt_service: jwt,
             username_cache,
             password_complexity: password_config,
@@ -113,7 +111,7 @@ fn create_user_service_with_security_pipeline(
 
     let service = UserService::new_with_brute_force_service_and_runtime(
         pool,
-        synctv_core::service::user::UserServiceDependencies {
+        synctv_core::service::UserServiceDependencies {
             jwt_service: jwt.clone(),
             username_cache,
             password_complexity: password_config,

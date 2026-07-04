@@ -5,6 +5,7 @@
 
 use chrono::{DateTime, Utc};
 use moka::future::Cache as AsyncCache;
+use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
@@ -40,8 +41,6 @@ use crate::{
 
 use super::file_storage::{FileStorageCleanupOrigin, FileStorageContext, FileStorageService};
 
-pub use super::file_upload_policies::MAX_CHAT_ATTACHMENT_SIZE_BYTES;
-
 mod helpers;
 use helpers::*;
 
@@ -72,6 +71,7 @@ pub struct ChatService {
     room_settings_service: RoomSettingsService,
     user_service: Arc<UserService>,
     file_storage_service: Arc<dyn FileStorageService>,
+    message_cleanup_service: ChatMessageCleanupService,
     audit_service: Option<Arc<AuditService>>,
     /// Local room event bus for chat/domain notifications
     notification_service: NotificationService,
@@ -90,6 +90,53 @@ pub struct ChatMessageEventOutcome {
 pub struct ChatPinEventOutcome {
     pub event: ChatPinEvent,
     pub inserted: bool,
+}
+
+#[derive(Clone)]
+struct ChatMessageCleanupService {
+    pool: PgPool,
+    file_storage_service: Arc<dyn FileStorageService>,
+}
+
+impl ChatMessageCleanupService {
+    fn new(pool: PgPool, file_storage_service: Arc<dyn FileStorageService>) -> Self {
+        Self {
+            pool,
+            file_storage_service,
+        }
+    }
+
+    async fn cleanup_room_cap(&self, room_id: RoomId, keep_count: i64) -> Result<u64> {
+        super::cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            Some(&self.file_storage_service),
+            super::cleanup_ops::ChatMessageCleanupScope::RoomCap {
+                room_id,
+                keep_count,
+            },
+            FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "room cap purge",
+        )
+        .await
+    }
+
+    async fn cleanup_active_rooms_cap(
+        &self,
+        keep_count: i64,
+        activity_window_minutes: i32,
+    ) -> Result<u64> {
+        super::cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            Some(&self.file_storage_service),
+            super::cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
+                keep_count,
+                activity_window_minutes,
+            },
+            FileStorageCleanupOrigin::ReferenceCapExceeded,
+            "active-room cap purge",
+        )
+        .await
+    }
 }
 
 #[derive(Clone)]
@@ -140,6 +187,10 @@ impl ChatService {
         } = dependencies;
 
         Self {
+            message_cleanup_service: ChatMessageCleanupService::new(
+                chat_repository.pool().clone(),
+                file_storage_service.clone(),
+            ),
             chat_repository,
             rate_limiter,
             rate_limit_config,
@@ -397,16 +448,19 @@ impl ChatService {
                 .replay_idempotent_send_event(&room_id, &user_id, client_message_id, &request_hash)
                 .await?
             {
+                let mut event = event.event;
+                self.attach_event_attachment_view_metadata(&mut event, Some(&user_id))
+                    .await?;
                 info!(
                     room_id = %room_id,
                     user_id = %user_id,
-                    message_id = %event.event.message.message.id,
-                    event_id = %event.event.event_id,
+                    message_id = %event.message.message.id,
+                    event_id = %event.event_id,
                     inserted = false,
                     "Chat message send replayed from idempotency record"
                 );
                 return Ok(ChatMessageEventOutcome {
-                    event: event.event,
+                    event,
                     inserted: false,
                     pin_event: None,
                 });
@@ -435,7 +489,7 @@ impl ChatService {
                 user_id,
                 room_id,
                 &storage_scope,
-                &upload_policy.database_object_route_prefix,
+                upload_policy.object_kind,
                 request.client_message_id.as_deref(),
                 std::mem::take(&mut request.attachments),
             )
@@ -490,7 +544,9 @@ impl ChatService {
                 occurred_at,
             )
             .await?;
-        let event = created.event.event;
+        let mut event = created.event.event;
+        self.attach_event_attachment_view_metadata(&mut event, Some(&user_id))
+            .await?;
 
         info!(
             room_id = %room_id,
@@ -730,7 +786,7 @@ impl ChatService {
         after_event_id: Option<&str>,
         limit: i32,
     ) -> Result<Vec<ChatMessageEventLog>> {
-        match self
+        let mut events = match self
             .chat_repository
             .list_events_after(room_id, after_event_id, limit)
             .await
@@ -739,7 +795,10 @@ impl ChatService {
                 Err(Error::InvalidInput("Invalid chat event cursor".to_string()))
             }
             result => result,
-        }
+        }?;
+        self.attach_event_log_attachment_view_metadata(&mut events, None)
+            .await?;
+        Ok(events)
     }
 
     pub async fn get_events_after_sequence(
@@ -748,9 +807,13 @@ impl ChatService {
         after_sequence: i64,
         limit: i32,
     ) -> Result<Vec<ChatMessageEventLog>> {
-        self.chat_repository
+        let mut events = self
+            .chat_repository
             .list_events_after_sequence(room_id, after_sequence, limit)
-            .await
+            .await?;
+        self.attach_event_log_attachment_view_metadata(&mut events, None)
+            .await?;
+        Ok(events)
     }
 
     pub async fn is_event_sequence_retained_for_room(
@@ -1500,17 +1563,10 @@ impl ChatService {
             return Ok(0);
         }
 
-        let deleted = super::cleanup_ops::cleanup_chat_messages_with_files(
-            self.chat_repository.pool(),
-            Some(&self.file_storage_service),
-            super::cleanup_ops::ChatMessageCleanupScope::RoomCap {
-                room_id: *room_id,
-                keep_count: max_messages_to_keep_count(max_messages)?,
-            },
-            FileStorageCleanupOrigin::ReferenceCapExceeded,
-            "room cap purge",
-        )
-        .await?;
+        let deleted = self
+            .message_cleanup_service
+            .cleanup_room_cap(*room_id, max_messages_to_keep_count(max_messages)?)
+            .await?;
 
         if deleted > 0 {
             debug!(
@@ -1548,17 +1604,13 @@ impl ChatService {
             return Ok(0);
         }
 
-        let deleted = super::cleanup_ops::cleanup_chat_messages_with_files(
-            self.chat_repository.pool(),
-            Some(&self.file_storage_service),
-            super::cleanup_ops::ChatMessageCleanupScope::ActiveRoomsCap {
-                keep_count: max_messages_to_keep_count(max_messages)?,
+        let deleted = self
+            .message_cleanup_service
+            .cleanup_active_rooms_cap(
+                max_messages_to_keep_count(max_messages)?,
                 activity_window_minutes,
-            },
-            FileStorageCleanupOrigin::ReferenceCapExceeded,
-            "active-room cap purge",
-        )
-        .await?;
+            )
+            .await?;
 
         if deleted > 0 {
             debug!(
@@ -1802,7 +1854,7 @@ impl ChatService {
                 self.file_storage_service.as_ref(),
                 repository.as_ref(),
                 &mut message.attachments,
-                &upload_policy.database_object_route_prefix,
+                upload_policy.object_kind,
             )
             .await?;
         }
@@ -1819,12 +1871,36 @@ impl ChatService {
         Ok(())
     }
 
+    async fn attach_event_attachment_view_metadata(
+        &self,
+        event: &mut ChatMessageEvent,
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<()> {
+        self.attach_attachment_view_metadata(
+            std::slice::from_mut(&mut event.message),
+            viewer_user_id,
+        )
+        .await
+    }
+
+    async fn attach_event_log_attachment_view_metadata(
+        &self,
+        events: &mut [ChatMessageEventLog],
+        viewer_user_id: Option<&UserId>,
+    ) -> Result<()> {
+        for event in events {
+            self.attach_event_attachment_view_metadata(&mut event.event, viewer_user_id)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn prepare_submitted_chat_attachments(
         &self,
         user_id: UserId,
         target_room_id: RoomId,
         storage_scope: &str,
-        database_object_route_prefix: &str,
+        object_kind: crate::models::FileObjectKind,
         client_request_id: Option<&str>,
         attachments: Vec<SubmittedFileReference>,
     ) -> Result<Vec<crate::models::NewStoredFile>> {
@@ -1845,7 +1921,7 @@ impl ChatService {
         let context = FileStorageContext {
             user_id,
             storage_scope,
-            database_object_route_prefix,
+            object_kind,
             client_request_id,
         };
         let mut prepared = self
@@ -1875,7 +1951,7 @@ impl ChatService {
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
-                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
+                    object_kind: upload_policy.object_kind,
                     client_request_id: None,
                 },
             )
@@ -1926,6 +2002,7 @@ impl ChatService {
             filename: source_attachment.filename.clone(),
             storage_backend: source_attachment.storage_backend.clone(),
             object_key: source_attachment.object_key.clone(),
+            object_access: None,
             url: None,
             mime_type: source_attachment.mime_type.clone(),
             size_bytes: source_attachment.size_bytes,

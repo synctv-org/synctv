@@ -8,9 +8,7 @@ use crate::{
     Error, Result,
 };
 
-use super::{
-    ensure_actor_has_room_permission_now_tx, RealtimeOutboxSettingsEventFactory, RoomService,
-};
+use super::{RealtimeOutboxSettingsEventFactory, RoomService};
 
 impl RoomService {
     /// Set room settings with optimistic locking (CAS).
@@ -357,9 +355,8 @@ impl RoomService {
                             self.room_settings_repo.get_with_version(&room_id).await?;
                         let updated_settings = (*settings).clone();
                         let mut tx = self.pool.begin().await?;
-                        ensure_actor_has_room_permission_now_tx(
+                        self.ensure_actor_has_room_permission_now_tx(
                             &mut tx,
-                            &self.permission_service,
                             &room_id,
                             &user_id,
                             crate::models::RoomPermission::SET_ROOM_SETTINGS,
@@ -494,7 +491,7 @@ impl RoomService {
         previous_settings: &RoomSettings,
         updated_settings: &RoomSettings,
     ) {
-        use crate::service::notification::GuestKickReason;
+        use crate::service::GuestKickReason;
 
         let guest_kick_reason =
             if previous_settings.allow_guest_join.0 && !updated_settings.allow_guest_join.0 {
@@ -550,9 +547,8 @@ impl RoomService {
                     let (current, version) =
                         self.room_settings_repo.get_with_version(room_id).await?;
                     let mut tx = self.pool.begin().await?;
-                    ensure_actor_has_room_permission_now_tx(
+                    self.ensure_actor_has_room_permission_now_tx(
                         &mut tx,
-                        &self.permission_service,
                         room_id,
                         user_id,
                         crate::models::RoomPermission::SET_ROOM_SETTINGS,

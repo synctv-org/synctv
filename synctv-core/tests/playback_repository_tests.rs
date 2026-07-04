@@ -13,7 +13,7 @@ use synctv_core::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomPlaybackStateRepository,
         RoomRepository, UserRepository,
     },
-    service::room::DeleteEntriesRequest,
+    service::DeleteEntriesRequest,
     Error,
 };
 use synctv_core_testing::{create_test_pool, create_test_room_service, err, ok, some};

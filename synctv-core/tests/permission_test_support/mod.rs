@@ -6,8 +6,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{User, UserId, UserRole, UserStatus},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
 };
 use synctv_core_testing::ok;

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use synctv_core::models::{RoomId, UserId, UserRole};
-use synctv_core::service::RoomService;
 
 use crate::impls::pagination::paginate_all;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
@@ -48,10 +47,12 @@ impl AdminApiImpl {
         caller_role: UserRole,
         reason: Option<String>,
     ) -> Result<synctv_core::models::User, ApiError> {
-        let affected_room_ids = list_active_user_room_ids(&self.room_service, target_user_id)
+        let affected_room_ids = self
+            .list_active_user_room_ids(target_user_id)
             .await
             .map_err(ApiError::from)?;
-        let owned_room_ids = list_owned_room_ids(&self.room_service, target_user_id)
+        let owned_room_ids = self
+            .list_owned_room_ids(target_user_id)
             .await
             .map_err(ApiError::from)?;
         let mut owner_inactive_fanout = Vec::with_capacity(owned_room_ids.len());
@@ -115,12 +116,8 @@ impl AdminApiImpl {
                 .await;
         }
 
-        invalidate_user_room_permission_caches(
-            &self.room_service,
-            target_user_id,
-            &affected_room_ids,
-        )
-        .await;
+        self.invalidate_user_room_permission_caches(target_user_id, &affected_room_ids)
+            .await;
 
         self.realtime_lifecycle
             .disconnect_user(target_user_id, "user_banned")
@@ -128,51 +125,54 @@ impl AdminApiImpl {
 
         Ok(updated)
     }
-}
+    pub(in crate::impls::admin) async fn list_owned_room_ids(
+        &self,
+        user_id: &UserId,
+    ) -> synctv_core::Result<Vec<RoomId>> {
+        paginate_all(|page| async move {
+            let (rooms, total) = self
+                .room_service
+                .list_rooms_by_creator(
+                    user_id,
+                    synctv_core::models::PageParams::new(
+                        Some(page),
+                        Some(USER_ROOM_CLEANUP_PAGE_SIZE),
+                    ),
+                )
+                .await?;
+            let room_ids = rooms.into_iter().map(|room| room.id).collect();
+            Ok((room_ids, total))
+        })
+        .await
+    }
 
-async fn list_active_user_room_ids(
-    room_service: &RoomService,
-    user_id: &UserId,
-) -> synctv_core::Result<Vec<RoomId>> {
-    paginate_all(|page| async move {
-        let (page_room_ids, total) = room_service
-            .member_service()
-            .list_user_rooms(
-                user_id,
-                synctv_core::models::PageParams::new(Some(page), Some(USER_ROOM_CLEANUP_PAGE_SIZE)),
-            )
-            .await?;
-        Ok((page_room_ids, total))
-    })
-    .await
-}
+    async fn list_active_user_room_ids(
+        &self,
+        user_id: &UserId,
+    ) -> synctv_core::Result<Vec<RoomId>> {
+        paginate_all(|page| async move {
+            let (page_room_ids, total) = self
+                .room_service
+                .member_service()
+                .list_user_rooms(
+                    user_id,
+                    synctv_core::models::PageParams::new(
+                        Some(page),
+                        Some(USER_ROOM_CLEANUP_PAGE_SIZE),
+                    ),
+                )
+                .await?;
+            Ok((page_room_ids, total))
+        })
+        .await
+    }
 
-pub(in crate::impls::admin) async fn list_owned_room_ids(
-    room_service: &RoomService,
-    user_id: &UserId,
-) -> synctv_core::Result<Vec<RoomId>> {
-    paginate_all(|page| async move {
-        let (rooms, total) = room_service
-            .list_rooms_by_creator(
-                user_id,
-                synctv_core::models::PageParams::new(Some(page), Some(USER_ROOM_CLEANUP_PAGE_SIZE)),
-            )
-            .await?;
-        let room_ids = rooms.into_iter().map(|room| room.id).collect();
-        Ok((room_ids, total))
-    })
-    .await
-}
-
-async fn invalidate_user_room_permission_caches(
-    room_service: &RoomService,
-    user_id: &UserId,
-    room_ids: &[RoomId],
-) {
-    for room_id in room_ids {
-        room_service
-            .permission_service()
-            .invalidate_cache(room_id, user_id)
-            .await;
+    async fn invalidate_user_room_permission_caches(&self, user_id: &UserId, room_ids: &[RoomId]) {
+        for room_id in room_ids {
+            self.room_service
+                .permission_service()
+                .invalidate_cache(room_id, user_id)
+                .await;
+        }
     }
 }

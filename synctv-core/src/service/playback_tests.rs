@@ -7,11 +7,10 @@ use crate::repository::{
     MediaRepository, PlaylistRepository, ProviderInstanceRepository, RoomPlaybackStateRepository,
     RoomRepository,
 };
-use crate::service::permission::PermissionService;
+use crate::service::PermissionService;
 use crate::service::{
-    auth::{BruteForceProtection, JwtService},
-    InMemoryTokenBlacklistStore, MediaService, NotificationService, ProvidersManager,
-    RemoteProviderManager, UserService,
+    BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, MediaService,
+    NotificationService, ProvidersManager, RemoteProviderManager, UserService,
 };
 use async_trait::async_trait;
 use sqlx::PgPool;
@@ -170,7 +169,7 @@ fn make_playback_invalidation_runtime_for_lifecycle_tests(
 
 #[tokio::test]
 async fn standalone_playback_runtime_uses_local_authoritative_fence() {
-    let runtime = crate::service::playback::PlaybackServiceRuntime::local_only();
+    let runtime = crate::service::PlaybackServiceRuntime::local_only();
     let consistency = ConsistencyCoordinator::new(runtime.version_fence);
 
     assert!(
@@ -646,7 +645,7 @@ async fn test_db_reload_seeds_missing_local_playback_fence() {
         permission_service,
         media_service,
         make_user_service(&pool),
-        crate::service::playback::PlaybackServiceRuntime {
+        crate::service::PlaybackServiceRuntime {
             version_fence: fence.clone(),
             invalidation_service: None,
             l2_cache: None,

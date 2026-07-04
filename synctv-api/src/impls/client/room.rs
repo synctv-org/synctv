@@ -9,7 +9,7 @@ use synctv_core::models::{
     StoreFileUploadResult, UserId,
 };
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::room::ClientResourceAvailability;
+use synctv_core::service::ClientResourceAvailability;
 
 use super::convert::{
     apply_room_settings_patch_from_proto, chat_metadata_from_proto, file_metadata_from_proto,
@@ -270,7 +270,7 @@ impl ClientApiImpl {
                         room,
                         Some(settings),
                         Some(*member_count),
-                        synctv_core::service::room::ClientResourceAvailability::Available,
+                        synctv_core::service::ClientResourceAvailability::Available,
                         presence_by_room.get(&room.id).copied(),
                         Some(Self::required_creator_public_view(&creator_views, room)?),
                     )
@@ -328,7 +328,7 @@ impl ClientApiImpl {
         let (room, _member) = self
             .room_service
             .create_room_with_taxonomy_outbox(
-                synctv_core::service::room::CreateRoomWithTaxonomyRequest {
+                synctv_core::service::CreateRoomWithTaxonomyRequest {
                     name: req.name,
                     description: req.description,
                     created_by: uid,
@@ -438,7 +438,7 @@ impl ClientApiImpl {
                     &room,
                     Some(&settings),
                     self.load_room_member_count(&rid).await?,
-                    synctv_core::service::room::ClientResourceAvailability::Available,
+                    synctv_core::service::ClientResourceAvailability::Available,
                     Some(&presence),
                     None,
                 )
@@ -492,7 +492,7 @@ impl ClientApiImpl {
             .create_room_cover_upload_session(
                 rid,
                 *user_id,
-                synctv_core::service::room::CreateRoomCoverUploadSession {
+                synctv_core::service::CreateRoomCoverUploadSession {
                     client_cover_id: optional_trimmed_string(&req.client_cover_id),
                     mime_type: req.mime_type,
                     size_bytes: req.size_bytes,
@@ -2383,7 +2383,7 @@ mod tests {
     use crate::impls::ErrorKind;
     use chrono::Utc;
     use std::collections::HashMap;
-    use synctv_core::service::room::ClientResourceAvailability;
+    use synctv_core::service::ClientResourceAvailability;
     use synctv_core::{
         models::{
             ChatMessage, ChatMessagePin, ChatMessageWithAttachments, ChatPinEvent,
@@ -2439,7 +2439,7 @@ mod tests {
                 provider_stores: std::sync::Arc::new(
                     synctv_core::provider::ProviderStoreRegistry::local_only("test:chat-pin-api:"),
                 ),
-                public_id_codec: std::sync::Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: std::sync::Arc::new(crate::public_id::PublicIdCodec::plain()),
                 email_api: None,
                 passkey_service: None,
             },
@@ -2449,7 +2449,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_maps_sorting_and_defaults() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
         let query = api_ok(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 0,
@@ -2561,7 +2561,7 @@ mod tests {
 
     #[test]
     fn room_list_query_builders_reject_unknown_sort_and_relation_enums() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
         let public_room_error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 1,
@@ -2641,7 +2641,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_rejects_invalid_proto_request() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: -1,
@@ -2670,7 +2670,7 @@ mod tests {
 
     #[test]
     fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_transfer_room_ownership_request(
             synctv_proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
@@ -2689,7 +2689,7 @@ mod tests {
 
     #[test]
     fn build_check_room_request_rejects_invalid_room_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_check_room_request(
             synctv_proto::client::CheckRoomRequest {
                 room_id: "bad-room".to_string(),
@@ -2708,7 +2708,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_rejects_invalid_room_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
@@ -2727,7 +2727,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_parses_proto_validated_room_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let room_id = synctv_core::models::RoomId::expect_positive(123);
         let room_public_id = codec_ok(codec.encode_room_id(room_id))?;
         let parsed = api_ok(build_create_websocket_ticket_request(
@@ -2744,7 +2744,7 @@ mod tests {
     #[test]
     fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id(
     ) -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "room_abc".to_string(),
@@ -2972,6 +2972,7 @@ mod tests {
             id: "attachment-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "rooms/1/chat/2/attachment-1".to_string(),
+            object_access: None,
             url: Some("https://cdn.example.test/rooms/1/chat/2/attachment-1.webp".to_string()),
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1024),
@@ -3000,6 +3001,7 @@ mod tests {
             id: "attachment-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "rooms/1/chat/2/attachment-1".to_string(),
+            object_access: None,
             url: None,
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1024),
@@ -3054,6 +3056,7 @@ mod tests {
                 id: "attachment-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "rooms/1/chat/2/attachment-1".to_string(),
+                object_access: None,
                 url: None,
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(1024),
@@ -3069,6 +3072,7 @@ mod tests {
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
+            upload_object_access: None,
             upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: None,
             upload_headers: Default::default(),
@@ -3096,6 +3100,7 @@ mod tests {
                 id: "attachment-1".to_string(),
                 storage_backend: "s3".to_string(),
                 object_key: "rooms/1/chat/2/attachment-1".to_string(),
+                object_access: None,
                 url: None,
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(1024),
@@ -3111,6 +3116,7 @@ mod tests {
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
+            upload_object_access: None,
             upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),

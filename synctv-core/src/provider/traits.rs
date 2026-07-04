@@ -65,8 +65,8 @@ pub struct PlaybackResult {
 ///
 /// Bilibili live danmaku connects to Bilibili's upstream WebSocket service, so
 /// the Bilibili adapter owns source-config parsing, credential policy,
-/// remote-provider dispatch, and upstream reconnect behavior. API transports map
-/// this stream to SSE or gRPC server-side streaming.
+/// remote-provider dispatch, and upstream reconnect behavior. Transport
+/// adapters map this stream to their streaming response formats.
 pub type BilibiliLiveDanmakuStream =
     Pin<Box<dyn Stream<Item = Result<BilibiliLiveDanmakuEvent, ProviderError>> + Send + 'static>>;
 
@@ -244,6 +244,17 @@ pub enum ItemType {
     Media,    // File (video/audio/live stream)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum DirectoryItemThumbnail {
+    Url(String),
+    Emby {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        item_id: String,
+    },
+}
+
 /// Directory item (file or folder)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryItem {
@@ -260,9 +271,9 @@ pub struct DirectoryItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
 
-    /// Thumbnail URL (optional)
+    /// Thumbnail metadata (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub thumbnail: Option<String>,
+    pub thumbnail: Option<DirectoryItemThumbnail>,
 
     /// Upstream item description or summary.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,8 +300,8 @@ pub struct DynamicListQuery {
 /// Media provider trait.
 ///
 /// Core interface that all providers must implement. The maintenance contract
-/// for playback mode selection, signing, proxy siblings, and verification lives
-/// in `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
+/// for playback mode selection, proxy siblings, and verification lives in
+/// `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
 /// Keep that document updated when a provider adds modes, headers, proxy
 /// actions, manifest metadata, or live lifecycle behavior.
 ///
@@ -308,13 +319,13 @@ pub trait MediaProvider: Send + Sync {
     /// Provider-specific stream decisions happen here. A provider returns
     /// every playback mode that is valid for the source, typically an
     /// upstream/direct mode plus a `proxy_*` sibling when SyncTV can serve the
-    /// same content through playback provider routes. Signing, default-mode
-    /// selection, header exposure, manifest rewriting, subtitle rewriting, and
-    /// live resource lifecycle metadata belong in this provider-owned generation
-    /// path because those rules differ by provider and by source type.
+    /// same content through playback provider transport. Default-mode selection,
+    /// header exposure, manifest rewriting, subtitle rewriting, and live resource
+    /// lifecycle metadata belong in this provider-owned generation path because
+    /// those rules differ by provider and by source type.
     ///
-    /// The matching playback transport resolver must accept every signed URL produced here,
-    /// including HLS/DASH manifests, indexed segments, subtitles, danmaku,
+    /// The matching playback transport resolver must accept every versioned
+    /// transport target produced here, including HLS/DASH manifests, indexed segments, subtitles, danmaku,
     /// thumbnails, FLV, and live resource cleanup hooks. Provider changes need
     /// CLI plus curl end-to-end evidence for every returned mode and auxiliary
     /// URL, including cached playback and expiry behavior.
@@ -378,7 +389,7 @@ pub trait MediaProvider: Send + Sync {
     ///
     /// # Flow
     /// 1. Client constructs `source_config` from a provider parse/browse result
-    /// 2. Client calls the media or playlist API with `source_config`
+    /// 2. Caller submits `source_config` for media or playlist creation
     /// 3. Server calls `validate_source_config()`
     /// 4. If valid, save to database
     async fn validate_source_config(
@@ -463,8 +474,8 @@ pub trait MediaProvider: Send + Sync {
     /// Return the provider-owned playback session id from a generated playback result.
     ///
     /// Providers that allocate server-side playback/transcoding sessions should
-    /// expose the opaque provider session id here so the API layer can report
-    /// progress and release provider resources when room playback changes.
+    /// expose the opaque provider session id here so playback lifecycle logic can
+    /// report progress and release provider resources when room playback changes.
     fn playback_lifecycle_session_id(&self, _result: &PlaybackResult) -> Option<String> {
         None
     }

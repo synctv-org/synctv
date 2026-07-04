@@ -159,7 +159,6 @@ pub(super) fn validate_file_upload_policy(policy: &FileUploadPolicy) -> Result<(
             .max_audio_bitrate_bps
             .is_some_and(|bitrate| bitrate <= 0)
         || policy.storage_namespace.trim().is_empty()
-        || policy.database_object_route_prefix.trim().is_empty()
     {
         return Err(Error::InvalidInput(
             "invalid file upload policy".to_string(),

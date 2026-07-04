@@ -200,7 +200,7 @@ impl ClientServiceImpl {
         let Some(authorization) = authorization else {
             return Ok(None);
         };
-        let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(authorization)
+        let token = synctv_core::service::JwtValidator::extract_bearer_token(authorization)
             .map_err(|_| unauthenticated_status("Invalid authorization header"))?;
         if synctv_core::service::JwtService::token_type_hint(&token)
             == Some(synctv_core::service::TokenType::Guest)
@@ -368,7 +368,6 @@ impl ClientServiceImpl {
             sender: Arc::clone(&sender) as Arc<dyn MessageSender>,
             playback_service: self.client_api.clone(),
             playlist_items_snapshot_service: self.client_api.clone(),
-            room_members_snapshot_service: self.client_api.clone(),
             room_settings_snapshot_service:
                 crate::impls::room_settings_snapshot::default_room_settings_snapshot_service(
                     self.room_service.clone(),

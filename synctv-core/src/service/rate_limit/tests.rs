@@ -84,7 +84,7 @@ fn test_extracts_rate_limit_tier_from_transport_scoped_keys() {
         "websocket"
     );
     assert_eq!(
-        extract_rate_limit_tier("ratelimit:grpc:streaming:user:42"),
+        extract_rate_limit_tier("ratelimit:transport:streaming:user:42"),
         "streaming"
     );
     assert_eq!(

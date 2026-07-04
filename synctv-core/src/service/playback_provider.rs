@@ -1,14 +1,12 @@
 use std::sync::Arc;
 
 use crate::models::{MediaId, RoomId, SourceProvider, UserId};
-use crate::provider::playback_transport::PlaybackTransportServices;
-use crate::provider::store::{ProviderStore, ProviderStoreResolver};
 use crate::provider::{
     BilibiliProvider, ExecutionControl, PlaybackTransportAction, ProviderAccessService,
     ProviderContext, ProviderError, ProviderSet,
 };
-use crate::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
-use crate::{PublicIdCodec, PublicIdType};
+use crate::provider::{LiveFlvAccess, PlaybackTransportServices};
+use crate::provider::{ProviderStore, ProviderStoreResolver};
 
 #[derive(Clone)]
 pub struct AlistPlaybackProviderService {
@@ -199,9 +197,9 @@ impl BilibiliPlaybackProviderService {
         &self,
         version: &str,
         mode_name: &str,
-        mode: crate::provider::bilibili::BilibiliDashManifestMode,
+        mode: crate::provider::BilibiliDashManifestMode,
         store: Arc<dyn ProviderStore>,
-        proxy_url_for: Option<&mut crate::provider::bilibili::BilibiliDashProxyUrlMapper<'_>>,
+        proxy_url_for: Option<&mut crate::provider::BilibiliDashProxyUrlMapper<'_>>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
@@ -486,19 +484,13 @@ impl RtmpPlaybackProviderService {
         &self,
         version: &str,
         store: Arc<dyn ProviderStore>,
-        claims: &ProxyUrlClaims,
+        access: LiveFlvAccess,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .rtmp
-            .get_flv_stream(
-                Some(&store),
-                version,
-                request_control,
-                claims,
-                &self.runtime.public_id_codec,
-            )
+            .get_flv_stream(Some(&store), version, request_control, access)
             .await
     }
 
@@ -511,12 +503,7 @@ impl RtmpPlaybackProviderService {
         self.runtime
             .providers
             .rtmp
-            .get_hls_playlist(
-                Some(&store),
-                version,
-                request_control,
-                &self.runtime.public_id_codec,
-            )
+            .get_hls_playlist(Some(&store), version, request_control)
             .await
     }
 
@@ -530,13 +517,7 @@ impl RtmpPlaybackProviderService {
         self.runtime
             .providers
             .rtmp
-            .get_hls_segment(
-                Some(&store),
-                version,
-                segment_name,
-                request_control,
-                &self.runtime.public_id_codec,
-            )
+            .get_hls_segment(Some(&store), version, segment_name, request_control)
             .await
     }
 }
@@ -558,19 +539,13 @@ impl LiveProxyPlaybackProviderService {
         &self,
         version: &str,
         store: Arc<dyn ProviderStore>,
-        claims: &ProxyUrlClaims,
+        access: LiveFlvAccess,
         request_control: Option<&ExecutionControl>,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         self.runtime
             .providers
             .live_proxy
-            .get_flv_stream(
-                Some(&store),
-                version,
-                request_control,
-                claims,
-                &self.runtime.public_id_codec,
-            )
+            .get_flv_stream(Some(&store), version, request_control, access)
             .await
     }
 
@@ -583,12 +558,7 @@ impl LiveProxyPlaybackProviderService {
         self.runtime
             .providers
             .live_proxy
-            .get_hls_playlist(
-                Some(&store),
-                version,
-                request_control,
-                &self.runtime.public_id_codec,
-            )
+            .get_hls_playlist(Some(&store), version, request_control)
             .await
     }
 
@@ -602,13 +572,7 @@ impl LiveProxyPlaybackProviderService {
         self.runtime
             .providers
             .live_proxy
-            .get_hls_segment(
-                Some(&store),
-                version,
-                segment_name,
-                request_control,
-                &self.runtime.public_id_codec,
-            )
+            .get_hls_segment(Some(&store), version, segment_name, request_control)
             .await
     }
 
@@ -638,8 +602,6 @@ struct PlaybackProviderRuntime {
     providers: ProviderSet,
     provider_stores: Arc<dyn ProviderStoreResolver>,
     playback_transport_services: Arc<PlaybackTransportServices>,
-    public_id_codec: Arc<PublicIdCodec>,
-    signing_key: Arc<ProxySigningKey>,
     provider_access_service: Arc<dyn ProviderAccessService>,
 }
 
@@ -649,8 +611,6 @@ impl PlaybackProviderRuntime {
             providers: deps.providers,
             provider_stores: deps.provider_stores,
             playback_transport_services: deps.playback_transport_services,
-            public_id_codec: deps.public_id_codec,
-            signing_key: deps.signing_key,
             provider_access_service: deps.provider_access_service,
         }
     }
@@ -659,13 +619,11 @@ impl PlaybackProviderRuntime {
         &self,
         request: BilibiliLiveDanmakuRequest<'_>,
     ) -> Result<crate::provider::BilibiliLiveDanmakuStream, ProviderError> {
-        let media_id =
-            parse_public_id::<MediaId>(&self.public_id_codec, request.media_id, "media_id")?;
         let media = self
             .playback_transport_services
             .room_service
             .media_service()
-            .get_media(&media_id)
+            .get_media(&request.media_id)
             .await
             .map_err(core_error_to_provider_error)?
             .ok_or(ProviderError::NotFound)?;
@@ -707,44 +665,13 @@ impl PlaybackProviderRuntime {
                         "Bilibili provider does not expose live danmaku".to_string(),
                     )
                 })?;
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(request.actor_user_id)
-            .map_err(|error| {
-                ProviderError::Internal(format!("Failed to encode user public id: {error}"))
-            })?;
-        let public_room_id =
-            self.public_id_codec
-                .encode_room_id(media.room_id)
-                .map_err(|error| {
-                    ProviderError::Internal(format!("Failed to encode room public id: {error}"))
-                })?;
-        let public_media_id = self
-            .public_id_codec
-            .encode_media_id(media.id)
-            .map_err(|error| {
-                ProviderError::Internal(format!("Failed to encode media public id: {error}"))
-            })?;
         let credential_owner_id = media.creator_id.unwrap_or(request.actor_user_id);
-        let public_credential_owner_id = self
-            .public_id_codec
-            .encode_user_id(credential_owner_id)
-            .map_err(|error| {
-            ProviderError::Internal(format!(
-                "Failed to encode credential owner public id: {error}"
-            ))
-        })?;
         let mut ctx = ProviderContext::new("playback-provider")
             .with_user_id(request.actor_user_id)
-            .with_public_user_id(public_user_id)
             .with_credential_owner_id(credential_owner_id)
-            .with_public_credential_owner_id(public_credential_owner_id)
             .with_room_id(media.room_id)
-            .with_public_room_id(public_room_id)
             .with_media_id(media.id)
-            .with_public_media_id(public_media_id)
             .with_provider_access_service(self.provider_access_service.clone())
-            .with_signing_key(&self.signing_key)
             .with_store(self.provider_stores.load(BilibiliProvider::NAME))
             .with_request_context(request.request_control.map(ExecutionControl::child));
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
@@ -777,28 +704,13 @@ pub struct PlaybackProviderServiceDeps {
     pub providers: ProviderSet,
     pub provider_stores: Arc<dyn ProviderStoreResolver>,
     pub playback_transport_services: Arc<PlaybackTransportServices>,
-    pub public_id_codec: Arc<PublicIdCodec>,
-    pub signing_key: Arc<ProxySigningKey>,
     pub provider_access_service: Arc<dyn ProviderAccessService>,
 }
 
 pub struct BilibiliLiveDanmakuRequest<'a> {
-    pub media_id: &'a str,
+    pub media_id: MediaId,
     pub actor_user_id: UserId,
     pub request_control: Option<&'a ExecutionControl>,
-}
-
-fn parse_public_id<T>(
-    codec: &PublicIdCodec,
-    value: &str,
-    field: &'static str,
-) -> Result<T, ProviderError>
-where
-    T: PublicIdType,
-{
-    codec
-        .decode::<T>(value)
-        .map_err(|error| ProviderError::InvalidConfig(format!("Invalid {field}: {error}")))
 }
 
 fn membership_error_to_provider_error(error: crate::Error) -> ProviderError {

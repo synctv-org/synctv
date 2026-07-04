@@ -614,6 +614,7 @@ impl FileStorageRepository {
                 "file variant dimensions must be positive".to_string(),
             ));
         }
+        let metadata = serde_json::to_value(variant.metadata)?;
         let row = sqlx::query_as!(
             FileObjectVariant,
             r#"
@@ -643,7 +644,9 @@ impl FileStorageRepository {
             RETURNING storage_backend, object_key, original_storage_backend, original_object_key,
                       group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                       is_original, lossy, quality, sort_order,
-                      metadata AS "metadata!: FileVariantMetadata", created_at
+                      NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+                      metadata AS "metadata!: FileVariantMetadata",
+                      created_at
             "#,
             variant.storage_backend,
             variant.object_key,
@@ -661,7 +664,7 @@ impl FileStorageRepository {
             variant.lossy,
             variant.quality,
             variant.sort_order,
-            variant.metadata as _,
+            metadata
         )
         .fetch_one(&self.pool)
         .await?;
@@ -679,13 +682,15 @@ impl FileStorageRepository {
             SELECT storage_backend, object_key, original_storage_backend, original_object_key,
                    group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                    is_original, lossy, quality, sort_order,
-                   metadata AS "metadata!: FileVariantMetadata", created_at
+                   NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+                   metadata AS "metadata!: FileVariantMetadata",
+                   created_at
             FROM file_object_variants
             WHERE original_storage_backend = $1 AND original_object_key = $2
             ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC
             "#,
             storage_backend,
-            object_key,
+            object_key
         )
         .fetch_all(&self.pool)
         .await?;
@@ -703,7 +708,9 @@ impl FileStorageRepository {
             SELECT storage_backend, object_key, original_storage_backend, original_object_key,
                    group_id, variant_key, label, url, mime_type, size_bytes, width, height,
                    is_original, lossy, quality, sort_order,
-                   metadata AS "metadata!: FileVariantMetadata", created_at
+                   NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+                   metadata AS "metadata!: FileVariantMetadata",
+                   created_at
             FROM file_object_variants
             WHERE original_storage_backend = $1
               AND original_object_key = $2
@@ -711,7 +718,7 @@ impl FileStorageRepository {
             ORDER BY sort_order ASC, size_bytes ASC, variant_key ASC
             "#,
             storage_backend,
-            object_key,
+            object_key
         )
         .fetch_all(&self.pool)
         .await?;
@@ -926,8 +933,14 @@ impl FileStorageRepository {
                       WHERE s.storage_backend = file_references.storage_backend
                         AND s.object_key = file_references.object_key
                         AND file_references.metadata->>'kind' = 'uploadSession'
-                        AND (file_references.metadata->'data'->>'publicFileId') = file_references.reference_id
-                        AND (s.metadata->>'publicFileId') = file_references.reference_id
+                        AND COALESCE(
+                            file_references.metadata->'data'->>'publicFileId',
+                            file_references.metadata->'data'->>'fileId'
+                        ) = file_references.reference_id
+                        AND COALESCE(
+                            s.metadata->>'publicFileId',
+                            s.metadata->>'fileId'
+                        ) = file_references.reference_id
                         AND s.completed_at IS NOT NULL
                   )
               )
@@ -1095,8 +1108,8 @@ impl FileStorageRepository {
               ON s.storage_backend = r.storage_backend
              AND s.object_key = r.object_key
              AND r.metadata->>'kind' = 'uploadSession'
-             AND (r.metadata->'data'->>'publicFileId') = r.reference_id
-             AND (s.metadata->>'publicFileId') = r.reference_id
+             AND COALESCE(r.metadata->'data'->>'publicFileId', r.metadata->'data'->>'fileId') = r.reference_id
+             AND COALESCE(s.metadata->>'publicFileId', s.metadata->>'fileId') = r.reference_id
             WHERE r.reference_kind = $1
               AND r.reference_id = $2
               AND r.released_at IS NULL

@@ -2,13 +2,12 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{ReviewStatus, SignupMethod, UserId},
-    service::user::{
-        registration_types::{
-            PendingRegistrationPasskey, PendingRegistrationRequest, PendingRegistrationRequestRow,
-        },
-        UserService,
-    },
+    service::UserService,
     Error, Result,
+};
+
+use super::super::super::registration_types::{
+    PendingRegistrationPasskey, PendingRegistrationRequest, PendingRegistrationRequestRow,
 };
 
 impl UserService {

@@ -1,6 +1,6 @@
 use crate::{
     models::{oauth2_client::OAuth2Provider, SignupMethod, User},
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

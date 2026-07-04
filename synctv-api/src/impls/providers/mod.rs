@@ -12,8 +12,8 @@ use std::sync::Arc;
 pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
 pub(crate) use common::{
-    get_provider_binds, get_provider_credentials, provider_instance_name_for_provider,
-    provider_instance_name_for_response, resolve_bound_instance_name,
+    provider_instance_name_for_provider, provider_instance_name_for_response,
+    resolve_bound_instance_name,
 };
 pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub use emby::EmbyApiImpl;

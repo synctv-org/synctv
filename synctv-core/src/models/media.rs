@@ -948,9 +948,9 @@ pub struct BilibiliPlaybackMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliDashManifests {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dash: Option<synctv_media_providers::grpc::bilibili::DashInfo>,
+    pub dash: Option<BilibiliDashManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hevc: Option<synctv_media_providers::grpc::bilibili::DashInfo>,
+    pub hevc: Option<BilibiliDashManifest>,
 }
 
 impl BilibiliDashManifests {
@@ -959,11 +959,7 @@ impl BilibiliDashManifests {
         self.dash.is_none() && self.hevc.is_none()
     }
 
-    pub fn set(
-        &mut self,
-        mode: BilibiliDashManifestSlot,
-        manifest: synctv_media_providers::grpc::bilibili::DashInfo,
-    ) {
+    pub fn set(&mut self, mode: BilibiliDashManifestSlot, manifest: BilibiliDashManifest) {
         match mode {
             BilibiliDashManifestSlot::Dash => self.dash = Some(manifest),
             BilibiliDashManifestSlot::Hevc => self.hevc = Some(manifest),
@@ -971,15 +967,60 @@ impl BilibiliDashManifests {
     }
 
     #[must_use]
-    pub const fn get(
-        &self,
-        mode: BilibiliDashManifestSlot,
-    ) -> Option<&synctv_media_providers::grpc::bilibili::DashInfo> {
+    pub const fn get(&self, mode: BilibiliDashManifestSlot) -> Option<&BilibiliDashManifest> {
         match mode {
             BilibiliDashManifestSlot::Dash => self.dash.as_ref(),
             BilibiliDashManifestSlot::Hevc => self.hevc.as_ref(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashManifest {
+    pub duration: f64,
+    pub min_buffer_time: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub video_streams: Vec<BilibiliDashVideoStream>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_streams: Vec<BilibiliDashAudioStream>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashVideoStream {
+    pub id: u64,
+    pub base_url: String,
+    pub mime_type: String,
+    pub codecs: String,
+    pub width: u64,
+    pub height: u64,
+    pub frame_rate: String,
+    pub bandwidth: u64,
+    pub start_with_sap: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_base: Option<BilibiliDashSegmentBase>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashAudioStream {
+    pub id: u64,
+    pub base_url: String,
+    pub mime_type: String,
+    pub codecs: String,
+    pub bandwidth: u64,
+    pub start_with_sap: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_base: Option<BilibiliDashSegmentBase>,
+    pub audio_sampling_rate: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliDashSegmentBase {
+    pub index_range: String,
+    pub initialization_range: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

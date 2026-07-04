@@ -32,7 +32,7 @@ pub(super) fn required_realtime_text(
 
 pub(crate) fn room_member_event_to_proto(
     event: &synctv_realtime::sync::RealtimeEvent,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     sequence: i64,
 ) -> Result<Option<synctv_proto::client::RoomMemberEvent>, String> {
     use synctv_proto::client::RoomMemberEventKind;
@@ -253,7 +253,7 @@ pub(crate) fn room_member_event_to_proto(
 
 pub(crate) fn online_event_to_proto(
     event: &synctv_realtime::sync::RealtimeEvent,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_proto::client::OnlineEvent>, String> {
     use synctv_proto::client::OnlineEventKind;
     use synctv_realtime::sync::RealtimeEvent;
@@ -380,7 +380,7 @@ fn chat_presentation_text_from_metadata(
 
 pub(crate) fn chat_playback_media_id_from_metadata(
     metadata: &ChatMetadata,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = metadata
         .playback
@@ -396,7 +396,7 @@ pub(crate) fn chat_playback_media_id_from_metadata(
 
 pub(crate) fn chat_playback_playlist_id_from_metadata(
     metadata: &ChatMetadata,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = metadata
         .playback
@@ -420,7 +420,7 @@ pub(crate) struct ChatPlaybackMetadata {
 
 pub(crate) fn chat_playback_metadata_from_metadata(
     metadata: &ChatMetadata,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<ChatPlaybackMetadata, String> {
     let target = chat_playback_target_from_metadata(metadata)?;
     let target_hash = target
@@ -526,7 +526,7 @@ pub(crate) fn chat_metadata_for_send(
 
 pub(crate) fn chat_message_event_to_proto(
     event: &ChatMessageEvent,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessageEvent, String> {
     let room_id = public_id_codec
         .encode_room_id(event.room_id)
@@ -547,7 +547,7 @@ pub(crate) fn chat_message_event_to_proto(
 
 pub(crate) fn chat_pin_event_to_proto(
     event: &ChatPinEvent,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatPinEvent, String> {
     let room_id = public_id_codec
         .encode_room_id(event.room_id)
@@ -573,7 +573,7 @@ pub(crate) fn chat_pin_event_to_proto(
 
 pub(crate) fn chat_message_pin_to_proto(
     pin: &ChatMessagePin,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessagePin, String> {
     Ok(synctv_proto::client::ChatMessagePin {
         pinned_by_user_id: pin
@@ -593,7 +593,7 @@ pub(crate) fn chat_message_pin_to_proto(
 
 pub(crate) fn chat_message_receive_to_proto(
     value: &ChatMessageWithAttachments,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     username: String,
 ) -> Result<synctv_proto::client::ChatMessageReceive, String> {
     let message = &value.message;
@@ -689,7 +689,11 @@ pub(crate) fn core_chat_attachment_to_proto(
 ) -> Result<synctv_proto::client::ChatAttachment, String> {
     Ok(synctv_proto::client::ChatAttachment {
         id: attachment.id.clone(),
-        url: required_chat_attachment_url(attachment)?,
+        url: chat_attachment_url_field(attachment)?,
+        object_access: attachment
+            .object_access
+            .as_ref()
+            .map(crate::impls::stored_files::file_object_access_to_proto),
         mime_type: required_chat_attachment_mime_type(attachment)?,
         size_bytes: required_chat_attachment_size_bytes(attachment)?,
         width: attachment.width.unwrap_or_default(),
@@ -710,18 +714,26 @@ pub(crate) fn core_chat_attachment_to_proto(
     })
 }
 
-fn required_chat_attachment_url(
+fn chat_attachment_url_field(
     attachment: &synctv_core::models::ChatAttachment,
 ) -> Result<String, String> {
     let url = attachment
         .url
         .as_deref()
         .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            attachment
+                .object_access
+                .as_ref()
+                .and_then(crate::impls::stored_files::render_file_object_access_url)
+        })
         .ok_or_else(|| "chat attachment url is missing".to_string())?;
     if url.is_empty() {
         return Err("chat attachment url is empty".to_string());
     }
-    Ok(url.to_string())
+    Ok(url)
 }
 
 fn required_chat_attachment_mime_type(

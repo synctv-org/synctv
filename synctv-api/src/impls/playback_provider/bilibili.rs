@@ -13,28 +13,23 @@ use synctv_proto::playback_provider::bilibili::{
 use super::common::{
     playback_provider_route_base, playback_transport_action_to_chunk_stream,
     verify_playback_provider_access_with_deps, HasPlaybackProviderAccessFields, HlsRewriteSigning,
-    PlaybackProviderAccessRequest, PlaybackTransportExecutorDeps,
+    PlaybackProviderAccessRequest, PlaybackProviderApiRuntime, PlaybackProviderIdentityRuntime,
+    PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
+use crate::proxy_signature::ProxySigningKeyQueryExt;
 
 const PROVIDER: &str = synctv_core::provider::BilibiliProvider::NAME;
 
 pub struct BilibiliPlaybackProviderDeps<'a> {
     pub playback_provider_service: &'a BilibiliPlaybackProviderService,
-    pub proxy_signing_key: &'a synctv_core::proxy_signature::ProxySigningKey,
-    pub public_id_codec: &'a synctv_core::PublicIdCodec,
-    pub provider_stores: &'a dyn synctv_core::provider::store::ProviderStoreResolver,
-    pub user_service: &'a synctv_core::service::UserService,
-    pub playback_transport_services:
-        &'a synctv_core::provider::playback_transport::PlaybackTransportServices,
+    pub runtime: PlaybackProviderApiRuntime<'a>,
     pub request_control: Option<&'a ExecutionControl>,
-    pub proxy_http_client: &'a reqwest::Client,
-    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
-    pub proxy_slice_cache: &'a synctv_proxy::slice_cache::SliceCache,
 }
 
 pub struct BilibiliLiveDanmakuDeps<'a> {
     pub playback_provider_service: &'a BilibiliPlaybackProviderService,
+    pub identity_runtime: PlaybackProviderIdentityRuntime<'a>,
     pub actor_user_id: synctv_core::models::UserId,
     pub request_control: Option<&'a ExecutionControl>,
 }
@@ -208,9 +203,9 @@ pub async fn get_bilibili_dash_manifest(
     .await?;
     let dash_segment_base = playback_provider_route_base("bilibili", &req.version, "dash-segments");
     let mode_name = req.mode_name.clone();
-    let signing_key = deps.proxy_signing_key;
+    let signing_key = deps.runtime.proxy_signing_key;
     let mut proxy_url_for =
-        (mode == synctv_core::provider::bilibili::BilibiliDashManifestMode::Proxy).then(|| {
+        (mode == synctv_core::provider::BilibiliDashManifestMode::Proxy).then(|| {
             Box::new(move |index: usize, _target_url: &str| {
                 let resource = format!("dash-segments/{mode_name}/{index}");
                 let mut segment_claims = claims.clone();
@@ -224,7 +219,7 @@ pub async fn get_bilibili_dash_manifest(
                     index,
                     signed_query
                 )
-            }) as Box<synctv_core::provider::bilibili::BilibiliDashProxyUrlMapper<'_>>
+            }) as Box<synctv_core::provider::BilibiliDashProxyUrlMapper<'_>>
         });
     let action = deps
         .playback_provider_service
@@ -358,10 +353,14 @@ pub async fn watch_bilibili_live_danmaku(
     req: WatchBilibiliLiveDanmakuRequest,
 ) -> Result<BilibiliLiveDanmakuStream, ApiError> {
     crate::impls::validate_proto_request(&req)?;
+    let media_id = crate::impls::proto_validated_media_id(
+        &req.media_id,
+        deps.identity_runtime.public_id_codec,
+    )?;
     let stream = deps
         .playback_provider_service
         .watch_live_danmaku(BilibiliLiveDanmakuRequest {
-            media_id: &req.media_id,
+            media_id,
             actor_user_id: deps.actor_user_id,
             request_control: deps.request_control,
         })
@@ -377,25 +376,25 @@ pub async fn watch_bilibili_live_danmaku(
 
 fn bilibili_dash_manifest_mode(
     value: i32,
-) -> Result<synctv_core::provider::bilibili::BilibiliDashManifestMode, ApiError> {
+) -> Result<synctv_core::provider::BilibiliDashManifestMode, ApiError> {
     match BilibiliDashManifestMode::try_from(value).map_err(|_| {
         ApiError::InvalidInput("Unsupported Bilibili DASH manifest mode".to_string())
     })? {
         BilibiliDashManifestMode::Unspecified | BilibiliDashManifestMode::Direct => {
-            Ok(synctv_core::provider::bilibili::BilibiliDashManifestMode::Direct)
+            Ok(synctv_core::provider::BilibiliDashManifestMode::Direct)
         }
         BilibiliDashManifestMode::Proxy => {
-            Ok(synctv_core::provider::bilibili::BilibiliDashManifestMode::Proxy)
+            Ok(synctv_core::provider::BilibiliDashManifestMode::Proxy)
         }
     }
 }
 
 fn bilibili_dash_manifest_mode_resource(
-    mode: synctv_core::provider::bilibili::BilibiliDashManifestMode,
+    mode: synctv_core::provider::BilibiliDashManifestMode,
 ) -> &'static str {
     match mode {
-        synctv_core::provider::bilibili::BilibiliDashManifestMode::Direct => "direct",
-        synctv_core::provider::bilibili::BilibiliDashManifestMode::Proxy => "proxy",
+        synctv_core::provider::BilibiliDashManifestMode::Direct => "direct",
+        synctv_core::provider::BilibiliDashManifestMode::Proxy => "proxy",
     }
 }
 
@@ -404,8 +403,8 @@ async fn verify_bilibili_access(
     request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
-        std::sync::Arc<dyn synctv_core::provider::store::ProviderStore>,
-        synctv_core::proxy_signature::ProxyUrlClaims,
+        std::sync::Arc<dyn synctv_core::provider::ProviderStore>,
+        crate::proxy_signature::ProxyUrlClaims,
     ),
     ApiError,
 > {
@@ -453,10 +452,10 @@ crate::impl_has_playback_provider_access_fields!(BilibiliPlaybackProviderDeps<'a
 impl<'a> BilibiliPlaybackProviderDeps<'a> {
     fn chunk_deps(&self) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
-            proxy_signing_key: self.proxy_signing_key,
-            proxy_http_client: self.proxy_http_client,
-            ssrf_guard: self.ssrf_guard,
-            proxy_slice_cache: self.proxy_slice_cache,
+            proxy_signing_key: self.runtime.proxy_signing_key,
+            proxy_http_client: self.runtime.proxy_http_client,
+            ssrf_guard: self.runtime.ssrf_guard,
+            proxy_slice_cache: self.runtime.proxy_slice_cache,
             request_control: self.request_control,
             hls_rewrite: None,
         }
@@ -465,7 +464,7 @@ impl<'a> BilibiliPlaybackProviderDeps<'a> {
     fn chunk_deps_with_hls(
         &self,
         segment_base: &'a str,
-        claims: &'a synctv_core::proxy_signature::ProxyUrlClaims,
+        claims: &'a crate::proxy_signature::ProxyUrlClaims,
         resource: &'static str,
     ) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {

@@ -156,7 +156,7 @@ fn test_api_address() {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        public_ids: PublicIdsConfig::default(),
+        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-that-is-long-enough"
                 .to_string(),
@@ -194,7 +194,7 @@ fn test_metrics_address() {
     let config = Config {
         server: ServerConfig::default(),
         time: TimeConfig::default(),
-        public_ids: PublicIdsConfig::default(),
+        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig::default(),
         data_dir: default_data_dir().display().to_string(),
         metrics: MetricsConfig {
@@ -492,47 +492,83 @@ fn test_inspect_unknowns_with_env_map_reports_file_and_env_unknowns() {
 }
 
 #[test]
-fn test_public_ids_default_to_prefixed_decimal_ids() {
+fn test_external_ids_default_to_prefixed_decimal_ids() {
     let config = Config::from_env_map(&HashMap::new()).checked("default config should load");
-    let codec = crate::PublicIdCodec::from_config(&config.public_ids)
-        .checked("default public IDs config should be valid");
 
-    assert!(config.public_ids.sqids.is_none());
-    assert_eq!(
-        codec
-            .encode_user_id(crate::models::UserId::expect_positive(1))
-            .checked("user ID should encode"),
-        "usr_1"
-    );
+    assert!(config.external_ids.sqids.is_none());
 }
 
 #[test]
-fn test_public_ids_sqids_env_enables_prefixed_sqids() {
+fn test_external_ids_sqids_env_enables_prefixed_sqids() {
     let config = Config::from_env_map(&env_map(&[("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH", "8")]))
         .checked("sqids env config should load");
-    let codec = crate::PublicIdCodec::from_config(&config.public_ids)
-        .checked("sqids public IDs config should be valid");
-    let encoded = codec
-        .encode_user_id(crate::models::UserId::expect_positive(1))
-        .checked("user ID should encode");
 
     assert_eq!(
         config
-            .public_ids
+            .external_ids
             .sqids
             .as_ref()
             .checked("sqids should be enabled")
             .min_length,
         8
     );
-    assert!(encoded.starts_with("usr_"));
-    assert_ne!(encoded, "usr_1");
-    assert_eq!(
-        codec
-            .decode_user_id(&encoded)
-            .checked("user ID should decode"),
-        crate::models::UserId::expect_positive(1)
+}
+
+#[test]
+fn test_external_ids_sqids_validation_rejects_duplicate_alphabet() {
+    let mut config = valid_prod_config();
+    config.external_ids.sqids = Some(ExternalIdsSqidsConfig {
+        alphabet: Some("aabbcc".to_string()),
+        min_length: 8,
+    });
+
+    let errors = config
+        .validate_with_env_map(&HashMap::new())
+        .failed("duplicate sqids alphabet should fail config validation");
+
+    assert!(
+        errors.iter().any(|error| {
+            error.contains("external_ids.sqids.alphabet") && error.contains("unique characters")
+        }),
+        "unexpected errors: {errors:?}"
     );
+}
+
+#[test]
+fn test_external_ids_sqids_validation_rejects_punctuation_alphabet() {
+    let mut config = valid_prod_config();
+    config.external_ids.sqids = Some(ExternalIdsSqidsConfig {
+        alphabet: Some(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_string(),
+        ),
+        min_length: 8,
+    });
+
+    let errors = config
+        .validate_with_env_map(&HashMap::new())
+        .failed("punctuation sqids alphabet should fail config validation");
+
+    assert!(
+        errors.iter().any(|error| {
+            error.contains("external_ids.sqids.alphabet") && error.contains("ASCII alphanumeric")
+        }),
+        "unexpected errors: {errors:?}"
+    );
+}
+
+#[test]
+fn test_external_ids_sqids_validation_accepts_alphanumeric_alphabet() {
+    let mut config = valid_prod_config();
+    config.external_ids.sqids = Some(ExternalIdsSqidsConfig {
+        alphabet: Some(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+        ),
+        min_length: 8,
+    });
+
+    config
+        .validate_with_env_map(&HashMap::new())
+        .checked("alphanumeric sqids alphabet should pass config validation");
 }
 
 #[test]
@@ -576,7 +612,7 @@ fn valid_prod_config() -> Config {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        public_ids: PublicIdsConfig::default(),
+        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-that-is-long-enough"
                 .to_string(),

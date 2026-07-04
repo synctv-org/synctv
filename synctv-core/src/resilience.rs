@@ -28,8 +28,8 @@ pub mod timeout {
     /// Default timeout for external HTTP requests
     pub const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// Default timeout for gRPC calls
-    pub const GRPC_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+    /// Default timeout for remote transport calls.
+    pub const REMOTE_TRANSPORT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Timeout configuration
     #[derive(Debug, Clone, Copy)]
@@ -37,7 +37,7 @@ pub mod timeout {
         pub db_query: Duration,
         pub redis: Duration,
         pub http: Duration,
-        pub grpc: Duration,
+        pub remote_transport: Duration,
     }
 
     impl Default for TimeoutConfig {
@@ -46,7 +46,7 @@ pub mod timeout {
                 db_query: DB_QUERY_TIMEOUT,
                 redis: REDIS_OPERATION_TIMEOUT,
                 http: HTTP_REQUEST_TIMEOUT,
-                grpc: GRPC_CALL_TIMEOUT,
+                remote_transport: REMOTE_TRANSPORT_CALL_TIMEOUT,
             }
         }
     }
@@ -79,10 +79,10 @@ pub mod timeout {
             self
         }
 
-        /// Set gRPC timeout
+        /// Set the remote transport call timeout.
         #[must_use]
-        pub const fn with_grpc_timeout(mut self, timeout: Duration) -> Self {
-            self.grpc = timeout;
+        pub const fn with_remote_transport_timeout(mut self, timeout: Duration) -> Self {
+            self.remote_transport = timeout;
             self
         }
     }

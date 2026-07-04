@@ -3,9 +3,10 @@ use std::sync::Arc;
 use crate::{
     cache::{CacheDomain, CacheInvalidationRuntime, MemberPermissionKey},
     models::{RoomId, UserId},
-    service::permission::{PermissionCacheFence, PermissionService, PermissionWriteFence},
     Result,
 };
+
+use super::{PermissionCacheFence, PermissionService, PermissionWriteFence};
 
 impl PermissionService {
     pub(crate) async fn invalidate_cache_local_only(&self, room_id: &RoomId, user_id: &UserId) {

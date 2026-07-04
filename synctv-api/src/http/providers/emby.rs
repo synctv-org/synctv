@@ -5,6 +5,10 @@
 //! modules, while thumbnail fetches use an authenticated route that resolves
 //! Emby credentials server-side.
 
+use crate::emby_thumbnail_urls::{
+    clamp_thumbnail_dimension, thumbnail_signature_present, verify_signed_thumbnail_access,
+    ThumbnailSignatureAccessError, ThumbnailSignatureScope,
+};
 use axum::{
     extract::{Path, Query, RawQuery, State},
     routing::{get, post},
@@ -12,10 +16,7 @@ use axum::{
 };
 use futures::FutureExt;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use synctv_core::models::ProviderCredential;
-use synctv_core::provider::playback_transport::PlaybackTransportAction;
-use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
+use synctv_core::provider::{EmbyProvider, PlaybackTransportAction};
 
 use crate::http::{
     error::map_api_error, middleware::RequestMetadata, validation::ProtoQuery, AppError, AppResult,
@@ -32,9 +33,6 @@ use super::common::{
 };
 
 const DEFAULT_THUMBNAIL_HEIGHT: u32 = 300;
-const MAX_THUMBNAIL_DIMENSION: u32 = 1920;
-const THUMBNAIL_ROUTE_PREFIX: &str = "/api/providers/emby/thumbnail/";
-const THUMBNAIL_SIGNATURE_PROVIDER: &str = "emby-thumbnail";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,19 +54,6 @@ pub(crate) struct ThumbnailQuery {
     _exp: Option<i64>,
 }
 
-#[derive(Clone, Copy)]
-struct ThumbnailSignatureScope<'a> {
-    item_id: &'a str,
-    server_id: &'a str,
-    credential_owner_id: &'a str,
-    max_height: u32,
-    max_width: u32,
-}
-
-fn clamp_thumbnail_dimension(value: Option<u32>, default: u32) -> u32 {
-    value.unwrap_or(default).min(MAX_THUMBNAIL_DIMENSION)
-}
-
 fn resolve_thumbnail_query(
     query: &ThumbnailQuery,
 ) -> Result<(&str, Option<&str>, u32, u32), AppError> {
@@ -86,129 +71,8 @@ fn resolve_thumbnail_query(
     ))
 }
 
-fn build_thumbnail_proxy_action(
-    item_id: &str,
-    host: &str,
-    api_key: &str,
-    max_height: u32,
-    max_width: u32,
-) -> Result<PlaybackTransportAction, ApiError> {
-    let thumbnail_path = if max_width > 0 {
-        format!(
-            "/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90"
-        )
-    } else {
-        format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90")
-    };
-
-    let url = synctv_core::provider::emby::emby_server_url(host, &thumbnail_path)
-        .map_err(|error| ApiError::Internal(error.to_string()))?;
-
-    Ok(PlaybackTransportAction::FetchAndForward {
-        url,
-        headers: std::collections::HashMap::from([(
-            "X-Emby-Token".to_string(),
-            api_key.to_string(),
-        )]),
-        range_header: None,
-    })
-}
-
-fn build_thumbnail_proxy_action_from_credential(
-    item_id: &str,
-    credential: &ProviderCredential,
-    max_height: u32,
-    max_width: u32,
-) -> Result<PlaybackTransportAction, ApiError> {
-    if item_id.trim().is_empty() {
-        return Err(ApiError::InvalidInput(
-            "item_id must not be empty".to_string(),
-        ));
-    }
-
-    match credential {
-        ProviderCredential::Emby { host, api_key, .. } => {
-            build_thumbnail_proxy_action(item_id.trim(), host, api_key, max_height, max_width)
-        }
-        _ => Err(ApiError::Internal(
-            "Stored credential is not an Emby credential".to_string(),
-        )),
-    }
-}
-
-fn thumbnail_signature_version(scope: ThumbnailSignatureScope<'_>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(scope.item_id.as_bytes());
-    hasher.update([0]);
-    hasher.update(scope.server_id.as_bytes());
-    hasher.update([0]);
-    hasher.update(scope.credential_owner_id.as_bytes());
-    hasher.update([0]);
-    hasher.update(scope.max_height.to_be_bytes());
-    hasher.update(scope.max_width.to_be_bytes());
-    let digest = hasher.finalize();
-    hex::encode(digest)
-}
-
-fn build_signed_thumbnail_query(
-    signing_key: &ProxySigningKey,
-    room_id: &str,
-    user_id: &str,
-    scope: ThumbnailSignatureScope<'_>,
-    expires_at: i64,
-) -> String {
-    let claims = ProxyUrlClaims {
-        provider: THUMBNAIL_SIGNATURE_PROVIDER.to_string(),
-        version: thumbnail_signature_version(scope),
-        resource: "thumbnail".to_string(),
-        room_id: room_id.to_string(),
-        user_id: user_id.to_string(),
-        expires_at,
-        target_url: None,
-    };
-    signing_key.build_signed_query(&claims)
-}
-
-fn thumbnail_signature_present(raw_query: &str) -> bool {
-    url::form_urlencoded::parse(raw_query.as_bytes()).any(|(key, _)| key.as_ref() == "sig")
-}
-
-fn thumbnail_signature_query(raw_query: &str) -> String {
-    url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(
-            url::form_urlencoded::parse(raw_query.as_bytes())
-                .filter(|(key, _)| matches!(key.as_ref(), "sig" | "uid" | "rid" | "exp" | "pv")),
-        )
-        .finish()
-}
-
-fn verify_signed_thumbnail_access(
-    signing_key: &ProxySigningKey,
-    auth_user_id: &str,
-    raw_query: &str,
-    scope: ThumbnailSignatureScope<'_>,
-) -> Result<String, AppError> {
-    let signature_query = thumbnail_signature_query(raw_query);
-    let claims = signing_key
-        .parse_and_verify_query(
-            &signature_query,
-            THUMBNAIL_SIGNATURE_PROVIDER,
-            &thumbnail_signature_version(scope),
-            "thumbnail",
-        )
-        .map_err(|_| AppError::unauthorized("Invalid thumbnail signature"))?;
-
-    if claims.user_id != auth_user_id {
-        return Err(AppError::forbidden(
-            "Thumbnail URL is not valid for this user",
-        ));
-    }
-
-    Ok(claims.room_id)
-}
-
 fn authorize_thumbnail_request(
-    signing_key: &ProxySigningKey,
+    signing_key: &crate::proxy_signature::ProxySigningKey,
     public_credential_owner_id: &str,
     public_auth_user_id: &str,
     raw_query: &str,
@@ -225,7 +89,16 @@ fn authorize_thumbnail_request(
         credential_owner_id,
         ..scope
     };
-    verify_signed_thumbnail_access(signing_key, public_auth_user_id, raw_query, scope).map(Some)
+    verify_signed_thumbnail_access(signing_key, public_auth_user_id, raw_query, scope)
+        .map(Some)
+        .map_err(|error| match error {
+            ThumbnailSignatureAccessError::Invalid => {
+                AppError::unauthorized("Invalid thumbnail signature")
+            }
+            ThumbnailSignatureAccessError::WrongUser => {
+                AppError::forbidden("Thumbnail URL is not valid for this user")
+            }
+        })
 }
 
 fn app_error_to_thumbnail_api_error(error: &AppError) -> ApiError {
@@ -246,76 +119,6 @@ fn app_error_to_thumbnail_api_error(error: &AppError) -> ApiError {
         status if status.is_server_error() => ApiError::Internal(error.message().to_string()),
         _ => ApiError::InvalidInput(error.message().to_string()),
     }
-}
-
-pub(crate) fn sign_emby_thumbnail_url(
-    thumbnail_url: &str,
-    room_id: &str,
-    user_id: &str,
-    signing_key: &ProxySigningKey,
-) -> Result<String, String> {
-    let Some(path_with_item) = thumbnail_url.strip_prefix(THUMBNAIL_ROUTE_PREFIX) else {
-        return Ok(thumbnail_url.to_string());
-    };
-    let Some((item_id, raw_query)) = path_with_item.split_once('?') else {
-        return Ok(thumbnail_url.to_string());
-    };
-    if thumbnail_signature_present(raw_query) {
-        return Ok(thumbnail_url.to_string());
-    }
-
-    let mut server_id = None;
-    let mut credential_owner_id = None;
-    let mut max_height = None;
-    let mut max_width = None;
-    for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
-        match key.as_ref() {
-            "serverId" => server_id = Some(value.into_owned()),
-            "credentialOwnerId" => credential_owner_id = Some(value.into_owned()),
-            "maxHeight" => {
-                max_height = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail maxHeight: {error}")
-                })?);
-            }
-            "maxWidth" => {
-                max_width = Some(value.parse().map_err(|error| {
-                    format!("Failed to parse Emby thumbnail maxWidth: {error}")
-                })?);
-            }
-            _ => {}
-        }
-    }
-    let server_id = server_id.ok_or_else(|| "Emby thumbnail URL missing serverId".to_string())?;
-    let query = ThumbnailQuery {
-        server_id,
-        credential_owner_id,
-        max_height,
-        max_width,
-        _sig: None,
-        _uid: None,
-        _rid: None,
-        _exp: None,
-    };
-    let (server_id, credential_owner_id, max_height, max_width) =
-        resolve_thumbnail_query(&query).map_err(|error| error.message().to_string())?;
-    let credential_owner_id = credential_owner_id.unwrap_or(user_id);
-    let item_id = percent_encoding::percent_decode_str(item_id)
-        .decode_utf8()
-        .map_err(|error| format!("Failed to decode Emby thumbnail item_id: {error}"))?
-        .into_owned();
-    let scope = ThumbnailSignatureScope {
-        item_id: &item_id,
-        server_id,
-        credential_owner_id,
-        max_height,
-        max_width,
-    };
-    let expires_at = chrono::Utc::now().timestamp()
-        + synctv_core::proxy_signature::ProxySigningKey::default_expiry_secs();
-    let signed_query =
-        build_signed_thumbnail_query(signing_key, room_id, user_id, scope, expires_at);
-
-    Ok(format!("{thumbnail_url}&{signed_query}"))
 }
 
 /// Emby endpoints that perform authentication or credential mutation.
@@ -671,13 +474,9 @@ pub(crate) async fn thumbnail(
                         .public_id_codec
                         .decode_room_id(&room_id)
                         .map_err(crate::impls::ApiError::InvalidInput)?;
-                    crate::impls::playback_provider::validate_fresh_playback_provider_access(
-                        &state.user_service,
-                        &state.shared_api_runtime.playback_transport_services,
-                        &room_id,
-                        &authenticated.user_id,
-                    )
-                    .await?;
+                    super::playback_provider::playback_provider_api_runtime(&state)
+                        .validate_fresh_access(&room_id, &authenticated.user_id)
+                        .await?;
                 }
 
                 let credential_lookup_user_id = if let Some(public_id) = credential_owner_id {
@@ -690,22 +489,17 @@ pub(crate) async fn thumbnail(
                     authenticated.user_id
                 };
 
-                let credential = state
-                    .user_provider_credential_repository
-                    .get_by_provider_and_server(
-                        credential_lookup_user_id,
-                        synctv_core::provider::EmbyProvider::NAME,
-                        server_id,
-                    )
-                    .await
-                    .map_err(crate::impls::ApiError::from)?
-                    .ok_or_else(|| {
-                        crate::impls::ApiError::NotFound("Emby credential not found".to_string())
-                    })?;
-
-                let parsed = credential.credential_data.clone();
-                let action = build_thumbnail_proxy_action_from_credential(
-                    &item_id, &parsed, max_height, max_width,
+                let access = state
+                    .shared_api_runtime
+                    .provider_access_service
+                    .emby_access(credential_lookup_user_id, server_id, None, None)
+                    .await?;
+                let action = EmbyProvider::thumbnail_proxy_action(
+                    &item_id,
+                    &access.host,
+                    &access.api_key,
+                    max_height,
+                    max_width,
                 )?;
 
                 Ok::<PlaybackTransportAction, ApiError>(action)
@@ -722,6 +516,11 @@ pub(crate) async fn thumbnail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::emby_thumbnail_urls::{
+        build_signed_thumbnail_query, sign_emby_thumbnail_url, thumbnail_signature_query,
+        thumbnail_signature_version, THUMBNAIL_SIGNATURE_PROVIDER,
+    };
+    use crate::proxy_signature::{ProxySigningKey, ProxySigningKeyQueryExt};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -733,8 +532,8 @@ mod tests {
         result.map_err(|error| test_error(format!("route error: {error:?}")))
     }
 
-    fn api_ok<T>(result: Result<T, ApiError>) -> TestResult<T> {
-        result.map_err(|error| test_error(format!("{error:?}")))
+    fn provider_ok<T>(result: Result<T, synctv_core::provider::ProviderError>) -> TestResult<T> {
+        result.map_err(|error| test_error(error.to_string()))
     }
 
     fn string_ok<T>(result: Result<T, String>) -> TestResult<T> {
@@ -784,6 +583,25 @@ mod tests {
         assert_eq!(credential_owner_id, Some("owner-123"));
         assert_eq!(max_height, 480);
         assert_eq!(max_width, 640);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolve_thumbnail_query_floors_zero_height_to_default() -> TestResult {
+        let query = ThumbnailQuery {
+            server_id: "emby-main".to_string(),
+            credential_owner_id: None,
+            max_height: Some(0),
+            max_width: Some(0),
+            _sig: None,
+            _uid: None,
+            _rid: None,
+            _exp: None,
+        };
+        let (_, _, max_height, max_width) = route_ok(resolve_thumbnail_query(&query))?;
+
+        assert_eq!(max_height, 300);
+        assert_eq!(max_width, 0);
         Ok(())
     }
 
@@ -877,6 +695,10 @@ mod tests {
             .split('?')
             .nth(1)
             .ok_or_else(|| test_error("signed thumbnail query should exist"))?;
+        let query_with_provider_version = format!("{raw_query}&pv=stale-provider-version");
+        let filtered_with_provider_version =
+            thumbnail_signature_query(&query_with_provider_version);
+        assert!(!filtered_with_provider_version.contains("pv="));
         let query = thumbnail_signature_query(raw_query);
         let claims = signing_key
             .parse_and_verify_query(
@@ -948,14 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn test_build_thumbnail_proxy_action_from_credential_uses_server_side_token() -> TestResult {
-        let action = api_ok(build_thumbnail_proxy_action_from_credential(
+    fn test_thumbnail_proxy_action_uses_server_side_token() -> TestResult {
+        let action = provider_ok(EmbyProvider::thumbnail_proxy_action(
             "item-123",
-            &ProviderCredential::Emby {
-                host: "https://emby.example.com/base".to_string(),
-                api_key: "secret-token".to_string(),
-                emby_user_id: "user-1".to_string(),
-            },
+            "https://emby.example.com/base",
+            "secret-token",
             300,
             640,
         ))?;
@@ -965,6 +784,36 @@ mod tests {
                 assert_eq!(
                     url,
                     "https://emby.example.com/base/Items/item-123/Images/Primary?maxHeight=300&maxWidth=640&quality=90"
+                );
+                assert_eq!(
+                    headers.get("X-Emby-Token"),
+                    Some(&"secret-token".to_string())
+                );
+            }
+            other => {
+                return Err(test_error(format!(
+                    "expected FetchAndForward, got {other:?}"
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_thumbnail_proxy_action_encodes_item_id_path_segment() -> TestResult {
+        let action = provider_ok(EmbyProvider::thumbnail_proxy_action(
+            "folder/item?x#y",
+            "https://emby.example.com/base?ignored=true#fragment",
+            "secret-token",
+            0,
+            0,
+        ))?;
+
+        match action {
+            PlaybackTransportAction::FetchAndForward { url, headers, .. } => {
+                assert_eq!(
+                    url,
+                    "https://emby.example.com/base/Items/folder%2Fitem%3Fx%23y/Images/Primary?quality=90"
                 );
                 assert_eq!(
                     headers.get("X-Emby-Token"),

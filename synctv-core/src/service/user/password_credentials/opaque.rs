@@ -5,14 +5,13 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{User, UserId},
     repository::PasswordCredentialMaterial,
-    service::user::{
-        session_types::{
-            OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
-            OpaqueRegistrationStartChallenge, OPAQUE_REGISTRATION_SESSION_TTL_SECS,
-        },
-        UserService,
-    },
+    service::UserService,
     Error, Result,
+};
+
+use super::super::session_types::{
+    OpaquePasswordUpdateVerification, OpaqueRegistrationPurpose, OpaqueRegistrationSession,
+    OpaqueRegistrationStartChallenge, OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 
 impl UserService {

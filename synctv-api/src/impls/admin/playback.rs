@@ -54,15 +54,6 @@ impl AdminApiImpl {
         media: synctv_core::models::Media,
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(*user_id)
-            .map_err(|error| public_id_encode_error("user", &error))?;
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(*room_id)
-            .map_err(|error| public_id_encode_error("room", &error))?;
-
         let providers_manager = self.room_service.media_service().providers_manager();
         let provider = providers_manager
             .resolve_provider(
@@ -74,25 +65,11 @@ impl AdminApiImpl {
 
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(*user_id)
-            .with_public_user_id(public_user_id.clone())
             .with_room_id(*room_id)
-            .with_public_room_id(public_room_id)
             .with_media_id(media.id)
-            .with_public_media_id(
-                self.public_id_codec
-                    .encode_media_id(media.id)
-                    .map_err(|error| public_id_encode_error("media", &error))?,
-            )
-            .with_playback_client_profile(playback_client_profile.cloned())
-            .with_signing_key(&self.signing_key);
+            .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = media.creator_id.as_ref() {
-            let public_creator_id = self
-                .public_id_codec
-                .encode_user_id(*creator_id)
-                .map_err(|error| public_id_encode_error("credential owner", &error))?;
-            ctx = ctx
-                .with_credential_owner_id(*creator_id)
-                .with_public_credential_owner_id(public_creator_id);
+            ctx = ctx.with_credential_owner_id(*creator_id);
         }
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -141,19 +118,25 @@ impl AdminApiImpl {
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
 
-        // public_room_id and public_user_id must be present for signing
-        // If they're None, it indicates a logic error in context building
-        let room_id = ctx.public_room_id.as_deref().ok_or(ApiError::Internal(
-            "Missing public_room_id in provider context for playback signing".into(),
+        let room_id = ctx.room_id().ok_or(ApiError::Internal(
+            "Missing room_id in provider context for playback signing".into(),
         ))?;
-        let user_id = ctx.public_user_id.as_deref().ok_or(ApiError::Internal(
-            "Missing public_user_id in provider context for playback signing".into(),
+        let user_id = ctx.user_id().ok_or(ApiError::Internal(
+            "Missing user_id in provider context for playback signing".into(),
         ))?;
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id)
+            .map_err(|error| public_id_encode_error("room", &error))?;
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id)
+            .map_err(|error| public_id_encode_error("user", &error))?;
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
-            room_id,
-            user_id,
+            room_id: &public_room_id,
+            user_id: &public_user_id,
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;
@@ -196,29 +179,12 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(*user_id_model)
-            .map_err(|error| public_id_encode_error("user", &error))?;
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(*room_id_model)
-            .map_err(|error| public_id_encode_error("room", &error))?;
         let mut ctx = synctv_core::provider::ProviderContext::new("synctv")
             .with_user_id(*user_id_model)
-            .with_public_user_id(public_user_id)
             .with_room_id(*room_id_model)
-            .with_public_room_id(public_room_id)
-            .with_playback_client_profile(playback_client_profile.cloned())
-            .with_signing_key(&self.signing_key);
+            .with_playback_client_profile(playback_client_profile.cloned());
         if let Some(creator_id) = playlist.creator_id.as_ref() {
-            let public_creator_id = self
-                .public_id_codec
-                .encode_user_id(*creator_id)
-                .map_err(|error| public_id_encode_error("credential owner", &error))?;
-            ctx = ctx
-                .with_credential_owner_id(*creator_id)
-                .with_public_credential_owner_id(public_creator_id);
+            ctx = ctx.with_credential_owner_id(*creator_id);
         }
         if let Some(provider_instance_name) = source_fields.provider_instance_name {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
@@ -267,10 +233,18 @@ impl AdminApiImpl {
             .target(target.clone())
             .build()
             .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id_model)
+            .map_err(|error| public_id_encode_error("room", &error))?;
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id_model)
+            .map_err(|error| public_id_encode_error("user", &error))?;
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
-            room_id: ctx.public_room_id.as_deref().unwrap_or_default(),
-            user_id: ctx.public_user_id.as_deref().unwrap_or_default(),
+            room_id: &public_room_id,
+            user_id: &public_user_id,
         };
         let mut playback =
             try_playback_to_proto(&full_result, &self.public_id_codec, Some(&signing))?;

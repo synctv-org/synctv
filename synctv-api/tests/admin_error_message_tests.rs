@@ -21,15 +21,13 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use sqlx::PgPool;
-use synctv_api::impls::admin::validate_admin_auth;
-use synctv_api::impls::ApiError;
+use synctv_api::{AdminAuthValidator, ApiError, ValidatedAdmin};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::UserId,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        user::UserServiceRuntimeOptions,
-        InMemoryTokenBlacklistStore, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, UserService,
+        UserServiceRuntimeOptions,
     },
 };
 use synctv_core_testing::{create_test_pool, opaque_register_user};
@@ -66,7 +64,7 @@ fn create_user_service(pool: &PgPool) -> UserService {
                 enabled: true,
                 need_review: false,
             }),
-            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     )
 }
@@ -83,9 +81,7 @@ async fn register_test_user(
 }
 
 /// Extract the error message from an ApiError::Authentication variant
-fn get_authentication_error_message(
-    result: Result<synctv_api::impls::admin::ValidatedAdmin, ApiError>,
-) -> String {
+fn get_authentication_error_message(result: Result<ValidatedAdmin, ApiError>) -> String {
     match result {
         Err(ApiError::Authentication(msg)) => msg,
         Ok(_) => panic!("Expected Authentication error, but got success"),
@@ -116,7 +112,9 @@ async fn test_user_not_found_returns_unified_error_message() {
     let non_existent_user_id = UserId::expect_positive(10_000_007);
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, non_existent_user_id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(non_existent_user_id, 0, token_iat)
+        .await;
 
     assert!(result.is_err(), "Non-existent user should fail auth");
 
@@ -145,7 +143,9 @@ async fn test_banned_user_returns_unified_error_message() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(user.id, 0, token_iat)
+        .await;
 
     assert!(result.is_err(), "Banned user should fail auth");
 
@@ -175,7 +175,9 @@ async fn test_deleted_user_returns_unified_error_message() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(user.id, 0, token_iat)
+        .await;
 
     assert!(result.is_err(), "Deleted user should fail auth");
 
@@ -199,7 +201,9 @@ async fn test_active_user_passes_auth() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(user.id, 0, token_iat)
+        .await;
 
     assert!(
         result.is_ok(),
@@ -223,7 +227,9 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     // Scenario 1: User not found
     let non_existent_id = UserId::expect_positive(10_000_008);
     let token_iat = Utc::now().timestamp();
-    let result = validate_admin_auth(&user_service, non_existent_id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(non_existent_id, 0, token_iat)
+        .await;
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 2: Banned user
@@ -237,7 +243,9 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .ban_user_and_cleanup_memberships(&banned_user.id, None, None)
         .await
         .unwrap();
-    let result = validate_admin_auth(&user_service, banned_user.id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(banned_user.id, 0, token_iat)
+        .await;
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 3: Deleted user
@@ -248,7 +256,9 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     )
     .await;
     user_service.delete_user(&deleted_user.id).await.unwrap();
-    let result = validate_admin_auth(&user_service, deleted_user.id, 0, token_iat).await;
+    let result = AdminAuthValidator::new(&user_service)
+        .validate(deleted_user.id, 0, token_iat)
+        .await;
     error_messages.push(get_authentication_error_message(result));
 
     // Verify all error messages are identical

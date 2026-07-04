@@ -9,8 +9,8 @@ use crate::{
         UserPasswordRepository, UserPreferencesRepository, UserRepository,
     },
     service::{
-        auth::{BruteForceProtectionService, JwtService, TokenBlacklistStore},
-        user::{UserService, UserServiceDependencies, UserServiceRuntimeOptions},
+        BruteForceProtectionService, JwtService, TokenBlacklistStore, UserService,
+        UserServiceDependencies, UserServiceRuntimeOptions,
     },
 };
 

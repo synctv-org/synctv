@@ -9,18 +9,20 @@ use synctv_proto::playback_provider::direct_url::{
 };
 use tonic::{Request, Response, Status};
 
-use super::{execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream};
-use crate::http::AppState;
+use super::{
+    execute_playback_provider_stream, grpc_request_metadata, GrpcResponseStream,
+    PlaybackProviderGrpcState,
+};
 
 #[derive(Clone)]
 pub struct DirectUrlPlaybackProviderGrpcService {
-    state: Arc<AppState>,
+    state: Arc<PlaybackProviderGrpcState>,
     config: Arc<synctv_core::Config>,
 }
 
 impl DirectUrlPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<AppState>, config: Arc<synctv_core::Config>) -> Self {
+    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
         Self { state, config }
     }
 }
@@ -123,21 +125,14 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
 }
 
 fn direct_url_deps<'a>(
-    state: &'a AppState,
+    state: &'a PlaybackProviderGrpcState,
     request_control: Option<&'a synctv_core::provider::ExecutionControl>,
 ) -> crate::impls::playback_provider::direct_url::DirectUrlPlaybackProviderDeps<'a> {
     crate::impls::playback_provider::direct_url::DirectUrlPlaybackProviderDeps {
         playback_provider_service: &state
             .shared_api_runtime
             .direct_url_playback_provider_service,
-        proxy_signing_key: &state.shared_api_runtime.proxy_signing_key,
-        public_id_codec: &state.shared_api_runtime.public_id_codec,
-        provider_stores: state.shared_api_runtime.provider_stores.as_ref(),
-        user_service: &state.shared_api_runtime.client_api.user_service,
-        playback_transport_services: &state.shared_api_runtime.playback_transport_services,
+        runtime: super::playback_provider_api_runtime(state),
         request_control,
-        proxy_http_client: &state.proxy_http_client,
-        ssrf_guard: &state.ssrf_guard,
-        proxy_slice_cache: &state.proxy_slice_cache,
     }
 }

@@ -2,6 +2,7 @@ use super::{
     apply_global_layers, build_app_state, build_cors_layer, optional_header_str,
     register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterConfig,
 };
+use crate::proxy_signature::ProxySigningKey;
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::{routing::get, Router};
@@ -12,7 +13,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use synctv_core::cache::{KeyBuilder, UsernameCache};
 use synctv_core::provider::ProviderSet;
-use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::service::{
     AuditService, ContentFilter, InMemoryTokenBlacklistStore, ProvidersManager, RateLimitConfig,
     RateLimiter, RoomService, UserService,
@@ -35,6 +35,297 @@ fn app_err<T>(result: Result<T, super::AppError>) -> TestResult<super::AppError>
         Ok(_) => Err(test_error("expected HTTP app error")),
         Err(error) => Ok(error),
     }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn test_provider_access_service(
+    credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
+    providers: &ProviderSet,
+    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+) -> Arc<dyn synctv_core::provider::ProviderAccessService> {
+    Arc::new(
+        synctv_core::provider::CachedProviderAccessService::new(
+            credential_repo,
+            providers.alist.clone(),
+        )
+        .with_store(provider_stores.load("credentials")),
+    )
+}
+
+struct TestPlaybackProviderServices {
+    playback_transport_services: Arc<synctv_core::provider::PlaybackTransportServices>,
+    alist: Arc<synctv_core::service::AlistPlaybackProviderService>,
+    bilibili: Arc<synctv_core::service::BilibiliPlaybackProviderService>,
+    direct_url: Arc<synctv_core::service::DirectUrlPlaybackProviderService>,
+    emby: Arc<synctv_core::service::EmbyPlaybackProviderService>,
+    rtmp: Arc<synctv_core::service::RtmpPlaybackProviderService>,
+    live_proxy: Arc<synctv_core::service::LiveProxyPlaybackProviderService>,
+}
+
+struct TestProviderApiImpls {
+    provider_common: Arc<crate::impls::ProviderCommonApiImpl>,
+    bilibili: Arc<crate::impls::BilibiliApiImpl>,
+    alist: Arc<crate::impls::AlistApiImpl>,
+    emby: Arc<crate::impls::EmbyApiImpl>,
+}
+
+struct TestCoreApiImpls {
+    client: Arc<crate::impls::ClientApiImpl>,
+    admin: Option<Arc<crate::impls::AdminApiImpl>>,
+    email: Option<Arc<crate::impls::EmailApiImpl>>,
+    notification: Option<Arc<crate::impls::NotificationApiImpl>>,
+    oauth2: Option<Arc<crate::impls::OAuth2ApiImpl>>,
+}
+
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn test_core_api_impls(
+    config: Arc<synctv_core::Config>,
+    user_service: Arc<UserService>,
+    read_pool: Option<sqlx::PgPool>,
+    room_service: Arc<RoomService>,
+    connection_service: Arc<dyn synctv_realtime::sync::ConnectionRuntime>,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    jwt_service: synctv_core::service::JwtService,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    request_executor: Arc<crate::impls::RequestExecutor>,
+    jwt_validator: Arc<synctv_core::service::JwtValidator>,
+    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    signing_key: Arc<ProxySigningKey>,
+    rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
+    settings_service: Option<Arc<synctv_core::service::SettingsService>>,
+    runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
+    email_service: Option<Arc<synctv_core::service::EmailService>>,
+    email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
+    audit_service: Arc<AuditService>,
+    provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
+) -> TestResult<TestCoreApiImpls> {
+    let email = match (email_service.clone(), email_token_service) {
+        (Some(email_service), Some(email_token_service)) => {
+            Some(Arc::new(crate::impls::EmailApiImpl::new(
+                user_service.clone(),
+                email_service,
+                email_token_service,
+                rate_limiter.clone(),
+                public_id_codec.clone(),
+            )))
+        }
+        _ => None,
+    };
+    let realtime_event_service = Arc::new(crate::runtime::LocalNoopRealtimeEventService::new());
+    let client = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: user_service.clone(),
+            read_pool: read_pool.clone(),
+            room_service: room_service.clone(),
+            connection_service: connection_service.clone(),
+            config: config.clone(),
+            publish_key_service: None,
+            jwt_service,
+            live_streaming_infrastructure: None,
+            runtime_settings_store: runtime_settings_store.clone(),
+            public_id_codec: public_id_codec.clone(),
+            chat_service: None,
+            provider_stores: provider_stores.clone(),
+            email_api: email.clone(),
+            passkey_service: None,
+        },
+        crate::impls::ClientApiRuntime::new_with_services(crate::impls::ClientApiRuntimeServices {
+            realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
+            realtime_event_service: realtime_event_service.clone(),
+            redis_runtime: None,
+            builtin_stun_url: None,
+            webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
+            provider_access_service: provider_access_service.clone(),
+            signing_key: signing_key.clone(),
+            presence_service: presence_service.clone(),
+            jwt_validator,
+            request_executor: request_executor.clone(),
+            ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
+            playback_duration_probe: None,
+        }),
+    ));
+    let admin = if let Some(settings_service) = settings_service {
+        let email_service = email_service
+            .ok_or_else(|| test_error("email service is required to build admin API"))?;
+        Some(Arc::new(crate::impls::AdminApiImpl::new_with_runtime(
+            crate::impls::AdminApiConfig {
+                room_service,
+                user_service: user_service.clone(),
+                read_services: crate::test_support::admin_read_services(user_service.as_ref()),
+                settings_service,
+                runtime_settings_store,
+                email_service,
+                connection_service,
+                provider_instance_manager,
+                live_streaming_infrastructure: None,
+                publish_key_service: None,
+                config,
+                audit_service,
+                public_id_codec: public_id_codec.clone(),
+            },
+            crate::impls::AdminApiRuntime {
+                realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
+                realtime_event_service,
+                provider_stores,
+                provider_access_service,
+                signing_key,
+                presence_service,
+                request_executor,
+            },
+        )))
+    } else {
+        None
+    };
+
+    Ok(TestCoreApiImpls {
+        client,
+        admin,
+        email,
+        notification: None,
+        oauth2: None,
+    })
+}
+
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+fn test_provider_api_impls(
+    providers: &ProviderSet,
+    provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
+    user_service: Arc<UserService>,
+    audit_service: Arc<AuditService>,
+    providers_manager: Arc<synctv_core::service::ProvidersManager>,
+    request_executor: Arc<crate::impls::RequestExecutor>,
+    credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
+    provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+) -> TestResult<TestProviderApiImpls> {
+    let provider_common = Arc::new(crate::impls::ProviderCommonApiImpl::new_with_runtime(
+        provider_instance_manager,
+        user_service,
+        audit_service,
+        crate::impls::ProviderCommonApiRuntime {
+            providers_manager,
+            request_executor,
+        },
+    ));
+    let runtime = crate::impls::ProviderApiRuntime {
+        access_service: provider_access_service,
+        event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+    };
+    let bilibili = Arc::new(
+        crate::impls::BilibiliApiImpl::new_with_runtime(
+            &providers.bilibili,
+            credential_repo.clone(),
+            b"test-secret-key-for-http-router-tests-minimum-32-chars",
+            runtime.clone(),
+        )
+        .map_err(|error| test_error(error.to_string()))?,
+    );
+    let alist = Arc::new(crate::impls::AlistApiImpl::new_with_runtime(
+        &providers.alist,
+        credential_repo.clone(),
+        runtime.clone(),
+    ));
+    let emby = Arc::new(crate::impls::EmbyApiImpl::new_with_runtime(
+        &providers.emby,
+        credential_repo,
+        runtime,
+    ));
+
+    Ok(TestProviderApiImpls {
+        provider_common,
+        bilibili,
+        alist,
+        emby,
+    })
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn test_playback_provider_services(
+    providers: ProviderSet,
+    provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    room_service: Arc<RoomService>,
+    credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
+    provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+) -> TestPlaybackProviderServices {
+    let playback_transport_services = Arc::new(synctv_core::provider::PlaybackTransportServices {
+        room_service: room_service.clone(),
+        permission_service: room_service.permission_service().clone(),
+        credential_encryption: None,
+        credential_repo,
+        provider_access_service: provider_access_service.clone(),
+    });
+    let deps = synctv_core::service::PlaybackProviderServiceDeps {
+        providers,
+        provider_stores,
+        playback_transport_services: playback_transport_services.clone(),
+        provider_access_service,
+    };
+    TestPlaybackProviderServices {
+        playback_transport_services,
+        alist: Arc::new(synctv_core::service::AlistPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        bilibili: Arc::new(synctv_core::service::BilibiliPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        direct_url: Arc::new(synctv_core::service::DirectUrlPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        emby: Arc::new(synctv_core::service::EmbyPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        rtmp: Arc::new(synctv_core::service::RtmpPlaybackProviderService::new(
+            deps.clone(),
+        )),
+        live_proxy: Arc::new(synctv_core::service::LiveProxyPlaybackProviderService::new(
+            deps,
+        )),
+    }
+}
+
+struct TestApiExecutionRuntime {
+    jwt_validator: Arc<synctv_core::service::JwtValidator>,
+    security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    request_executor: Arc<crate::impls::RequestExecutor>,
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn test_api_execution_runtime(
+    config: Arc<synctv_core::Config>,
+    user_service: Arc<UserService>,
+    user_cache: Arc<synctv_core::cache::UserCache>,
+    jwt_service: synctv_core::service::JwtService,
+    rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
+) -> TestResult<TestApiExecutionRuntime> {
+    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new_with_runtime(
+        user_service.clone(),
+        synctv_core::service::SecurityPipelineRuntime {
+            user_cache: Some(user_cache),
+            token_blacklist: user_service.token_blacklist_store(),
+            key_builder: user_service.key_builder().clone(),
+        },
+    ));
+    let jwt_validator = Arc::new(synctv_core::service::JwtValidator::new(Arc::new(
+        jwt_service,
+    )));
+    let public_id_codec = Arc::new(
+        crate::public_id::PublicIdCodec::from_config(&config.external_ids)
+            .map_err(|error| test_error(format!("invalid test public id config: {error}")))?,
+    );
+    let request_executor = Arc::new(crate::impls::RequestExecutor::new(
+        config,
+        jwt_validator.clone(),
+        security_pipeline.clone(),
+        rate_limiter,
+    ));
+
+    Ok(TestApiExecutionRuntime {
+        jwt_validator,
+        security_pipeline,
+        public_id_codec,
+        request_executor,
+    })
 }
 
 fn test_request(result: Result<Request<Body>, axum::http::Error>) -> TestResult<Request<Body>> {
@@ -362,33 +653,111 @@ fn test_app_state_with_rate_limits(
         "test-secret-key-for-http-router-tests-minimum-32-chars",
     ));
     let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+    let audit_service = Arc::new(audit_service);
     let config = synctv_core::Config {
         request_rate_limits,
         ..synctv_core::Config::default()
     };
+    let config = Arc::new(config);
+    let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
+        128,
+        60,
+        300,
+        "test:user:".to_string(),
+    ));
+    let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:".to_string()));
+    let api_execution_runtime = test_fixture(test_api_execution_runtime(
+        config.clone(),
+        user_service.clone(),
+        user_cache.clone(),
+        jwt_service.clone(),
+        rate_limiter.clone(),
+    ));
+    let credential_repo =
+        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
+    let shared_provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
+        synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:"),
+    );
+    let provider_access_service = test_provider_access_service(
+        credential_repo.clone(),
+        &providers,
+        shared_provider_stores.clone(),
+    );
+    let playback_provider_services = test_playback_provider_services(
+        providers.clone(),
+        shared_provider_stores.clone(),
+        room_service.clone(),
+        credential_repo.clone(),
+        provider_access_service.clone(),
+    );
+    let connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
+        synctv_realtime::sync::ConnectionLimits::default(),
+    ));
+    let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
+    let shared_proxy_signing_key = Arc::new(
+        crate::proxy_signature::ProxySigningKey::try_derive_from(
+            b"test-proxy-signing-key-minimum-32-bytes!!",
+        )
+        .expect("test proxy signing key should derive"),
+    );
+    let core_api_impls = test_fixture(test_core_api_impls(
+        config.clone(),
+        user_service.clone(),
+        None,
+        room_service.clone(),
+        connection_manager.clone(),
+        presence_service.clone(),
+        jwt_service.clone(),
+        api_execution_runtime.public_id_codec.clone(),
+        api_execution_runtime.request_executor.clone(),
+        api_execution_runtime.jwt_validator.clone(),
+        shared_provider_stores.clone(),
+        provider_access_service.clone(),
+        shared_proxy_signing_key.clone(),
+        rate_limiter.clone(),
+        None,
+        None,
+        None,
+        None,
+        audit_service.clone(),
+        provider_instance_manager.clone(),
+    ));
+    let provider_api_impls = test_fixture(test_provider_api_impls(
+        &providers,
+        provider_instance_manager.clone(),
+        user_service.clone(),
+        audit_service.clone(),
+        providers_manager.clone(),
+        api_execution_runtime.request_executor.clone(),
+        credential_repo.clone(),
+        provider_access_service.clone(),
+    ));
     let router_config = RouterConfig {
-        config: Arc::new(config),
-        user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
-            128,
-            60,
-            300,
-            "test:user:".to_string(),
-        )),
+        config,
+        user_cache,
         user_service,
         read_pool: None,
         room_service,
         content_filter: ContentFilter::new(),
         provider_instance_manager,
-        user_provider_credential_repository: Arc::new(
-            synctv_core::repository::UserProviderCredentialRepository::new(pool),
-        ),
+        user_provider_credential_repository: credential_repo,
+        provider_access_service,
         providers,
         event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
-        connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
-            synctv_realtime::sync::ConnectionLimits::default(),
-        )),
-        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
+        connection_manager,
+        presence_service,
         jwt_service,
+        jwt_validator: api_execution_runtime.jwt_validator,
+        security_pipeline: api_execution_runtime.security_pipeline,
+        public_id_codec: api_execution_runtime.public_id_codec,
+        request_executor: api_execution_runtime.request_executor,
+        metrics_access_controller: Arc::new(crate::metrics_auth::MetricsAccessController::new()),
+        client_api: core_api_impls.client.clone(),
+        admin_api: core_api_impls.admin.clone(),
+        email_api: core_api_impls.email.clone(),
+        notification_api: core_api_impls.notification.clone(),
+        oauth2_api: core_api_impls.oauth2.clone(),
         realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
         oauth2_service: None,
         passkey_service: None,
@@ -399,20 +768,26 @@ fn test_app_state_with_rate_limits(
         publish_key_service: None,
         notification_service: None,
         chat_service: None,
-        audit_service: Arc::new(audit_service),
+        audit_service,
         live_streaming_infrastructure: None,
-        rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
+        rate_limiter,
         ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         redis_runtime: None,
-        shared_provider_stores: Arc::new(
-            synctv_core::provider::store::ProviderStoreRegistry::local_only("test:provider:"),
-        ),
-        shared_proxy_signing_key: Arc::new(
-            synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
-                b"test-proxy-signing-key-minimum-32-bytes!!",
-            )
-            .expect("test proxy signing key should derive"),
-        ),
+        shared_provider_stores,
+        playback_transport_services: playback_provider_services
+            .playback_transport_services
+            .clone(),
+        alist_playback_provider_service: playback_provider_services.alist.clone(),
+        bilibili_playback_provider_service: playback_provider_services.bilibili.clone(),
+        direct_url_playback_provider_service: playback_provider_services.direct_url.clone(),
+        emby_playback_provider_service: playback_provider_services.emby.clone(),
+        rtmp_playback_provider_service: playback_provider_services.rtmp.clone(),
+        live_proxy_playback_provider_service: playback_provider_services.live_proxy.clone(),
+        provider_common_api: provider_api_impls.provider_common.clone(),
+        bilibili_api: provider_api_impls.bilibili.clone(),
+        alist_api: provider_api_impls.alist.clone(),
+        emby_api: provider_api_impls.emby.clone(),
+        shared_proxy_signing_key,
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
         credential_encryption: None,
@@ -446,7 +821,7 @@ async fn test_app_state_with_websocket_runtime(
     );
     let chat_service = synctv_core::service::ChatService::new(
         Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
-        synctv_core::service::chat::ChatRuntime {
+        synctv_core::service::ChatRuntime {
             rate_limiter: router_config.rate_limiter.clone(),
             rate_limit_config: state
                 .shared_api_runtime
@@ -455,7 +830,7 @@ async fn test_app_state_with_websocket_runtime(
                 .clone(),
             content_filter: state.shared_api_runtime.content_filter.as_ref().clone(),
         },
-        synctv_core::service::chat::ChatDependencies {
+        synctv_core::service::ChatDependencies {
             permission_service: router_config.room_service.permission_service().clone(),
             room_settings_service,
             user_service: router_config.user_service.clone(),
@@ -514,9 +889,9 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
     let permission_service = synctv_core::service::PermissionService::new_with_runtime(
         synctv_core::repository::RoomMemberRepository::new(pool.clone()),
         synctv_core::repository::RoomRepository::new(pool.clone()),
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     );
     let permission_service = test_fixture(permission_service);
@@ -528,14 +903,14 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
         None,
         None,
     );
-    let chat_service = synctv_core::service::ChatService::new(
+    let chat_service = Arc::new(synctv_core::service::ChatService::new(
         Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
-        synctv_core::service::chat::ChatRuntime {
+        synctv_core::service::ChatRuntime {
             rate_limiter: Arc::new(RateLimiter::local_only("test:http-chat:".to_string())),
             rate_limit_config: RateLimitConfig::default(),
             content_filter: ContentFilter::new(),
         },
-        synctv_core::service::chat::ChatDependencies {
+        synctv_core::service::ChatDependencies {
             permission_service,
             room_settings_service,
             user_service: Arc::clone(&user_service),
@@ -544,7 +919,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
             notification_service,
             runtime_settings_store: None,
         },
-    );
+    ));
 
     let realtime_manager =
         synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
@@ -564,16 +939,73 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
         .await;
     let realtime_manager = Arc::new(test_fixture(realtime_manager));
 
+    let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
+        128,
+        60,
+        300,
+        "test:http-chat:user:".to_string(),
+    ));
+    let api_execution_runtime = test_fixture(test_api_execution_runtime(
+        router_config.config.clone(),
+        user_service.clone(),
+        user_cache.clone(),
+        router_config.jwt_service.clone(),
+        router_config.rate_limiter.clone(),
+    ));
+    let client_api = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
+        crate::impls::ClientApiConfig {
+            user_service: user_service.clone(),
+            read_pool: None,
+            room_service: room_service.clone(),
+            chat_service: Some(chat_service.clone()),
+            connection_service: router_config.connection_manager.clone(),
+            config: router_config.config.clone(),
+            publish_key_service: None,
+            jwt_service: router_config.jwt_service.clone(),
+            live_streaming_infrastructure: None,
+            runtime_settings_store: router_config.runtime_settings_store.clone(),
+            provider_stores: router_config.shared_provider_stores.clone(),
+            public_id_codec: api_execution_runtime.public_id_codec.clone(),
+            email_api: router_config.email_api.clone(),
+            passkey_service: router_config.passkey_service.clone(),
+        },
+        crate::impls::ClientApiRuntime::new_with_services(crate::impls::ClientApiRuntimeServices {
+            realtime_fanout: router_config.realtime_fanout_service.clone(),
+            realtime_event_service: realtime_manager.clone(),
+            redis_runtime: router_config.redis_runtime.clone(),
+            builtin_stun_url: None,
+            webrtc_status: router_config.webrtc_status.clone(),
+            provider_access_service: router_config.provider_access_service.clone(),
+            signing_key: router_config.shared_proxy_signing_key.clone(),
+            presence_service: router_config.presence_service.clone(),
+            jwt_validator: api_execution_runtime.jwt_validator.clone(),
+            request_executor: api_execution_runtime.request_executor.clone(),
+            ws_ticket_service: router_config.ws_ticket_service.clone(),
+            playback_duration_probe: router_config.playback_duration_probe.clone(),
+        }),
+    ));
+
+    router_config.user_cache = user_cache;
     router_config.user_service = user_service;
     router_config.room_service = room_service;
-    router_config.chat_service = Some(Arc::new(chat_service));
+    router_config.chat_service = Some(chat_service);
     router_config.event_service = realtime_manager;
+    router_config.jwt_validator = api_execution_runtime.jwt_validator;
+    router_config.security_pipeline = api_execution_runtime.security_pipeline;
+    router_config.public_id_codec = api_execution_runtime.public_id_codec;
+    router_config.request_executor = api_execution_runtime.request_executor;
+    router_config.client_api = client_api;
     router_config.connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
         synctv_realtime::sync::ConnectionLimits::default(),
     ));
     router_config.audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
     router_config.user_provider_credential_repository =
         Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
+    router_config.provider_access_service = test_provider_access_service(
+        router_config.user_provider_credential_repository.clone(),
+        &router_config.providers,
+        router_config.shared_provider_stores.clone(),
+    );
 
     test_fixture(build_app_state(router_config))
 }
@@ -678,7 +1110,24 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         "test-secret-key-for-http-router-tests-minimum-32-chars",
     )
     .map_err(|error| test_error(error.to_string()))?;
+    let config = Arc::new(synctv_core::Config::default());
+    let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
+        128,
+        60,
+        300,
+        "test:user:".to_string(),
+    ));
+    let rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService> =
+        Arc::new(RateLimiter::local_only("test:".to_string()));
+    let api_execution_runtime = test_api_execution_runtime(
+        config.clone(),
+        user_service.clone(),
+        user_cache.clone(),
+        jwt_service.clone(),
+        rate_limiter.clone(),
+    )?;
     let (audit_service, _audit_handle) = AuditService::new(pool.clone());
+    let audit_service = Arc::new(audit_service);
     let injected_cache = Arc::new(
         SliceCache::new(SliceCacheConfig {
             enabled: false,
@@ -686,39 +1135,96 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         })
         .map_err(|error| test_error(error.to_string()))?,
     );
-    let injected_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver> =
-        Arc::new(synctv_core::provider::store::ProviderStoreRegistry::local_only("shared:test:"));
+    let injected_provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> = Arc::new(
+        synctv_core::provider::ProviderStoreRegistry::local_only("shared:test:"),
+    );
+    let injected_credential_repo =
+        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+    let injected_provider_access_service = test_provider_access_service(
+        injected_credential_repo.clone(),
+        &providers,
+        injected_provider_stores.clone(),
+    );
+    let injected_playback_provider_services = test_playback_provider_services(
+        providers.clone(),
+        injected_provider_stores.clone(),
+        room_service.clone(),
+        injected_credential_repo.clone(),
+        injected_provider_access_service.clone(),
+    );
+    let injected_public_id_codec = api_execution_runtime.public_id_codec.clone();
+    let injected_request_executor = api_execution_runtime.request_executor.clone();
+    let injected_provider_api_impls = test_provider_api_impls(
+        &providers,
+        provider_instance_manager.clone(),
+        user_service.clone(),
+        audit_service.clone(),
+        providers_manager.clone(),
+        injected_request_executor.clone(),
+        injected_credential_repo.clone(),
+        injected_provider_access_service.clone(),
+    )?;
     let injected_proxy_signing_key = Arc::new(
         ProxySigningKey::try_derive_from(b"test-secret-key-for-http-router-tests-minimum-32-chars")
             .map_err(|error| test_error(error.to_string()))?,
     );
+    let connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
+        synctv_realtime::sync::ConnectionLimits::default(),
+    ));
+    let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
+    let injected_core_api_impls = test_core_api_impls(
+        config.clone(),
+        user_service.clone(),
+        None,
+        room_service.clone(),
+        connection_manager.clone(),
+        presence_service.clone(),
+        jwt_service.clone(),
+        injected_public_id_codec.clone(),
+        injected_request_executor.clone(),
+        api_execution_runtime.jwt_validator.clone(),
+        injected_provider_stores.clone(),
+        injected_provider_access_service.clone(),
+        injected_proxy_signing_key.clone(),
+        rate_limiter.clone(),
+        None,
+        None,
+        None,
+        None,
+        audit_service.clone(),
+        provider_instance_manager.clone(),
+    )?;
     let injected_proxy_http_client =
         synctv_proxy::build_proxy_http_client(synctv_common::ssrf::SsrfGuard::strict_policy())
             .map_err(|error| test_error(error.to_string()))?;
+    let injected_metrics_access_controller =
+        Arc::new(crate::metrics_auth::MetricsAccessController::new());
 
     let state = build_app_state(RouterConfig {
-        config: Arc::new(synctv_core::Config::default()),
+        config,
         user_service,
-        user_cache: Arc::new(synctv_core::cache::UserCache::local_only(
-            128,
-            60,
-            300,
-            "test:user:".to_string(),
-        )),
+        user_cache,
         room_service,
         read_pool: None,
         content_filter: ContentFilter::new(),
         provider_instance_manager,
-        user_provider_credential_repository: Arc::new(
-            synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
-        ),
+        user_provider_credential_repository: injected_credential_repo,
+        provider_access_service: injected_provider_access_service.clone(),
         providers,
         event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
-        connection_manager: Arc::new(synctv_realtime::sync::ConnectionManager::new(
-            synctv_realtime::sync::ConnectionLimits::default(),
-        )),
-        presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
+        connection_manager,
+        presence_service,
         jwt_service,
+        jwt_validator: api_execution_runtime.jwt_validator,
+        security_pipeline: api_execution_runtime.security_pipeline,
+        public_id_codec: injected_public_id_codec.clone(),
+        request_executor: injected_request_executor.clone(),
+        metrics_access_controller: injected_metrics_access_controller.clone(),
+        client_api: injected_core_api_impls.client.clone(),
+        admin_api: injected_core_api_impls.admin.clone(),
+        email_api: injected_core_api_impls.email.clone(),
+        notification_api: injected_core_api_impls.notification.clone(),
+        oauth2_api: injected_core_api_impls.oauth2.clone(),
         realtime_fanout_service: crate::realtime_fanout::disabled_realtime_fanout_service(),
         oauth2_service: None,
         passkey_service: None,
@@ -729,12 +1235,29 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         publish_key_service: None,
         notification_service: None,
         chat_service: None,
-        audit_service: Arc::new(audit_service),
+        audit_service,
         live_streaming_infrastructure: None,
-        rate_limiter: Arc::new(RateLimiter::local_only("test:".to_string())),
+        rate_limiter,
         ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
         redis_runtime: None,
         shared_provider_stores: injected_provider_stores.clone(),
+        playback_transport_services: injected_playback_provider_services
+            .playback_transport_services
+            .clone(),
+        alist_playback_provider_service: injected_playback_provider_services.alist.clone(),
+        bilibili_playback_provider_service: injected_playback_provider_services.bilibili.clone(),
+        direct_url_playback_provider_service: injected_playback_provider_services
+            .direct_url
+            .clone(),
+        emby_playback_provider_service: injected_playback_provider_services.emby.clone(),
+        rtmp_playback_provider_service: injected_playback_provider_services.rtmp.clone(),
+        live_proxy_playback_provider_service: injected_playback_provider_services
+            .live_proxy
+            .clone(),
+        provider_common_api: injected_provider_api_impls.provider_common.clone(),
+        bilibili_api: injected_provider_api_impls.bilibili.clone(),
+        alist_api: injected_provider_api_impls.alist.clone(),
+        emby_api: injected_provider_api_impls.emby.clone(),
         shared_proxy_signing_key: injected_proxy_signing_key.clone(),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
@@ -763,6 +1286,69 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
             &injected_provider_stores
         ),
         "AppState must reuse the injected provider store registry"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.provider_access_service,
+            &injected_provider_access_service
+        ),
+        "AppState must reuse the injected provider access service"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.public_id_codec,
+            &injected_public_id_codec
+        ),
+        "AppState must reuse the injected public ID codec"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.request_executor,
+            &injected_request_executor
+        ),
+        "AppState must reuse the injected request executor"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.metrics_access_controller,
+            &injected_metrics_access_controller
+        ),
+        "AppState must reuse the injected metrics access controller"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.client_api,
+            &injected_core_api_impls.client
+        ),
+        "AppState must reuse the injected client API"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.provider_common_api,
+            &injected_provider_api_impls.provider_common
+        ),
+        "AppState must reuse the injected provider common API"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.bilibili_api,
+            &injected_provider_api_impls.bilibili
+        ),
+        "AppState must reuse the injected Bilibili API"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.alist_api,
+            &injected_provider_api_impls.alist
+        ),
+        "AppState must reuse the injected Alist API"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &state.shared_api_runtime.emby_api,
+            &injected_provider_api_impls.emby
+        ),
+        "AppState must reuse the injected Emby API"
     );
     assert!(
         Arc::ptr_eq(
@@ -945,7 +1531,14 @@ async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    if status != StatusCode::OK {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        panic!(
+            "expected chat events SSE status 200, got {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
     let mut body = response.into_body();
     let first_frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
         .await?
@@ -1109,7 +1702,14 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
     )?;
     let response = test_response(app.oneshot(request).await)?;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    if status != StatusCode::OK {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        panic!(
+            "expected chat events replay SSE status 200, got {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
     let mut body = response.into_body();
     let mut rendered = String::new();
     for _ in 0..8 {

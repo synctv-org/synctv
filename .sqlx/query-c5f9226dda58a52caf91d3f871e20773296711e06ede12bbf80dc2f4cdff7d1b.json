@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT rm.role,\n               rm.added_permissions,\n               rm.removed_permissions,\n               rm.admin_added_permissions,\n               rm.admin_removed_permissions,\n               rs.settings AS \"settings?: RoomSettings\"\n        FROM room_members rm\n        LEFT JOIN room_settings rs\n          ON rs.room_id = rm.room_id\n        WHERE rm.room_id = $1\n          AND rm.user_id = $2\n          AND NOT EXISTS (\n              SELECT 1\n              FROM room_member_kick_cooldowns rmkc\n              WHERE rmkc.room_id = rm.room_id\n                AND rmkc.user_id = rm.user_id\n                AND rmkc.ends_at > CURRENT_TIMESTAMP\n          )\n        FOR UPDATE OF rm\n        ",
+  "query": "\n            SELECT rm.role,\n                   rm.added_permissions,\n                   rm.removed_permissions,\n                   rm.admin_added_permissions,\n                   rm.admin_removed_permissions,\n                   rs.settings AS \"settings?: RoomSettings\"\n            FROM room_members rm\n            LEFT JOIN room_settings rs\n              ON rs.room_id = rm.room_id\n            WHERE rm.room_id = $1\n              AND rm.user_id = $2\n              AND NOT EXISTS (\n                  SELECT 1\n                  FROM room_member_kick_cooldowns rmkc\n                  WHERE rmkc.room_id = rm.room_id\n                    AND rmkc.user_id = rm.user_id\n                    AND rmkc.ends_at > CURRENT_TIMESTAMP\n            )\n            FOR UPDATE OF rm\n            ",
   "describe": {
     "columns": [
       {
@@ -85,5 +85,5 @@
       false
     ]
   },
-  "hash": "c852ade4a29470c97d74efb120838a9e8523796bce6e4e15dc05a0710d5ef8c7"
+  "hash": "c5f9226dda58a52caf91d3f871e20773296711e06ede12bbf80dc2f4cdff7d1b"
 }

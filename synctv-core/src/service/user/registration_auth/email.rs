@@ -5,7 +5,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::{SignupMethod, User, UserStatus},
     repository::{EmailRegistrationTokenRepository, PasswordCredentialMaterial},
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

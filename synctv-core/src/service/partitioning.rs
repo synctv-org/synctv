@@ -1,5 +1,7 @@
 use chrono::{Datelike, NaiveDate};
-use sqlx::PgPool;
+use sqlx::pool::PoolConnection;
+use sqlx::Executor as _;
+use sqlx::{PgPool, Postgres};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
@@ -17,6 +19,23 @@ pub(crate) const INITIAL_LEADER_RETRY_INTERVAL_SECS: u64 = 5;
 /// node inserts data. Retention cleanup stays leader-gated in the background
 /// task to avoid duplicate startup DDL, so this is always `false`.
 pub(crate) const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
+
+/// Acquire a dedicated connection for partition DDL with `statement_timeout`
+/// disabled for the lifetime of that session.
+pub(crate) async fn acquire_unbounded_ddl_connection(
+    pool: &PgPool,
+) -> anyhow::Result<PoolConnection<Postgres>> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to acquire DB connection for DDL: {error}"))?;
+
+    conn.execute("SET statement_timeout = 0")
+        .await
+        .map_err(|error| anyhow::anyhow!("Failed to disable statement_timeout for DDL: {error}"))?;
+
+    Ok(conn)
+}
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct PartitionNameRow {

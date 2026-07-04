@@ -11,11 +11,18 @@ use k8s_openapi::api::authorization::v1::{
     NonResourceAttributes, SubjectAccessReview, SubjectAccessReviewSpec,
 };
 #[cfg(feature = "k8s")]
+use moka::sync::Cache;
+#[cfg(feature = "k8s")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "k8s")]
 use std::sync::Arc;
 #[cfg(feature = "k8s")]
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "k8s")]
+const KUBERNETES_METRICS_AUTHENTICATION_CACHE_CAPACITY: u64 = 10_000;
+#[cfg(feature = "k8s")]
+const KUBERNETES_METRICS_AUTHORIZATION_CACHE_CAPACITY: u64 = 20_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricsAccessError {
@@ -165,7 +172,7 @@ fn extract_bearer_token(headers: &HeaderMap) -> Result<String, MetricsAccessErro
 
 fn extract_bearer_token_from_headers(headers: &HeaderMap) -> Result<String, MetricsAccessError> {
     let header_value = authorization_header(headers)?;
-    synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
+    synctv_core::service::JwtValidator::extract_bearer_token(header_value)
         .map_err(|_| MetricsAccessError::Unauthorized)
 }
 
@@ -210,8 +217,8 @@ struct CachedAuthorizationDecision {
 #[cfg(feature = "k8s")]
 struct KubernetesMetricsAuthorizer {
     client: kube::Client,
-    authentication_cache: dashmap::DashMap<String, CachedKubernetesUserInfo>,
-    authorization_cache: dashmap::DashMap<String, CachedAuthorizationDecision>,
+    authentication_cache: Cache<String, CachedKubernetesUserInfo>,
+    authorization_cache: Cache<String, CachedAuthorizationDecision>,
 }
 
 #[cfg(feature = "k8s")]
@@ -220,8 +227,12 @@ impl KubernetesMetricsAuthorizer {
         let client = kube::Client::try_default().await?;
         Ok(Self {
             client,
-            authentication_cache: dashmap::DashMap::new(),
-            authorization_cache: dashmap::DashMap::new(),
+            authentication_cache: Cache::builder()
+                .max_capacity(KUBERNETES_METRICS_AUTHENTICATION_CACHE_CAPACITY)
+                .build(),
+            authorization_cache: Cache::builder()
+                .max_capacity(KUBERNETES_METRICS_AUTHORIZATION_CACHE_CAPACITY)
+                .build(),
         })
     }
 
@@ -260,6 +271,7 @@ impl KubernetesMetricsAuthorizer {
             if entry.expires_at > now {
                 return Ok(entry.user_info.clone());
             }
+            self.authentication_cache.invalidate(&cache_key);
         }
 
         let api: kube::Api<TokenReview> = kube::Api::all(self.client.clone());
@@ -333,6 +345,7 @@ impl KubernetesMetricsAuthorizer {
             if entry.expires_at > now {
                 return Ok(entry.allowed);
             }
+            self.authorization_cache.invalidate(&cache_key);
         }
 
         let api: kube::Api<SubjectAccessReview> = kube::Api::all(self.client.clone());

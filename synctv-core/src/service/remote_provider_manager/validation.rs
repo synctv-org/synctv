@@ -20,7 +20,7 @@ impl RemoteProviderManager {
             "http" | "https" => {}
             scheme => {
                 return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext gRPC, or https:// for TLS"
+                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext transport, or https:// for TLS"
                 )))
             }
         }
@@ -66,7 +66,7 @@ impl RemoteProviderManager {
             "https" => "https",
             scheme => {
                 return Err(crate::Error::InvalidInput(format!(
-                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext gRPC, or https:// for TLS"
+                    "Remote provider endpoint scheme '{scheme}' is not supported; use http:// for plaintext transport, or https:// for TLS"
                 )))
             }
         };
@@ -91,7 +91,7 @@ impl RemoteProviderManager {
         Ok(normalized)
     }
 
-    /// Validate endpoint and timeout without creating or connecting a channel.
+    /// Validate endpoint and timeout without creating or connecting a remote transport.
     pub(super) fn validate_config_with_ssrf_guard(
         config: &ProviderInstance,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,

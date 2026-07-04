@@ -1,4 +1,4 @@
-use crate::{models::UserId, service::user::UserService};
+use crate::{models::UserId, service::UserService};
 
 #[async_trait::async_trait]
 impl crate::service::ws_ticket::UserValidator for UserService {

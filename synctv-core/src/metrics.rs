@@ -509,38 +509,38 @@ pub mod database {
         });
 }
 
-/// gRPC operations
-pub mod grpc {
+/// Remote transport operations.
+pub mod remote_transport {
     use super::*;
 
-    /// Total gRPC requests, labeled by service, method, and status code.
-    pub static GRPC_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> =
+    /// Total remote transport requests, labeled by service, method, and status code.
+    pub static REMOTE_TRANSPORT_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
             int_counter_vec(
                 "grpc_requests_total",
-                "Total number of gRPC requests",
+                "Total number of remote transport requests",
                 &["service", "method", "status"],
             )
         });
 
-    /// RPC request duration histogram
-    pub static GRPC_REQUEST_DURATION: std::sync::LazyLock<HistogramVec> =
+    /// Remote transport request duration histogram.
+    pub static REMOTE_TRANSPORT_REQUEST_DURATION: std::sync::LazyLock<HistogramVec> =
         std::sync::LazyLock::new(|| {
             histogram_vec(
                 HistogramOpts::new(
                     "grpc_request_duration_seconds",
-                    "gRPC request duration in seconds",
+                    "Remote transport request duration in seconds",
                 ),
                 &["service", "method", "status"],
             )
         });
 
-    /// Active RPC streams gauge
-    pub static GRPC_ACTIVE_STREAMS: std::sync::LazyLock<IntGauge> =
+    /// Active remote transport streams gauge.
+    pub static REMOTE_TRANSPORT_ACTIVE_STREAMS: std::sync::LazyLock<IntGauge> =
         std::sync::LazyLock::new(|| {
             int_gauge(
                 "grpc_active_streams",
-                "Current number of active gRPC streams",
+                "Current number of active remote transport streams",
             )
         });
 }
@@ -1134,73 +1134,6 @@ macro_rules! record_db_query {
     };
 }
 
-/// Normalize a request path for metric labels.
-///
-/// Replaces path parameters (UUIDs, numeric IDs, nanoids) with placeholders
-/// to avoid high-cardinality labels.
-#[must_use]
-pub fn normalize_path(path: &str) -> String {
-    let segments: Vec<&str> = path.split('/').collect();
-    let mut result = Vec::with_capacity(segments.len());
-
-    for (i, segment) in segments.iter().enumerate() {
-        if segment.is_empty() {
-            result.push(*segment);
-            continue;
-        }
-
-        // Replace segments that look like IDs (after known resource paths)
-        let prev = if i > 0 { segments.get(i - 1) } else { None };
-        let is_id = matches!(
-            prev,
-            Some(
-                &"rooms"
-                    | &"media"
-                    | &"chat"
-                    | &"playlists"
-                    | &"users"
-                    | &"notifications"
-                    | &"settings"
-                    | &"members"
-            )
-        );
-
-        if is_id || is_dynamic_segment(segment) {
-            result.push(":id");
-        } else {
-            result.push(segment);
-        }
-    }
-
-    result.join("/")
-}
-
-/// Check if a path segment looks like a dynamic ID (UUID, numeric, or base62 ID).
-fn is_dynamic_segment(segment: &str) -> bool {
-    // UUID format: 8-4-4-4-12 hex chars (with hyphens, 36 chars total)
-    if segment.len() == 36 && segment.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
-        let parts: Vec<&str> = segment.split('-').collect();
-        if parts.len() == 5
-            && parts[0].len() == 8
-            && parts[1].len() == 4
-            && parts[2].len() == 4
-            && parts[3].len() == 4
-            && parts[4].len() == 12
-        {
-            return true;
-        }
-    }
-    // Pure numeric IDs
-    if segment.chars().all(|c| c.is_ascii_digit()) && !segment.is_empty() {
-        return true;
-    }
-    // Hex strings of 32 chars (UUID without hyphens)
-    if segment.len() == 32 && segment.chars().all(|c| c.is_ascii_hexdigit()) {
-        return true;
-    }
-    false
-}
-
 /// Hot path metrics
 pub mod hot_paths {
     use super::*;
@@ -1301,35 +1234,6 @@ mod tests {
         );
         let output = ok(String::from_utf8(buffer), "metrics should be valid UTF-8");
         assert!(output.contains("http_request_duration_seconds"));
-    }
-
-    #[test]
-    fn test_normalize_path_existing_resources() {
-        assert_eq!(
-            normalize_path("/api/rooms/abc123/media"),
-            "/api/rooms/:id/media"
-        );
-        assert_eq!(normalize_path("/api/media/xyz789"), "/api/media/:id");
-        assert_eq!(normalize_path("/api/chat/msg001"), "/api/chat/:id");
-        assert_eq!(normalize_path("/api/playlists/pl123"), "/api/playlists/:id");
-    }
-
-    #[test]
-    fn test_normalize_path_extended_resources() {
-        assert_eq!(normalize_path("/api/users/u123"), "/api/users/:id");
-        assert_eq!(
-            normalize_path("/api/notifications/n456"),
-            "/api/notifications/:id"
-        );
-        assert_eq!(normalize_path("/api/settings/s789"), "/api/settings/:id");
-        assert_eq!(normalize_path("/api/members/m012"), "/api/members/:id");
-    }
-
-    #[test]
-    fn test_normalize_path_no_id_segments() {
-        assert_eq!(normalize_path("/api/rooms"), "/api/rooms");
-        assert_eq!(normalize_path("/api/health"), "/api/health");
-        assert_eq!(normalize_path("/metrics"), "/metrics");
     }
 
     #[test]
@@ -1437,14 +1341,14 @@ mod tests {
     }
 
     #[test]
-    fn test_grpc_metrics() {
-        // Verify gRPC request counter
-        grpc::GRPC_REQUESTS_TOTAL
+    fn test_remote_transport_metrics() {
+        // Verify remote transport request counter
+        remote_transport::REMOTE_TRANSPORT_REQUESTS_TOTAL
             .with_label_values(&["cluster", "get_nodes", "ok"])
             .inc();
 
-        // Verify gRPC duration histogram can be observed with correct labels
-        let timer = grpc::GRPC_REQUEST_DURATION
+        // Verify remote transport duration histogram can be observed with correct labels
+        let timer = remote_transport::REMOTE_TRANSPORT_REQUEST_DURATION
             .with_label_values(&["cluster", "get_nodes", "ok"])
             .start_timer();
         timer.observe_duration();
@@ -1754,10 +1658,10 @@ mod tests {
         database::DB_CONNECTIONS_ACTIVE.set(0);
         database::DB_CONNECTIONS_IDLE.set(0);
         database::DB_POOL_SIZE_MAX.set(0);
-        grpc::GRPC_REQUESTS_TOTAL
+        remote_transport::REMOTE_TRANSPORT_REQUESTS_TOTAL
             .with_label_values(&["_test", "_test", "_test"])
             .inc();
-        grpc::GRPC_REQUEST_DURATION
+        remote_transport::REMOTE_TRANSPORT_REQUEST_DURATION
             .with_label_values(&["_test", "_test", "_test"])
             .observe(0.0);
         cache::CACHE_INVALIDATIONS
@@ -1875,7 +1779,7 @@ mod tests {
             "Missing db_pool_size_max"
         );
 
-        // gRPC metrics
+        // Remote transport metrics
         assert!(
             output.contains("grpc_requests_total"),
             "Missing grpc_requests_total"
@@ -1988,7 +1892,7 @@ mod tests {
     fn test_hot_path_metrics() {
         // Test Hot path metrics
         hot_paths::API_HOT_PATH_LATENCY
-            .with_label_values(&["/api/rooms/:id", "GET"])
+            .with_label_values(&["rooms/:id", "GET"])
             .observe(0.015);
 
         hot_paths::DB_HOT_PATH_LATENCY
@@ -2018,11 +1922,11 @@ mod tests {
     fn test_http_error_rate_metrics() {
         // Test HTTP error rate metrics
         http::HTTP_ERROR_RATE
-            .with_label_values(&["GET", "/api/rooms/:id", "timeout"])
+            .with_label_values(&["GET", "rooms/:id", "timeout"])
             .inc();
 
         http::HTTP_ERROR_RATE
-            .with_label_values(&["POST", "/api/rooms", "validation"])
+            .with_label_values(&["POST", "rooms", "validation"])
             .inc();
 
         let output = gather_metrics();

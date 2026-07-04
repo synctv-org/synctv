@@ -25,12 +25,11 @@ use synctv_core::{
         RoomSettingsRepository, UpsertFileBlob, UpsertFileObject, UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        chat::{ChatDependencies, ChatRuntime},
-        file_storage::{FileStorageCleanupOrigin, FileStorageService},
-        AuditService, ChatService, ContentFilter, DisabledFileStorageService,
-        InMemoryTokenBlacklistStore, NotificationService, PermissionService, RateLimitConfig,
-        RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService, UserService,
+        AuditService, BruteForceProtection, ChatDependencies, ChatRuntime, ChatService,
+        ContentFilter, DisabledFileStorageService, FileStorageCleanupOrigin, FileStorageService,
+        InMemoryTokenBlacklistStore, JwtService, NotificationService, PermissionService,
+        RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService,
+        UserService,
     },
     Error,
 };
@@ -129,9 +128,9 @@ fn make_chat_service_with_options(
     let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     )
     .checked("permission service should build");
@@ -176,13 +175,11 @@ fn make_chat_service_with_database_storage(pool: &PgPool) -> (ChatService, Usern
     make_chat_service_with_config_and_storage(
         pool,
         RateLimitConfig::default(),
-        Arc::new(
-            synctv_core::service::file_storage::DatabaseFileStorageService::new(
-                "database",
-                Arc::new(FileStorageRepository::new(pool.clone())),
-                "test-file-storage-secret",
-            ),
-        ),
+        Arc::new(synctv_core::service::DatabaseFileStorageService::new(
+            "database",
+            Arc::new(FileStorageRepository::new(pool.clone())),
+            "test-file-storage-secret",
+        )),
     )
 }
 
@@ -191,19 +188,14 @@ async fn upload_chat_attachment_file(
     session: &synctv_core::models::FileUploadSession,
     payload: Vec<u8>,
 ) {
-    let upload_url = session
-        .upload_url
-        .as_deref()
-        .checked("database upload url should be returned");
-    let parsed = url::Url::parse(&format!("http://localhost{upload_url}"))
-        .checked("relative database object URL should parse with base");
-    let encoded_object_key = parsed
-        .path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .checked("encoded object key path segment should exist");
+    let encoded_object_key = session
+        .upload_object_access
+        .as_ref()
+        .map(|endpoint| endpoint.encoded_object_key.as_str())
+        .checked("database upload endpoint should be returned");
     let upload_token = session
         .upload_headers
-        .get(synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER)
+        .get(synctv_core::service::FILE_UPLOAD_TOKEN_HEADER)
         .checked("database upload token header should be returned");
     let content_type = session
         .file
@@ -471,9 +463,9 @@ async fn test_send_message_rate_limit_triggers() {
     let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     )
     .checked("permission service should build");
@@ -876,9 +868,9 @@ async fn test_send_message_broadcasts_to_room_members() {
     let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     )
     .checked("permission service should build");
@@ -2102,6 +2094,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         id: id.to_string(),
         storage_backend: "database".to_string(),
         object_key: object_key.to_string(),
+        object_access: None,
         url: Some("https://example.invalid/shared.webp".to_string()),
         mime_type: Some("image/webp".to_string()),
         size_bytes: Some(i64::try_from(payload.len()).checked("test operation should succeed")),
@@ -2153,7 +2146,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
         2
     );
 
-    let storage = synctv_core::service::file_storage::DatabaseFileStorageService::new(
+    let storage = synctv_core::service::DatabaseFileStorageService::new(
         "database",
         Arc::new(FileStorageRepository::new(pool.clone())),
         "test-file-storage-secret",

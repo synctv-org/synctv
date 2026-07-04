@@ -1,39 +1,42 @@
 // Remote Provider Manager
-// Manages remote provider instances (gRPC connections).
-// Supports both local (in-process) and remote (gRPC) provider instances.
+// Manages remote provider instances.
+// Supports both local (in-process) and remote provider instances.
 // ## Multi-replica support
-// Instead of maintaining a persistent channel map that is invisible across replicas,
-// channels are created lazily on demand and cached with a TTL. When a provider
+// Instead of maintaining a persistent connection map that is invisible across replicas,
+// connections are created lazily on demand and cached with a TTL. When a provider
 // operation is needed, the manager looks up the instance config from the DB and
-// creates a channel if not already cached.
+// creates a connection if not already cached.
 // Provider changes (add/update/delete/enable/disable) are broadcast via the
 // shared durable cache invalidation stream so other replicas can invalidate
-// their local channel cache even across restarts and transient disconnects.
+// their local connection cache even across restarts and transient disconnects.
 
 use crate::cache::CacheInvalidationRuntime;
 use crate::models::{ProviderInstance, ProviderInstanceListQuery};
-use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
+use crate::provider::provider_client::{
+    execute_health_check, validate_auth_secret, RemoteProviderConnection,
+};
 use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
 use crate::repository::ProviderInstanceRepository;
+use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use synctv_common::ExecutionControl;
 use tokio::task::JoinHandle;
-use tonic::transport::Channel;
-use tonic_health::pb::{health_client::HealthClient, HealthCheckRequest};
 
 mod invalidation;
 mod management;
 mod transport;
 mod validation;
 
-/// Default channel cache TTL (5 minutes)
-const CHANNEL_CACHE_TTL_SECS: u64 = 300;
+/// Default connection cache TTL (5 minutes)
+const CONNECTION_CACHE_TTL_SECS: u64 = 300;
 
-/// Maximum number of cached channels
-const MAX_CACHED_CHANNELS: u64 = 1_000;
+/// Maximum number of cached connections
+const MAX_CACHED_CONNECTIONS: u64 = 1_000;
+
+const REMOTE_HEALTH_CHECK_CONCURRENCY: usize = 16;
 
 #[async_trait::async_trait]
 pub trait ProviderInstanceStore: Send + Sync + std::fmt::Debug {
@@ -164,7 +167,7 @@ pub(crate) fn empty_provider_instance_manager() -> Arc<RemoteProviderManager> {
 
 /// Remote Provider Manager
 ///
-/// Manages remote provider instances (gRPC connections).
+/// Manages remote provider instances.
 /// Provider adapters use the local singleton only when no provider instance
 /// name is requested. Explicit instance names are resolved through
 /// `resolve_client_required(_with_context)` so missing, disabled, or
@@ -173,13 +176,13 @@ pub(crate) fn empty_provider_instance_manager() -> Arc<RemoteProviderManager> {
 ///
 /// ## Multi-replica architecture
 ///
-/// - Channels are created lazily from DB config and cached with TTL via moka
-/// - `get(name)` looks up the cached channel or creates one from DB on cache miss
+/// - Connections are created lazily from DB config and cached with TTL via moka
+/// - `get(name)` looks up the cached connection or creates one from DB on cache miss
 /// - Provider mutations publish durable invalidation events through `CacheInvalidationService`
 /// - A background subscriber listens for invalidation messages and evicts stale entries
 pub struct RemoteProviderManager {
-    /// Lazily-populated channel cache with TTL (indexed by instance name)
-    channel_cache: Arc<moka::future::Cache<String, RemoteProviderConnection>>,
+    /// Lazily-populated connection cache with TTL (indexed by instance name)
+    connection_cache: Arc<moka::future::Cache<String, RemoteProviderConnection>>,
 
     /// Repository for database operations
     repository: Arc<dyn ProviderInstanceStore>,
@@ -197,10 +200,10 @@ pub struct RemoteProviderManager {
     /// to in-process servers without weakening the production SSRF policy.
     address_overrides: Arc<HashMap<String, SocketAddr>>,
 
-    /// Global SSRF policy for remote provider gRPC endpoints.
+    /// Global SSRF policy for remote provider endpoints.
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 
-    /// Whether remote provider gRPC clients should negotiate gzip compression.
+    /// Whether remote provider clients should negotiate gzip compression.
     grpc_compression_enabled: bool,
 }
 
@@ -208,6 +211,12 @@ pub struct RemoteProviderManagerOptions {
     pub address_overrides: HashMap<String, SocketAddr>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub grpc_compression_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteProviderRuntimeStatus {
+    pub available: bool,
+    pub has_auth_secret: bool,
 }
 
 impl Default for RemoteProviderManagerOptions {
@@ -379,7 +388,7 @@ impl RemoteProviderManager {
         }
 
         let loaded = self
-            .channel_cache
+            .connection_cache
             .try_get_with_by_ref(name, async {
                 let Some(config) = self.repository.get_by_name(name).await.map_err(|error| {
                     LoadError::Provider(Self::map_remote_resolution_error(error))
@@ -392,17 +401,12 @@ impl RemoteProviderManager {
                     return Err(LoadError::NotCacheable);
                 }
 
-                let channel = self.create_grpc_channel(&config).map_err(|error| {
+                let connection = self.create_remote_connection(&config).map_err(|error| {
                     LoadError::Provider(Self::map_remote_resolution_error(error))
                 })?;
-                let connection =
-                    self.build_remote_connection(&config, channel)
-                        .map_err(|error| {
-                            LoadError::Provider(Self::map_remote_resolution_error(error))
-                        })?;
 
                 tracing::debug!(
-                    "Lazily created and cached channel for instance '{}'",
+                    "Lazily created and cached remote provider connection for instance '{}'",
                     config.name
                 );
                 Ok(connection)
@@ -504,13 +508,13 @@ impl RemoteProviderManager {
                  For multi-replica setups, configure durable cache invalidation for cross-replica sync."
             );
         }
-        let channel_cache = moka::future::Cache::builder()
-            .max_capacity(MAX_CACHED_CHANNELS)
-            .time_to_live(Duration::from_secs(CHANNEL_CACHE_TTL_SECS))
+        let connection_cache = moka::future::Cache::builder()
+            .max_capacity(MAX_CACHED_CONNECTIONS)
+            .time_to_live(Duration::from_secs(CONNECTION_CACHE_TTL_SECS))
             .build();
 
         Self {
-            channel_cache: Arc::new(channel_cache),
+            connection_cache: Arc::new(connection_cache),
             repository,
             cache_invalidation,
             invalidation_cancel: tokio_util::sync::CancellationToken::new(),
@@ -523,7 +527,7 @@ impl RemoteProviderManager {
 
     /// Initialize manager by pre-warming the cache with all enabled instances from database.
     ///
-    /// This is optional -- channels will be created lazily on demand even without
+    /// This is optional -- connections will be created lazily on demand even without
     /// calling `init()`. However, pre-warming reduces latency for the first request
     /// to each provider.
     pub async fn init(&self) -> crate::Result<()> {
@@ -536,7 +540,7 @@ impl RemoteProviderManager {
         for config in configs {
             if !Self::requires_remote_connection(&config) {
                 tracing::debug!(
-                    "Skipping remote channel pre-warm for local-only provider instance: {}",
+                    "Skipping remote connection pre-warm for local-only provider instance: {}",
                     config.name
                 );
                 continue;
@@ -544,24 +548,14 @@ impl RemoteProviderManager {
 
             Self::validate_config_with_ssrf_guard(&config, &self.ssrf_guard)?;
 
-            match self.create_grpc_channel(&config) {
-                Ok(channel) => match self.build_remote_connection(&config, channel) {
-                    Ok(connection) => {
-                        self.channel_cache
-                            .insert(config.name.clone(), connection)
-                            .await;
-                        tracing::info!("Pre-warmed provider instance cache: {}", config.name);
-                        success_count += 1;
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Failed to pre-warm provider instance {}: {}",
-                            config.name,
-                            e
-                        );
-                        error_count += 1;
-                    }
-                },
+            match self.create_remote_connection(&config) {
+                Ok(connection) => {
+                    self.connection_cache
+                        .insert(config.name.clone(), connection)
+                        .await;
+                    tracing::info!("Pre-warmed provider instance cache: {}", config.name);
+                    success_count += 1;
+                }
                 Err(e) => {
                     tracing::error!(
                         "Failed to pre-warm provider instance {}: {}",
@@ -582,27 +576,12 @@ impl RemoteProviderManager {
         Ok(())
     }
 
-    fn build_remote_connection(
-        &self,
-        config: &ProviderInstance,
-        channel: Channel,
-    ) -> crate::Result<RemoteProviderConnection> {
-        let auth_secret = validate_auth_secret(Some(Self::required_auth_secret(config)?))
-            .map_err(|e| crate::Error::InvalidInput(e.to_string()))?;
-        Ok(RemoteProviderConnection::new_with_grpc_compression(
-            channel,
-            auth_secret,
-            self.grpc_compression_enabled,
-        ))
-    }
-
     async fn build_management_validated_remote_connection_with_control(
         &self,
         config: &ProviderInstance,
         control: Option<&ExecutionControl>,
     ) -> crate::Result<RemoteProviderConnection> {
-        let channel = self.create_grpc_channel(config)?;
-        let connection = self.build_remote_connection(config, channel)?;
+        let connection = self.create_remote_connection(config)?;
         self.validate_management_connection_with_control(config, &connection, control)
             .await?;
         Ok(connection)
@@ -614,49 +593,10 @@ impl RemoteProviderManager {
         connection: &RemoteProviderConnection,
         control: Option<&ExecutionControl>,
     ) -> crate::Result<()> {
-        let mut client = HealthClient::new(connection.channel());
-        let mut request = tonic::Request::new(HealthCheckRequest {
-            service: String::new(),
-        });
-        let secret = connection.auth_secret().ok_or_else(|| {
-            crate::Error::InvalidInput(format!(
-                "Remote provider instance '{}' requires a non-empty jwt_secret for health checks",
-                config.name
-            ))
-        })?;
-        let metadata_value = secret.parse().map_err(|e| {
-            crate::Error::InvalidInput(format!(
-                "Remote provider instance '{}' jwt_secret must be valid ASCII gRPC metadata: {e}",
-                config.name
-            ))
-        })?;
-        request
-            .metadata_mut()
-            .insert("x-provider-secret", metadata_value);
         let timeout = Duration::from_secs(5);
         let control = Self::probe_execution_control(control, timeout);
 
-        let response = control
-            .run(client.check(request))
-            .await
-            .map_err(|err| match err {
-                synctv_common::ExecutionControlError::DeadlineExceeded => {
-                    crate::Error::InvalidInput(format!(
-                        "Remote provider instance '{}' connectivity validation timed out after {}s",
-                        config.name,
-                        timeout.as_secs()
-                    ))
-                }
-                other => crate::Error::from(other),
-            })?
-            .map_err(|status| {
-                crate::Error::InvalidInput(format!(
-                    "Remote provider instance '{}' health check failed: {status}",
-                    config.name
-                ))
-            })?;
-
-        let status = response.into_inner().status;
+        let status = execute_health_check(&config.name, connection, &control, timeout).await?;
         if status != 1 {
             return Err(crate::Error::InvalidInput(format!(
                 "Remote provider instance '{}' is not serving (health status: {status})",
@@ -667,17 +607,41 @@ impl RemoteProviderManager {
         Ok(())
     }
 
-    /// Get a remote provider instance channel by name for best-effort probes.
+    /// Get a remote provider instance connection by name for best-effort probes.
     ///
     /// Checks the local moka cache first. On cache miss, loads the instance config
-    /// from the database and creates a channel lazily. This ensures that provider
+    /// from the database and creates a connection lazily. This ensures that provider
     /// instances added on other replicas are visible after the cache TTL expires
     /// (or immediately if a Redis invalidation notification was received).
     ///
     /// Returns:
-    /// - `Some(channel)` if the instance exists and is enabled
+    /// - `Some(connection)` if the instance exists and is enabled
     /// - `None` if not found, disabled, or temporarily unavailable
-    pub async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
+    pub async fn runtime_status(&self, name: &str) -> RemoteProviderRuntimeStatus {
+        match self.get_connection_result(name).await {
+            Ok(Some(connection)) => RemoteProviderRuntimeStatus {
+                available: true,
+                has_auth_secret: connection.auth_secret().is_some(),
+            },
+            Ok(None) => RemoteProviderRuntimeStatus {
+                available: false,
+                has_auth_secret: false,
+            },
+            Err(err) => {
+                tracing::error!(
+                    "Failed to resolve remote provider instance '{}' for runtime status: {}",
+                    name,
+                    err
+                );
+                RemoteProviderRuntimeStatus {
+                    available: false,
+                    has_auth_secret: false,
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
         match self.get_connection_result(name).await {
             Ok(connection) => connection,
             Err(err) => {
@@ -691,8 +655,7 @@ impl RemoteProviderManager {
         }
     }
 
-    /// Resolve a provider client without silently falling back when an explicit
-    /// remote instance name was requested.
+    /// Resolve a provider client without silent fallback and attach a cooperative request context.
     ///
     /// Semantics:
     /// - `instance_name=None`: use the local singleton client.
@@ -702,24 +665,7 @@ impl RemoteProviderManager {
     ///   falling back to the local singleton.
     /// - `instance_name=Some(name)` and remote resolution/config loading fails:
     ///   surface the underlying provider/config/internal error.
-    pub async fn resolve_client_required<T>(
-        &self,
-        instance_name: Option<&str>,
-        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
-        load_local: impl FnOnce() -> T,
-    ) -> std::result::Result<T, ProviderError> {
-        match instance_name {
-            Some(name) => self
-                .get_connection_result(name)
-                .await?
-                .map(create_remote)
-                .ok_or_else(|| ProviderError::InstanceNotFound(name.to_string())),
-            None => Ok(load_local()),
-        }
-    }
-
-    /// Resolve a provider client without silent fallback and attach a cooperative request context.
-    pub async fn resolve_client_required_with_context<T>(
+    pub(crate) async fn resolve_client_required_with_context<T>(
         &self,
         instance_name: Option<&str>,
         request_context: Option<&crate::provider::ExecutionControl>,
@@ -810,7 +756,7 @@ impl RemoteProviderManager {
     /// Health check all remote instances
     ///
     /// Returns a map of instance name to health status.
-    /// Uses gRPC Health Check protocol with 5-second timeout per instance.
+    /// Uses the remote provider health-check protocol with a 5-second timeout per instance.
     ///
     /// Loads the full list from DB to check all instances, not just cached ones.
     pub async fn health_check(&self) -> HashMap<String, bool> {
@@ -863,9 +809,63 @@ impl RemoteProviderManager {
         results
     }
 
+    pub async fn health_check_instances_owned(
+        self: Arc<Self>,
+        configs: Vec<ProviderInstance>,
+    ) -> HashMap<String, bool> {
+        let mut results = HashMap::new();
+        let mut remote_configs = Vec::new();
+
+        for config in configs {
+            if !Self::requires_remote_connection(&config) {
+                continue;
+            }
+
+            if validate_auth_secret(config.jwt_secret.as_deref()).is_err() {
+                tracing::warn!(
+                    "Health check reporting provider instance '{}' unhealthy: missing or invalid jwt_secret for remote-capable configuration",
+                    config.name
+                );
+                results.insert(config.name.clone(), false);
+                continue;
+            }
+
+            remote_configs.push(config);
+        }
+
+        let manager = Arc::clone(&self);
+        let remote_results = stream::iter(remote_configs)
+            .map(move |config| {
+                let manager = Arc::clone(&manager);
+                let name = config.name.clone();
+                async move {
+                    let is_healthy = manager.health_check_instance(&config).await;
+                    (name, is_healthy)
+                }
+            })
+            .buffer_unordered(REMOTE_HEALTH_CHECK_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        for (name, is_healthy) in remote_results {
+            results.insert(name, is_healthy);
+        }
+
+        results
+    }
+
+    async fn health_check_instance(self: Arc<Self>, config: &ProviderInstance) -> bool {
+        let Some(connection) = self.get(&config.name).await else {
+            return false;
+        };
+
+        self.check_instance_health(&config.name, config, &connection)
+            .await
+    }
+
     /// Check health of a single remote instance
     ///
-    /// Calls gRPC Health Check RPC with 5-second timeout.
+    /// Calls the remote provider health-check endpoint with a 5-second timeout.
     async fn check_instance_health(
         &self,
         name: &str,

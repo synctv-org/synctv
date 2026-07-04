@@ -5,7 +5,7 @@ use crate::{
         ChatMessage, ChatMessageType, Media, MediaId, PageParams, RoomId, RoomPermission,
         RoomPlaybackState, UserId,
     },
-    service::room::RoomService,
+    service::RoomService,
     Error, Result,
 };
 
@@ -43,7 +43,7 @@ impl RoomService {
         media_id: MediaId,
         name: Option<String>,
     ) -> Result<Media> {
-        let request = crate::service::media::EditMediaRequest {
+        let request = crate::service::EditMediaRequest {
             media_id,
             name,
             description: None,
@@ -57,7 +57,7 @@ impl RoomService {
         &self,
         room_id: RoomId,
         user_id: UserId,
-        request: crate::service::media::MoveMediaRequest,
+        request: crate::service::MoveMediaRequest,
     ) -> Result<Vec<Media>> {
         self.media_service
             .move_media(room_id, user_id, request)

@@ -47,33 +47,12 @@ impl std::fmt::Display for ReviewStatus {
     }
 }
 
-impl From<ReviewStatus> for synctv_proto::common::ReviewStatus {
-    fn from(value: ReviewStatus) -> Self {
-        match value {
-            ReviewStatus::Pending => Self::Pending,
-            ReviewStatus::Approved => Self::Approved,
-            ReviewStatus::Rejected => Self::Rejected,
-        }
-    }
-}
-
 impl From<ReviewStatus> for i32 {
     fn from(value: ReviewStatus) -> Self {
-        synctv_proto::common::ReviewStatus::from(value) as Self
-    }
-}
-
-impl TryFrom<synctv_proto::common::ReviewStatus> for ReviewStatus {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::ReviewStatus) -> Result<Self, Self::Error> {
         match value {
-            synctv_proto::common::ReviewStatus::Pending => Ok(Self::Pending),
-            synctv_proto::common::ReviewStatus::Approved => Ok(Self::Approved),
-            synctv_proto::common::ReviewStatus::Rejected => Ok(Self::Rejected),
-            synctv_proto::common::ReviewStatus::Unspecified => {
-                Err(format!("Unknown review status: {}", value as i32))
-            }
+            ReviewStatus::Pending => 1,
+            ReviewStatus::Approved => 2,
+            ReviewStatus::Rejected => 3,
         }
     }
 }
@@ -82,9 +61,12 @@ impl TryFrom<i32> for ReviewStatus {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::ReviewStatus::try_from(value)
-            .map_err(|_| format!("Unknown review status: {value}"))?;
-        Self::try_from(proto)
+        match value {
+            1 => Ok(Self::Pending),
+            2 => Ok(Self::Approved),
+            3 => Ok(Self::Rejected),
+            _ => Err(format!("Unknown review status: {value}")),
+        }
     }
 }
 
@@ -98,24 +80,11 @@ sqlx_i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
 mod tests {
     use super::ReviewStatus;
 
-    fn status_from_proto(value: synctv_proto::common::ReviewStatus) -> ReviewStatus {
-        match ReviewStatus::try_from(value) {
-            Ok(status) => status,
-            Err(error) => std::panic::panic_any(format!("review status should convert: {error}")),
-        }
-    }
-
     #[test]
-    fn review_status_proto_conversions_reject_unspecified_input() {
-        assert_eq!(
-            i32::from(ReviewStatus::Pending),
-            synctv_proto::common::ReviewStatus::Pending as i32
-        );
-        assert_eq!(
-            status_from_proto(synctv_proto::common::ReviewStatus::Approved),
-            ReviewStatus::Approved
-        );
-        assert!(ReviewStatus::try_from(synctv_proto::common::ReviewStatus::Unspecified).is_err());
+    fn review_status_i32_conversions_reject_unknown_input() {
+        assert_eq!(i32::from(ReviewStatus::Pending), 1);
+        assert_eq!(ReviewStatus::try_from(2), Ok(ReviewStatus::Approved));
         assert!(ReviewStatus::try_from(0).is_err());
+        assert!(ReviewStatus::try_from(4).is_err());
     }
 }

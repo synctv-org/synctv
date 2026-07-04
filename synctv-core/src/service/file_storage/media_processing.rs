@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     models::{
-        FileMetadata, FileObjectVariant, FileUploadPolicy, FileVariantMetadata, NewStoredFile,
+        FileMetadata, FileObjectKind, FileObjectVariant, FileUploadPolicy, FileVariantMetadata,
+        NewStoredFile,
     },
     repository::{FileStorageRepository, UpsertFileObjectGroup, UpsertFileObjectVariant},
     service::file_storage::{validation::validate_file_dimensions, FileObjectReader},
@@ -56,7 +57,7 @@ pub(crate) async fn process_file_variants_for_object(
     repository: Arc<FileStorageRepository>,
     storage_backend: &str,
     object_key: &str,
-    database_object_route_prefix: &str,
+    object_kind: FileObjectKind,
     upload_policy: &FileUploadPolicy,
 ) -> Result<ProcessedFileVariants> {
     let Some(mut object) = repository.get_object(storage_backend, object_key).await? else {
@@ -108,8 +109,7 @@ pub(crate) async fn process_file_variants_for_object(
         .await?;
     let group_id = group.id;
 
-    let original_url =
-        storage.object_url(storage_backend, object_key, database_object_route_prefix)?;
+    let original_url = storage.public_object_url(storage_backend, object_key)?;
     repository
         .upsert_object_variant(UpsertFileObjectVariant {
             storage_backend,
@@ -142,16 +142,20 @@ pub(crate) async fn process_file_variants_for_object(
             repository: repository.as_ref(),
             storage_backend,
             object_key,
-            database_object_route_prefix,
             group_id: &group_id,
             original_size_bytes: object.size_bytes,
         };
         process_image_variants(context, &image).await?;
     }
 
-    let variants = repository
-        .list_object_variants(storage_backend, object_key)
-        .await?;
+    let variants = object_variants_with_urls(
+        storage,
+        repository.as_ref(),
+        storage_backend,
+        object_key,
+        object_kind,
+    )
+    .await?;
     Ok(ProcessedFileVariants { variants })
 }
 
@@ -159,7 +163,7 @@ pub(crate) async fn attach_variants_to_files(
     storage: &dyn FileStorageService,
     repository: &FileStorageRepository,
     files: &mut [NewStoredFile],
-    database_object_route_prefix: &str,
+    object_kind: FileObjectKind,
 ) -> Result<()> {
     for file in files {
         let variants = object_variants_with_urls(
@@ -167,11 +171,12 @@ pub(crate) async fn attach_variants_to_files(
             repository,
             &file.storage_backend,
             &file.object_key,
-            database_object_route_prefix,
+            object_kind,
         )
         .await?;
         if let Some(preview) = preferred_preview_variant(&variants) {
             file.url.clone_from(&preview.url);
+            file.object_access.clone_from(&preview.object_access);
         }
         attach_variants_metadata(&mut file.metadata, &variants);
     }
@@ -182,19 +187,29 @@ pub(crate) async fn attach_variants_to_chat_attachments(
     storage: &dyn FileStorageService,
     repository: &FileStorageRepository,
     attachments: &mut [crate::models::ChatAttachment],
-    database_object_route_prefix: &str,
+    object_kind: FileObjectKind,
 ) -> Result<()> {
     for attachment in attachments {
+        attachment.object_access = storage.file_object_access(
+            &attachment.storage_backend,
+            &attachment.object_key,
+            object_kind,
+        )?;
+        if attachment.url.as_deref().is_none_or(str::is_empty) {
+            attachment.url =
+                storage.public_object_url(&attachment.storage_backend, &attachment.object_key)?;
+        }
         let variants = object_variants_with_urls(
             storage,
             repository,
             &attachment.storage_backend,
             &attachment.object_key,
-            database_object_route_prefix,
+            object_kind,
         )
         .await?;
         if let Some(preview) = preferred_preview_variant(&variants) {
             attachment.url.clone_from(&preview.url);
+            attachment.object_access.clone_from(&preview.object_access);
         }
         attach_variants_metadata(&mut attachment.metadata, &variants);
     }
@@ -206,18 +221,20 @@ async fn object_variants_with_urls(
     repository: &FileStorageRepository,
     storage_backend: &str,
     object_key: &str,
-    database_object_route_prefix: &str,
+    object_kind: FileObjectKind,
 ) -> Result<Vec<FileObjectVariant>> {
     let mut variants = repository
         .list_object_variants(storage_backend, object_key)
         .await?;
     for variant in &mut variants {
+        variant.object_access = storage.file_object_access(
+            &variant.storage_backend,
+            &variant.object_key,
+            object_kind,
+        )?;
         if variant.url.as_deref().is_none_or(str::is_empty) {
-            variant.url = storage.object_url(
-                &variant.storage_backend,
-                &variant.object_key,
-                database_object_route_prefix,
-            )?;
+            variant.url =
+                storage.public_object_url(&variant.storage_backend, &variant.object_key)?;
         }
     }
     Ok(variants)
@@ -230,14 +247,16 @@ fn attach_variants_metadata(metadata: &mut FileMetadata, variants: &[FileObjectV
 fn preferred_preview_variant(variants: &[FileObjectVariant]) -> Option<&FileObjectVariant> {
     variants
         .iter()
-        .find(|variant| {
-            !variant.is_original && variant.url.as_deref().is_some_and(|url| !url.is_empty())
-        })
+        .find(|variant| !variant.is_original && variant_has_view_access(variant))
         .or_else(|| {
-            variants.iter().find(|variant| {
-                variant.is_original && variant.url.as_deref().is_some_and(|url| !url.is_empty())
-            })
+            variants
+                .iter()
+                .find(|variant| variant.is_original && variant_has_view_access(variant))
         })
+}
+
+fn variant_has_view_access(variant: &FileObjectVariant) -> bool {
+    variant.url.as_deref().is_some_and(|url| !url.is_empty()) || variant.object_access.is_some()
 }
 
 struct ImageVariantProcessingContext<'a> {
@@ -245,7 +264,6 @@ struct ImageVariantProcessingContext<'a> {
     repository: &'a FileStorageRepository,
     storage_backend: &'a str,
     object_key: &'a str,
-    database_object_route_prefix: &'a str,
     group_id: &'a str,
     original_size_bytes: i64,
 }
@@ -286,11 +304,9 @@ async fn process_image_variants(
                 },
             )
             .await?;
-        let url = context.storage.object_url(
-            context.storage_backend,
-            &variant_object_key,
-            context.database_object_route_prefix,
-        )?;
+        let url = context
+            .storage
+            .public_object_url(context.storage_backend, &variant_object_key)?;
         context
             .repository
             .upsert_object_variant(UpsertFileObjectVariant {

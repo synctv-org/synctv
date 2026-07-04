@@ -4,10 +4,7 @@ use synctv_common::ExecutionControl;
 
 use crate::{
     models::{User, UserAuthFactors, UserId},
-    service::{
-        auth::{TokenAuthContext, TokenCredentialBinding},
-        user::UserService,
-    },
+    service::{user::UserService, TokenAuthContext, TokenCredentialBinding},
     Error, Result,
 };
 

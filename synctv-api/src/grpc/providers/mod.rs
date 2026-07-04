@@ -2,11 +2,11 @@
 //!
 //! Provider-specific gRPC services for parse, browse, proxy, etc.
 
-pub mod alist;
-pub mod bilibili;
-pub mod common;
-pub mod emby;
-pub mod rtmp;
+pub(crate) mod alist;
+pub(crate) mod bilibili;
+pub(crate) mod common;
+pub(crate) mod emby;
+pub(crate) mod rtmp;
 
 pub(crate) fn provider_request_metadata<T>(
     request: &tonic::Request<T>,

@@ -515,7 +515,8 @@ fn build_url_from_split_parts(
 pub struct Config {
     pub server: ServerConfig,
     pub time: TimeConfig,
-    pub public_ids: PublicIdsConfig,
+    #[serde(alias = "public_ids")]
+    pub external_ids: ExternalIdsConfig,
     pub security: SecurityConfig,
     /// Shared root directory for runtime-owned local files.
     ///
@@ -555,7 +556,7 @@ impl std::fmt::Debug for Config {
         f.debug_struct("Config")
             .field("server", &self.server)
             .field("time", &self.time)
-            .field("public_ids", &self.public_ids)
+            .field("external_ids", &self.external_ids)
             .field("security", &"<redacted>")
             .field("data_dir", &self.data_dir)
             .field("metrics", &self.metrics)
@@ -588,7 +589,7 @@ impl Default for Config {
         Self {
             server: ServerConfig::default(),
             time: TimeConfig::default(),
-            public_ids: PublicIdsConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             security: SecurityConfig::default(),
             data_dir: default_data_dir().display().to_string(),
             metrics: MetricsConfig::default(),
@@ -618,23 +619,23 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct PublicIdsConfig {
-    /// Optional sqids configuration for API-facing public IDs.
+pub struct ExternalIdsConfig {
+    /// Optional sqids configuration for externally visible resource identifiers.
     ///
     /// Leave unset to use the default prefixed decimal format.
-    pub sqids: Option<PublicIdsSqidsConfig>,
+    pub sqids: Option<ExternalIdsSqidsConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct PublicIdsSqidsConfig {
+pub struct ExternalIdsSqidsConfig {
     /// Optional sqids alphabet. Leave empty/None to use the crate default.
     pub alphabet: Option<String>,
-    /// Minimum public ID length for API-facing sqids.
+    /// Minimum encoded resource ID length.
     pub min_length: u8,
 }
 
-impl Default for PublicIdsSqidsConfig {
+impl Default for ExternalIdsSqidsConfig {
     fn default() -> Self {
         Self {
             alphabet: None,
@@ -763,12 +764,13 @@ pub struct ServerConfig {
     /// Maximum time in seconds to wait for active connections to drain during shutdown.
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
     pub shutdown_drain_timeout_seconds: u64,
-    /// Maximum gRPC message size in bytes for both incoming (decoding) and
-    /// outgoing (encoding) messages. Prevents OOM attacks from oversized messages.
+    /// Maximum remote transport message size in bytes for both incoming
+    /// (decoding) and outgoing (encoding) messages. Prevents OOM attacks from
+    /// oversized messages.
     /// Default: 16777216 (16 MB). Minimum: 1048576 (1 MB).
     /// Set via `SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES` env var or config file.
     pub grpc_max_message_size_bytes: usize,
-    /// Enable gzip compression negotiation for gRPC request and response bodies.
+    /// Enable gzip compression negotiation for remote transport request and response bodies.
     /// Compression is only used when the peer advertises support.
     pub grpc_compression_enabled: bool,
 }
@@ -1990,8 +1992,8 @@ pub struct ClusterChannelConfig {
     /// multi-replica deployments, set this to true.
     pub enabled: bool,
 
-    /// Shared secret for authenticating cluster gRPC calls between nodes.
-    /// When set, all inter-node gRPC requests must include this secret in the
+    /// Shared secret for authenticating cluster transport calls between nodes.
+    /// When set, all inter-node transport requests must include this secret in the
     /// `x-cluster-secret` metadata header. If empty, cluster endpoints are disabled.
     pub secret: String,
 
@@ -2025,7 +2027,7 @@ pub struct ClusterChannelConfig {
     pub leader_election_mode: ClusterLeaderElectionMode,
 
     /// Static peer addresses for non-K8s / non-Redis cluster discovery.
-    /// When configured, each peer is periodically health-checked via gRPC
+    /// When configured, each peer is periodically health-checked via cluster transport
     /// and registered into the `NodeRegistry` if alive.
     /// Example: `["host1:50051", "host2:50051"]`
     pub peers: Vec<String>,
@@ -2201,7 +2203,7 @@ impl Default for ProxySliceCacheConfig {
 /// Request API rate limit configuration.
 ///
 /// This is separate from the domain-level `RateLimitConfig` in
-/// `synctv_core::service::rate_limit` (which controls chat rates).
+/// `synctv_core::service` request rate limiting (which controls chat rates).
 /// This struct configures the shared request limits used by all transports.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

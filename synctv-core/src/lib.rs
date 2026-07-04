@@ -84,8 +84,6 @@ pub mod metrics;
 pub mod models;
 pub mod oauth2;
 pub mod provider;
-pub mod proxy_signature;
-pub mod public_id;
 pub mod redis_runtime;
 pub mod repository;
 pub mod resilience;
@@ -103,11 +101,9 @@ pub use cache::KeyBuilder;
 pub use config::{
     ChatConfig, Config, FileStorageBackendConfig, FileStorageBackendType, FileStorageConfig,
     FileStorageDatabaseCompression, FileStorageDatabaseConfig, FileStorageS3Config,
-    PublicIdsConfig, PublicIdsSqidsConfig, RateLimitScopeRule, RateLimitScopeStrategy,
-    RequestRateLimitConfig,
+    RateLimitScopeRule, RateLimitScopeStrategy, RequestRateLimitConfig,
 };
 pub use error::{Error, InternalExt, Result};
-pub use public_id::{PublicIdCodec, PublicIdKind, PublicIdType};
 pub use redis_runtime::{
     coordination_runtime_from_client, coordination_runtime_from_client_with_config,
     coordination_runtime_from_client_with_config_and_operation_timeout, direct_runtime,

@@ -1,8 +1,8 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::config::PublicIdsConfig;
-use crate::models::{
+use synctv_core::config::ExternalIdsConfig;
+use synctv_core::models::{
     BanRecordId, ContentReportId, MediaId, PlaylistId, ReviewRequestId, RoomCategoryId, RoomId,
     RoomLabelId, TypedId, UserId,
 };
@@ -125,8 +125,8 @@ impl PublicIdType for ContentReportId {
 
 /// Shared encoder/decoder for externally visible resource identifiers.
 ///
-/// Core boundary APIs may accept and emit sqids strings. After decoding, core
-/// services and repositories continue to use numeric typed IDs.
+/// API entrypoints decode external IDs before calling core services and encode
+/// typed IDs before rendering responses.
 #[derive(Clone)]
 pub struct PublicIdCodec {
     encoding: PublicIdEncoding,
@@ -152,21 +152,22 @@ impl PublicIdCodec {
         }
     }
 
-    pub fn from_config(config: &PublicIdsConfig) -> Result<Self, String> {
+    pub fn from_config(config: &ExternalIdsConfig) -> Result<Self, String> {
         let Some(sqids_config) = config.sqids.as_ref() else {
             return Ok(Self::plain());
         };
 
-        let options = sqids::Options::new(
-            sqids_config
-                .alphabet
-                .clone()
-                .filter(|alphabet| !alphabet.is_empty()),
-            Some(sqids_config.min_length),
-            None,
-        );
+        let alphabet = sqids_config
+            .alphabet
+            .clone()
+            .filter(|alphabet| !alphabet.is_empty());
+        if let Some(alphabet) = alphabet.as_deref() {
+            validate_sqids_alphabet(alphabet)?;
+        }
+
+        let options = sqids::Options::new(alphabet, Some(sqids_config.min_length), None);
         let sqids = sqids::Sqids::new(Some(options))
-            .map_err(|error| format!("invalid public_ids.sqids configuration: {error}"))?;
+            .map_err(|error| format!("invalid external_ids.sqids configuration: {error}"))?;
         Ok(Self {
             encoding: PublicIdEncoding::Sqids(Arc::new(sqids)),
         })
@@ -319,10 +320,21 @@ fn validate_positive_id(id: i64, kind: PublicIdKind) -> Result<(), String> {
     }
 }
 
+fn validate_sqids_alphabet(alphabet: &str) -> Result<(), String> {
+    if alphabet.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        Ok(())
+    } else {
+        Err(
+            "invalid external_ids.sqids.alphabet: expected ASCII alphanumeric characters only"
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::PublicIdsSqidsConfig;
+    use synctv_core::config::{ExternalIdsConfig, ExternalIdsSqidsConfig};
 
     fn ok<T, E: fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
         match result {
@@ -421,8 +433,8 @@ mod tests {
 
     #[test]
     fn sqids_mode_keeps_prefix_and_type_domain() {
-        let codec = PublicIdCodec::from_config(&PublicIdsConfig {
-            sqids: Some(PublicIdsSqidsConfig::default()),
+        let codec = PublicIdCodec::from_config(&ExternalIdsConfig {
+            sqids: Some(ExternalIdsSqidsConfig::default()),
         })
         .map_err(|error| error.clone());
         let codec = ok(codec, "sqids codec should build");
@@ -439,6 +451,36 @@ mod tests {
             UserId::expect_positive(1)
         );
         assert!(codec.decode_room_id(&user).is_err());
+    }
+
+    #[test]
+    fn sqids_mode_rejects_invalid_alphabet() {
+        let codec = PublicIdCodec::from_config(&ExternalIdsConfig {
+            sqids: Some(ExternalIdsSqidsConfig {
+                alphabet: Some("aa".to_string()),
+                min_length: 8,
+            }),
+        });
+
+        assert!(codec.is_err());
+    }
+
+    #[test]
+    fn sqids_mode_rejects_alphabet_outside_api_id_body_grammar() {
+        let codec = PublicIdCodec::from_config(&ExternalIdsConfig {
+            sqids: Some(ExternalIdsSqidsConfig {
+                alphabet: Some(
+                    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-".to_string(),
+                ),
+                min_length: 8,
+            }),
+        });
+
+        let error = codec.expect_err("punctuation alphabet should be rejected");
+        assert!(
+            error.contains("ASCII alphanumeric"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

@@ -25,7 +25,7 @@ use synctv_core_testing::{
 };
 use synctv_media_providers::grpc::{
     alist::alist_server::AlistServer, emby::emby_server::EmbyServer,
-    AlistService as AlistGrpcService, EmbyService as EmbyGrpcService,
+    AlistService as AlistRemoteService, EmbyService as EmbyRemoteService,
 };
 use tokio::sync::{broadcast, Barrier};
 use tonic::metadata::MetadataMap;
@@ -358,7 +358,7 @@ async fn spawn_authenticated_provider_server(
         .set_service_status("", ServingStatus::Serving)
         .await;
     reporter
-        .set_serving::<AlistServer<AlistGrpcService>>()
+        .set_serving::<AlistServer<AlistRemoteService>>()
         .await;
 
     let auth_secret = auth_secret.to_string();
@@ -366,7 +366,7 @@ async fn spawn_authenticated_provider_server(
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(authenticated_health)
-            .add_service(AlistServer::new(GrpcAuthProbeAlistService::new(
+            .add_service(AlistServer::new(RemoteAuthProbeAlistService::new(
                 auth_secret,
             )))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
@@ -378,13 +378,13 @@ async fn spawn_authenticated_provider_server(
 }
 
 #[derive(Clone)]
-struct GrpcAuthProbeAlistService {
+struct RemoteAuthProbeAlistService {
     expected_secret: Arc<str>,
     fail_after_auth: bool,
     require_real_upstream_token: bool,
 }
 
-impl GrpcAuthProbeAlistService {
+impl RemoteAuthProbeAlistService {
     fn new(expected_secret: String) -> Self {
         Self {
             expected_secret: Arc::<str>::from(expected_secret),
@@ -415,7 +415,7 @@ impl GrpcAuthProbeAlistService {
 }
 
 #[tonic::async_trait]
-impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeAlistService {
+impl synctv_media_providers::grpc::alist::alist_server::Alist for RemoteAuthProbeAlistService {
     async fn login(
         &self,
         _request: tonic::Request<synctv_media_providers::grpc::alist::LoginReq>,
@@ -497,12 +497,12 @@ impl synctv_media_providers::grpc::alist::alist_server::Alist for GrpcAuthProbeA
 }
 
 #[derive(Clone)]
-struct GrpcAuthProbeEmbyService {
+struct RemoteAuthProbeEmbyService {
     expected_secret: Arc<str>,
     fail_after_auth: bool,
 }
 
-impl GrpcAuthProbeEmbyService {
+impl RemoteAuthProbeEmbyService {
     fn failing_after_auth(expected_secret: String) -> Self {
         Self {
             expected_secret: Arc::<str>::from(expected_secret),
@@ -516,7 +516,7 @@ impl GrpcAuthProbeEmbyService {
 }
 
 #[tonic::async_trait]
-impl synctv_media_providers::grpc::emby::emby_server::Emby for GrpcAuthProbeEmbyService {
+impl synctv_media_providers::grpc::emby::emby_server::Emby for RemoteAuthProbeEmbyService {
     async fn login(
         &self,
         _request: tonic::Request<synctv_media_providers::grpc::emby::LoginReq>,
@@ -656,7 +656,7 @@ async fn spawn_authenticated_provider_server_with_handler_failure(
         .set_service_status("", ServingStatus::Serving)
         .await;
     reporter
-        .set_serving::<AlistServer<AlistGrpcService>>()
+        .set_serving::<AlistServer<AlistRemoteService>>()
         .await;
 
     let auth_secret = auth_secret.to_string();
@@ -665,7 +665,7 @@ async fn spawn_authenticated_provider_server_with_handler_failure(
         Server::builder()
             .add_service(authenticated_health)
             .add_service(AlistServer::new(
-                GrpcAuthProbeAlistService::failing_after_auth(auth_secret),
+                RemoteAuthProbeAlistService::failing_after_auth(auth_secret),
             ))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
@@ -690,7 +690,7 @@ async fn spawn_authenticated_provider_server_rejecting_placeholder_upstream_auth
         .set_service_status("", ServingStatus::Serving)
         .await;
     reporter
-        .set_serving::<AlistServer<AlistGrpcService>>()
+        .set_serving::<AlistServer<AlistRemoteService>>()
         .await;
 
     let auth_secret = auth_secret.to_string();
@@ -699,7 +699,7 @@ async fn spawn_authenticated_provider_server_rejecting_placeholder_upstream_auth
         Server::builder()
             .add_service(authenticated_health)
             .add_service(AlistServer::new(
-                GrpcAuthProbeAlistService::requiring_real_upstream_token(auth_secret),
+                RemoteAuthProbeAlistService::requiring_real_upstream_token(auth_secret),
             ))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
@@ -723,7 +723,9 @@ async fn spawn_authenticated_emby_provider_server_with_handler_failure(
     reporter
         .set_service_status("", ServingStatus::Serving)
         .await;
-    reporter.set_serving::<EmbyServer<EmbyGrpcService>>().await;
+    reporter
+        .set_serving::<EmbyServer<EmbyRemoteService>>()
+        .await;
 
     let auth_secret = auth_secret.to_string();
     let authenticated_health = authenticated_health_service(health_service, auth_secret.clone());
@@ -731,7 +733,7 @@ async fn spawn_authenticated_emby_provider_server_with_handler_failure(
         Server::builder()
             .add_service(authenticated_health)
             .add_service(EmbyServer::new(
-                GrpcAuthProbeEmbyService::failing_after_auth(auth_secret),
+                RemoteAuthProbeEmbyService::failing_after_auth(auth_secret),
             ))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
@@ -802,11 +804,11 @@ async fn scenario_channel_creation_from_db_config() {
         .add(instance.clone())
         .await
         .checked("test operation should succeed");
-    let channel = manager.get("test-instance-1").await;
+    let status = manager.runtime_status("test-instance-1").await;
 
     assert!(
-        channel.is_some(),
-        "validated remote channel should be available"
+        status.available,
+        "validated remote runtime should be available"
     );
     let repo = provider_repo(&infra.pool);
     let fetched = repo
@@ -866,7 +868,7 @@ async fn scenario_redis_invalidation_on_delete() {
         .await
         .checked("test operation should succeed");
     assert!(
-        manager2.get("test-instance-5").await.is_some(),
+        manager2.runtime_status("test-instance-5").await.available,
         "manager2 should warm provider cache before delete invalidation"
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -880,7 +882,7 @@ async fn scenario_redis_invalidation_on_delete() {
         REDIS_INVALIDATION_WAIT_INTERVAL,
         || {
             let manager2 = &manager2;
-            async move { manager2.get("test-instance-5").await.is_none() }
+            async move { !manager2.runtime_status("test-instance-5").await.available }
         },
     )
     .await;
@@ -892,8 +894,8 @@ async fn scenario_redis_invalidation_on_delete() {
         !instances2.contains(&"test-instance-5".to_string()),
         "Manager2 should not list deleted instance"
     );
-    let channel = manager2.get("test-instance-5").await;
-    assert!(channel.is_none(), "Deleted instance should return None");
+    let status = manager2.runtime_status("test-instance-5").await;
+    assert!(!status.available, "Deleted instance should be unavailable");
 
     manager1.shutdown().await;
     manager2.shutdown().await;
@@ -940,7 +942,7 @@ async fn scenario_add_rolls_back_when_provider_invalidation_publish_fails() {
         "provider row must be rolled back when invalidation publish fails"
     );
     assert!(
-        manager.get(&instance.name).await.is_none(),
+        !manager.runtime_status(&instance.name).await.available,
         "local channel cache must be cleared when add rollback occurs"
     );
 
@@ -975,10 +977,11 @@ async fn scenario_delete_rolls_back_when_provider_invalidation_publish_fails() {
         make_test_address_overrides(host, health_addr.port()),
     );
 
-    let cached_before_delete = failing_manager
-        .get(&instance.name)
-        .await
-        .checked("cached channel should exist before delete");
+    let status_before_delete = failing_manager.runtime_status(&instance.name).await;
+    assert!(
+        status_before_delete.available,
+        "runtime should be available before delete"
+    );
     let err = failing_manager
         .delete(&instance.name)
         .await
@@ -1000,14 +1003,14 @@ async fn scenario_delete_rolls_back_when_provider_invalidation_publish_fails() {
         restored.endpoint, instance.endpoint,
         "delete rollback must restore the original provider configuration"
     );
-    let cached_after_delete = failing_manager
-        .get(&instance.name)
-        .await
-        .checked("cached channel should be restored after delete rollback");
+    let status_after_delete = failing_manager.runtime_status(&instance.name).await;
+    assert!(
+        status_after_delete.available,
+        "delete rollback must restore runtime availability"
+    );
     assert_eq!(
-        cached_after_delete.auth_secret(),
-        cached_before_delete.auth_secret(),
-        "delete rollback must restore the previous local cache entry"
+        status_after_delete.has_auth_secret, status_before_delete.has_auth_secret,
+        "delete rollback must restore auth-secret readiness"
     );
 
     abort_test_task(health_handle).await;
@@ -1405,55 +1408,30 @@ async fn scenario_get_returns_none_for_absent_remote_instance() {
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    let channel = manager.get("non-existent-instance").await;
+    let status = manager.runtime_status("non-existent-instance").await;
 
     assert!(
-        channel.is_none(),
-        "Non-existent instance should return None for best-effort probes"
+        !status.available,
+        "Non-existent instance should be unavailable for best-effort probes"
     );
 }
 
-async fn scenario_resolve_client_required_uses_local_when_instance_name_none() {
+async fn scenario_runtime_status_reports_missing_remote_instance_unavailable() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
 
     let repo = provider_repo(&infra.pool);
     let manager = RemoteProviderManager::new(Arc::new(repo));
 
-    let result = manager
-        .resolve_client_required(None as Option<&str>, |_channel| "remote", || "local")
-        .await;
+    let status = manager.runtime_status("missing-instance").await;
 
-    assert_eq!(
-        result.checked("test operation should succeed"),
-        "local",
-        "resolve_client_required should use local when instance_name is None"
+    assert!(
+        !status.available,
+        "missing remote instance should be unavailable"
     );
 }
 
-async fn scenario_resolve_client_required_rejects_missing_remote_instance() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    let result = manager
-        .resolve_client_required(Some("missing-instance"), |_channel| "remote", || "local")
-        .await;
-
-    assert!(
-        result.is_err(),
-        "explicit remote instance must not fallback to local"
-    );
-    let err = result.failed("operation should fail");
-    assert!(
-        matches!(err, synctv_core::provider::ProviderError::InstanceNotFound(ref name) if name == "missing-instance"),
-        "unexpected error: {err:?}"
-    );
-}
-
-async fn scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
+async fn scenario_runtime_status_reports_misconfigured_remote_instance_unavailable() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
 
@@ -1467,45 +1445,11 @@ async fn scenario_resolve_client_required_surfaces_existing_remote_instance_conf
         .await
         .checked("invalid remote row should persist for resolution coverage");
 
-    let result = manager
-        .resolve_client_required(Some(&invalid.name), |_channel| "remote", || "local")
-        .await;
+    let status = manager.runtime_status(&invalid.name).await;
 
     assert!(
-        result.is_err(),
-        "explicit remote instance with invalid stored config must fail"
-    );
-    let err = result.failed("operation should fail");
-    assert!(
-        !matches!(
-            err,
-            synctv_core::provider::ProviderError::InstanceNotFound(_)
-        ),
-        "existing remote instance with bad config must not be reported as missing: {err:?}"
-    );
-}
-
-async fn scenario_resolve_client_required_preserves_retryable_repository_failures() {
-    let infra = TestInfra::new().await;
-    flush_provider_instances(&infra).await;
-
-    let repo = provider_repo(&infra.pool);
-    let manager = RemoteProviderManager::new(Arc::new(repo));
-
-    infra.pool.close().await;
-
-    let err = manager
-        .resolve_client_required(
-            Some("retryable-store-failure"),
-            |_channel| "remote",
-            || "local",
-        )
-        .await
-        .failed("repository outages should surface as retryable remote resolution failures");
-
-    assert!(
-        matches!(err, synctv_core::provider::ProviderError::ApiError(_)),
-        "repository outages must remain retryable instead of becoming internal errors: {err:?}"
+        !status.available,
+        "misconfigured remote instance should be unavailable"
     );
 }
 
@@ -1563,8 +1507,8 @@ async fn scenario_enable_disable_instance() {
         .checked("test operation should succeed");
     assert!(fetched.is_some());
     assert!(!fetched.checked("test operation should succeed").enabled);
-    let channel = manager.get("test-instance-13").await;
-    assert!(channel.is_none(), "Disabled instance should return None");
+    let status = manager.runtime_status("test-instance-13").await;
+    assert!(!status.available, "Disabled instance should be unavailable");
     manager
         .enable("test-instance-13")
         .await
@@ -1608,9 +1552,11 @@ async fn scenario_enable_with_invalid_endpoint_preserves_disabled_state() {
         "failed enable must not leave the DB row enabled"
     );
 
-    let channel = manager.get("test-instance-13-invalid-enable").await;
+    let status = manager
+        .runtime_status("test-instance-13-invalid-enable")
+        .await;
     assert!(
-        channel.is_none(),
+        !status.available,
         "failed enable must not leave a cached channel behind"
     );
 }
@@ -1649,9 +1595,11 @@ async fn scenario_enable_remote_instances_validate_jwt_secret() {
         "failed enable must not leave the DB row enabled"
     );
 
-    let connection = manager.get("test-instance-13-missing-secret-enable").await;
+    let status = manager
+        .runtime_status("test-instance-13-missing-secret-enable")
+        .await;
     assert!(
-        connection.is_none(),
+        !status.available,
         "invalid row without jwt_secret must not resolve to an unusable remote connection"
     );
 
@@ -1686,11 +1634,11 @@ async fn scenario_enable_remote_instances_validate_jwt_secret() {
     assert!(persisted.enabled, "invalid row should remain enabled");
     assert_eq!(persisted.jwt_secret, None);
 
-    let connection = manager
-        .get("test-instance-13-invalid-already-enabled")
+    let status = manager
+        .runtime_status("test-instance-13-invalid-already-enabled")
         .await;
     assert!(
-        connection.is_none(),
+        !status.available,
         "invalid row without jwt_secret must not resolve to an unusable remote connection"
     );
 }
@@ -1786,9 +1734,9 @@ async fn scenario_add_disabled_instance_is_not_retrievable_via_get() {
         .checked("instance should exist");
     assert!(!fetched.enabled, "instance should remain disabled in DB");
 
-    let channel = manager.get("test-instance-15-disabled").await;
+    let status = manager.runtime_status("test-instance-15-disabled").await;
     assert!(
-        channel.is_none(),
+        !status.available,
         "disabled instance must not be returned from same-node cache"
     );
 }
@@ -1817,8 +1765,10 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
         .await
         .checked("test operation should succeed");
 
-    let initial = manager.get("test-instance-15-update-disabled").await;
-    assert!(initial.is_some(), "enabled instance should be retrievable");
+    let initial = manager
+        .runtime_status("test-instance-15-update-disabled")
+        .await;
+    assert!(initial.available, "enabled instance should be retrievable");
 
     let mut disabled = instance;
     disabled.enabled = false;
@@ -1835,9 +1785,11 @@ async fn scenario_update_to_disabled_invalidates_cached_channel() {
         .checked("instance should exist");
     assert!(!fetched.enabled, "instance should be disabled in DB");
 
-    let channel = manager.get("test-instance-15-update-disabled").await;
+    let status = manager
+        .runtime_status("test-instance-15-update-disabled")
+        .await;
     assert!(
-        channel.is_none(),
+        !status.available,
         "update(enabled=false) must evict any cached channel"
     );
 
@@ -2178,7 +2130,7 @@ async fn scenario_manager_without_redis() {
         .await
         .checked("test operation should succeed");
     assert!(
-        manager.get("test-instance-19").await.is_some(),
+        manager.runtime_status("test-instance-19").await.available,
         "provider cache should warm before list"
     );
     let instances = manager
@@ -2265,18 +2217,16 @@ async fn scenario_init_rejects_invalid_secret_and_aborts_prewarming() {
         .await
         .failed("init must fail closed when persisted remote config is invalid");
 
-    let healthy_connection = manager
-        .get(&healthy.name)
-        .await
-        .checked("healthy instance should still be available from its add-time cache");
-    assert_eq!(
-        healthy_connection.auth_secret(),
-        Some("remote-provider-test-secret")
-    );
-
-    let invalid_connection = manager.get(&invalid.name).await;
+    let healthy_status = manager.runtime_status(&healthy.name).await;
     assert!(
-        invalid_connection.is_none(),
+        healthy_status.available,
+        "healthy instance should still be available from its add-time cache"
+    );
+    assert!(healthy_status.has_auth_secret);
+
+    let invalid_status = manager.runtime_status(&invalid.name).await;
+    assert!(
+        !invalid_status.available,
         "invalid remote instance must not resolve after init failure"
     );
 
@@ -2364,7 +2314,7 @@ async fn scenario_ssrf_validation_allows_public_endpoints() {
     );
 }
 
-async fn scenario_resolve_client_required_uses_remote_when_available() {
+async fn scenario_runtime_status_reports_remote_instance_available() {
     let infra = TestInfra::new().await;
     flush_provider_instances(&infra).await;
     let (health_addr, health_handle) =
@@ -2384,11 +2334,10 @@ async fn scenario_resolve_client_required_uses_remote_when_available() {
         .await
         .checked("test operation should succeed");
 
-    let result = manager
-        .resolve_client_required(Some("test-instance-23"), |_channel| "remote", || "local")
-        .await;
+    let status = manager.runtime_status("test-instance-23").await;
 
-    assert_eq!(result.checked("test operation should succeed"), "remote");
+    assert!(status.available);
+    assert!(status.has_auth_secret);
 
     abort_test_task(health_handle).await;
 }
@@ -2472,7 +2421,10 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
         .await
         .checked("test operation should succeed");
     assert!(
-        manager2.get("test-instance-prefix").await.is_some(),
+        manager2
+            .runtime_status("test-instance-prefix")
+            .await
+            .available,
         "manager2 should warm provider cache before prefix invalidation"
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2487,7 +2439,12 @@ async fn scenario_redis_invalidation_respects_key_prefix() {
         REDIS_INVALIDATION_WAIT_INTERVAL,
         || {
             let manager2 = &manager2;
-            async move { manager2.get("test-instance-prefix").await.is_none() }
+            async move {
+                !manager2
+                    .runtime_status("test-instance-prefix")
+                    .await
+                    .available
+            }
         },
     )
     .await;
@@ -2572,9 +2529,9 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
         .await
         .checked("test operation should succeed");
 
-    let channel = manager2.get("durable-provider-instance").await;
+    let status = manager2.runtime_status("durable-provider-instance").await;
     assert!(
-        channel.is_some(),
+        status.available,
         "manager2 should cache the instance before delete"
     );
 
@@ -2593,7 +2550,12 @@ async fn scenario_durable_invalidation_catches_up_after_listener_starts_late() {
         REDIS_INVALIDATION_WAIT_INTERVAL,
         || {
             let manager2 = &manager2;
-            async move { manager2.get("durable-provider-instance").await.is_none() }
+            async move {
+                !manager2
+                    .runtime_status("durable-provider-instance")
+                    .await
+                    .available
+            }
         },
     )
     .await;
@@ -2782,14 +2744,14 @@ async fn scenario_add_reachable_remote_instance_succeeds_with_connectivity_valid
         .await
         .checked("reachable remote instance should pass connectivity validation");
 
-    let connection = manager
-        .get(&instance.name)
-        .await
-        .checked("reachable remote instance should be cached");
-    assert_eq!(
-        connection.auth_secret(),
-        Some("remote-provider-test-secret"),
-        "validated remote instance should retain its auth secret"
+    let status = manager.runtime_status(&instance.name).await;
+    assert!(
+        status.available,
+        "reachable remote instance should be cached"
+    );
+    assert!(
+        status.has_auth_secret,
+        "validated remote instance should retain auth-secret readiness"
     );
 
     let stored = provider_repo(&infra.pool)
@@ -2958,9 +2920,9 @@ async fn scenario_invalid_remote_instance_without_jwt_secret_is_rejected_at_runt
         .await
         .checked("invalid row without jwt_secret should still persist");
 
-    let connection = manager.get(&instance.name).await;
+    let status = manager.runtime_status(&instance.name).await;
     assert!(
-        connection.is_none(),
+        !status.available,
         "invalid remote instance without jwt_secret must not build a runtime connection"
     );
 
@@ -2969,9 +2931,9 @@ async fn scenario_invalid_remote_instance_without_jwt_secret_is_rejected_at_runt
         .await
         .failed("init must fail closed for invalid persisted remote rows");
 
-    let cached = manager.get(&instance.name).await;
+    let cached = manager.runtime_status(&instance.name).await;
     assert!(
-        cached.is_none(),
+        !cached.available,
         "pre-warm must not cache an invalid remote instance without jwt_secret"
     );
 }
@@ -3149,30 +3111,16 @@ async fn test_get_returns_none_for_absent_remote_instance() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_resolve_client_required_uses_local_when_instance_name_none() {
+async fn test_runtime_status_reports_missing_remote_instance_unavailable() {
     install_rustls_provider_once();
-    scenario_resolve_client_required_uses_local_when_instance_name_none().await;
+    scenario_runtime_status_reports_missing_remote_instance_unavailable().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_resolve_client_required_rejects_missing_remote_instance() {
+async fn test_runtime_status_reports_misconfigured_remote_instance_unavailable() {
     install_rustls_provider_once();
-    scenario_resolve_client_required_rejects_missing_remote_instance().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_resolve_client_required_surfaces_existing_remote_instance_config_errors() {
-    install_rustls_provider_once();
-    scenario_resolve_client_required_surfaces_existing_remote_instance_config_errors().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Requires Docker"]
-async fn test_resolve_client_required_preserves_retryable_repository_failures() {
-    install_rustls_provider_once();
-    scenario_resolve_client_required_preserves_retryable_repository_failures().await;
+    scenario_runtime_status_reports_misconfigured_remote_instance_unavailable().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3282,9 +3230,9 @@ async fn test_ssrf_validation_allows_public_endpoints() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Requires Docker"]
-async fn test_resolve_client_required_uses_remote_when_available() {
+async fn test_runtime_status_reports_remote_instance_available() {
     install_rustls_provider_once();
-    scenario_resolve_client_required_uses_remote_when_available().await;
+    scenario_runtime_status_reports_remote_instance_available().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

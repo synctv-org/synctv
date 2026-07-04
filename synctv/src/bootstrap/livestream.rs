@@ -6,6 +6,7 @@ use synctv_core::{Config, RedisConnectionRuntime, SharedStateMode, SharedStatePr
 
 use crate::rtmp_auth;
 use crate::server;
+use synctv_api::PublicIdCodec;
 
 struct LivestreamRuntimeBindings {
     publisher_registry: Arc<dyn synctv_livestream::StreamRegistryTrait>,
@@ -78,7 +79,7 @@ fn build_livestream_runtime_bindings(
 ///
 pub async fn init_livestream(
     config: &Config,
-    synctv_services: &synctv_core::bootstrap::services::Services,
+    synctv_services: &synctv_core::bootstrap::Services,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
     node_id: &str,
@@ -159,7 +160,7 @@ pub async fn init_livestream(
         node_id: node_id.to_string(),
         api_address: config.advertise_api_address(),
         public_id_codec: Arc::new(
-            synctv_core::PublicIdCodec::from_config(&config.public_ids)
+            PublicIdCodec::from_config(&config.external_ids)
                 .map_err(|error| anyhow::anyhow!("Invalid RTMP auth public ID config: {error}"))?,
         ),
         stream_event_tx: Some(stream_lifecycle_tx),
@@ -293,7 +294,7 @@ mod tests {
     fn test_init_livestream_signature_uses_runtime_abstraction() {
         fn assert_signature(
             config: &Config,
-            services: &synctv_core::bootstrap::services::Services,
+            services: &synctv_core::bootstrap::Services,
             runtime: Option<Arc<dyn RedisConnectionRuntime>>,
             hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
             node_id: &str,

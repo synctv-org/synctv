@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
+use synctv_api::PublicIdCodec;
 use synctv_core::{
     models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
     service::{RoomService, StreamingPublishKeyService, UserService},
@@ -297,7 +298,7 @@ pub struct SyncTvRtmpAuth {
     publisher_cleanup: PublisherCleanupRuntime,
     /// Broadcast channel for stream lifecycle events (StreamStarted/StreamStopped)
     /// Shared codec for client-visible RTMP app/stream identifiers.
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<PublicIdCodec>,
     /// Optional shared restart flag from LivestreamServer. When set, new
     /// publications are rejected during the StreamHub cleanup/re-register window.
     is_restarting: Option<Arc<AtomicBool>>,
@@ -311,7 +312,7 @@ pub struct SyncTvRtmpAuthConfig {
     pub registry: Arc<dyn StreamRegistryTrait>,
     pub node_id: String,
     pub api_address: String,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub public_id_codec: Arc<PublicIdCodec>,
     pub stream_event_tx: Option<tokio::sync::broadcast::Sender<StreamLifecycleEvent>>,
     pub is_restarting: Option<Arc<AtomicBool>>,
     pub user_stream_index: Arc<dyn UserStreamIndex>,
@@ -938,7 +939,7 @@ impl SyncTvRtmpAuth {
         room_id: &RoomId,
         media_id: &MediaId,
         user_id: &UserId,
-        claims: &synctv_core::service::publish_key::PublishClaims,
+        claims: &synctv_core::service::PublishClaims,
     ) -> Result<&'static str, Box<dyn std::error::Error + Send + Sync>> {
         let is_global_admin = user.role.is_admin_or_above();
 
@@ -1274,7 +1275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rtmp_ids_require_public_id_prefixes() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = PublicIdCodec::plain();
 
         assert_eq!(
             codec

@@ -9,7 +9,7 @@ use synctv_core::{
         RoomPermission, RoomRole, UserId,
     },
     repository::{RoomMemberRepository, RoomSettingsRepository, UserRepository},
-    service::room::RoomServiceOptions,
+    service::RoomServiceOptions,
 };
 use synctv_core_testing::create_test_pool;
 use synctv_core_testing::{TestOptionExt, TestResultExt};

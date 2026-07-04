@@ -21,11 +21,9 @@ use synctv_core::{
         UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        notification::{GuestKickReason, RoomEvent},
-        room::{CreateRoomWithTaxonomyRequest, RoomCategoryUpdate, RoomServiceOptions},
-        InMemoryTokenBlacklistStore, RoomPasswordPolicy, RoomService, RuntimeSettingsStore,
-        SettingsService, UserService,
+        BruteForceProtection, CreateRoomWithTaxonomyRequest, GuestKickReason,
+        InMemoryTokenBlacklistStore, JwtService, RoomCategoryUpdate, RoomEvent, RoomPasswordPolicy,
+        RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
     Error,
 };
@@ -969,7 +967,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .create_playlist(
             room.id,
             member.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
+            synctv_core::service::CreatePlaylistRequest {
                 room_id: room.id,
                 name: "member folder".to_string(),
                 description: String::new(),
@@ -986,7 +984,7 @@ async fn test_leave_room_cleans_member_created_media_resources() {
         .add_media(
             room.id,
             member.id,
-            synctv_core::service::media::AddMediaRequest {
+            synctv_core::service::AddMediaRequest {
                 playlist_id: Some(playlist.id),
                 name: "member media".to_string(),
                 description: String::new(),
@@ -1085,7 +1083,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .create_playlist(
             room.id,
             target.id,
-            synctv_core::service::playlist::CreatePlaylistRequest {
+            synctv_core::service::CreatePlaylistRequest {
                 room_id: room.id,
                 name: "target folder".to_string(),
                 description: String::new(),
@@ -1102,7 +1100,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
         .add_media(
             room.id,
             target.id,
-            synctv_core::service::media::AddMediaRequest {
+            synctv_core::service::AddMediaRequest {
                 playlist_id: Some(playlist.id),
                 name: "target media".to_string(),
                 description: String::new(),
@@ -3208,7 +3206,7 @@ async fn test_delete_entries_removes_media_and_playlists_in_one_request() {
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![top_level_playlist.id],
                 media_ids: vec![root_media.id],
                 force: false,
@@ -3395,7 +3393,7 @@ async fn test_delete_entries_allows_foreign_playlist_delete_with_delete_any_perm
         .delete_entries(
             room.id,
             member.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -3465,7 +3463,7 @@ async fn test_delete_entries_denies_foreign_playlist_delete_when_delete_any_revo
         .delete_entries(
             room.id,
             admin.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -3522,7 +3520,7 @@ async fn test_delete_entries_allows_admin_default_delete_movie_any_for_foreign_m
         .delete_entries(
             room.id,
             admin.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id],
                 force: false,
@@ -3573,7 +3571,7 @@ async fn test_delete_entries_notifies_local_media_removed_subscribers() {
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id],
                 force: false,
@@ -3861,7 +3859,7 @@ async fn test_delete_entries_counts_media_deleted_via_playlist_cascade() {
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -3935,7 +3933,7 @@ async fn test_delete_entries_notifies_local_media_removed_for_playlist_cascade()
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -3993,7 +3991,7 @@ async fn test_delete_entries_notifies_local_playlist_deleted_subscribers() {
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![playlist.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -4056,7 +4054,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id],
                 force: false,
@@ -4119,7 +4117,7 @@ async fn test_delete_entries_rejects_currently_playing_resources_without_force()
         .delete_entries(
             playlist_room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: false,
@@ -4177,7 +4175,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
         .delete_entries(
             room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
                 media_ids: vec![media.id],
                 force: true,
@@ -4252,7 +4250,7 @@ async fn test_delete_entries_force_clears_playback_state_and_deletes_playing_res
         .delete_entries(
             playlist_room.id,
             owner.id,
-            synctv_core::service::room::DeleteEntriesRequest {
+            synctv_core::service::DeleteEntriesRequest {
                 playlist_ids: vec![parent.id],
                 media_ids: Vec::new(),
                 force: true,

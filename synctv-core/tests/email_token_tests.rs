@@ -435,10 +435,9 @@ async fn test_create_allows_multiple_unused_tokens_for_same_user_and_type() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_failed_verification_email_send_does_not_leave_valid_token() {
+async fn test_failed_verification_email_send_surfaces_error() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
-    let token_service = EmailTokenService::new(pool);
 
     let user = user_repo
         .create(&make_user("token_send_failure"))
@@ -456,8 +455,9 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     }))))
     .checked("test operation should succeed");
 
+    let token = "123456";
     let result = email_service
-        .send_email_bind_email(&email, &token_service, &user.id)
+        .send_email_bind_token_email_with_control(&email, token, None)
         .await;
     assert!(result.is_err(), "SMTP failure should surface as an error");
 
@@ -471,7 +471,7 @@ async fn test_failed_verification_email_send_does_not_leave_valid_token() {
     .checked("test operation should succeed");
     assert_eq!(
         remaining, 0,
-        "failed email delivery must not leave an unused email bind token behind"
+        "direct email delivery should not create an email bind token"
     );
 }
 

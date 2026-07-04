@@ -16,9 +16,8 @@ use synctv_core::{
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
+        RoomServiceOptions, UserService,
     },
     Config,
 };
@@ -72,12 +71,12 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 }
 
 async fn opaque_room_login(
-    client_api: &synctv_api::impls::ClientApiImpl,
+    client_api: &synctv_api::ClientApiImpl,
     user_id: &UserId,
     room_id: &str,
     password: &str,
     client_ip: &str,
-) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::ApiError> {
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
@@ -103,7 +102,7 @@ async fn opaque_room_login(
             credential_response,
             ClientLoginFinishParameters::default(),
         )
-        .map_err(|_| synctv_api::impls::ApiError::Authentication("Authentication failed".into()))?;
+        .map_err(|_| synctv_api::ApiError::Authentication("Authentication failed".into()))?;
 
     client_api
         .finish_room_password_login_with_control(
@@ -119,12 +118,12 @@ async fn opaque_room_login(
 }
 
 async fn start_opaque_room_login(
-    client_api: &synctv_api::impls::ClientApiImpl,
+    client_api: &synctv_api::ClientApiImpl,
     user_id: &UserId,
     room_id: &str,
     password: &str,
     client_ip: &str,
-) -> Result<PendingOpaqueRoomLogin, synctv_api::impls::ApiError> {
+) -> Result<PendingOpaqueRoomLogin, synctv_api::ApiError> {
     let mut rng = OsRng;
     let client_start = ClientLogin::<TestOpaqueCipherSuite>::start(&mut rng, password.as_bytes())
         .expect("client OPAQUE login start should succeed");
@@ -150,7 +149,7 @@ async fn start_opaque_room_login(
             credential_response,
             ClientLoginFinishParameters::default(),
         )
-        .map_err(|_| synctv_api::impls::ApiError::Authentication("Authentication failed".into()))?;
+        .map_err(|_| synctv_api::ApiError::Authentication("Authentication failed".into()))?;
 
     Ok(PendingOpaqueRoomLogin {
         session_id: challenge.session_id,
@@ -159,12 +158,12 @@ async fn start_opaque_room_login(
 }
 
 async fn start_tampered_opaque_room_login(
-    client_api: &synctv_api::impls::ClientApiImpl,
+    client_api: &synctv_api::ClientApiImpl,
     user_id: &UserId,
     room_id: &str,
     password: &str,
     client_ip: &str,
-) -> Result<PendingOpaqueRoomLogin, synctv_api::impls::ApiError> {
+) -> Result<PendingOpaqueRoomLogin, synctv_api::ApiError> {
     let mut login =
         start_opaque_room_login(client_api, user_id, room_id, password, client_ip).await?;
     if let Some(first) = login.credential_finalization.first_mut() {
@@ -176,11 +175,11 @@ async fn start_tampered_opaque_room_login(
 }
 
 async fn finish_opaque_room_login(
-    client_api: &synctv_api::impls::ClientApiImpl,
+    client_api: &synctv_api::ClientApiImpl,
     user_id: &UserId,
     login: PendingOpaqueRoomLogin,
     client_ip: &str,
-) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::impls::ApiError> {
+) -> Result<synctv_proto::client::JoinRoomResponse, synctv_api::ApiError> {
     client_api
         .finish_room_password_login_with_control(
             user_id,
@@ -197,11 +196,11 @@ async fn finish_opaque_room_login(
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-) -> synctv_api::impls::ClientApiImpl {
+) -> synctv_api::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
-    synctv_api::impls::ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+    synctv_api::ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -211,7 +210,7 @@ fn make_client_api(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -224,7 +223,7 @@ fn make_client_api(
 }
 
 async fn opaque_room_password_registration_upload(
-    client_api: &synctv_api::impls::ClientApiImpl,
+    client_api: &synctv_api::ClientApiImpl,
     user_id: &UserId,
     room_id: &str,
     password: &str,
@@ -306,7 +305,7 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         .unwrap();
 
     let client_api = make_client_api(user_service, room_service.clone());
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = synctv_api::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
     let (_session_id, finish_req) = opaque_room_password_registration_upload(
@@ -322,7 +321,7 @@ async fn test_finish_room_password_registration_rejects_session_for_different_ro
         .await
         .expect_err("room password registration session must be bound to one room");
     assert!(
-        matches!(error, synctv_api::impls::ApiError::InvalidInput(ref message)
+        matches!(error, synctv_api::ApiError::InvalidInput(ref message)
             if message.contains("does not match room")),
         "unexpected error: {error}"
     );
@@ -384,7 +383,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .unwrap();
 
     let client_api = make_client_api(user_service, room_service.clone());
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = synctv_api::PublicIdCodec::plain();
     let room_a_public_id = codec.encode_room_id(room_a.id).unwrap();
     let room_b_public_id = codec.encode_room_id(room_b.id).unwrap();
 
@@ -429,7 +428,7 @@ async fn test_finish_room_password_login_rejects_session_for_different_room_befo
         .await
         .expect_err("room password login session must be bound to one room");
     assert!(
-        matches!(error, synctv_api::impls::ApiError::InvalidInput(ref message)
+        matches!(error, synctv_api::ApiError::InvalidInput(ref message)
             if message.contains("does not match room")),
         "unexpected error: {error}"
     );
@@ -486,7 +485,7 @@ async fn test_client_api_room_password_success_resets_bruteforce_counter() {
 
     let client_api = make_client_api(user_service, room_service.clone());
 
-    let room_public_id = synctv_core::PublicIdCodec::plain()
+    let room_public_id = synctv_api::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
 
@@ -576,7 +575,7 @@ async fn test_preissued_room_password_opaque_sessions_cannot_bypass_finish_locko
         .unwrap();
 
     let client_api = make_client_api(user_service, room_service.clone());
-    let room_public_id = synctv_core::PublicIdCodec::plain()
+    let room_public_id = synctv_api::PublicIdCodec::plain()
         .encode_room_id(room.id)
         .unwrap();
     let client_ip = "192.168.1.102";

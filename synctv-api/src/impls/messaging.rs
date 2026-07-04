@@ -72,9 +72,12 @@ mod heartbeat;
 pub use heartbeat::HeartbeatSchedule;
 mod observed_playback;
 pub use observed_playback::{
-    spawn_observed_playback_lifecycle_event_source, ObservedPlaybackLifecycleEvent,
-    ObservedPlaybackLifecycleSubscriber, PlaybackAutoAdvanceSubscriber,
+    spawn_observed_playback_lifecycle_event_source, PlaybackAutoAdvanceSubscriber,
     ProviderPlaybackProgressSubscriber,
+};
+#[cfg(test)]
+pub(crate) use observed_playback::{
+    ObservedPlaybackLifecycleEvent, ObservedPlaybackLifecycleSubscriber,
 };
 mod playback;
 #[cfg(test)]
@@ -83,8 +86,7 @@ mod resource_watch;
 pub use resource_watch::{
     watch_chat_events_observe, watch_chat_pin_events_observe, watch_playback_observe,
     watch_playback_state_observe, watch_playlist_items_observe, watch_room_member_events_observe,
-    watch_room_settings_observe, PreparedResourceWatchSession, ResourceWatchSession,
-    ResourceWatchSessionConfig, WatchResourceKind,
+    watch_room_settings_observe, ResourceWatchSession, ResourceWatchSessionConfig,
 };
 mod webrtc;
 
@@ -119,15 +121,9 @@ pub(crate) use identity::{
     internal_guest_user_id, GUEST_INTERNAL_USER_ID_BASE, GUEST_INTERNAL_USER_ID_SPAN,
 };
 mod membership;
-use membership::{
-    guest_admission_denial_reason, probe_realtime_membership_access,
-    probe_realtime_membership_access_with_room, realtime_membership_denial_reason,
-    InitialRealtimeJoinState, RealtimeMembershipAccess,
-};
 #[cfg(test)]
-pub(crate) use membership::{
-    guest_policy_error_to_denial_reason, guest_token_blacklist_denial_reason,
-};
+pub(crate) use membership::guest_policy_error_to_denial_reason;
+use membership::{InitialRealtimeJoinState, RealtimeMembershipAccess, RealtimeMembershipProbe};
 
 /// Cached membership status for heartbeat validation.
 ///
@@ -193,7 +189,7 @@ pub struct StreamMessageHandler {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     playback_service: Arc<dyn PlaybackService>,
     playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -252,7 +248,7 @@ pub struct StreamMessageHandlerConfig {
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: Arc<RateLimitConfig>,
     pub content_filter: Arc<ContentFilter>,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub concurrency_config: Arc<MessageConcurrencyConfig>,
 }
@@ -356,6 +352,10 @@ impl StreamMessageHandler {
         }
     }
 
+    fn membership_probe(&self) -> RealtimeMembershipProbe<'_> {
+        RealtimeMembershipProbe::new(&self.room_service)
+    }
+
     #[cfg(test)]
     pub fn new(config: StreamMessageHandlerConfig) -> Self {
         let runtime = StreamMessageHandlerRuntime::local(&config.event_service);
@@ -402,6 +402,7 @@ impl StreamMessageHandler {
             actor: room_actor,
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
+            chat_service: Some(Arc::clone(&chat_service)),
             presence_service: Arc::clone(&presence_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: Arc::clone(&sender),
@@ -667,13 +668,9 @@ impl StreamMessageHandler {
     }
 
     async fn guest_admission_denial_reason(&self) -> Result<Option<String>, RealtimeJoinError> {
-        guest_admission_denial_reason(
-            &self.room_service,
-            &self.room_id,
-            &self.user_id,
-            &self.principal,
-        )
-        .await
+        self.membership_probe()
+            .guest_admission_denial_reason(&self.room_id, &self.user_id, &self.principal)
+            .await
     }
 
     async fn prepare_initial_realtime_join_state(
@@ -736,9 +733,10 @@ impl StreamMessageHandler {
             ));
         }
 
-        let membership_lookup =
-            probe_realtime_membership_access_with_room(&self.room_service, &room, &self.user_id)
-                .await;
+        let membership_lookup = self
+            .membership_probe()
+            .probe_realtime_membership_access_with_room(&room, &self.user_id)
+            .await;
         let member = match membership_lookup {
             Ok(RealtimeMembershipAccess::Allowed(member)) => member,
             Ok(RealtimeMembershipAccess::Denied(reason)) => return Ok(Err(reason)),
@@ -1228,12 +1226,10 @@ impl StreamMessageHandler {
                             );
                             disconnect_rx = self.connection_service.subscribe_disconnect();
 
-                            match realtime_membership_denial_reason(
-                                &self.room_service,
-                                &self.room_id,
-                                &self.user_id,
-                            )
-                            .await
+                            match self
+                                .membership_probe()
+                                .realtime_membership_denial_reason(&self.room_id, &self.user_id)
+                                .await
                             {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
@@ -1373,12 +1369,10 @@ impl StreamMessageHandler {
                             );
                             admin_rx = self.event_service.subscribe_admin_events();
 
-                            match realtime_membership_denial_reason(
-                                &self.room_service,
-                                &self.room_id,
-                                &self.user_id,
-                            )
-                            .await
+                            match self
+                                .membership_probe()
+                                .realtime_membership_denial_reason(&self.room_id, &self.user_id)
+                                .await
                             {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
@@ -1519,12 +1513,10 @@ impl StreamMessageHandler {
                     }
 
                     // Cache miss: query database and populate cache.
-                    match probe_realtime_membership_access(
-                        &self.room_service,
-                        &self.room_id,
-                        &self.user_id,
-                    )
-                    .await
+                    match self
+                        .membership_probe()
+                        .probe_realtime_membership_access(&self.room_id, &self.user_id)
+                        .await
                     {
                         Ok(RealtimeMembershipAccess::Allowed(member)) => {
                             let cached = CachedMembership::from_member(Some(&member));
@@ -2228,12 +2220,9 @@ impl StreamMessageHandler {
                                 );
                                 disconnect_rx = connection_service.subscribe_disconnect();
                                 if !is_guest {
-                                    match realtime_membership_denial_reason(
-                                        &room_service,
-                                        &room_id,
-                                        &user_id,
-                                    )
-                                    .await
+                                    match RealtimeMembershipProbe::new(&room_service)
+                                        .realtime_membership_denial_reason(&room_id, &user_id)
+                                        .await
                                     {
                                         Ok(Some(reason)) => {
                                             tracing::info!(
@@ -2353,12 +2342,9 @@ impl StreamMessageHandler {
                                 );
                                 admin_rx = event_service.subscribe_admin_events();
                                 if !is_guest {
-                                    match realtime_membership_denial_reason(
-                                        &room_service,
-                                        &room_id,
-                                        &user_id,
-                                    )
-                                    .await
+                                    match RealtimeMembershipProbe::new(&room_service)
+                                        .realtime_membership_denial_reason(&room_id, &user_id)
+                                        .await
                                     {
                                         Ok(Some(reason)) => {
                                             tracing::info!(
@@ -2461,12 +2447,12 @@ impl StreamMessageHandler {
                                 }
                             }
 
-                            match realtime_membership_denial_reason(
-                                &heartbeat_room_service,
-                                &heartbeat_room_id,
-                                &heartbeat_user_id,
-                            )
-                            .await
+                            match RealtimeMembershipProbe::new(&heartbeat_room_service)
+                                .realtime_membership_denial_reason(
+                                    &heartbeat_room_id,
+                                    &heartbeat_user_id,
+                                )
+                                .await
                             {
                                 Ok(Some(reason)) => {
                                     tracing::info!(
@@ -2552,7 +2538,7 @@ impl StreamMessageHandler {
                     .handle_observe_resource(observe)
                     .await?;
                 self.resource_observer
-                    .replay_chat_events_after(&self.chat_service, observe)
+                    .replay_chat_events_after(observe)
                     .await?;
                 self.resource_observer
                     .replay_room_resource_events_after(observe)
@@ -2694,9 +2680,10 @@ impl StreamMessageHandler {
             });
         }
 
-        let member_lookup =
-            probe_realtime_membership_access(&self.room_service, &self.room_id, &self.user_id)
-                .await;
+        let member_lookup = self
+            .membership_probe()
+            .probe_realtime_membership_access(&self.room_id, &self.user_id)
+            .await;
 
         let member = match member_lookup {
             Ok(RealtimeMembershipAccess::Allowed(member)) => member,
@@ -2763,7 +2750,7 @@ fn parse_optional_chat_message_id(raw: &str) -> Result<Option<i64>, String> {
 
 fn proto_chat_mentions_to_core(
     mentions: &[synctv_proto::client::ChatMentionInput],
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Vec<ChatMentionInput>, String> {
     mentions
         .iter()

@@ -6,7 +6,7 @@
 
 use axum::http::Method;
 use synctv_core::models::{MediaId, RoomId};
-use synctv_core::provider::playback_transport::PlaybackTransportAction;
+use synctv_core::provider::PlaybackTransportAction;
 
 use crate::http::providers::playback_provider::transport::stream_chunk_http_response;
 use crate::http::{AppError, AppResult, AppState};
@@ -15,6 +15,7 @@ use crate::impls::playback_provider::common::{
     LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest, LiveHlsSegmentChunksRequest,
     LivePlaybackDeps,
 };
+use crate::proxy_signature::ProxySigningKeyQueryExt;
 
 pub(crate) async fn execute_live_stream_action(
     state: &AppState,

@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```text
-//! use synctv_core::service::global_settings::*;
+//! use synctv_core::service::*;
 //!
 //! // Initialize during app startup
 //! let registry = RuntimeSettingsStore::new(settings_service);

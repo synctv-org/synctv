@@ -8,7 +8,7 @@ use std::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 use synctv_core::models::UserId;
-use synctv_core::service::auth::{JwtService, OpaquePasswordService};
+use synctv_core::service::{JwtService, OpaquePasswordService};
 
 /// Benchmark: JWT token generation
 fn bench_jwt_sign(c: &mut Criterion) {

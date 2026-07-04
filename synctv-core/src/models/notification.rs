@@ -147,7 +147,7 @@ pub(crate) fn default_notification_data() -> NotificationData {
     NotificationData::default()
 }
 
-/// List notifications query parameters
+/// Structured filters for listing notifications.
 #[derive(Debug, Default, Deserialize)]
 pub struct NotificationListQuery {
     pub pagination: super::pagination::PageParams,

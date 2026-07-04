@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            INSERT INTO file_object_variants (\n                storage_backend, object_key, original_storage_backend, original_object_key,\n                group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                is_original, lossy, quality, sort_order, metadata\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                original_storage_backend = EXCLUDED.original_storage_backend,\n                original_object_key = EXCLUDED.original_object_key,\n                group_id = EXCLUDED.group_id,\n                variant_key = EXCLUDED.variant_key,\n                label = EXCLUDED.label,\n                url = EXCLUDED.url,\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                width = EXCLUDED.width,\n                height = EXCLUDED.height,\n                is_original = EXCLUDED.is_original,\n                lossy = EXCLUDED.lossy,\n                quality = EXCLUDED.quality,\n                sort_order = EXCLUDED.sort_order,\n                metadata = EXCLUDED.metadata\n            RETURNING storage_backend, object_key, original_storage_backend, original_object_key,\n                      group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                      is_original, lossy, quality, sort_order,\n                      metadata AS \"metadata!: FileVariantMetadata\", created_at\n            ",
+  "query": "\n            INSERT INTO file_object_variants (\n                storage_backend, object_key, original_storage_backend, original_object_key,\n                group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                is_original, lossy, quality, sort_order, metadata\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)\n            ON CONFLICT (storage_backend, object_key)\n            DO UPDATE SET\n                original_storage_backend = EXCLUDED.original_storage_backend,\n                original_object_key = EXCLUDED.original_object_key,\n                group_id = EXCLUDED.group_id,\n                variant_key = EXCLUDED.variant_key,\n                label = EXCLUDED.label,\n                url = EXCLUDED.url,\n                mime_type = EXCLUDED.mime_type,\n                size_bytes = EXCLUDED.size_bytes,\n                width = EXCLUDED.width,\n                height = EXCLUDED.height,\n                is_original = EXCLUDED.is_original,\n                lossy = EXCLUDED.lossy,\n                quality = EXCLUDED.quality,\n                sort_order = EXCLUDED.sort_order,\n                metadata = EXCLUDED.metadata\n            RETURNING storage_backend, object_key, original_storage_backend, original_object_key,\n                      group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                      is_original, lossy, quality, sort_order,\n                      NULL::JSONB AS \"object_access?: crate::models::FileObjectAccess\",\n                      metadata AS \"metadata!: FileVariantMetadata\",\n                      created_at\n            ",
   "describe": {
     "columns": [
       {
@@ -181,6 +181,12 @@
       },
       {
         "ordinal": 16,
+        "name": "object_access?: crate::models::FileObjectAccess",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
         "name": "metadata!: FileVariantMetadata",
         "type_info": "Jsonb",
         "origin": {
@@ -191,7 +197,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -240,9 +246,10 @@
       false,
       true,
       false,
+      null,
       false,
       false
     ]
   },
-  "hash": "be1bee62fc15b191a68c61533a3430dfb8fbb05133d009a09a716ac09f12db45"
+  "hash": "7da951f79a0ee45101804f8ce65788d205c43e432ad8c738719fcfa96a023966"
 }

@@ -7,7 +7,6 @@ use synctv_common::ExecutionControl;
 
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
-use crate::proxy_signature::ProxySigningKey;
 use crate::repository::UserProviderCredentialRepository;
 
 use super::{PlaybackClientProfile, ProviderAccessService};
@@ -18,33 +17,18 @@ pub struct ProviderContext<'a> {
     /// User ID requesting playback (optional)
     pub user_id: Option<UserId>,
 
-    /// Externally visible user ID for signed proxy URLs.
-    pub public_user_id: Option<String>,
-
     /// User ID whose provider credentials should be used when provider semantics
     /// require creator-owned shared credentials.
     pub credential_owner_id: Option<UserId>,
 
-    /// Externally visible credential owner ID for URLs returned to clients.
-    pub public_credential_owner_id: Option<String>,
-
     /// Room ID (optional)
     pub room_id: Option<RoomId>,
-
-    /// Externally visible room ID for signed proxy URLs.
-    pub public_room_id: Option<String>,
 
     /// Media ID currently being resolved (optional)
     pub media_id: Option<MediaId>,
 
-    /// Externally visible media ID for client-facing provider URLs.
-    pub public_media_id: Option<String>,
-
     /// Bound provider instance name selected by the media/playlist owner (optional)
     pub provider_instance_name: Option<&'a str>,
-
-    /// Base URL for generating proxy URLs
-    pub base_url: Option<&'a str>,
 
     /// Cache key prefix (e.g., "synctv")
     pub key_prefix: &'a str,
@@ -64,9 +48,6 @@ pub struct ProviderContext<'a> {
     /// Typed provider access service for cached credential/session resolution.
     pub provider_access_service: Option<Arc<dyn ProviderAccessService>>,
 
-    /// Proxy signing key for generating HMAC-signed proxy URLs (optional)
-    pub signing_key: Option<&'a ProxySigningKey>,
-
     /// Cooperative request context propagated from the caller, if any.
     pub request_context: Option<ExecutionControl>,
 
@@ -80,22 +61,16 @@ impl<'a> ProviderContext<'a> {
     pub fn new(key_prefix: &'a str) -> Self {
         Self {
             user_id: None,
-            public_user_id: None,
             credential_owner_id: None,
-            public_credential_owner_id: None,
             room_id: None,
-            public_room_id: None,
             media_id: None,
-            public_media_id: None,
             provider_instance_name: None,
-            base_url: None,
             key_prefix,
             db: None,
             credential_encryption: None,
             store: None,
             credential_repo: None,
             provider_access_service: None,
-            signing_key: None,
             request_context: None,
             playback_client_profile: None,
         }
@@ -108,27 +83,10 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set externally visible user ID for proxy signatures.
-    #[must_use]
-    pub fn with_public_user_id(mut self, user_id: impl Into<String>) -> Self {
-        self.public_user_id = Some(user_id.into());
-        self
-    }
-
     /// Set credential owner ID
     #[must_use]
     pub const fn with_credential_owner_id(mut self, credential_owner_id: UserId) -> Self {
         self.credential_owner_id = Some(credential_owner_id);
-        self
-    }
-
-    /// Set externally visible credential owner ID for client-facing URLs.
-    #[must_use]
-    pub fn with_public_credential_owner_id(
-        mut self,
-        credential_owner_id: impl Into<String>,
-    ) -> Self {
-        self.public_credential_owner_id = Some(credential_owner_id.into());
         self
     }
 
@@ -139,13 +97,6 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set externally visible room ID for proxy signatures.
-    #[must_use]
-    pub fn with_public_room_id(mut self, room_id: impl Into<String>) -> Self {
-        self.public_room_id = Some(room_id.into());
-        self
-    }
-
     /// Set media ID
     #[must_use]
     pub const fn with_media_id(mut self, media_id: MediaId) -> Self {
@@ -153,24 +104,10 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set externally visible media ID for client-facing provider URLs.
-    #[must_use]
-    pub fn with_public_media_id(mut self, media_id: impl Into<String>) -> Self {
-        self.public_media_id = Some(media_id.into());
-        self
-    }
-
     /// Set canonical bound provider instance name.
     #[must_use]
     pub const fn with_provider_instance_name(mut self, provider_instance_name: &'a str) -> Self {
         self.provider_instance_name = Some(provider_instance_name);
-        self
-    }
-
-    /// Set base URL
-    #[must_use]
-    pub const fn with_base_url(mut self, base_url: &'a str) -> Self {
-        self.base_url = Some(base_url);
         self
     }
 
@@ -209,13 +146,6 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub fn with_provider_access_service(mut self, service: Arc<dyn ProviderAccessService>) -> Self {
         self.provider_access_service = Some(service);
-        self
-    }
-
-    /// Set proxy signing key for generating HMAC-signed proxy URLs
-    #[must_use]
-    pub const fn with_signing_key(mut self, key: &'a ProxySigningKey) -> Self {
-        self.signing_key = Some(key);
         self
     }
 
@@ -261,37 +191,13 @@ impl<'a> ProviderContext<'a> {
     }
 
     #[must_use]
-    pub fn proxy_user_id(&self) -> Option<String> {
-        self.public_user_id
-            .clone()
-            .or_else(|| self.user_id.map(|id| id.to_string()))
-    }
-
-    #[must_use]
-    pub fn proxy_room_id(&self) -> Option<String> {
-        self.public_room_id
-            .clone()
-            .or_else(|| self.room_id.map(|id| id.to_string()))
-    }
-
-    #[must_use]
     pub const fn media_id(&self) -> Option<&MediaId> {
         self.media_id.as_ref()
     }
 
     #[must_use]
-    pub fn public_media_id(&self) -> Option<&str> {
-        self.public_media_id.as_deref()
-    }
-
-    #[must_use]
     pub const fn credential_owner_id(&self) -> Option<&UserId> {
         self.credential_owner_id.as_ref()
-    }
-
-    #[must_use]
-    pub fn public_credential_owner_id(&self) -> Option<&str> {
-        self.public_credential_owner_id.as_deref()
     }
 
     #[must_use]
@@ -307,27 +213,5 @@ impl<'a> ProviderContext<'a> {
         }
 
         Ok(())
-    }
-
-    /// Validate that all required fields are present for playback generation.
-    ///
-    /// Returns an error listing missing required fields (`base_url`, `db`).
-    /// Optional fields (`user_id`, `room_id`, `media_id`, `store`) are not checked.
-    pub fn validate(&self) -> Result<(), crate::Error> {
-        let mut missing = Vec::new();
-        if self.base_url.is_none() {
-            missing.push("base_url");
-        }
-        if self.db.is_none() {
-            missing.push("db");
-        }
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(crate::Error::InvalidInput(format!(
-                "ProviderContext missing required fields: {}",
-                missing.join(", ")
-            )))
-        }
     }
 }

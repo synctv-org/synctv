@@ -43,7 +43,118 @@ pub struct DatabaseMaintenanceService {
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
     runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    resource_tasks: DatabaseMaintenanceResourceTasks,
+}
+
+#[derive(Clone)]
+struct DatabaseMaintenanceResourceTasks {
+    pool: PgPool,
     file_storage_service: Option<Arc<dyn FileStorageService>>,
+}
+
+impl DatabaseMaintenanceResourceTasks {
+    fn new(pool: PgPool, file_storage_service: Option<Arc<dyn FileStorageService>>) -> Self {
+        Self {
+            pool,
+            file_storage_service,
+        }
+    }
+
+    async fn cleanup_retained_chat_messages(&self, retention_days: i64) -> crate::Result<u64> {
+        cleanup_ops::cleanup_chat_messages_with_files(
+            &self.pool,
+            self.file_storage_service.as_ref(),
+            cleanup_ops::ChatMessageCleanupScope::Retention { retention_days },
+            FileStorageCleanupOrigin::RetentionExpired,
+            "old message purge",
+        )
+        .await
+    }
+
+    async fn retry_file_cleanup_jobs(&self) -> crate::Result<()> {
+        let repository = FileStorageRepository::new(self.pool.clone());
+        let due_jobs = repository.count_due_cleanup_jobs().await?;
+        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs);
+
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(());
+        };
+
+        let jobs = repository
+            .claim_due_cleanup_jobs(FILE_CLEANUP_RETRY_LIMIT, "db_maintenance")
+            .await?;
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let mut completed = 0_u64;
+        let mut rescheduled = 0_u64;
+        for job in jobs {
+            record_file_cleanup_job_metric("claimed", &job.origin, &job.storage_backend);
+            let file_reference = job.reference_target();
+            let delete_origin = FileStorageCleanupOrigin::parse(&job.origin)
+                .unwrap_or(FileStorageCleanupOrigin::CleanupRetry);
+            match storage
+                .delete_files(delete_origin, std::slice::from_ref(&file_reference))
+                .await
+            {
+                Ok(()) => {
+                    repository.complete_cleanup_job(job.id).await?;
+                    record_file_cleanup_job_metric("completed", &job.origin, &job.storage_backend);
+                    completed += 1;
+                }
+                Err(error) => {
+                    let delay_seconds = file_cleanup_retry_delay_seconds(job.attempt_count);
+                    repository
+                        .reschedule_cleanup_job(job.id, &error.to_string(), delay_seconds)
+                        .await?;
+                    record_file_cleanup_job_metric(
+                        "rescheduled",
+                        &job.origin,
+                        &job.storage_backend,
+                    );
+                    rescheduled += 1;
+                    warn!(
+                        job_id = job.id,
+                        object_key = %job.object_key,
+                        delay_seconds,
+                        error = %error,
+                        "File cleanup retry failed"
+                    );
+                }
+            }
+        }
+
+        let due_jobs_after_retry = repository.count_due_cleanup_jobs().await?;
+        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs_after_retry);
+
+        info!(completed, rescheduled, "File cleanup retry cycle completed");
+        Ok(())
+    }
+
+    async fn cleanup_unreferenced_file_objects(
+        &self,
+        retention_seconds: u64,
+    ) -> crate::Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_unreferenced_file_objects(&self.pool, storage, retention_seconds).await
+    }
+
+    async fn cleanup_expired_file_references(&self) -> crate::Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_expired_file_references(&self.pool, storage).await
+    }
+
+    async fn cleanup_expired_file_upload_sessions(&self) -> crate::Result<u64> {
+        let Some(storage) = &self.file_storage_service else {
+            return Ok(0);
+        };
+        cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage).await
+    }
 }
 
 impl DatabaseMaintenanceService {
@@ -85,11 +196,14 @@ impl DatabaseMaintenanceService {
         options: DatabaseMaintenanceOptions,
     ) -> Self {
         Self {
+            resource_tasks: DatabaseMaintenanceResourceTasks::new(
+                pool.clone(),
+                options.file_storage_service.clone(),
+            ),
             pool,
             config: options.config,
             leader_check,
             runtime_settings_store: options.runtime_settings_store,
-            file_storage_service: options.file_storage_service,
         }
     }
 
@@ -171,14 +285,10 @@ impl DatabaseMaintenanceService {
     /// filter maps directly to daily partitions.
     pub async fn run_cleanup_old_chat_messages(&self) -> CoreResult<()> {
         let retention_days = self.chat_message_retention_days()?;
-        let deleted = cleanup_ops::cleanup_chat_messages_with_files(
-            &self.pool,
-            self.file_storage_service.as_ref(),
-            cleanup_ops::ChatMessageCleanupScope::Retention { retention_days },
-            FileStorageCleanupOrigin::RetentionExpired,
-            "old message purge",
-        )
-        .await?;
+        let deleted = self
+            .resource_tasks
+            .cleanup_retained_chat_messages(retention_days)
+            .await?;
         if deleted > 0 {
             info!(
                 deleted,
@@ -241,64 +351,7 @@ impl DatabaseMaintenanceService {
     /// Retry due file object cleanup jobs that were persisted after a previous
     /// delete attempt failed.
     pub async fn run_retry_file_cleanup_jobs(&self) -> crate::Result<()> {
-        let repository = FileStorageRepository::new(self.pool.clone());
-        let due_jobs = repository.count_due_cleanup_jobs().await?;
-        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs);
-
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(());
-        };
-
-        let jobs = repository
-            .claim_due_cleanup_jobs(FILE_CLEANUP_RETRY_LIMIT, "db_maintenance")
-            .await?;
-        if jobs.is_empty() {
-            return Ok(());
-        }
-
-        let mut completed = 0_u64;
-        let mut rescheduled = 0_u64;
-        for job in jobs {
-            record_file_cleanup_job_metric("claimed", &job.origin, &job.storage_backend);
-            let file_reference = job.reference_target();
-            let delete_origin = FileStorageCleanupOrigin::parse(&job.origin)
-                .unwrap_or(FileStorageCleanupOrigin::CleanupRetry);
-            match storage
-                .delete_files(delete_origin, std::slice::from_ref(&file_reference))
-                .await
-            {
-                Ok(()) => {
-                    repository.complete_cleanup_job(job.id).await?;
-                    record_file_cleanup_job_metric("completed", &job.origin, &job.storage_backend);
-                    completed += 1;
-                }
-                Err(error) => {
-                    let delay_seconds = file_cleanup_retry_delay_seconds(job.attempt_count);
-                    repository
-                        .reschedule_cleanup_job(job.id, &error.to_string(), delay_seconds)
-                        .await?;
-                    record_file_cleanup_job_metric(
-                        "rescheduled",
-                        &job.origin,
-                        &job.storage_backend,
-                    );
-                    rescheduled += 1;
-                    warn!(
-                        job_id = job.id,
-                        object_key = %job.object_key,
-                        delay_seconds,
-                        error = %error,
-                        "File cleanup retry failed"
-                    );
-                }
-            }
-        }
-
-        let due_jobs_after_retry = repository.count_due_cleanup_jobs().await?;
-        crate::metrics::file_storage::FILE_CLEANUP_JOBS_DUE.set(due_jobs_after_retry);
-
-        info!(completed, rescheduled, "File cleanup retry cycle completed");
-        Ok(())
+        self.resource_tasks.retry_file_cleanup_jobs().await
     }
 
     /// Delete uploaded file objects that never received an active product reference.
@@ -306,15 +359,10 @@ impl DatabaseMaintenanceService {
     /// This handles interrupted direct uploads where bytes were stored but the
     /// product mutation that would attach the file never completed.
     pub async fn run_cleanup_unreferenced_file_objects(&self) -> crate::Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        let deleted = cleanup_ops::cleanup_unreferenced_file_objects(
-            &self.pool,
-            storage,
-            self.config.unreferenced_file_retention_seconds,
-        )
-        .await?;
+        let deleted = self
+            .resource_tasks
+            .cleanup_unreferenced_file_objects(self.config.unreferenced_file_retention_seconds)
+            .await?;
         if deleted > 0 {
             info!(deleted, "Unreferenced file object cleanup completed");
         }
@@ -323,19 +371,15 @@ impl DatabaseMaintenanceService {
 
     /// Release file references whose reference-level lifetime has expired.
     pub async fn run_cleanup_expired_file_references(&self) -> crate::Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        cleanup_ops::cleanup_expired_file_references(&self.pool, storage).await
+        self.resource_tasks.cleanup_expired_file_references().await
     }
 
     /// Delete expired upload sessions and backend-specific temporary upload data.
     pub async fn run_cleanup_expired_file_upload_sessions(&self) -> crate::Result<u64> {
-        let Some(storage) = &self.file_storage_service else {
-            return Ok(0);
-        };
-        let deleted =
-            cleanup_ops::cleanup_expired_file_upload_sessions(&self.pool, storage).await?;
+        let deleted = self
+            .resource_tasks
+            .cleanup_expired_file_upload_sessions()
+            .await?;
         if deleted > 0 {
             info!(deleted, "Expired file upload session cleanup completed");
         }
@@ -412,7 +456,7 @@ impl DatabaseMaintenanceService {
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
             runtime_settings_store: self.runtime_settings_store.clone(),
-            file_storage_service: self.file_storage_service.clone(),
+            resource_tasks: self.resource_tasks.clone(),
         };
 
         crate::spawn::spawn_monitored("db_maintenance", async move {

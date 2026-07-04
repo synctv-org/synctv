@@ -11,7 +11,7 @@ use crate::{
         room_member::RemovedRoomMember,
         UserProviderCredentialRepository,
     },
-    service::{audit::AuditService, auth::OpaquePasswordService},
+    service::{audit::AuditService, OpaquePasswordService},
     Error, Result,
 };
 
@@ -143,7 +143,7 @@ impl AuthorizedAdminActor {
 #[derive(Clone)]
 pub struct RoomServiceOptions {
     pub read_pool: Option<sqlx::PgPool>,
-    pub distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
+    pub distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub version_fence: Arc<dyn crate::cache::VersionFenceStore>,
     pub playback_l2_cache: crate::cache::PlaybackStateCache,
@@ -156,7 +156,7 @@ pub struct RoomServiceOptions {
     pub provider_access_service: Option<Arc<dyn crate::provider::ProviderAccessService>>,
     pub provider_stores: Option<Arc<dyn crate::provider::ProviderStoreResolver>>,
     pub audit_service: Option<Arc<AuditService>>,
-    pub brute_force_service: Option<Arc<dyn crate::service::auth::BruteForceProtectionService>>,
+    pub brute_force_service: Option<Arc<dyn crate::service::BruteForceProtectionService>>,
     pub runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
     pub opaque_password_service: Arc<OpaquePasswordService>,
@@ -216,9 +216,9 @@ impl RoomServiceOptions {
             user_notification_service: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
             opaque_password_registration_session_store:
-                crate::service::room::local_room_opaque_password_registration_session_store(),
+                crate::service::local_room_opaque_password_registration_session_store(),
             opaque_password_login_session_store:
-                crate::service::room::local_room_opaque_password_login_session_store(),
+                crate::service::local_room_opaque_password_login_session_store(),
             realtime_outbox: None,
             media_file_storage_service: None,
             room_file_storage_service: None,

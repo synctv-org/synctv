@@ -3,7 +3,7 @@ use crate::{
         AuditAction, AuditDetails, AuditTargetType, RoomAdminPermissionBits,
         RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomRole, UserId,
     },
-    service::{member::AdminMemberUpdate, optimistic_retry, permission::PermissionWriteFence},
+    service::{optimistic_retry, AdminMemberUpdate, PermissionWriteFence},
     Error, Result,
 };
 

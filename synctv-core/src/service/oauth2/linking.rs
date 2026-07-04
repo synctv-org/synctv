@@ -12,6 +12,12 @@ use crate::{
 };
 
 impl OAuth2Service {
+    fn user_service(&self) -> Result<&crate::service::UserService> {
+        self.user_service.as_deref().ok_or_else(|| {
+            Error::ServiceUnavailable("OAuth2 user service is not configured".to_string())
+        })
+    }
+
     /// Find an existing user by `OAuth2` provider, or create a new one and link the provider,
     /// all within a single database transaction.
     ///
@@ -19,7 +25,6 @@ impl OAuth2Service {
     /// provider identity both find no existing user and both create separate user records.
     pub async fn find_or_create_and_link(
         &self,
-        user_service: &UserService,
         instance_name: &str,
         user_info: &OAuth2UserInfo,
     ) -> Result<OAuth2LinkResult> {
@@ -81,7 +86,6 @@ impl OAuth2Service {
         if signup_policy.signup_need_review {
             return self
                 .create_pending_registration_with_review(
-                    user_service,
                     tx,
                     instance_name,
                     user_info,
@@ -93,7 +97,6 @@ impl OAuth2Service {
 
         let new_user = self
             .create_oauth2_user_with_candidates(
-                user_service,
                 &mut tx,
                 user_info,
                 &base_username,
@@ -142,13 +145,13 @@ impl OAuth2Service {
 
     async fn create_pending_registration_with_review(
         &self,
-        user_service: &UserService,
         mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
         instance_name: &str,
         user_info: &OAuth2UserInfo,
         candidates: &[String],
         user_email: Option<&str>,
     ) -> Result<OAuth2LinkResult> {
+        let user_service = self.user_service()?;
         if let Some(email) = user_email {
             if user_service.get_by_email(email).await?.is_some()
                 && user_service
@@ -264,13 +267,13 @@ impl OAuth2Service {
 
     async fn create_oauth2_user_with_candidates(
         &self,
-        user_service: &UserService,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         user_info: &OAuth2UserInfo,
         base_username: &str,
         candidates: &[String],
         user_email: Option<&str>,
     ) -> Result<User> {
+        let user_service = self.user_service()?;
         let mut new_user = None;
         for (attempt, candidate) in candidates.iter().enumerate() {
             let savepoint = format!("oauth2_user_create_{attempt}");

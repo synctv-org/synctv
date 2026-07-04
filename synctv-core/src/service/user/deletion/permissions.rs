@@ -5,7 +5,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{RoomId, UserId},
     repository::RoomMemberRepository,
-    service::permission::{PermissionService, PermissionWriteFence},
+    service::{PermissionService, PermissionWriteFence},
     Result,
 };
 
@@ -18,14 +18,16 @@ pub(super) struct PendingRemovedMemberFence {
     fence: PermissionWriteFence,
 }
 
-#[derive(Debug, Default)]
-struct PendingRemovedMemberFences {
+#[derive(Debug)]
+struct PendingRemovedMemberFences<'a> {
+    permission_service: &'a PermissionService,
     inner: Vec<PendingRemovedMemberFence>,
 }
 
-impl PendingRemovedMemberFences {
-    fn with_capacity(capacity: usize) -> Self {
+impl<'a> PendingRemovedMemberFences<'a> {
+    fn with_capacity(permission_service: &'a PermissionService, capacity: usize) -> Self {
         Self {
+            permission_service,
             inner: Vec::with_capacity(capacity),
         }
     }
@@ -38,9 +40,9 @@ impl PendingRemovedMemberFences {
         self.inner
     }
 
-    async fn abort_all(&self, permission_service: &PermissionService) {
+    async fn abort_all(&self) {
         for pending in &self.inner {
-            permission_service
+            self.permission_service
                 .abort_permission_write(&pending.fence)
                 .await;
         }
@@ -57,7 +59,7 @@ impl UserService {
         Vec<crate::repository::room_member::RemovedRoomMember>,
         Vec<PendingRemovedMemberFence>,
     )> {
-        let pending_permission_fences = if let Some(permission_service) = &self.permission_service {
+        let pending_permission_fences = if self.permission_service.is_some() {
             let members = sqlx::query!(
                 r#"SELECT room_id as "room_id: RoomId",
                           user_id as "user_id: UserId",
@@ -73,8 +75,7 @@ impl UserService {
             .map(|row| (row.room_id, row.user_id, row.version))
             .collect::<Vec<_>>();
 
-            self.reserve_fences_for_members(permission_service, members)
-                .await?
+            self.reserve_fences_for_members(members).await?
         } else {
             Vec::new()
         };
@@ -96,10 +97,13 @@ impl UserService {
 
     async fn reserve_fences_for_members(
         &self,
-        permission_service: &PermissionService,
         members: Vec<(RoomId, UserId, i64)>,
     ) -> Result<Vec<PendingRemovedMemberFence>> {
-        let mut fences = PendingRemovedMemberFences::with_capacity(members.len());
+        let Some(permission_service) = &self.permission_service else {
+            return Ok(Vec::new());
+        };
+        let mut fences =
+            PendingRemovedMemberFences::with_capacity(permission_service, members.len());
         for (room_id, member_user_id, version) in members {
             let fence = match permission_service
                 .begin_permission_write(&room_id, &member_user_id, version)
@@ -107,7 +111,7 @@ impl UserService {
             {
                 Ok(fence) => fence,
                 Err(error) => {
-                    fences.abort_all(permission_service).await;
+                    fences.abort_all().await;
                     return Err(error);
                 }
             };
@@ -125,9 +129,9 @@ impl UserService {
         room_ids: &[RoomId],
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Vec<PendingRemovedMemberFence>> {
-        let Some(permission_service) = &self.permission_service else {
+        if self.permission_service.is_none() {
             return Ok(Vec::new());
-        };
+        }
         if room_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -148,8 +152,7 @@ impl UserService {
         .map(|row| (row.room_id, row.user_id, row.version))
         .collect::<Vec<_>>();
 
-        self.reserve_fences_for_members(permission_service, members)
-            .await
+        self.reserve_fences_for_members(members).await
     }
 
     pub(super) async fn commit_removed_member_permission_fences(

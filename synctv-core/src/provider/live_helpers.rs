@@ -1,17 +1,13 @@
 //! Shared helpers for live playback providers (RTMP and LiveProxy).
 
 use super::error::ProviderError;
-use super::playback_transport::PlaybackTransportAction;
+use super::playback_transport::{LiveFlvAccess, PlaybackTransportAction};
 use super::store::VersionedPlayback;
 use crate::models::{MediaId, RoomId};
-use crate::proxy_signature::ProxyUrlClaims;
-use crate::PublicIdCodec;
 
 /// Extract room_id and media_id from versioned playback metadata.
 pub(super) fn live_ids_from_metadata(
     versioned: &VersionedPlayback,
-    _public_id_codec: &PublicIdCodec,
-    _context_label: &str,
 ) -> Result<(RoomId, MediaId), ProviderError> {
     let room_id = versioned
         .result
@@ -30,21 +26,15 @@ pub(super) fn live_ids_from_metadata(
 pub(super) fn build_flv_action(
     provider_name: &str,
     versioned: &VersionedPlayback,
-    claims: &ProxyUrlClaims,
-    public_id_codec: &PublicIdCodec,
-    context_label: &str,
+    access: LiveFlvAccess,
 ) -> Result<PlaybackTransportAction, ProviderError> {
-    let (room_id, media_id) = live_ids_from_metadata(versioned, public_id_codec, context_label)?;
+    let (room_id, media_id) = live_ids_from_metadata(versioned)?;
     Ok(PlaybackTransportAction::LiveFlv {
         provider_name: provider_name.to_string(),
         room_id,
         media_id,
-        user_id: super::playback_transport::parse_playback_user_id(
-            public_id_codec,
-            &claims.user_id,
-            &format!("{context_label} proxy claims"),
-        )?,
-        expires_at: claims.expires_at,
+        user_id: access.user_id,
+        expires_at: access.expires_at,
     })
 }
 
@@ -52,10 +42,8 @@ pub(super) fn build_flv_action(
 pub(super) fn build_hls_playlist_action(
     provider_name: &str,
     versioned: &VersionedPlayback,
-    public_id_codec: &PublicIdCodec,
-    context_label: &str,
 ) -> Result<PlaybackTransportAction, ProviderError> {
-    let (room_id, media_id) = live_ids_from_metadata(versioned, public_id_codec, context_label)?;
+    let (room_id, media_id) = live_ids_from_metadata(versioned)?;
     Ok(PlaybackTransportAction::LiveHlsPlaylist {
         provider_name: provider_name.to_string(),
         room_id,
@@ -69,10 +57,8 @@ pub(super) fn build_hls_segment_action(
     provider_name: &str,
     versioned: &VersionedPlayback,
     segment_name: &str,
-    public_id_codec: &PublicIdCodec,
-    context_label: &str,
 ) -> Result<PlaybackTransportAction, ProviderError> {
-    let (room_id, media_id) = live_ids_from_metadata(versioned, public_id_codec, context_label)?;
+    let (room_id, media_id) = live_ids_from_metadata(versioned)?;
     Ok(PlaybackTransportAction::LiveHlsSegment {
         provider_name: provider_name.to_string(),
         room_id,

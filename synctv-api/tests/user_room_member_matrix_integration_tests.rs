@@ -5,8 +5,8 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Utc;
-use synctv_api::impls::{
-    admin::RequestContext, AdminApiConfig, AdminApiImpl, ApiError, ClientApiImpl,
+use synctv_api::{
+    AdminApiConfig, AdminApiImpl, AdminRequestContext as RequestContext, ApiError, ClientApiImpl,
 };
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
@@ -20,11 +20,9 @@ use synctv_core::{
         UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
-        PublishKeyService, RemoteProviderManager, RoomService, RuntimeSettingsStore,
-        SettingsService, UserService,
+        AuditService, BruteForceProtection, EmailConfig, EmailConfigProvider, EmailService,
+        InMemoryTokenBlacklistStore, JwtService, PublishKeyService, RemoteProviderManager,
+        RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
     Config,
 };
@@ -38,8 +36,8 @@ impl EmailConfigProvider for DisabledEmailConfigProvider {
     }
 }
 
-fn public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::plain()
 }
 
 fn review_request_public_id(id: i64) -> String {
@@ -90,7 +88,7 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -100,7 +98,7 @@ fn make_client_api(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -148,8 +146,8 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
 
     AdminApiImpl::new_with_runtime(
         AdminApiConfig {
-            read_pool: None,
             room_service: Arc::new(room_service),
+            read_services: support::admin_read_services(user_service.as_ref()),
             user_service,
             settings_service,
             runtime_settings_store: Some(runtime_settings_store),
@@ -160,7 +158,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
             publish_key_service: Some(publish_key_service),
             config: Arc::new(Config::default()),
             audit_service: Arc::new(AuditService::new_unbuffered(pool)),
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
         },
         support::admin_api_runtime(),
     )

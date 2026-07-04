@@ -473,7 +473,7 @@ impl RoomService {
         if let Some(ref lock) = self.distributed_lock {
             let created_by = request.created_by;
             let lock_key = format!("create_room:{created_by}");
-            return crate::service::distributed_lock::with_coordination_lock(
+            return crate::service::with_coordination_lock(
                 lock.as_ref(),
                 &lock_key,
                 Self::CREATE_ROOM_LOCK_TTL_SECS,

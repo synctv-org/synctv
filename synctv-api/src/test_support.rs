@@ -8,14 +8,14 @@ use synctv_core::service::{
 };
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    service::auth::{JwtValidator, SecurityPipeline},
+    service::{JwtValidator, SecurityPipeline},
 };
 use synctv_realtime::sync::{
     BroadcastResult, ConnectionId, PublishRequest, RealtimeEvent, SharedRealtimeEvent,
 };
 use tokio::sync::{broadcast, mpsc};
 
-use crate::impls::{AdminApiRuntime, ClientApiRuntime, RequestExecutor};
+use crate::impls::{AdminApiRuntime, AdminReadServices, ClientApiRuntime, RequestExecutor};
 use crate::realtime_fanout::{ChannelRealtimeFanoutService, RealtimeFanoutService};
 use crate::runtime::{RealtimeEventService, RealtimeMetrics};
 
@@ -55,13 +55,32 @@ pub fn local_request_executor() -> RequestExecutor {
     )
 }
 
-pub fn proxy_signing_key(
-    seed: &'static [u8],
-) -> Arc<synctv_core::proxy_signature::ProxySigningKey> {
+pub fn proxy_signing_key(seed: &'static [u8]) -> Arc<crate::proxy_signature::ProxySigningKey> {
     Arc::new(
-        synctv_core::proxy_signature::ProxySigningKey::try_derive_from(seed)
+        crate::proxy_signature::ProxySigningKey::try_derive_from(seed)
             .expect("test signing key should derive"),
     )
+}
+
+pub fn admin_read_services(user_service: &UserService) -> AdminReadServices {
+    let write_pool = user_service.pool().clone();
+    let read_pool = user_service.eventually_consistent_pool().clone();
+    AdminReadServices {
+        system_stats_service: Arc::new(synctv_core::service::SystemStatsService::new(
+            read_pool.clone(),
+        )),
+        review_service: Arc::new(synctv_core::service::ReviewService::new_with_read_pool(
+            write_pool.clone(),
+            read_pool.clone(),
+        )),
+        ban_record_service: Arc::new(synctv_core::service::BanRecordService::new_with_read_pool(
+            write_pool.clone(),
+            read_pool.clone(),
+        )),
+        content_report_service: Arc::new(
+            synctv_core::service::ContentReportService::new_with_read_pool(write_pool, read_pool),
+        ),
+    }
 }
 
 pub fn client_api_runtime() -> ClientApiRuntime {

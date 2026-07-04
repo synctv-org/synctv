@@ -19,12 +19,9 @@ use synctv_core::{
     provider::DynamicListQuery,
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        media::{AddMediaRequest, BackendPlaybackRequest, EditMediaRequest},
-        playlist::CreatePlaylistRequest,
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
-        UserService,
+        AddMediaRequest, BackendPlaybackRequest, BruteForceProtection, CreatePlaylistRequest,
+        EditMediaRequest, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
+        RemoteProviderManager, RoomService, RoomServiceOptions, UserService,
     },
     Error,
 };
@@ -587,7 +584,6 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
                 page_size: 20,
                 ..DynamicListQuery::default()
             },
-            None,
         )
         .await
         .failed("credential-backed dynamic listing should fail closed without repo wiring");
@@ -1005,7 +1001,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         .move_media(
             room.id,
             owner.id,
-            synctv_core::service::media::MoveMediaRequest {
+            synctv_core::service::MoveMediaRequest {
                 media_ids: vec![media.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1093,7 +1089,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
         .move_media(
             room.id,
             owner.id,
-            synctv_core::service::media::MoveMediaRequest {
+            synctv_core::service::MoveMediaRequest {
                 media_ids: vec![media2.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1187,7 +1183,7 @@ async fn test_move_media_batch_preserves_request_order() {
         .move_media(
             room.id,
             owner.id,
-            synctv_core::service::media::MoveMediaRequest {
+            synctv_core::service::MoveMediaRequest {
                 media_ids: vec![media4.id, media2.id],
                 source_playlist_id: None,
                 target_playlist_id: None,
@@ -1309,7 +1305,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
         .move_media(
             room.id,
             owner.id,
-            synctv_core::service::media::MoveMediaRequest {
+            synctv_core::service::MoveMediaRequest {
                 media_ids: vec![moving.id],
                 source_playlist_id: None,
                 target_playlist_id: Some(dst.id),
@@ -1425,7 +1421,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
         .move_media(
             room.id,
             owner.id,
-            synctv_core::service::media::MoveMediaRequest {
+            synctv_core::service::MoveMediaRequest {
                 media_ids: Vec::new(),
                 source_playlist_id: Some(src.id),
                 target_playlist_id: Some(dst.id),

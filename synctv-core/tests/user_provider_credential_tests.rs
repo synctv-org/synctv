@@ -11,6 +11,7 @@ use synctv_core::{
         ProviderCredential, ProviderInstance, ProviderType, SignupMethod, SourceProvider, User,
         UserId, UserProviderCredential,
     },
+    provider::{AlistProvider, BilibiliProvider},
     repository::{ProviderInstanceRepository, UserProviderCredentialRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
@@ -24,7 +25,7 @@ fn make_user(username: &str) -> User {
 }
 
 fn bilibili_server_id() -> String {
-    UserProviderCredential::bilibili_server_id()
+    BilibiliProvider::credential_server_id()
 }
 
 fn provider_code(provider: ProviderType) -> i16 {
@@ -40,21 +41,23 @@ fn make_credential(user_id: UserId, provider: &str, server_id: &str) -> UserProv
         server_id: server_id.to_string(),
         provider_instance_name: None,
         credential_data: match provider {
-            "bilibili" => ProviderCredential::bilibili(std::collections::HashMap::from([(
-                "SESSDATA".to_string(),
-                "test_session".to_string(),
-            )])),
-            "alist" => ProviderCredential::alist(
-                "https://alist.example.com".to_string(),
-                "alice".to_string(),
-                "hashed_password".to_string(),
-                None,
-            ),
-            "emby" => ProviderCredential::emby(
-                "https://emby.example.com".to_string(),
-                "api_key".to_string(),
-                "emby_user".to_string(),
-            ),
+            "bilibili" => ProviderCredential::Bilibili {
+                cookies: std::collections::HashMap::from([(
+                    "SESSDATA".to_string(),
+                    "test_session".to_string(),
+                )]),
+            },
+            "alist" => ProviderCredential::Alist {
+                host: "https://alist.example.com".to_string(),
+                username: "alice".to_string(),
+                password: "hashed_password".to_string(),
+                otp_secret: None,
+            },
+            "emby" => ProviderCredential::Emby {
+                host: "https://emby.example.com".to_string(),
+                api_key: "api_key".to_string(),
+                emby_user_id: "emby_user".to_string(),
+            },
             _ => ProviderCredential::default(),
         },
         expires_at: None,
@@ -263,10 +266,12 @@ async fn test_update_credential() {
         .checked("test operation should succeed");
 
     // Update credential data
-    cred.credential_data = ProviderCredential::bilibili(std::collections::HashMap::from([(
-        "SESSDATA".to_string(),
-        "new_session_value".to_string(),
-    )]));
+    cred.credential_data = ProviderCredential::Bilibili {
+        cookies: std::collections::HashMap::from([(
+            "SESSDATA".to_string(),
+            "new_session_value".to_string(),
+        )]),
+    };
     cred_repo
         .update(&cred)
         .await
@@ -453,11 +458,11 @@ async fn test_same_provider_host_can_be_stored_for_different_instances() {
         .await
         .checked("test operation should succeed");
 
-    let server_main = UserProviderCredential::generate_server_id_for_instance(
+    let server_main = AlistProvider::credential_server_id_for_instance(
         "https://alist.example.com",
         Some("alist-main"),
     );
-    let server_backup = UserProviderCredential::generate_server_id_for_instance(
+    let server_backup = AlistProvider::credential_server_id_for_instance(
         "https://alist.example.com",
         Some("alist-backup"),
     );
@@ -521,7 +526,7 @@ async fn test_delete_provider_instance_cascades_instance_credentials() {
         .await
         .checked("test operation should succeed");
 
-    let server_id = UserProviderCredential::generate_server_id_for_instance(
+    let server_id = AlistProvider::credential_server_id_for_instance(
         "https://alist-delete.example.com",
         Some("alist-delete-me"),
     );
@@ -561,7 +566,7 @@ async fn test_blank_provider_instance_name_is_normalized_to_null() {
         .checked("test operation should succeed");
 
     let server_id =
-        UserProviderCredential::generate_server_id_for_instance("https://alist.example.com", None);
+        AlistProvider::credential_server_id_for_instance("https://alist.example.com", None);
     let credential = make_credential_with_instance(user.id, "alist", &server_id, Some("   "));
 
     let credential = cred_repo
@@ -606,11 +611,12 @@ async fn test_upsert_by_user_provider_server_replaces_existing_credential_atomic
         .checked("test operation should succeed");
 
     let mut replacement = make_credential(user.id, "bilibili", &server_id);
-    replacement.credential_data =
-        ProviderCredential::bilibili(std::collections::HashMap::from([(
+    replacement.credential_data = ProviderCredential::Bilibili {
+        cookies: std::collections::HashMap::from([(
             "SESSDATA".to_string(),
             "replacement_session".to_string(),
-        )]));
+        )]),
+    };
     cred_repo
         .upsert_by_user_provider_server(&replacement)
         .await

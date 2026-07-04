@@ -8,10 +8,9 @@ use crate::{
 };
 
 use super::{
-    cleanup_member_resources_in_tx, ensure_actor_has_room_permission_now_tx,
-    AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
-    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxPermissionChangedEventFactory,
-    RealtimeOutboxUserLeftEventFactory, RoomService,
+    cleanup_member_resources_in_tx, AdminAddMemberWithOutboxRequest,
+    AdminRejectJoinRequestWithOutbox, RealtimeOutboxMemberResourceCleanupEventFactory,
+    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxUserLeftEventFactory, RoomService,
 };
 
 fn normalized_rejection_reason(reason: Option<&str>) -> Option<&str> {
@@ -235,9 +234,8 @@ impl RoomService {
         self.ensure_target_user_can_join(&target_user_id).await?;
 
         let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
+        self.ensure_actor_has_room_permission_now_tx(
             &mut tx,
-            &self.permission_service,
             &room_id,
             &actor_id,
             crate::models::RoomPermission::ADD_MEMBER,
@@ -332,9 +330,8 @@ impl RoomService {
             .await?;
 
         let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
+        self.ensure_actor_has_room_permission_now_tx(
             &mut tx,
-            &self.permission_service,
             &room_id,
             &actor_id,
             crate::models::RoomPermission::APPROVE_MEMBER,
@@ -408,9 +405,8 @@ impl RoomService {
             .await?;
 
         let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
+        self.ensure_actor_has_room_permission_now_tx(
             &mut tx,
-            &self.permission_service,
             &room_id,
             &actor_id,
             crate::models::RoomPermission::APPROVE_MEMBER,

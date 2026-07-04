@@ -5,7 +5,7 @@ use crate::{
         Room, RoomCategory, RoomCategoryId, RoomId, RoomLabel, RoomLabelId, UpsertRoomCategory,
         UpsertRoomLabel, UserId,
     },
-    service::room::RoomService,
+    service::RoomService,
     Error, Result,
 };
 

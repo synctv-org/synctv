@@ -32,7 +32,7 @@ use synctv_proto::client::{
     ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
     GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
     GetAuthorizationUrlRequest, GetAuthorizationUrlResponse, GetLinkedProvidersResponse,
-    ListAvailableProvidersResponse, OAuth2ProviderInstancePathRequest, OAuth2ProviderType,
+    ListAvailableProvidersResponse, OAuth2ProviderInstancePathRequest,
     OAuth2ProviderTypePathRequest, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 
@@ -119,27 +119,7 @@ fn oauth2_provider_type_path_to_proto(provider: &str) -> Result<i32, AppError> {
         provider: provider.to_string(),
     })
     .map_err(map_api_error)?;
-    let provider = synctv_core::models::OAuth2Provider::from_str_name(provider)
-        .ok_or_else(|| AppError::bad_request("Invalid OAuth2 provider type"))?;
-    let proto = match provider {
-        synctv_core::models::OAuth2Provider::QQ => OAuth2ProviderType::Oauth2ProviderTypeQq,
-        synctv_core::models::OAuth2Provider::GitHub => OAuth2ProviderType::Oauth2ProviderTypeGithub,
-        synctv_core::models::OAuth2Provider::Google => OAuth2ProviderType::Oauth2ProviderTypeGoogle,
-        synctv_core::models::OAuth2Provider::Microsoft => {
-            OAuth2ProviderType::Oauth2ProviderTypeMicrosoft
-        }
-        synctv_core::models::OAuth2Provider::Discord => {
-            OAuth2ProviderType::Oauth2ProviderTypeDiscord
-        }
-        synctv_core::models::OAuth2Provider::Casdoor => {
-            OAuth2ProviderType::Oauth2ProviderTypeCasdoor
-        }
-        synctv_core::models::OAuth2Provider::Logto => OAuth2ProviderType::Oauth2ProviderTypeLogto,
-        synctv_core::models::OAuth2Provider::Oidc => OAuth2ProviderType::Oauth2ProviderTypeOidc,
-        synctv_core::models::OAuth2Provider::Feishu => OAuth2ProviderType::Oauth2ProviderTypeFeishu,
-        synctv_core::models::OAuth2Provider::Gitee => OAuth2ProviderType::Oauth2ProviderTypeGitee,
-    };
-    Ok(proto as i32)
+    crate::impls::OAuth2ApiImpl::oauth2_provider_name_to_proto(provider).map_err(map_api_error)
 }
 
 fn map_oauth2_exchange_error(error: crate::impls::ApiError) -> AppError {
@@ -522,11 +502,10 @@ mod tests {
         let unlink: UnlinkProviderQuery = serde_urlencoded::from_str(
             "providerUserId=remote-user-1&verificationId=verification-id&providerInstanceName=github-main",
         )?;
-        let unlink = unlink.into_request(OAuth2ProviderType::Oauth2ProviderTypeGithub as i32);
-        assert_eq!(
-            unlink.provider,
-            OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
-        );
+        let github_provider =
+            synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32;
+        let unlink = unlink.into_request(github_provider);
+        assert_eq!(unlink.provider, github_provider);
         assert_eq!(unlink.verification_id, "verification-id");
         assert_eq!(unlink.provider_user_id, "remote-user-1");
         assert_eq!(unlink.provider_instance_name, "github-main");
@@ -547,11 +526,10 @@ mod tests {
             "provider=1&providerUserId=remote-user-1",
         )
         .expect("unknown path field should be ignored");
-        let unlink = unlink.into_request(OAuth2ProviderType::Oauth2ProviderTypeGithub as i32);
-        assert_eq!(
-            unlink.provider,
-            OAuth2ProviderType::Oauth2ProviderTypeGithub as i32
-        );
+        let github_provider =
+            synctv_proto::client::OAuth2ProviderType::Oauth2ProviderTypeGithub as i32;
+        let unlink = unlink.into_request(github_provider);
+        assert_eq!(unlink.provider, github_provider);
         assert_eq!(unlink.provider_user_id, "remote-user-1");
     }
 

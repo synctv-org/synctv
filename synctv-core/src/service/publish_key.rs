@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     models::{MediaId, RoomId, UserId},
-    service::auth::JwtService,
+    service::JwtService,
     Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 

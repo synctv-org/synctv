@@ -4,7 +4,7 @@ use crate::models::{
     RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
     RoomRole, RoomSettings, RoomStatus, UserId,
 };
-use crate::service::distributed_lock::with_coordination_lock;
+use crate::service::with_coordination_lock;
 use crate::test_helpers::RoomFixture;
 use crate::Error;
 use async_trait::async_trait;
@@ -123,7 +123,7 @@ fn test_room_name_counts_unicode_characters_not_bytes() {
 struct FailingCoordinationLock;
 
 #[async_trait]
-impl crate::service::distributed_lock::CoordinationLock for FailingCoordinationLock {
+impl crate::service::CoordinationLock for FailingCoordinationLock {
     async fn acquire(&self, key: &str, _ttl_secs: u64) -> crate::Result<Option<String>> {
         Err(Error::ServiceUnavailable(format!(
             "synthetic lock failure for {key}"

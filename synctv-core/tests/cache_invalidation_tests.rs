@@ -678,10 +678,8 @@ async fn test_cache_invalidation_after_commit() {
         cache::{KeyBuilder, UsernameCache},
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
-        service::auth::{BruteForceProtection, JwtService},
-        service::{
-            room::RoomServiceOptions, InMemoryTokenBlacklistStore, RoomService, UserService,
-        },
+        service::{BruteForceProtection, JwtService},
+        service::{InMemoryTokenBlacklistStore, RoomService, RoomServiceOptions, UserService},
     };
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",
@@ -852,10 +850,8 @@ async fn test_cache_invalidation_rollback_does_not_broadcast() {
         cache::{KeyBuilder, UsernameCache},
         models::{Room, RoomId, User, UserId, UserRole, UserStatus},
         repository::{RoomRepository, UserRepository},
-        service::auth::{BruteForceProtection, JwtService},
-        service::{
-            room::RoomServiceOptions, InMemoryTokenBlacklistStore, RoomService, UserService,
-        },
+        service::{BruteForceProtection, JwtService},
+        service::{InMemoryTokenBlacklistStore, RoomService, RoomServiceOptions, UserService},
     };
     let (_postgres, pool) = create_test_pool_with_options_and_label(
         "synctv_test",

@@ -184,7 +184,7 @@ impl std::fmt::Debug for GuestTokenValidator {
 mod tests {
     use super::*;
     use crate::models::{RoomId, UserId};
-    use crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
+    use crate::service::InMemoryTokenBlacklistStore;
 
     fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
         match result {

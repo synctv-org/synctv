@@ -7,11 +7,10 @@ use crate::{
 
 use super::{
     apply_delete_entries_impact_in_tx, delete_entries_result_from_impact,
-    ensure_actor_has_room_permission_now_tx, has_active_room_membership_in_tx,
-    has_room_permission_in_tx, plan_clear_playlist_scope_in_tx, plan_delete_entries_in_room_in_tx,
-    AuthorizedAdminActor, ClearPlaylistResult, DeleteEntriesPlan, DeleteEntriesRequest,
-    DeleteEntriesResult, EntryDeletionImpact, RealtimeOutboxDeleteEntriesEventFactory, RoomService,
-    MAX_DELETE_TARGETS,
+    has_active_room_membership_in_tx, plan_clear_playlist_scope_in_tx,
+    plan_delete_entries_in_room_in_tx, AuthorizedAdminActor, ClearPlaylistResult,
+    DeleteEntriesPlan, DeleteEntriesRequest, DeleteEntriesResult, EntryDeletionImpact,
+    RealtimeOutboxDeleteEntriesEventFactory, RoomService, MAX_DELETE_TARGETS,
 };
 
 impl RoomService {
@@ -198,14 +197,14 @@ impl RoomService {
         }
 
         if has_foreign_resources
-            && !has_room_permission_in_tx(
-                &mut tx,
-                &self.permission_service,
-                &room_id,
-                &user_id,
-                RoomPermission::DELETE_MEDIA_RESOURCE_ANY,
-            )
-            .await?
+            && !self
+                .has_room_permission_in_tx(
+                    &mut tx,
+                    &room_id,
+                    &user_id,
+                    RoomPermission::DELETE_MEDIA_RESOURCE_ANY,
+                )
+                .await?
         {
             return Err(Error::Authorization(
                 synctv_common::messages::PERMISSION_DENIED.to_string(),
@@ -497,9 +496,8 @@ impl RoomService {
         outbox_event_factory: Option<RealtimeOutboxDeleteEntriesEventFactory>,
     ) -> Result<ClearPlaylistResult> {
         let mut tx = self.pool.begin().await?;
-        ensure_actor_has_room_permission_now_tx(
+        self.ensure_actor_has_room_permission_now_tx(
             &mut tx,
-            &self.permission_service,
             &room_id,
             &user_id,
             RoomPermission::CLEAR_MEDIA_RESOURCES,

@@ -41,14 +41,14 @@ fn required_banned_at(user: &synctv_core::models::User) -> Result<i64, ApiError>
 }
 
 fn encode_optional_user_id(
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<String, ApiError> {
     encode_optional_user_id_option(public_id_codec, id).map(std::option::Option::unwrap_or_default)
 }
 
 fn encode_optional_user_id_option(
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<Option<String>, ApiError> {
     id.map(|id| {
@@ -60,7 +60,7 @@ fn encode_optional_user_id_option(
 }
 
 fn encode_optional_room_id(
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
     id: Option<RoomId>,
 ) -> Result<String, ApiError> {
     id.map(|id| {
@@ -100,7 +100,7 @@ fn content_report_status_to_proto(value: ContentReportStatus) -> i32 {
 
 pub(crate) fn content_report_row_to_proto(
     row: &ContentReportAdminRow,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::ContentReport, ApiError> {
     Ok(synctv_proto::admin::ContentReport {
         id: public_id_codec
@@ -139,7 +139,7 @@ pub(crate) fn content_report_row_to_proto(
 
 pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
     row: &UserRegistrationReviewRecord,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::UserRegistrationReview, ApiError> {
     let oauth2_provider = row.oauth2_provider.clone().map(|provider| {
         (match provider {
@@ -205,7 +205,7 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
     row: &RoomCreationReviewRecord,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomCreationReview, ApiError> {
     Ok(synctv_proto::admin::RoomCreationReview {
         id: public_id_codec
@@ -237,7 +237,7 @@ pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomJoinReview, ApiError> {
     Ok(synctv_proto::admin::RoomJoinReview {
         id: public_id_codec
@@ -262,7 +262,7 @@ pub(in crate::impls::admin) fn room_join_review_row_to_proto(
 
 pub(in crate::impls::admin) fn ban_row_to_proto(
     row: &BanRecordRow,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::BanRecord, ApiError> {
     Ok(synctv_proto::admin::BanRecord {
         id: public_id_codec
@@ -293,9 +293,9 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
     creator_status: UserStatus,
     creator_avatar_url: Option<&str>,
     cover: Option<&synctv_core::models::StoredFileReference>,
-    cover_url: Option<&str>,
+    cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
     presence: Option<&synctv_core::service::OnlineRoomStats>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::Room, ApiError> {
     let room_settings = settings.ok_or_else(|| {
         ApiError::Internal(format!(
@@ -324,7 +324,7 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
                 ApiError::Internal(format!("Failed to encode room creator id: {error}"))
             })?,
         creator_username: creator_username.to_string(),
-        status: synctv_proto::common::RoomStatus::from(room.status) as i32,
+        status: i32::from(room.status),
         settings: Some(room_settings_to_proto(room_settings)),
         member_count,
         created_at: room.created_at.timestamp(),
@@ -339,7 +339,8 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
         cover: cover
             .map(|file| {
                 crate::impls::client::convert::stored_file_reference_to_resource_cover(
-                    file, cover_url,
+                    file,
+                    cover_access,
                 )
             })
             .transpose()?,
@@ -360,7 +361,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
     member: &synctv_core::models::RoomMemberWithUser,
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     let permissions =
         permission_service.effective_member_with_user_permissions(member, room_settings);
@@ -370,7 +371,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
 pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
     permissions: synctv_core::models::RoomPermissionSet,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     Ok(synctv_proto::common::RoomMember {
         room_id: public_id_codec
@@ -400,7 +401,7 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
     presence: Option<&synctv_core::service::OnlineUserStats>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
     Ok(synctv_proto::admin::AdminUser {
         id: public_id_codec

@@ -33,7 +33,7 @@ fn mfa_method_to_proto(method: AuthFactorMethod) -> synctv_proto::client::MfaMet
 
 pub(crate) fn login_outcome_to_proto(
     outcome: AuthenticatedLogin,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::LoginResponse, ApiError> {
     match outcome {
         AuthenticatedLogin::Complete {
@@ -118,7 +118,7 @@ fn validate_direct_password_registration_request(
 
 fn pending_registration_to_proto(
     pending: PendingAccountRegistration,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::PendingRegistrationReview, ApiError> {
     Ok(synctv_proto::client::PendingRegistrationReview {
         review_request_id: public_id_codec
@@ -135,7 +135,7 @@ fn pending_registration_to_proto(
 
 fn registration_outcome_to_proto(
     outcome: AccountRegistrationOutcome,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::RegisterResponse, ApiError> {
     match outcome {
         AccountRegistrationOutcome::Registered {
@@ -937,7 +937,7 @@ mod tests {
 
     #[test]
     fn registration_outcome_to_proto_encodes_completed_registration() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let response = api_ok(registration_outcome_to_proto(
             AccountRegistrationOutcome::Registered {
                 user: User::new(
@@ -964,7 +964,7 @@ mod tests {
 
     #[test]
     fn registration_outcome_to_proto_encodes_pending_review() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let response = api_ok(registration_outcome_to_proto(
             AccountRegistrationOutcome::PendingReview(PendingAccountRegistration {
                 review_request_id: UserId::expect_positive(42),
@@ -1070,7 +1070,7 @@ mod tests {
             0,
             None,
             Some("logout-failure-session"),
-            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
         let result = revoke_session_for_logout(&jwt_service, &token, |_logout_token| async {
@@ -1134,7 +1134,7 @@ mod tests {
             0,
             None,
             "logout-refresh-session",
-            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
         let result =
@@ -1184,7 +1184,7 @@ mod tests {
             0,
             None,
             Some("expired-logout-session"),
-            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
         let result =
@@ -1216,7 +1216,7 @@ mod tests {
             0,
             None,
             Some(session_id),
-            &synctv_core::service::auth::TokenCredentialBinding::Password { version: 0 },
+            &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
         let result = revoke_session_for_logout(&jwt_service, &token, |logout_token| async move {

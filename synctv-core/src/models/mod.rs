@@ -130,7 +130,6 @@ pub mod room_member;
 pub mod room_settings;
 pub mod settings;
 pub mod source_config;
-pub mod source_config_convert;
 pub mod user;
 pub mod user_preferences;
 pub mod validation;
@@ -160,14 +159,14 @@ pub use email_token::EmailTokenType;
 pub use file_storage::{
     CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
     CreateFileUploadSession, FileAudioMetadata, FileBlob, FileBlobCompression, FileBlobPart,
-    FileByteRange, FileCleanupJob, FileCleanupMetadata, FileMetadata, FileObject, FileObjectData,
-    FileObjectDownload, FileObjectGroup, FileObjectMetadata, FileObjectVariant,
-    FileOwnershipProofRange, FileRangeRequest, FileReferenceMetadata, FileReferenceTarget,
-    FileUploadManifestPart, FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadPlan,
-    FileUploadPlanPart, FileUploadPolicy, FileUploadRange, FileUploadSession,
-    FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionMetadata,
-    FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata, GetFileObject,
-    NewStoredFile, StoreFileUpload, StoreFileUploadResult, StoredFileReference,
+    FileByteRange, FileCleanupJob, FileCleanupMetadata, FileMetadata, FileObject, FileObjectAccess,
+    FileObjectData, FileObjectDownload, FileObjectGroup, FileObjectKind, FileObjectMetadata,
+    FileObjectVariant, FileOwnershipProofRange, FileRangeRequest, FileReferenceMetadata,
+    FileReferenceTarget, FileUploadManifestPart, FileUploadOwnershipProofMetadata,
+    FileUploadPartUrl, FileUploadPlan, FileUploadPlanPart, FileUploadPolicy, FileUploadRange,
+    FileUploadSession, FileUploadSessionCreateResult, FileUploadSessionKind,
+    FileUploadSessionMetadata, FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata,
+    GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult, StoredFileReference,
     SubmittedFileReference, SubmittedFileReferenceKind, FILE_CLEANUP_ORIGIN_MAX_CHARS,
     FILE_ID_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS,
     FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
@@ -178,8 +177,9 @@ pub use id::{
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,
-    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, BilibiliDashManifestSlot,
-    BilibiliDashManifests, BilibiliPlaybackMetadata, DirectMultimodeParams, EmbyPlaybackMetadata,
+    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, BilibiliDashAudioStream,
+    BilibiliDashManifest, BilibiliDashManifestSlot, BilibiliDashManifests, BilibiliDashSegmentBase,
+    BilibiliDashVideoStream, BilibiliPlaybackMetadata, DirectMultimodeParams, EmbyPlaybackMetadata,
     FromProviderParams, Media, MediaListQuery, MediaListSortBy, PlaybackAlistMedia,
     PlaybackAlistSubtitle, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia,
     PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,

@@ -30,9 +30,9 @@ use synctv_core::{
     models::UserStatus,
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, SecurityPipeline, SecurityPipelineRuntime},
         AccountRegistrationOutcome, AuthenticatedLogin, BruteForceProtection,
-        InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
+        InMemoryTokenBlacklistStore, JwtService, SecurityPipeline, SecurityPipelineRuntime,
+        TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
 };
@@ -67,12 +67,12 @@ fn create_user_service(pool: &PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-        synctv_core::service::user::UserServiceRuntimeOptions {
+        synctv_core::service::UserServiceRuntimeOptions {
             password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
                 enabled: true,
                 need_review: false,
             }),
-            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     )
 }

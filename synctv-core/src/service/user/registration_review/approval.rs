@@ -6,11 +6,11 @@ use crate::{
         PasswordCredentialMaterial, ReviewRepository, UserOAuthProviderRepository,
         WebAuthnCredentialRepository,
     },
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 
-use crate::service::user::registration_types::PendingRegistrationRequest;
+use super::super::registration_types::PendingRegistrationRequest;
 
 impl UserService {
     async fn approve_oauth2_registration(

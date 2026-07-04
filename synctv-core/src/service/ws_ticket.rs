@@ -534,13 +534,13 @@ impl WsTicketService {
                         cross_node_capable,
                         "WebSocket ticket rejected: user validation failed"
                     );
-                    match crate::service::auth::SecurityPipeline::classify_auth_error(&e) {
-                        crate::service::auth::AuthErrorCategory::Authentication
-                        | crate::service::auth::AuthErrorCategory::Authorization => {
+                    match crate::service::SecurityPipeline::classify_auth_error(&e) {
+                        crate::service::AuthErrorCategory::Authentication
+                        | crate::service::AuthErrorCategory::Authorization => {
                             Error::Authentication(AUTHENTICATION_FAILED_MESSAGE.to_string())
                         }
-                        crate::service::auth::AuthErrorCategory::Unavailable
-                        | crate::service::auth::AuthErrorCategory::Internal => e,
+                        crate::service::AuthErrorCategory::Unavailable
+                        | crate::service::AuthErrorCategory::Internal => e,
                     }
                 })?;
 

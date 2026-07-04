@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                INSERT INTO chat_message_attachments (\n                    id, kind, room_id, message_id, message_created_at, filename,\n                    storage_backend, object_key, url, mime_type, size_bytes, width, height, metadata\n                )\n                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n                RETURNING id AS \"id!\",\n                          kind AS \"kind!: ChatAttachmentKind\",\n                          room_id AS \"room_id!: RoomId\",\n                          message_id AS \"message_id!\",\n                          message_created_at AS \"message_created_at!\",\n                          filename,\n                          storage_backend AS \"storage_backend!\",\n                          object_key AS \"object_key!\",\n                          url,\n                          mime_type,\n                          size_bytes,\n                          width,\n                          height,\n                          metadata AS \"metadata!: crate::models::FileMetadata\",\n                          created_at AS \"created_at!\",\n                          NULL::TEXT AS \"reuse_token?\",\n                          NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n                ",
+  "query": "\n            SELECT a.id AS \"id!\",\n                   a.kind AS \"kind!: ChatAttachmentKind\",\n                   a.room_id AS \"room_id!: RoomId\",\n                   a.message_id AS \"message_id!\",\n                   a.message_created_at AS \"message_created_at!\",\n                   a.filename,\n                   a.storage_backend AS \"storage_backend!\",\n                   a.object_key AS \"object_key!\",\n                   a.url,\n                   a.mime_type,\n                   a.size_bytes,\n                   a.width,\n                   a.height,\n                   a.metadata AS \"metadata!: crate::models::FileMetadata\",\n                   a.created_at AS \"created_at!\",\n                   NULL::JSONB AS \"object_access?: crate::models::FileObjectAccess\",\n\n                   NULL::TEXT AS \"reuse_token?\",\n                   NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n            FROM chat_message_attachments a\n            JOIN unnest($1::bigint[], $2::timestamptz[]) AS m(id, created_at)\n              ON a.message_id = m.id AND a.message_created_at = m.created_at\n            ORDER BY a.message_created_at DESC, a.message_id DESC, a.created_at ASC, a.id ASC\n            ",
   "describe": {
     "columns": [
       {
@@ -170,12 +170,18 @@
       },
       {
         "ordinal": 15,
+        "name": "object_access?: crate::models::FileObjectAccess",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
         "name": "reuse_token?",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "reuse_expires_at?",
         "type_info": "Timestamptz",
         "origin": "Expression"
@@ -183,20 +189,8 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Int2",
-        "Int8",
-        "Int8",
-        "Timestamptz",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "Int8",
-        "Int4",
-        "Int4",
-        "Jsonb"
+        "Int8Array",
+        "TimestamptzArray"
       ]
     },
     "nullable": [
@@ -216,8 +210,9 @@
       false,
       false,
       null,
+      null,
       null
     ]
   },
-  "hash": "e8d6e50fb36d3aaa7a61535649deb6969f4aa397a74c8b13b8074635de28cb29"
+  "hash": "36bba54b24ad43335ca7042fffbfa90469defaa07250846132d3944dbe4b8ff5"
 }

@@ -24,7 +24,7 @@ use synctv_core::{
         RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{member::MemberService, permission::PermissionService, NotificationService},
+    service::{MemberService, NotificationService, PermissionService},
     Error,
 };
 use synctv_core_testing::{create_test_database_with_options_and_label, ok, TestDatabase};

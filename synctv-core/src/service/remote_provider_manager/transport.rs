@@ -1,5 +1,6 @@
 use super::RemoteProviderManager;
 use crate::models::ProviderInstance;
+use crate::provider::provider_client::{validate_auth_secret, RemoteProviderConnection};
 #[cfg(any(
     feature = "tls-aws-lc",
     feature = "tls-ring",
@@ -26,12 +27,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-use tonic::transport::{Certificate, ClientTlsConfig};
-use tonic::transport::{Channel, Endpoint, Uri};
+use tonic::transport::{
+    Certificate as TransportCertificate, ClientTlsConfig as TransportTlsConfig,
+};
+use tonic::transport::{
+    Channel as TransportChannel, Endpoint as TransportEndpoint, Uri as TransportUri,
+};
 
 /// Match the remote provider server's HTTP/2 frame budget for large provider
 /// directory/listing responses.
-const PROVIDER_GRPC_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
+const PROVIDER_TRANSPORT_FRAME_SIZE_LIMIT: u32 = 4 * 1024 * 1024;
 
 /// A certificate verifier that accepts any server certificate.
 #[cfg(any(
@@ -97,7 +102,7 @@ impl ServerCertVerifier for NoVerifier {
 }
 
 #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-fn apply_default_grpc_roots(mut tls_config: ClientTlsConfig) -> ClientTlsConfig {
+fn apply_default_transport_roots(mut tls_config: TransportTlsConfig) -> TransportTlsConfig {
     #[cfg(feature = "tls-webpki-roots")]
     {
         tls_config = tls_config.with_webpki_roots();
@@ -114,7 +119,7 @@ fn apply_default_grpc_roots(mut tls_config: ClientTlsConfig) -> ClientTlsConfig 
 impl RemoteProviderManager {
     fn resolve_ssrf_validated_address(
         address_overrides: Arc<HashMap<String, SocketAddr>>,
-        uri: &Uri,
+        uri: &TransportUri,
         guard: &synctv_common::ssrf::SsrfGuard,
     ) -> impl std::future::Future<Output = std::io::Result<(String, SocketAddr)>> + Send {
         let uri = uri.clone();
@@ -180,13 +185,16 @@ impl RemoteProviderManager {
         }
     }
 
-    /// Create a gRPC channel for the given provider instance.
-    pub(super) fn create_grpc_channel(&self, config: &ProviderInstance) -> crate::Result<Channel> {
+    /// Create a remote provider transport channel for the given provider instance.
+    fn create_transport_channel(
+        &self,
+        config: &ProviderInstance,
+    ) -> crate::Result<TransportChannel> {
         Self::validate_endpoint_ssrf(&config.endpoint, &self.ssrf_guard)?;
 
         let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
         let transport_endpoint = Self::normalized_transport_endpoint(config)?;
-        let endpoint = Endpoint::from_shared(transport_endpoint)
+        let endpoint = TransportEndpoint::from_shared(transport_endpoint)
             .map_err(|error| {
                 Self::provider_connection_setup_error(
                     "Remote provider endpoint configuration is invalid.",
@@ -194,7 +202,7 @@ impl RemoteProviderManager {
                 )
             })?
             .timeout(timeout)
-            .max_frame_size(PROVIDER_GRPC_FRAME_SIZE_LIMIT)
+            .max_frame_size(PROVIDER_TRANSPORT_FRAME_SIZE_LIMIT)
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(10));
@@ -231,7 +239,7 @@ impl RemoteProviderManager {
                     let channel = self.connect_insecure_tls(&endpoint);
 
                     tracing::info!(
-                        "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
+                        "Established insecure-TLS remote provider connection to {} (timeout: {:?})",
                         config.endpoint,
                         timeout,
                     );
@@ -242,13 +250,13 @@ impl RemoteProviderManager {
 
             #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
             {
-                let mut tls_config = ClientTlsConfig::new();
+                let mut tls_config = TransportTlsConfig::new();
 
                 if let Some(ref ca_pem) = config.custom_ca {
-                    let cert = Certificate::from_pem(ca_pem);
+                    let cert = TransportCertificate::from_pem(ca_pem);
                     tls_config = tls_config.ca_certificate(cert);
                 } else {
-                    tls_config = apply_default_grpc_roots(tls_config);
+                    tls_config = apply_default_transport_roots(tls_config);
                 }
 
                 endpoint = endpoint.tls_config(tls_config).map_err(|error| {
@@ -269,7 +277,7 @@ impl RemoteProviderManager {
 
         let guard = self.ssrf_guard.clone();
         let address_overrides = Arc::clone(&self.address_overrides);
-        let connector = tower::service_fn(move |uri: Uri| {
+        let connector = tower::service_fn(move |uri: TransportUri| {
             let guard = guard.clone();
             let address_overrides = address_overrides.clone();
             async move {
@@ -283,7 +291,7 @@ impl RemoteProviderManager {
         let channel = endpoint.connect_with_connector_lazy(connector);
 
         tracing::info!(
-            "Established gRPC connection to {} (timeout: {:?}, TLS: {})",
+            "Established remote provider connection to {} (timeout: {:?}, TLS: {})",
             config.endpoint,
             timeout,
             config.tls
@@ -292,14 +300,28 @@ impl RemoteProviderManager {
         Ok(channel)
     }
 
-    /// Connect to a gRPC endpoint with TLS certificate verification disabled.
+    pub(super) fn create_remote_connection(
+        &self,
+        config: &ProviderInstance,
+    ) -> crate::Result<RemoteProviderConnection> {
+        let channel = self.create_transport_channel(config)?;
+        let auth_secret = validate_auth_secret(Some(Self::required_auth_secret(config)?))
+            .map_err(|error| crate::Error::InvalidInput(error.to_string()))?;
+        Ok(RemoteProviderConnection::new_with_transport_compression(
+            channel,
+            auth_secret,
+            self.grpc_compression_enabled,
+        ))
+    }
+
+    /// Connect to a remote provider endpoint with TLS certificate verification disabled.
     #[cfg(any(
         feature = "tls-aws-lc",
         feature = "tls-ring",
         feature = "tls-webpki-roots",
         feature = "tls-native-roots"
     ))]
-    fn connect_insecure_tls(&self, endpoint: &Endpoint) -> Channel {
+    fn connect_insecure_tls(&self, endpoint: &TransportEndpoint) -> TransportChannel {
         crate::install_process_crypto_provider();
 
         let guard = self.ssrf_guard.clone();
@@ -310,7 +332,7 @@ impl RemoteProviderManager {
             .with_custom_certificate_verifier(Arc::new(NoVerifier))
             .with_no_client_auth();
 
-        let connector = tower::service_fn(move |uri: Uri| {
+        let connector = tower::service_fn(move |uri: TransportUri| {
             let tls_config = tls_config.clone();
             let guard = guard.clone();
             let address_overrides = address_overrides.clone();

@@ -1,16 +1,16 @@
 use synctv_core::{
     models::{AuditDetails, ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
     service::{
-        room::RoomCategoryUpdate, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
+        AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, RoomCategoryUpdate,
     },
 };
 
 use super::{
-    i64_to_i32_api, load_creator_user_map, normalize_non_empty_filter,
-    prepare_delete_entries_outbox_fanout, proto_admin_room_list_sort_by,
-    proto_admin_room_member_list_sort_by, proto_admin_sort_direction, proto_room_status_filter,
-    required_room_settings, try_managed_room_to_proto, try_members_to_proto, AdminApiImpl,
-    ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    i64_to_i32_api, normalize_non_empty_filter, prepare_delete_entries_outbox_fanout,
+    proto_admin_room_list_sort_by, proto_admin_room_member_list_sort_by,
+    proto_admin_sort_direction, proto_room_status_filter, required_room_settings,
+    try_managed_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError, RequestContext,
+    LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
     convert::{room_category_to_proto, room_label_to_proto, room_presence_stats_to_proto},
@@ -120,7 +120,7 @@ impl AdminApiImpl {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
+        let creator_user_map = self.load_creator_user_map(&creator_ids).await?;
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
@@ -160,7 +160,7 @@ impl AdminApiImpl {
                 creator.status,
                 creator_avatar_url.as_deref(),
                 cover.as_ref().map(|(reference, _)| reference),
-                cover.as_ref().map(|(_, url)| url.as_str()),
+                cover.as_ref().map(|(_, access)| access),
                 presence_by_room.get(&r.id).copied(),
                 &self.public_id_codec,
             )?);
@@ -766,7 +766,7 @@ impl AdminApiImpl {
         let updated_member = self
             .room_service
             .admin_update_member_with_outbox(
-                synctv_core::service::member::AdminMemberUpdate {
+                synctv_core::service::AdminMemberUpdate {
                     room_id: rid,
                     actor_id: *admin_user_id,
                     actor_username: admin_username,
@@ -874,7 +874,7 @@ impl AdminApiImpl {
                 target_uid,
                 kick_cooldown_seconds,
                 persisted_kicked_by,
-                synctv_core::service::room::KickMemberOutboxOptions {
+                synctv_core::service::KickMemberOutboxOptions {
                     permission_changed: Some(prepared_membership_fanout.outbox_factory()),
                     cleanup: Some(prepared_cleanup_fanout.member_cleanup_outbox_factory()),
                     lifecycle: Some(lifecycle_outbox_event),
@@ -947,7 +947,7 @@ impl AdminApiImpl {
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let creator_user_map = load_creator_user_map(&self.user_service, &creator_ids).await?;
+        let creator_user_map = self.load_creator_user_map(&creator_ids).await?;
 
         let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
         let room_id_refs: Vec<&synctv_core::models::RoomId> = room_ids.iter().collect();
@@ -986,7 +986,7 @@ impl AdminApiImpl {
                 creator.status,
                 creator_avatar_url.as_deref(),
                 cover.as_ref().map(|(reference, _)| reference),
-                cover.as_ref().map(|(_, url)| url.as_str()),
+                cover.as_ref().map(|(_, access)| access),
                 presence_by_room.get(&room.id).copied(),
                 &self.public_id_codec,
             )?);

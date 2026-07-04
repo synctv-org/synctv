@@ -5,10 +5,7 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Utc;
-use synctv_api::impls::{
-    client::{GuestRoomAccess, RoomActor},
-    ApiError, ClientApiImpl,
-};
+use synctv_api::{ApiError, ClientApiImpl, GuestRoomAccess, RoomActor};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -21,11 +18,10 @@ use synctv_core::{
         RoomSettingsRepository, UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        chat::{ChatDependencies, ChatRuntime},
-        AuditService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
-        PermissionService, RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService,
-        RoomSettingsService, UserService,
+        AuditService, BruteForceProtection, ChatDependencies, ChatRuntime, ContentFilter,
+        InMemoryTokenBlacklistStore, JwtService, NotificationService, PermissionService,
+        RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService,
+        UserService,
     },
     Config,
 };
@@ -87,11 +83,11 @@ fn make_chat_service_with_audit(
     let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             cache_size: 1000,
             cache_ttl_secs: 300,
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     )
     .expect("permission service should build");
@@ -131,7 +127,7 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -141,7 +137,7 @@ fn make_client_api(
             jwt_service: JwtService::new(TEST_JWT_SECRET).unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: Some(chat_service),
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",

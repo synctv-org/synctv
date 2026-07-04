@@ -13,8 +13,7 @@ use synctv_core::{
     models::{Media, MediaId, SourceProvider, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Error,
 };

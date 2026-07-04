@@ -5,7 +5,7 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Utc;
-use synctv_api::impls::ClientApiImpl;
+use synctv_api::ClientApiImpl;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -14,16 +14,15 @@ use synctv_core::{
     },
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Config,
 };
 use synctv_core_testing::{create_test_pool, TestContainer};
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
-fn public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::plain()
 }
 
 fn make_user(username: &str) -> User {
@@ -177,7 +176,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
     runtime.presence_service = connection_service.presence_service();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -187,7 +186,7 @@ async fn create_client_api_fixture() -> ClientApiFixture {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",

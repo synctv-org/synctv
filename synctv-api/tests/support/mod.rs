@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use synctv_api::impls::{AdminApiRuntime, ClientApiRuntime, RequestExecutor};
+use synctv_api::{
+    AdminApiRuntime, AdminReadServices, ClientApiRuntime, ProxySigningKey, RequestExecutor,
+};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    proxy_signature::ProxySigningKey,
     service::{
-        auth::{BruteForceProtection, JwtService, JwtValidator, SecurityPipeline},
-        InMemoryTokenBlacklistStore, RateLimiter, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, JwtValidator, RateLimiter,
+        SecurityPipeline, UserService,
     },
 };
 
@@ -54,4 +55,26 @@ pub fn admin_api_runtime() -> AdminApiRuntime {
             "test:admin:",
         )),
     )
+}
+
+#[allow(dead_code)]
+pub fn admin_read_services(user_service: &UserService) -> AdminReadServices {
+    let write_pool = user_service.pool().clone();
+    let read_pool = user_service.eventually_consistent_pool().clone();
+    AdminReadServices {
+        system_stats_service: Arc::new(synctv_core::service::SystemStatsService::new(
+            read_pool.clone(),
+        )),
+        review_service: Arc::new(synctv_core::service::ReviewService::new_with_read_pool(
+            write_pool.clone(),
+            read_pool.clone(),
+        )),
+        ban_record_service: Arc::new(synctv_core::service::BanRecordService::new_with_read_pool(
+            write_pool.clone(),
+            read_pool.clone(),
+        )),
+        content_report_service: Arc::new(
+            synctv_core::service::ContentReportService::new_with_read_pool(write_pool, read_pool),
+        ),
+    }
 }

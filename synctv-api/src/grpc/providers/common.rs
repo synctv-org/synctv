@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+use crate::api_runtime::SharedApiRuntime;
 use crate::grpc::map_api_error;
-use crate::http::SharedApiRuntime;
 use crate::impls::admin::RequestContext;
 use synctv_core::Config;
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::{
     cache::{KeyBuilder, UsernameCache},
     models::{User, UserId},
-    service::{auth::TokenBlacklistStore, file_storage::FileStorageService, user::UserService},
+    service::{file_storage::FileStorageService, TokenBlacklistStore, UserService},
     Error, Result,
 };
 

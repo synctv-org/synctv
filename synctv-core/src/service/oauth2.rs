@@ -13,7 +13,7 @@ use crate::{
     models::{oauth2_client::OAuth2Provider, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
     repository::UserOAuthProviderRepository,
-    service::{OAuth2SignupPolicy, RuntimeSettingsStore},
+    service::{OAuth2SignupPolicy, RuntimeSettingsStore, UserService},
     Result,
 };
 
@@ -153,6 +153,7 @@ pub struct OAuth2Service {
     /// Allowlist of permitted non-loopback redirect domains.
     allowed_redirect_domains: Arc<Vec<String>>,
     runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    user_service: Option<Arc<UserService>>,
     providers_fingerprint: Arc<RwLock<Option<String>>>,
 }
 
@@ -160,6 +161,7 @@ pub struct OAuth2Service {
 pub struct OAuth2ServiceRuntime {
     pub allowed_redirect_domains: Vec<String>,
     pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
+    pub user_service: Option<Arc<UserService>>,
 }
 
 impl std::fmt::Debug for OAuth2Service {

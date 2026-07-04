@@ -8,10 +8,7 @@ use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::UserId,
-    service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, UserService,
-    },
+    service::{BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, UserService},
 };
 use synctv_core_testing::{create_test_pool, ok, opaque_register_user};
 
@@ -37,12 +34,12 @@ fn create_user_service(pool: &sqlx::PgPool) -> UserService {
         token_blacklist,
         key_builder,
         brute_force,
-        synctv_core::service::user::UserServiceRuntimeOptions {
+        synctv_core::service::UserServiceRuntimeOptions {
             password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
                 enabled: true,
                 need_review: false,
             }),
-            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     )
 }

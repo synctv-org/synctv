@@ -14,17 +14,16 @@ use crate::{
         PlaylistId, RoomId, SourceProvider, UserId,
     },
     provider::{
-        provider_requires_credential_repo, store::ProviderStoreResolver, PlaybackResult,
-        ProviderAccessService, ProviderContext, SourceConfig,
+        provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
+        ProviderStoreResolver, SourceConfig,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
     service::{
         notification::{MediaAddedNotification, NotificationService},
-        permission::PermissionService,
         provider_binding::resolve_credential_provider_instance_binding,
         source_config::validate_source_config_size,
-        FileStorageService, ProvidersManager,
+        FileStorageService, PermissionService, ProvidersManager,
     },
     Error, Result,
 };
@@ -182,7 +181,6 @@ impl MediaService {
         user_id: Option<&'a UserId>,
         room_id: &'a RoomId,
         credential_owner_id: Option<&'a UserId>,
-        public_credential_owner_id: Option<&'a str>,
         provider_instance_name: Option<&'a str>,
     ) -> ProviderContext<'a> {
         let mut ctx = ProviderContext::new("synctv").with_room_id(*room_id);
@@ -191,9 +189,6 @@ impl MediaService {
         }
         if let Some(credential_owner_id) = credential_owner_id {
             ctx = ctx.with_credential_owner_id(*credential_owner_id);
-        }
-        if let Some(public_credential_owner_id) = public_credential_owner_id {
-            ctx = ctx.with_public_credential_owner_id(public_credential_owner_id);
         }
         if let Some(provider_instance_name) =
             normalize_provider_instance_name(provider_instance_name)
@@ -273,7 +268,6 @@ impl MediaService {
             Some(user_id),
             room_id,
             Some(user_id),
-            None,
             explicit_provider_instance.as_deref(),
         );
 
@@ -301,7 +295,6 @@ impl MediaService {
             Some(user_id),
             room_id,
             Some(user_id),
-            None,
             bound_provider_instance.as_deref(),
         );
 
@@ -964,8 +957,8 @@ impl MediaService {
         &self,
         request: BackendPlaybackRequest<'_>,
     ) -> Result<Option<PlaybackResult>> {
-        // Shared backend playback entrypoint used by API transports and
-        // background workers. HTTP and gRPC should converge here through impls;
+        // Shared backend playback entrypoint used by request adapters and
+        // background workers. External entrypoints should converge here;
         // provider adapters own mode selection, signing, headers, manifests,
         // subtitles, and lifecycle metadata inside `generate_playback`.
         match (request.media_id, request.playlist_id) {
@@ -985,7 +978,6 @@ impl MediaService {
                         None,
                         &request.room_id,
                         media.creator_id.as_ref(),
-                        None,
                         media.provider_instance_name.as_deref(),
                     )
                     .with_media_id(media.id);
@@ -998,7 +990,7 @@ impl MediaService {
                 let prepared = self
                     .prepare_dynamic_playlist(&request.room_id, &playlist_id)
                     .await?;
-                let ctx = self.dynamic_playlist_context(&prepared, None, None, None);
+                let ctx = self.dynamic_playlist_context(&prepared, None, None);
                 let Some(target) = request.target else {
                     return Err(Error::InvalidInput(
                         "target is required for dynamic playlist playback".to_string(),

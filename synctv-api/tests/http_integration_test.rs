@@ -40,7 +40,7 @@ fn grpc_code_for_http_status(status: StatusCode) -> i32 {
 
 mod error_responses {
     use super::*;
-    use synctv_api::http::error::AppError;
+    use synctv_api::AppError;
 
     fn error_router(error: &AppError) -> Router {
         let status = error.status();
@@ -311,8 +311,8 @@ mod error_responses {
 
 mod error_classification {
     use axum::http::StatusCode;
-    use synctv_api::http::error::map_api_error;
-    use synctv_api::impls::ApiError;
+    use synctv_api::map_http_api_error as map_api_error;
+    use synctv_api::ApiError;
     use synctv_core::Error as CoreError;
 
     #[test]
@@ -389,7 +389,7 @@ mod error_classification {
 
 mod security_headers {
     use super::*;
-    use synctv_api::http::middleware::security_headers_middleware;
+    use synctv_api::security_headers_middleware;
 
     fn security_app() -> Router {
         Router::new()
@@ -485,7 +485,7 @@ mod security_headers {
 }
 
 mod hsts_headers {
-    use synctv_api::http::middleware::hsts_header;
+    use synctv_api::hsts_header;
 
     #[test]
     fn test_hsts_header_variants() {
@@ -518,10 +518,7 @@ mod health_endpoints {
 
     #[tokio::test]
     async fn test_liveness_returns_ok_without_details() {
-        let app = Router::new().route(
-            "/health/live",
-            get(synctv_api::http::health::liveness_check),
-        );
+        let app = Router::new().route("/health/live", get(synctv_api::liveness_check));
 
         let req = Request::get("/health/live").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -534,7 +531,7 @@ mod health_endpoints {
 }
 
 mod api_error_classification {
-    use synctv_api::impls::{ApiError, ErrorKind};
+    use synctv_api::{ApiError, ErrorKind};
 
     #[test]
     fn test_api_error_classification() {
@@ -583,7 +580,7 @@ mod api_error_classification {
 
 mod auth_flow {
     use synctv_core::models::UserId;
-    use synctv_core::service::auth::{JwtService, TokenCredentialBinding};
+    use synctv_core::service::{JwtService, TokenCredentialBinding};
 
     fn jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()

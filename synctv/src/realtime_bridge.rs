@@ -313,7 +313,7 @@ mod tests {
         let events = [
             synctv_core::service::RoomEvent::MemberKicked { user_id },
             synctv_core::service::RoomEvent::GuestKicked {
-                reason: synctv_core::service::notification::GuestKickReason::AdminKick,
+                reason: synctv_core::service::GuestKickReason::AdminKick,
                 message: "guest removed".to_string(),
             },
             synctv_core::service::RoomEvent::StreamStarted {

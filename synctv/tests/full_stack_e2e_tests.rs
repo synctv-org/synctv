@@ -2425,7 +2425,7 @@ async fn full_stack_health_endpoints_report_live_and_ready() {
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn full_stack_management_exposes_only_remote_admin_surface() {
-    use synctv_api::grpc::{AdminServiceImpl, ClientServiceImpl};
+    use synctv_api::{AdminServiceImpl, ClientServiceImpl};
     use synctv_management::proto::management_service_server::ManagementServiceServer;
     use synctv_management::ManagementServiceImpl;
     use synctv_proto::admin::admin_service_server::AdminServiceServer;
@@ -6912,7 +6912,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
     assert_eq!(room.description, "created through full-stack gRPC e2e");
     assert_eq!(room.created_by, login.user.expect("login user").id);
     assert_eq!(room.member_count, 1);
-    let decoded_room_id = synctv_core::PublicIdCodec::plain()
+    let decoded_room_id = synctv_api::PublicIdCodec::plain()
         .decode_room_id(&room.id)
         .expect("created room id should be a typed public room id");
     assert!(decoded_room_id.as_i64() > 0);

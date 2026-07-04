@@ -7,9 +7,8 @@
 //!
 //! - **Domain-level**: `ChatService` uses `RateLimiter` for per-user chat
 //!   throttling.
-//! - **API-level**: `synctv-api` uses `RateLimiter` from shared request
-//!   execution paths and transport-adjacent helpers for request-level
-//!   throttling.
+//! - **API-level**: transport adapters use `RateLimiter` from shared request
+//!   execution paths and transport-adjacent helpers for request-level throttling.
 //!
 //! # Backends
 //!
@@ -90,7 +89,7 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
         "media",
         "chat",
         "room_password_check",
-        "grpc",
+        "transport",
         "api",
         "refresh",
         "email",
@@ -419,7 +418,7 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        let mem_key = format!("{}grpc:{}", self.key_prefix, key);
+        let mem_key = format!("{}transport:{}", self.key_prefix, key);
         self.sync_limiter
             .check(&mem_key, max_requests, window_seconds)
             .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {

@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 # Internal
-synctv-proto = { workspace = true, default-features = false, features = ["main"] }
 synctv-media-providers = { workspace = true, default-features = false }
 synctv-common = { workspace = true, default-features = false }
 
@@ -17,7 +16,7 @@ tokio-util.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 
-# gRPC
+# Remote transport
 tonic.workspace = true
 tonic-prost.workspace = true
 tonic-health.workspace = true
@@ -52,7 +51,6 @@ async_singleflight.workspace = true
 
 # IDs & Crypto
 uuid.workspace = true
-sqids.workspace = true
 rand.workspace = true
 rand_08.workspace = true
 rand_chacha_08.workspace = true
@@ -117,7 +115,6 @@ handlebars.workspace = true
 base64.workspace = true
 hostname.workspace = true
 lz4_flex.workspace = true
-urlencoding.workspace = true
 zstd.workspace = true
 image.workspace = true
 symphonia.workspace = true
@@ -128,7 +125,6 @@ default = []
 k8s = []
 test-support = []
 tls-aws-lc = [
-    "synctv-proto/tls-aws-lc",
     "synctv-media-providers/tls-aws-lc",
     "synctv-common/tls-aws-lc",
     "tonic/tls-aws-lc",
@@ -140,7 +136,6 @@ tls-aws-lc = [
     "jsonwebtoken/aws_lc_rs",
 ]
 tls-ring = [
-    "synctv-proto/tls-ring",
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
     "tonic/tls-ring",
@@ -151,7 +146,6 @@ tls-ring = [
     "jsonwebtoken/rust_crypto",
 ]
 tls-webpki-roots = [
-    "synctv-proto/tls-webpki-roots",
     "synctv-media-providers/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
     "tonic/tls-webpki-roots",
@@ -162,7 +156,6 @@ tls-webpki-roots = [
     "jsonwebtoken/rust_crypto",
 ]
 tls-native-roots = [
-    "synctv-proto/tls-native-roots",
     "synctv-media-providers/tls-native-roots",
     "synctv-common/tls-native-roots",
     "tonic/tls-native-roots",

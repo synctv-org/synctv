@@ -29,9 +29,8 @@ use synctv_core::{
         UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
+        RoomServiceOptions, UserService,
     },
     service::{ProvidersManager, RemoteProviderManager},
 };
@@ -1661,7 +1660,6 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
                 page_size: 20,
                 ..DynamicListQuery::default()
             },
-            None,
         )
         .await
         .checked("dynamic playlist listing should receive credential encryption");

@@ -55,11 +55,11 @@ use crate::source_config::{
     bilibili_pgc_source_config, bilibili_video_source_config, direct_url_source_config,
     emby_media_source_config, emby_playlist_source_config,
 };
-use synctv_api::grpc_support::map_api_error;
-use synctv_api::impls::admin::{RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID};
-use synctv_api::impls::{
-    AdminApiImpl, AlistApiImpl, ApiError, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl,
-    ProviderCommonApiImpl,
+use synctv_api::map_api_error;
+use synctv_api::PublicIdCodec;
+use synctv_api::{
+    AdminApiImpl, AdminRequestContext as RequestContext, AlistApiImpl, ApiError, BilibiliApiImpl,
+    ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use synctv_core::models::{UserId, UserRole as CoreUserRole};
 use synctv_core::service::UserService;
@@ -112,7 +112,7 @@ pub struct ManagementServiceImpl {
     node_id: String,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<PublicIdCodec>,
 }
 
 pub struct ManagementServiceDependencies {
@@ -421,7 +421,7 @@ impl ManagementServiceImpl {
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
-        let ip_address = match synctv_api::grpc_support::extract_client_ip(request, &self.config) {
+        let ip_address = match synctv_api::extract_client_ip(request, &self.config) {
             Ok(ip_address) => ip_address.map(|ip| ip.to_string()),
             Err(error) => {
                 tracing::warn!(error = %error, "Failed to extract management request client IP");

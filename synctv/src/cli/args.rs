@@ -665,19 +665,15 @@ pub enum CliSourceProvider {
 }
 
 impl CliSourceProvider {
-    pub(super) const fn to_core(self) -> synctv_core::models::SourceProvider {
-        match self {
-            Self::DirectUrl => synctv_core::models::SourceProvider::DirectUrl,
-            Self::Bilibili => synctv_core::models::SourceProvider::Bilibili,
-            Self::Alist => synctv_core::models::SourceProvider::Alist,
-            Self::Emby => synctv_core::models::SourceProvider::Emby,
-            Self::Rtmp => synctv_core::models::SourceProvider::Rtmp,
-            Self::LiveProxy => synctv_core::models::SourceProvider::LiveProxy,
-        }
-    }
-
     pub(super) fn to_proto(self) -> synctv_proto::source_config::SourceProvider {
-        self.to_core().into()
+        match self {
+            Self::DirectUrl => synctv_proto::source_config::SourceProvider::DirectUrl,
+            Self::Bilibili => synctv_proto::source_config::SourceProvider::Bilibili,
+            Self::Alist => synctv_proto::source_config::SourceProvider::Alist,
+            Self::Emby => synctv_proto::source_config::SourceProvider::Emby,
+            Self::Rtmp => synctv_proto::source_config::SourceProvider::Rtmp,
+            Self::LiveProxy => synctv_proto::source_config::SourceProvider::LiveProxy,
+        }
     }
 
     pub(super) fn to_proto_i32(self) -> i32 {

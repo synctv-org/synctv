@@ -13,9 +13,8 @@ use synctv_core::{
         RoomPlaybackStateRepository, UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        ActivePlaybackRoomSource, InMemoryTokenBlacklistStore, PlaybackDurationProbeService,
-        RoomService, UserService,
+        ActivePlaybackRoomSource, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
+        PlaybackDurationProbeService, RoomService, UserService,
     },
 };
 use synctv_core_testing::{create_test_pool, TestOptionExt, TestResultExt};

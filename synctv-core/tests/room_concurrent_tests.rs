@@ -24,7 +24,7 @@ use synctv_core::{
         RoomMember, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{member::MemberService, permission::PermissionService, NotificationService},
+    service::{MemberService, NotificationService, PermissionService},
     Error,
 };
 use synctv_core_testing::{

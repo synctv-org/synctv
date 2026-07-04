@@ -13,9 +13,8 @@ use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
+        RoomServiceOptions, UserService,
     },
 };
 use synctv_core_testing::{create_test_pool, err, ok};

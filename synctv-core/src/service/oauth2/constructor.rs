@@ -101,6 +101,7 @@ impl OAuth2Service {
             ssrf_guard,
             allowed_redirect_domains: Arc::new(runtime.allowed_redirect_domains),
             runtime_settings_store: runtime.runtime_settings_store,
+            user_service: runtime.user_service,
             providers_fingerprint: Arc::new(RwLock::new(None)),
         })
     }
@@ -123,6 +124,7 @@ impl OAuth2Service {
             ssrf_guard,
             allowed_redirect_domains: Arc::new(runtime.allowed_redirect_domains),
             runtime_settings_store: runtime.runtime_settings_store,
+            user_service: runtime.user_service,
             providers_fingerprint: Arc::new(RwLock::new(None)),
         })
     }

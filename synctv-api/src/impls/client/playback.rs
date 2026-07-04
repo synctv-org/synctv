@@ -6,7 +6,7 @@ use chrono::Utc;
 use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity, SourceProvider};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
-use synctv_core::service::playback::{
+use synctv_core::service::{
     PlaybackSourceExpectation, PlaybackStatePatch, PlaybackStateUpdateRequest,
 };
 
@@ -126,7 +126,7 @@ fn build_playback_result_from_provider(
 
 pub(crate) fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<StartPlaybackTarget, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::StartPlaybackRequest {
@@ -148,7 +148,7 @@ pub(crate) fn build_start_playback_request(
 
 pub(crate) fn build_playback_state_update(
     update: synctv_proto::client::UpdatePlaybackStateRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<PlaybackStateUpdateCommand, ApiError> {
     crate::impls::validate_proto_request(&update)?;
     let synctv_proto::client::UpdatePlaybackStateRequest {
@@ -234,7 +234,7 @@ pub(crate) fn build_playback_source_expectation(
     expected_media_id: Option<String>,
     expected_playlist_id: Option<String>,
     expected_target_hash: Option<String>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<PlaybackSourceExpectation>, ApiError> {
     if expected_media_id.is_none()
         && expected_playlist_id.is_none()
@@ -326,48 +326,16 @@ impl ClientApiImpl {
         playback_client_profile: Option<&synctv_core::provider::PlaybackClientProfile>,
         request_control: Option<&ExecutionControl>,
     ) -> Result<ProviderContext<'a>, ApiError> {
-        let public_user_id = self
-            .public_id_codec
-            .encode_user_id(*user_id)
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to encode user public id: {error}"))
-            })?;
-        let public_room_id = self
-            .public_id_codec
-            .encode_room_id(*room_id)
-            .map_err(|error| {
-                ApiError::Internal(format!("Failed to encode room public id: {error}"))
-            })?;
         let mut ctx = ProviderContext::new("synctv")
             .with_user_id(*user_id)
-            .with_public_user_id(public_user_id)
             .with_room_id(*room_id)
-            .with_public_room_id(public_room_id)
             .with_playback_client_profile(playback_client_profile.cloned())
             .with_request_context(request_control.map(ExecutionControl::child));
         if let Some(media_id) = media_id {
-            let public_media_id =
-                self.public_id_codec
-                    .encode_media_id(media_id)
-                    .map_err(|error| {
-                        ApiError::Internal(format!("Failed to encode media public id: {error}"))
-                    })?;
-            ctx = ctx
-                .with_media_id(media_id)
-                .with_public_media_id(public_media_id);
+            ctx = ctx.with_media_id(media_id);
         }
         if let Some(credential_owner_id) = credential_owner_id {
-            let public_credential_owner_id = self
-                .public_id_codec
-                .encode_user_id(*credential_owner_id)
-                .map_err(|error| {
-                    ApiError::Internal(format!(
-                        "Failed to encode credential owner public id: {error}"
-                    ))
-                })?;
-            ctx = ctx
-                .with_credential_owner_id(*credential_owner_id)
-                .with_public_credential_owner_id(public_credential_owner_id);
+            ctx = ctx.with_credential_owner_id(*credential_owner_id);
         }
         if let Some(provider_instance_name) = provider_instance_name
             .map(str::trim)
@@ -382,7 +350,6 @@ impl ClientApiImpl {
             ctx = ctx.with_credential_encryption(enc);
         }
         ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
-        ctx = ctx.with_signing_key(&self.signing_key);
         Ok(ctx)
     }
 
@@ -468,27 +435,39 @@ impl ClientApiImpl {
         self.sign_and_finalize_playback(&full_result, &ctx)
     }
 
-    /// Helper to extract public IDs from provider context, sign playback URLs, and set expiration.
+    /// Helper to encode public IDs, sign playback URLs, and set expiration.
     fn sign_and_finalize_playback(
         &self,
         full_result: &synctv_core::models::media::PlaybackResult,
         ctx: &synctv_core::provider::ProviderContext<'_>,
     ) -> Result<synctv_proto::client::Playback, ApiError> {
-        let room_id = ctx.public_room_id.as_deref().ok_or_else(|| {
+        let room_id = ctx.room_id().ok_or_else(|| {
             ApiError::Internal(
-                "Missing public_room_id in provider context for playback signing".to_string(),
+                "Missing room_id in provider context for playback signing".to_string(),
             )
         })?;
-        let user_id = ctx.public_user_id.as_deref().ok_or_else(|| {
+        let user_id = ctx.user_id().ok_or_else(|| {
             ApiError::Internal(
-                "Missing public_user_id in provider context for playback signing".to_string(),
+                "Missing user_id in provider context for playback signing".to_string(),
             )
         })?;
+        let public_room_id = self
+            .public_id_codec
+            .encode_room_id(*room_id)
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode room public id: {error}"))
+            })?;
+        let public_user_id = self
+            .public_id_codec
+            .encode_user_id(*user_id)
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to encode user public id: {error}"))
+            })?;
 
         let signing = PlaybackHttpSigningContext {
             signing_key: &self.signing_key,
-            room_id,
-            user_id,
+            room_id: &public_room_id,
+            user_id: &public_user_id,
         };
         let mut playback =
             try_playback_to_proto(full_result, &self.public_id_codec, Some(&signing))?;

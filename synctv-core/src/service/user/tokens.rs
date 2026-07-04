@@ -3,10 +3,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::UserId,
     repository::{UserOAuthProviderRepository, WebAuthnCredentialRepository},
-    service::{
-        auth::{TokenAuthContext, TokenCredentialBinding},
-        user::UserService,
-    },
+    service::{user::UserService, TokenAuthContext, TokenCredentialBinding},
     Error, Result,
 };
 
@@ -165,7 +162,7 @@ impl UserService {
 
     async fn validate_refresh_credential_binding(
         &self,
-        claims: &crate::service::auth::Claims,
+        claims: &crate::service::Claims,
         user_id: &UserId,
         current_password_version: i32,
     ) -> Result<TokenCredentialBinding> {

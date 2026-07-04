@@ -1,25 +1,41 @@
 #[cfg(test)]
 use synctv_core::models::RoomId;
 use synctv_core::models::UserId;
-use synctv_core::service::UserService;
+use synctv_core::service::FileStorageService;
 
 use super::{
     try_admin_room_member_to_proto_with_settings, try_admin_user_to_proto,
     try_managed_room_to_proto, AdminApiImpl, ApiError,
 };
 
-pub(in crate::impls::admin) async fn load_creator_user_map(
-    user_service: &UserService,
-    creator_ids: &[UserId],
-) -> Result<std::collections::HashMap<UserId, synctv_core::models::User>, ApiError> {
-    let users = user_service
-        .get_users_by_ids(creator_ids)
-        .await
-        .map_err(ApiError::from)?;
-    Ok(users.into_iter().map(|user| (user.id, user)).collect())
+fn stored_file_reference_rendered_url(
+    storage: &dyn FileStorageService,
+    file_reference: &synctv_core::models::StoredFileReference,
+    object_kind: synctv_core::models::FileObjectKind,
+) -> Result<Option<String>, ApiError> {
+    Ok(
+        crate::impls::stored_files::stored_file_reference_access_for_kind(
+            storage,
+            file_reference,
+            object_kind,
+        )?
+        .and_then(|access| crate::impls::stored_files::stored_file_object_access_url(&access)),
+    )
 }
 
 impl AdminApiImpl {
+    pub(in crate::impls::admin) async fn load_creator_user_map(
+        &self,
+        creator_ids: &[UserId],
+    ) -> Result<std::collections::HashMap<UserId, synctv_core::models::User>, ApiError> {
+        let users = self
+            .user_service
+            .get_users_by_ids(creator_ids)
+            .await
+            .map_err(ApiError::from)?;
+        Ok(users.into_iter().map(|user| (user.id, user)).collect())
+    }
+
     pub(in crate::impls::admin) async fn creator_avatar_url(
         &self,
         user: &synctv_core::models::User,
@@ -39,19 +55,23 @@ impl AdminApiImpl {
             return Ok(None);
         };
 
-        storage
-            .object_url(
-                &file_reference.storage_backend,
-                &file_reference.object_key,
-                &synctv_core::service::user_avatar_upload_policy().database_object_route_prefix,
-            )
-            .map_err(ApiError::from)
+        stored_file_reference_rendered_url(
+            storage.as_ref(),
+            &file_reference,
+            synctv_core::service::user_avatar_upload_policy().object_kind,
+        )
     }
 
     pub(in crate::impls::admin) async fn room_cover_for_admin(
         &self,
         room: &synctv_core::models::Room,
-    ) -> Result<Option<(synctv_core::models::StoredFileReference, String)>, ApiError> {
+    ) -> Result<
+        Option<(
+            synctv_core::models::StoredFileReference,
+            crate::impls::stored_files::StoredFileObjectAccess,
+        )>,
+        ApiError,
+    > {
         let Some(reference_id) = room.cover_file_reference_id else {
             return Ok(None);
         };
@@ -66,14 +86,12 @@ impl AdminApiImpl {
         let Some(file_reference) = file_reference else {
             return Ok(None);
         };
-        let url = storage
-            .object_url(
-                &file_reference.storage_backend,
-                &file_reference.object_key,
-                &synctv_core::service::room_cover_upload_policy().database_object_route_prefix,
-            )
-            .map_err(ApiError::from)?;
-        Ok(url.map(|url| (file_reference, url)))
+        let access = crate::impls::stored_files::stored_file_reference_access_for_kind(
+            storage.as_ref(),
+            &file_reference,
+            synctv_core::service::room_cover_upload_policy().object_kind,
+        )?;
+        Ok(access.map(|access| (file_reference, access)))
     }
 
     pub(in crate::impls::admin) async fn admin_user_to_proto_with_email(
@@ -158,7 +176,7 @@ impl AdminApiImpl {
             creator.status,
             creator_avatar_url.as_deref(),
             cover.as_ref().map(|(reference, _)| reference),
-            cover.as_ref().map(|(_, url)| url.as_str()),
+            cover.as_ref().map(|(_, access)| access),
             Some(&presence),
             &self.public_id_codec,
         )

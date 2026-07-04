@@ -123,12 +123,12 @@ mod permissions {
     use super::*;
     use std::sync::Arc;
 
-    use synctv_api::impls::{ApiError, ClientApiImpl};
+    use synctv_api::{ApiError, ClientApiImpl};
     use synctv_core::cache::{l2_backend::RedisCacheL2, KeyBuilder, UsernameCache};
     use synctv_core::models::room_settings::{AllowGuestJoin, GuestAddedPermissions};
     use synctv_core::repository::SettingsRepository;
-    use synctv_core::service::auth::jwt::JwtService;
-    use synctv_core::service::user::UserServiceRuntimeOptions;
+    use synctv_core::service::JwtService;
+    use synctv_core::service::UserServiceRuntimeOptions;
     use synctv_core::service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, RoomService, RuntimeSettingsStore,
         SettingsService, UserService,
@@ -170,20 +170,16 @@ mod permissions {
         );
         let brute_force = BruteForceProtection::new_with_config(
             redis_key_prefix.clone(),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn.clone(),
-                    50_000,
-                    synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
-                ),
-            ),
-            Arc::new(
-                synctv_core::service::auth::brute_force::RedisAttemptTracker::new(
-                    redis_conn,
-                    100_000,
-                    synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
-                ),
-            ),
+            Arc::new(synctv_core::service::RedisAttemptTracker::new(
+                redis_conn.clone(),
+                50_000,
+                synctv_core::service::BruteForceConfig::default().attempts_ttl_secs,
+            )),
+            Arc::new(synctv_core::service::RedisAttemptTracker::new(
+                redis_conn,
+                100_000,
+                synctv_core::service::BruteForceConfig::default().ip_attempts_ttl_secs,
+            )),
             synctv_core::service::BruteForceConfig::default(),
         );
         let jwt_service =
@@ -206,7 +202,7 @@ mod permissions {
                         need_review: false,
                     },
                 ),
-                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+                ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
             },
         );
         let user_service = Arc::new(user_service);
@@ -226,7 +222,7 @@ mod permissions {
             test_webrtc_config().webrtc.stun_port
         );
         let client_api = ClientApiImpl::new_with_runtime(
-            synctv_api::impls::ClientApiConfig {
+            synctv_api::ClientApiConfig {
                 read_pool: None,
                 user_service: user_service.clone(),
                 room_service: room_service.clone(),
@@ -236,7 +232,7 @@ mod permissions {
                 jwt_service,
                 live_streaming_infrastructure: None,
                 runtime_settings_store: Some(runtime_settings_store.clone()),
-                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
                 chat_service: None,
                 provider_stores: Arc::new(
                     synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:"),
@@ -244,7 +240,7 @@ mod permissions {
                 email_api: None,
                 passkey_service: None,
             },
-            synctv_api::impls::ClientApiRuntime {
+            synctv_api::ClientApiRuntime {
                 builtin_stun_url: Some(builtin_stun_url),
                 ..support::client_api_runtime()
             },

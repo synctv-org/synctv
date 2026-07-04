@@ -14,8 +14,7 @@ use synctv_common::ExecutionControl;
 use tokio::sync::broadcast;
 
 use super::email_templates::EmailTemplateManager;
-use super::email_token::EmailTokenService;
-use crate::{models::EmailTokenType, Error, InternalExt, Result};
+use crate::{Error, InternalExt, Result};
 
 /// Mask an email address for safe logging: `user***@example.com`
 pub fn mask_email(email: &str) -> String {
@@ -119,69 +118,6 @@ impl EmailService {
                 .await
                 .map_err(|error| EmailError::SendError(error.to_string()))?,
             None => future.await,
-        }
-    }
-
-    async fn send_tokenized_email_with_control(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
-        token_type: EmailTokenType,
-        success_log_message: &'static str,
-        control: Option<&ExecutionControl>,
-    ) -> Result<String> {
-        Self::validate_email(email)?;
-
-        if let Some(control) = control {
-            control
-                .check_active()
-                .map_err(|error| Error::Timeout(error.to_string()))?;
-        }
-
-        let token = token_service
-            .generate_token_with_control(user_id, token_type, control)
-            .await?;
-
-        if let Some(config) = self.current_config()? {
-            let send_result = match token_type {
-                EmailTokenType::EmailBind => {
-                    self.send_email_bind_email_impl(&config, email, &token, control)
-                        .await
-                }
-                EmailTokenType::PasswordReset => {
-                    self.send_password_reset_email_impl(&config, email, &token, control)
-                        .await
-                }
-                EmailTokenType::EmailLogin => {
-                    self.send_email_login_email_impl(&config, email, &token, control)
-                        .await
-                }
-            };
-
-            if let Err(error) = send_result {
-                tracing::error!(
-                    email = %mask_email(email),
-                    token_type = %token_type.as_str(),
-                    error = %error,
-                    "Failed to send tokenized email, invalidating generated token"
-                );
-                token_service
-                    .invalidate_specific_token(&token, user_id, token_type)
-                    .await?;
-                return Err(map_email_send_failure(error));
-            }
-
-            tracing::info!(message = success_log_message, email = %mask_email(email));
-            Ok(String::new())
-        } else {
-            tracing::warn!("Email service is disabled or not configured");
-            token_service
-                .invalidate_specific_token(&token, user_id, token_type)
-                .await?;
-            Err(Error::ServiceUnavailable(
-                "Email delivery is not configured on this server.".to_string(),
-            ))
         }
     }
 
@@ -379,35 +315,6 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send email bind email
-    pub async fn send_email_bind_email(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
-    ) -> Result<String> {
-        self.send_email_bind_email_with_control(email, token_service, user_id, None)
-            .await
-    }
-
-    pub async fn send_email_bind_email_with_control(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
-        control: Option<&ExecutionControl>,
-    ) -> Result<String> {
-        self.send_tokenized_email_with_control(
-            email,
-            token_service,
-            user_id,
-            EmailTokenType::EmailBind,
-            "Sent email bind email",
-            control,
-        )
-        .await
-    }
-
     pub async fn send_email_bind_token_email_with_control(
         &self,
         email: &str,
@@ -436,62 +343,60 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send password reset email
-    pub async fn send_password_reset_email(
+    pub async fn send_password_reset_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
-    ) -> Result<String> {
-        self.send_password_reset_email_with_control(email, token_service, user_id, None)
-            .await
-    }
-
-    pub async fn send_password_reset_email_with_control(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> Result<String> {
-        self.send_tokenized_email_with_control(
-            email,
-            token_service,
-            user_id,
-            EmailTokenType::PasswordReset,
-            "Sent password reset email",
-            control,
-        )
-        .await
-    }
+    ) -> Result<()> {
+        Self::validate_email(email)?;
 
-    /// Send a passwordless email login code.
-    pub async fn send_email_login_email(
-        &self,
-        email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
-    ) -> Result<String> {
-        self.send_email_login_email_with_control(email, token_service, user_id, None)
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
+
+        self.send_password_reset_email_impl(&config, email, token, control)
             .await
+            .map_err(map_email_send_failure)?;
+
+        tracing::info!("Sent password reset email to {}", mask_email(email));
+        Ok(())
     }
 
-    pub async fn send_email_login_email_with_control(
+    pub async fn send_email_login_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &crate::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> Result<String> {
-        self.send_tokenized_email_with_control(
-            email,
-            token_service,
-            user_id,
-            EmailTokenType::EmailLogin,
-            "Sent email login code",
-            control,
-        )
-        .await
+    ) -> Result<()> {
+        Self::validate_email(email)?;
+
+        if let Some(control) = control {
+            control
+                .check_active()
+                .map_err(|error| Error::Timeout(error.to_string()))?;
+        }
+
+        let config = self.current_config()?.ok_or_else(|| {
+            Error::ServiceUnavailable(
+                "Email delivery is not configured on this server.".to_string(),
+            )
+        })?;
+
+        self.send_email_login_email_impl(&config, email, token, control)
+            .await
+            .map_err(map_email_send_failure)?;
+
+        tracing::info!("Sent email login code to {}", mask_email(email));
+        Ok(())
     }
 
     pub async fn send_email_registration_token_email_with_control(

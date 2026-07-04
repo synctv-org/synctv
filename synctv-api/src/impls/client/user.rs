@@ -158,6 +158,7 @@ fn avatar_upload_session_to_proto(
         avatar_reference: Some(upload_session_avatar_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
         upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
         expires_at: fields.expires_at,
@@ -340,14 +341,17 @@ impl ClientApiImpl {
             .load_stored_file_reference(user.avatar_file_reference_id)
             .await?
         {
-            let url = self.stored_file_reference_url(
+            let access = self.stored_file_reference_access(
                 &file,
                 &synctv_core::service::user_avatar_upload_policy(),
             )?;
-            let file = stored_file_reference_to_media_cover(&file, url.as_deref())?;
+            let file = stored_file_reference_to_media_cover(&file, access.as_ref())?;
+            proto.avatar_url.clone_from(&file.url);
+            proto.avatar_access.clone_from(&file.object_access);
             proto.avatar = Some(synctv_proto::client::UserAvatar {
                 id: file.id,
                 url: file.url,
+                object_access: file.object_access,
                 mime_type: file.mime_type,
                 size_bytes: file.size_bytes,
                 width: file.width,
@@ -500,7 +504,7 @@ impl ClientApiImpl {
             .user_service
             .create_avatar_upload_session(
                 user_id,
-                synctv_core::service::user::CreateUserAvatarUploadSession {
+                synctv_core::service::CreateUserAvatarUploadSession {
                     client_avatar_id: (!req.client_avatar_id.trim().is_empty())
                         .then_some(req.client_avatar_id),
                     mime_type: req.mime_type,
@@ -785,15 +789,13 @@ impl ClientApiImpl {
             .check_email_delivery_rate_limits(&email, user_id, EmailTokenType::EmailLogin, None)
             .await?;
         email_api
-            .email_service
-            .send_email_login_email_with_control(
+            .send_tokenized_email_with_control(
                 &email,
-                &email_api.email_token_service,
                 user_id,
+                synctv_core::models::EmailTokenType::EmailLogin,
                 None,
             )
-            .await
-            .map_err(ApiError::from)?;
+            .await?;
         Ok(
             synctv_proto::client::RequestSensitiveOperationEmailCodeResponse {
                 message: "Verification code sent".to_string(),

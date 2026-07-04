@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use synctv_core::cache::KeyBuilder;
 use synctv_core::models::RoomId;
-use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
-use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
+use synctv_core::service::InMemoryTokenBlacklistStore;
+use synctv_core::service::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 
 // Shared guest-token validation requirement tests.
 

@@ -3,12 +3,12 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
-        FileBlob, FileMetadata, FileObjectDownload, FileObjectVariant, FileReferenceTarget,
-        FileUploadSessionCreateResult, GetFileObject, NewStoredFile, StoreFileUpload,
-        StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
+        FileBlob, FileMetadata, FileObjectDownload, FileObjectKind, FileObjectVariant,
+        FileReferenceTarget, FileUploadSessionCreateResult, GetFileObject, NewStoredFile,
+        StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind,
     },
     service::file_storage::{
-        database_file_read_token_storage_backend, file_upload_token_storage_backend,
+        file_object_read_token_storage_backend, file_upload_token_storage_backend,
         prepare_upload_reference_file, upload_session_reference_target,
         validation::validate_stored_files, CreateFileReuseGrant, FileObjectReader, FileReuseGrant,
         FileStorageCleanupOrigin, FileStorageContext, FileStorageService, ValidatedFileReuseGrant,
@@ -61,16 +61,28 @@ impl FileStorageService for RoutedFileStorageService {
         &self.write_backend
     }
 
-    fn object_url(
+    fn supports_reuse_grants(&self) -> bool {
+        self.registry
+            .backend(&self.write_backend)
+            .is_ok_and(|backend| backend.supports_reuse_grants())
+    }
+
+    fn public_object_url(&self, storage_backend: &str, object_key: &str) -> Result<Option<String>> {
+        self.registry
+            .backend(storage_backend)?
+            .public_object_url(storage_backend, object_key)
+    }
+
+    fn file_object_access(
         &self,
         storage_backend: &str,
         object_key: &str,
-        database_object_route_prefix: &str,
-    ) -> Result<Option<String>> {
-        self.registry.backend(storage_backend)?.object_url(
+        object_kind: crate::models::FileObjectKind,
+    ) -> Result<Option<crate::models::FileObjectAccess>> {
+        self.registry.backend(storage_backend)?.file_object_access(
             storage_backend,
             object_key,
-            database_object_route_prefix,
+            object_kind,
         )
     }
 
@@ -130,10 +142,12 @@ impl FileStorageService for RoutedFileStorageService {
             ));
         };
         let mut prepared = Vec::with_capacity(files.len());
-        let mut by_backend: HashMap<String, Vec<SubmittedFileReference>> =
+        let mut upload_files_by_backend: HashMap<String, Vec<NewStoredFile>> =
+            HashMap::with_capacity(files.len());
+        let mut submitted_files_by_backend: HashMap<String, Vec<SubmittedFileReference>> =
             HashMap::with_capacity(files.len());
         for file in files {
-            let backend_name = match file.kind {
+            match file.kind {
                 SubmittedFileReferenceKind::Upload => {
                     let id = file.id.trim();
                     if id.is_empty() {
@@ -142,21 +156,36 @@ impl FileStorageService for RoutedFileStorageService {
                         ));
                     }
                     let (reference_kind, reference_id) = upload_session_reference_target(id);
-                    prepare_upload_reference_file(
+                    let resolved = prepare_upload_reference_file(
                         &repository,
                         context,
                         reference_kind,
                         &reference_id,
                         id,
                     )
-                    .await?
-                    .storage_backend
+                    .await?;
+                    upload_files_by_backend
+                        .entry(resolved.storage_backend.clone())
+                        .or_default()
+                        .push(resolved);
                 }
-                SubmittedFileReferenceKind::Reuse => self.write_backend.clone(),
-            };
-            by_backend.entry(backend_name).or_default().push(file);
+                SubmittedFileReferenceKind::Reuse => {
+                    submitted_files_by_backend
+                        .entry(self.write_backend.clone())
+                        .or_default()
+                        .push(file);
+                }
+            }
         }
-        for (backend_name, backend_files) in by_backend {
+        for (backend_name, backend_files) in upload_files_by_backend {
+            let mut backend_prepared = self
+                .registry
+                .backend(&backend_name)?
+                .prepare_files(context, backend_files)
+                .await?;
+            prepared.append(&mut backend_prepared);
+        }
+        for (backend_name, backend_files) in submitted_files_by_backend {
             let mut backend_prepared = self
                 .registry
                 .backend(&backend_name)?
@@ -272,7 +301,7 @@ impl FileStorageService for RoutedFileStorageService {
     }
 
     async fn get_object(&self, request: GetFileObject) -> Result<FileBlob> {
-        let backend_name = database_file_read_token_storage_backend(&request.read_token)?;
+        let backend_name = file_object_read_token_storage_backend(&request.read_token)?;
         self.registry
             .backend(&backend_name)?
             .get_object(request)
@@ -280,7 +309,7 @@ impl FileStorageService for RoutedFileStorageService {
     }
 
     async fn get_object_stream(&self, request: GetFileObject) -> Result<FileObjectDownload> {
-        let backend_name = database_file_read_token_storage_backend(&request.read_token)?;
+        let backend_name = file_object_read_token_storage_backend(&request.read_token)?;
         self.registry
             .backend(&backend_name)?
             .get_object_stream(request)
@@ -323,17 +352,12 @@ impl FileStorageService for RoutedFileStorageService {
         &self,
         storage_backend: &str,
         object_key: &str,
-        database_object_route_prefix: &str,
+        object_kind: FileObjectKind,
         upload_policy: &crate::models::FileUploadPolicy,
     ) -> Result<Vec<FileObjectVariant>> {
         self.registry
             .backend(storage_backend)?
-            .process_object_variants(
-                storage_backend,
-                object_key,
-                database_object_route_prefix,
-                upload_policy,
-            )
+            .process_object_variants(storage_backend, object_key, object_kind, upload_policy)
             .await
     }
 }

@@ -1,27 +1,115 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use synctv_core::models::{MediaId, RoomId, UserId};
-use synctv_core::provider::playback_transport::{
-    PlaybackTransportAction, PlaybackTransportServices,
-};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::proxy_signature::{ProxySigningKey, ProxyUrlClaims};
+use synctv_core::provider::{LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices};
 use synctv_core::service::UserService;
 use synctv_proto::playback_provider::common::StreamChunk;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::impls::ApiError;
+use crate::proxy_signature::ProxySigningKeyQueryExt;
 
 pub struct PlaybackProviderAccessDeps<'a> {
     pub proxy_signing_key: &'a ProxySigningKey,
-    pub public_id_codec: &'a synctv_core::PublicIdCodec,
-    pub provider_stores: &'a dyn synctv_core::provider::store::ProviderStoreResolver,
+    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
+    pub provider_stores: &'a dyn synctv_core::provider::ProviderStoreResolver,
     pub user_service: &'a UserService,
     pub playback_transport_services: &'a PlaybackTransportServices,
+}
+
+struct PlaybackProviderAccessValidator<'a> {
+    user_service: &'a UserService,
+    playback_transport_services: &'a PlaybackTransportServices,
+}
+
+impl PlaybackProviderAccessValidator<'_> {
+    async fn validate_fresh_access(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<(), ApiError> {
+        let user = self
+            .user_service
+            .get_user(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
+            return Err(ApiError::Authorization(
+                synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
+            ));
+        }
+
+        let room = self
+            .playback_transport_services
+            .room_service
+            .get_room(room_id)
+            .await
+            .map_err(ApiError::from)?;
+        if room.is_banned || !room.status.is_active() {
+            return Err(ApiError::Authorization(
+                "Playback provider URL is no longer valid for this room".to_string(),
+            ));
+        }
+
+        self.playback_transport_services
+            .room_service
+            .check_membership(room_id, user_id)
+            .await
+            .map_err(map_playback_provider_membership_probe_error)
+    }
+}
+
+impl PlaybackProviderAccessDeps<'_> {
+    pub async fn validate_fresh_access(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<(), ApiError> {
+        PlaybackProviderAccessValidator {
+            user_service: self.user_service,
+            playback_transport_services: self.playback_transport_services,
+        }
+        .validate_fresh_access(room_id, user_id)
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PlaybackProviderApiRuntime<'a> {
+    pub proxy_signing_key: &'a ProxySigningKey,
+    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
+    pub provider_stores: &'a dyn synctv_core::provider::ProviderStoreResolver,
+    pub user_service: &'a UserService,
+    pub playback_transport_services: &'a PlaybackTransportServices,
+    pub proxy_http_client: &'a reqwest::Client,
+    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
+    pub proxy_slice_cache: &'a synctv_proxy::slice_cache::SliceCache,
+}
+
+impl PlaybackProviderApiRuntime<'_> {
+    pub async fn validate_fresh_access(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<(), ApiError> {
+        PlaybackProviderAccessValidator {
+            user_service: self.user_service,
+            playback_transport_services: self.playback_transport_services,
+        }
+        .validate_fresh_access(room_id, user_id)
+        .await
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct PlaybackProviderIdentityRuntime<'a> {
+    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
 }
 
 pub struct PlaybackProviderAccessRequest<'a> {
@@ -42,24 +130,22 @@ macro_rules! impl_has_playback_provider_access_fields {
         impl<'a> $crate::impls::playback_provider::common::HasPlaybackProviderAccessFields<'a>
             for $type
         {
-            fn proxy_signing_key(&self) -> &'a synctv_core::proxy_signature::ProxySigningKey {
-                self.proxy_signing_key
+            fn proxy_signing_key(&self) -> &'a $crate::proxy_signature::ProxySigningKey {
+                self.runtime.proxy_signing_key
             }
-            fn public_id_codec(&self) -> &'a synctv_core::PublicIdCodec {
-                self.public_id_codec
+            fn public_id_codec(&self) -> &'a $crate::public_id::PublicIdCodec {
+                self.runtime.public_id_codec
             }
-            fn provider_stores(
-                &self,
-            ) -> &'a dyn synctv_core::provider::store::ProviderStoreResolver {
-                self.provider_stores
+            fn provider_stores(&self) -> &'a dyn synctv_core::provider::ProviderStoreResolver {
+                self.runtime.provider_stores
             }
             fn user_service(&self) -> &'a synctv_core::service::UserService {
-                self.user_service
+                self.runtime.user_service
             }
             fn playback_transport_services(
                 &self,
-            ) -> &'a synctv_core::provider::playback_transport::PlaybackTransportServices {
-                self.playback_transport_services
+            ) -> &'a synctv_core::provider::PlaybackTransportServices {
+                self.runtime.playback_transport_services
             }
         }
     };
@@ -67,8 +153,8 @@ macro_rules! impl_has_playback_provider_access_fields {
 
 pub trait HasPlaybackProviderAccessFields<'a> {
     fn proxy_signing_key(&self) -> &'a ProxySigningKey;
-    fn public_id_codec(&self) -> &'a synctv_core::PublicIdCodec;
-    fn provider_stores(&self) -> &'a dyn synctv_core::provider::store::ProviderStoreResolver;
+    fn public_id_codec(&self) -> &'a crate::public_id::PublicIdCodec;
+    fn provider_stores(&self) -> &'a dyn synctv_core::provider::ProviderStoreResolver;
     fn user_service(&self) -> &'a UserService;
     fn playback_transport_services(&self) -> &'a PlaybackTransportServices;
 
@@ -89,12 +175,25 @@ pub async fn verify_playback_provider_access_with_deps(
     request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
-        Arc<dyn synctv_core::provider::store::ProviderStore>,
+        Arc<dyn synctv_core::provider::ProviderStore>,
         ProxyUrlClaims,
     ),
     ApiError,
 > {
     verify_playback_provider_http_access(deps, provider_name, request).await
+}
+
+pub fn live_flv_access_from_claims(
+    public_id_codec: &crate::public_id::PublicIdCodec,
+    claims: &ProxyUrlClaims,
+) -> Result<LiveFlvAccess, ApiError> {
+    let user_id = public_id_codec
+        .decode_user_id(&claims.user_id)
+        .map_err(|error| ApiError::InvalidInput(format!("Invalid uid: {error}")))?;
+    Ok(LiveFlvAccess {
+        user_id,
+        expires_at: claims.expires_at,
+    })
 }
 
 const MAX_MANIFEST_CONTENT_LENGTH: u64 = 10 * 1024 * 1024;
@@ -129,30 +228,40 @@ pub struct LivePlaybackDeps<'a> {
     pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
+#[derive(Clone, Copy)]
+pub struct LivePlaybackApiRuntime<'a> {
+    pub proxy_signing_key: &'a ProxySigningKey,
+    pub live_streaming_infrastructure:
+        Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
+    pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
+    pub livestream_config: &'a synctv_core::config::LivestreamConfig,
+    pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
+}
+
 /// Macro to implement HasLivePlaybackFields for provider types
 /// that have matching field names.
 #[macro_export]
 macro_rules! impl_has_live_playback_fields {
     ($type:ty) => {
         impl<'a> $crate::impls::playback_provider::common::HasLivePlaybackFields<'a> for $type {
-            fn proxy_signing_key(&self) -> &'a synctv_core::proxy_signature::ProxySigningKey {
-                self.proxy_signing_key
+            fn proxy_signing_key(&self) -> &'a $crate::proxy_signature::ProxySigningKey {
+                self.live_runtime.proxy_signing_key
             }
             fn live_streaming_infrastructure(
                 &self,
             ) -> Option<&'a std::sync::Arc<synctv_livestream::LiveStreamingInfrastructure>> {
-                self.live_streaming_infrastructure
+                self.live_runtime.live_streaming_infrastructure
             }
             fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime {
-                self.connection_runtime
+                self.live_runtime.connection_runtime
             }
             fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig {
-                self.livestream_config
+                self.live_runtime.livestream_config
             }
             fn runtime_settings_store(
                 &self,
             ) -> Option<&'a synctv_core::service::RuntimeSettingsStore> {
-                self.runtime_settings_store
+                self.live_runtime.runtime_settings_store
             }
         }
     };
@@ -444,47 +553,13 @@ pub(crate) fn map_playback_provider_membership_probe_error(err: synctv_core::Err
     }
 }
 
-pub async fn validate_fresh_playback_provider_access(
-    user_service: &UserService,
-    playback_transport_services: &PlaybackTransportServices,
-    room_id: &RoomId,
-    user_id: &UserId,
-) -> Result<(), ApiError> {
-    let user = user_service
-        .get_user(user_id)
-        .await
-        .map_err(ApiError::from)?;
-    if user.status != synctv_core::models::UserStatus::Active || user.deleted_at.is_some() {
-        return Err(ApiError::Authorization(
-            synctv_common::messages::STALE_PROXY_ACCESS.to_string(),
-        ));
-    }
-
-    let room = playback_transport_services
-        .room_service
-        .get_room(room_id)
-        .await
-        .map_err(ApiError::from)?;
-    if room.is_banned || !room.status.is_active() {
-        return Err(ApiError::Authorization(
-            "Playback provider URL is no longer valid for this room".to_string(),
-        ));
-    }
-
-    playback_transport_services
-        .room_service
-        .check_membership(room_id, user_id)
-        .await
-        .map_err(map_playback_provider_membership_probe_error)
-}
-
 pub async fn verify_playback_provider_http_access(
     deps: &PlaybackProviderAccessDeps<'_>,
     provider_name: &'static str,
     request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
-        Arc<dyn synctv_core::provider::store::ProviderStore>,
+        Arc<dyn synctv_core::provider::ProviderStore>,
         ProxyUrlClaims,
     ),
     ApiError,
@@ -521,13 +596,7 @@ pub async fn verify_playback_provider_http_access(
         .public_id_codec
         .decode::<RoomId>(&claims.room_id)
         .map_err(|error| ApiError::InvalidInput(format!("Invalid {error} in room_id")))?;
-    validate_fresh_playback_provider_access(
-        deps.user_service,
-        deps.playback_transport_services,
-        &room_id,
-        &user_id,
-    )
-    .await?;
+    deps.validate_fresh_access(&room_id, &user_id).await?;
     Ok((deps.provider_stores.load(provider_name), claims))
 }
 
@@ -1035,6 +1104,45 @@ mod tests {
             .build()
     }
 
+    #[test]
+    fn live_flv_access_decodes_signed_public_user_id_at_api_boundary() {
+        let codec = crate::public_id::PublicIdCodec::plain();
+        let claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "rtmp".to_string(),
+            version: "v1".to_string(),
+            resource: "flv-stream".to_string(),
+            room_id: "room_2".to_string(),
+            user_id: "usr_7".to_string(),
+            expires_at: 1234,
+            target_url: None,
+        };
+
+        let access = live_flv_access_from_claims(&codec, &claims)
+            .expect("prefixed public user id should decode");
+
+        assert_eq!(
+            access.user_id,
+            synctv_core::models::UserId::expect_positive(7)
+        );
+        assert_eq!(access.expires_at, 1234);
+    }
+
+    #[test]
+    fn live_flv_access_rejects_unprefixed_public_user_id() {
+        let codec = crate::public_id::PublicIdCodec::plain();
+        let claims = crate::proxy_signature::ProxyUrlClaims {
+            provider: "rtmp".to_string(),
+            version: "v1".to_string(),
+            resource: "flv-stream".to_string(),
+            room_id: "room_2".to_string(),
+            user_id: "7".to_string(),
+            expires_at: 1234,
+            target_url: None,
+        };
+
+        assert!(live_flv_access_from_claims(&codec, &claims).is_err());
+    }
+
     #[tokio::test]
     async fn fetch_and_forward_chunk_stream_uses_slice_cache_for_full_body() -> anyhow::Result<()> {
         let Some(mock_server) = start_mock_server_or_skip().await? else {
@@ -1083,7 +1191,7 @@ mod tests {
                 client.clone(),
                 ssrf_guard.clone(),
             )?;
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
             b"test-secret-key-for-playback-provider-common",
         )?;
         let deps = PlaybackTransportExecutorDeps {
@@ -1153,10 +1261,10 @@ mod tests {
                 client.clone(),
                 ssrf_guard.clone(),
             )?;
-        let signing_key = synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+        let signing_key = crate::proxy_signature::ProxySigningKey::try_derive_from(
             b"test-secret-key-for-playback-provider-common",
         )?;
-        let claims = synctv_core::proxy_signature::ProxyUrlClaims {
+        let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "direct_url".to_string(),
             version: "v1".to_string(),
             resource: "hls-segments".to_string(),

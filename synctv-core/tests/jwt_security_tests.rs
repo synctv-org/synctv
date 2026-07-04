@@ -10,10 +10,9 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use synctv_core::{
     models::UserId,
-    service::auth::{jwt::JwtService, Claims, JwtValidator, TokenCredentialBinding},
+    service::{Claims, JwtService, JwtValidator, TokenCredentialBinding},
 };
 use synctv_core_testing::{create_test_jwt_service, err, ok};
-use tonic::metadata::MetadataMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ExpiredClaims {
@@ -430,36 +429,6 @@ async fn test_jwt_concurrent_token_generation() {
 // SEC8: JwtValidator edge cases
 
 #[tokio::test]
-async fn test_jwt_validator_non_ascii_grpc_metadata() {
-    let jwt_service = Arc::new(create_test_jwt_service());
-    let validator = JwtValidator::new(jwt_service);
-
-    // gRPC metadata with non-ASCII characters in the authorization header
-    // MetadataMap::insert only accepts ASCII header values. Non-ASCII values
-    // should cause the metadata parsing to fail with an error.
-    let metadata = MetadataMap::new();
-    // No authorization header at all -- should get "Missing authorization header"
-    let result = validator.validate_grpc(&metadata);
-    assert!(result.is_err(), "Missing auth header should fail");
-
-    // Binary metadata values (non-ASCII) are stored with "-bin" suffix in gRPC.
-    // The "authorization" key is ASCII-only, so inserting non-ASCII causes a parse
-    // error at the tonic level. We verify the validator handles this gracefully.
-    let mut metadata_bad = MetadataMap::new();
-    // Insert a binary metadata value under the "authorization-bin" key
-    // (non-ASCII metadata must use -bin suffix in gRPC)
-    let binary_value = tonic::metadata::MetadataValue::from_bytes(b"\x80\x81\x82");
-    metadata_bad.insert_bin("authorization-bin", binary_value);
-
-    // Attempting to validate gRPC without proper "authorization" key should fail
-    let result = validator.validate_grpc(&metadata_bad);
-    assert!(
-        result.is_err(),
-        "Non-ASCII gRPC metadata (binary key) should cause validation failure"
-    );
-}
-
-#[tokio::test]
 async fn test_jwt_validator_empty_bearer_token_after_prefix() {
     let jwt_service = Arc::new(create_test_jwt_service());
     let validator = JwtValidator::new(jwt_service);
@@ -494,7 +463,7 @@ async fn test_jwt_validator_empty_bearer_token_after_prefix() {
     }
 
     // HTTP: "Bearer " + empty should fail
-    let result4 = validator.validate_http("Bearer ");
+    let result4 = validator.validate_authorization_header("Bearer ");
     assert!(
         result4.is_err(),
         "HTTP validation with empty bearer should fail"
@@ -502,31 +471,21 @@ async fn test_jwt_validator_empty_bearer_token_after_prefix() {
 }
 
 #[tokio::test]
-async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
+async fn test_jwt_validator_authorization_header_returns_authentication_error() {
     let jwt_service = Arc::new(create_test_jwt_service());
     let validator = JwtValidator::new(jwt_service);
 
-    // Missing auth metadata
-    let metadata = MetadataMap::new();
-    let result = validator.validate_grpc_as_status(&metadata);
-    assert!(result.is_err());
-    let status = err(result, "missing auth metadata should fail");
-    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    let result = JwtValidator::extract_bearer_token("Basic invalid.token");
+    assert!(matches!(
+        err(result, "invalid authorization header should fail"),
+        synctv_core::Error::Authentication(_)
+    ));
 
-    // Invalid token in metadata
-    let mut metadata2 = MetadataMap::new();
-    metadata2.insert(
-        "authorization",
-        ok(
-            "Bearer invalid.token".parse(),
-            "authorization metadata should parse",
-        ),
-    );
-    let result2 = validator.validate_grpc_as_status(&metadata2);
-    assert_eq!(
-        err(result2, "invalid metadata token should fail").code(),
-        tonic::Code::Unauthenticated
-    );
+    let result2 = validator.validate_authorization_header("Bearer invalid.token");
+    assert!(matches!(
+        err(result2, "invalid bearer token should fail"),
+        synctv_core::Error::Authentication(_)
+    ));
 }
 
 // SEC9: JwtService::verify_custom skips issuer/audience

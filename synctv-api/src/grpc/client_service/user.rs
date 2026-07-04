@@ -57,7 +57,7 @@ impl UserService for ClientServiceImpl {
                         )
                     })?;
                     let token =
-                        synctv_core::service::auth::JwtValidator::extract_bearer_token(&auth_value)
+                        synctv_core::service::JwtValidator::extract_bearer_token(&auth_value)
                             .map_err(|_| {
                                 crate::impls::ApiError::Authentication(
                                     synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),

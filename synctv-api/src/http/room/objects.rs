@@ -350,7 +350,7 @@ pub async fn upload_chat_attachment_object(
 ) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
-        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        synctv_core::service::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
@@ -445,7 +445,7 @@ pub async fn upload_media_cover_object(
 ) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
-        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        synctv_core::service::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
@@ -530,7 +530,7 @@ pub async fn upload_room_cover_object(
 ) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
-        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        synctv_core::service::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;
@@ -615,7 +615,7 @@ pub async fn upload_playlist_cover_object(
 ) -> AppResult<Response> {
     let upload_token = super::super::required_header_str(
         &headers,
-        synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
+        synctv_core::service::FILE_UPLOAD_TOKEN_HEADER,
         "Missing file upload token",
     )?;
     let content_type = super::super::optional_header_str(&headers, &header::CONTENT_TYPE)?;

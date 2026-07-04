@@ -4,12 +4,12 @@
 use synctv_core::{
     models::{OpaquePasswordRecord, SignupMethod, User, UserId, UserRole, UserStatus},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-    service::auth::{OpaquePasswordService, TokenCredentialBinding},
+    service::{OpaquePasswordService, TokenCredentialBinding},
 };
 use synctv_core_testing::{create_test_jwt_service, create_test_pool, ok, some};
 
 fn sign_test_refresh_token(
-    jwt_service: &synctv_core::service::auth::jwt::JwtService,
+    jwt_service: &synctv_core::service::JwtService,
     user_id: &UserId,
 ) -> String {
     ok(
@@ -103,10 +103,7 @@ async fn fetch_user(repo: &UserRepository, username: &str) -> User {
     )
 }
 
-fn sign_access(
-    jwt_service: &synctv_core::service::auth::jwt::JwtService,
-    user_id: &UserId,
-) -> String {
+fn sign_access(jwt_service: &synctv_core::service::JwtService, user_id: &UserId) -> String {
     ok(
         jwt_service.sign_access_token(user_id, 0),
         "access token should be signed",
@@ -114,9 +111,9 @@ fn sign_access(
 }
 
 fn verify_access(
-    jwt_service: &synctv_core::service::auth::jwt::JwtService,
+    jwt_service: &synctv_core::service::JwtService,
     token: &str,
-) -> synctv_core::service::auth::Claims {
+) -> synctv_core::service::Claims {
     ok(
         jwt_service.verify_access_token(token),
         "access token should verify",
@@ -124,9 +121,9 @@ fn verify_access(
 }
 
 fn verify_refresh(
-    jwt_service: &synctv_core::service::auth::jwt::JwtService,
+    jwt_service: &synctv_core::service::JwtService,
     token: &str,
-) -> synctv_core::service::auth::Claims {
+) -> synctv_core::service::Claims {
     ok(
         jwt_service.verify_refresh_token(token),
         "refresh token should verify",

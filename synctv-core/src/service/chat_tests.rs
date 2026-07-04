@@ -7,6 +7,7 @@ use crate::service::file_storage::{
     upload_session_part_size, validate_create_file_upload_session, DatabaseFileStorageService,
     S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
 };
+use crate::service::MAX_CHAT_ATTACHMENT_SIZE_BYTES;
 use crate::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -19,9 +20,8 @@ use crate::{
         RoomSettingsRepository, UpsertFileObject, UserRepository,
     },
     service::{
-        auth::JwtService, chat_attachment_upload_policy, BruteForceProtection,
-        DisabledFileStorageService, InMemoryTokenBlacklistStore, RateLimiter, RoomService,
-        RuntimeSettingsStore,
+        chat_attachment_upload_policy, BruteForceProtection, DisabledFileStorageService,
+        InMemoryTokenBlacklistStore, JwtService, RateLimiter, RoomService, RuntimeSettingsStore,
     },
 };
 use image::ImageEncoder;
@@ -99,26 +99,9 @@ fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &s
     }
 }
 
-fn object_url_parts(upload_url: &str) -> (String, String) {
-    let parsed = ok(
-        url::Url::parse(&format!("http://localhost{upload_url}")),
-        "relative database object URL should parse with base",
-    );
-    let encoded_object_key = some(
-        parsed
-            .path_segments()
-            .and_then(|mut segments| segments.next_back())
-            .map(str::to_string),
-        "encoded object key path segment should exist",
-    );
-    let read_token = some(
-        parsed
-            .query_pairs()
-            .find_map(|(key, value)| (key == "token").then(|| value.into_owned())),
-        "read token should be present",
-    );
-
-    (encoded_object_key, read_token)
+fn upload_access_parts(session: &FileUploadSession, context: &str) -> (String, String) {
+    let access = some(session.upload_object_access.as_ref(), context);
+    (access.encoded_object_key.clone(), access.read_token.clone())
 }
 
 fn submitted_file_reference(file: &NewStoredFile) -> SubmittedFileReference {
@@ -159,11 +142,8 @@ async fn send_database_chat_attachment(
         ),
         "attachment upload session should be created",
     );
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -226,6 +206,7 @@ impl FileStorageService for PrefixingFileStorageService {
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
+                object_access: None,
                 url: Some(format!("https://cdn.invalid/uploads/{id}")),
                 mime_type: Some(request.mime_type),
                 size_bytes: Some(request.size_bytes),
@@ -238,6 +219,7 @@ impl FileStorageService for PrefixingFileStorageService {
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
+            upload_object_access: None,
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
@@ -285,6 +267,7 @@ impl FileStorageService for PrefixingFileStorageService {
                 id: attachment.id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("submitted/{}", attachment.id),
+                object_access: None,
                 url: Some(format!("https://cdn.invalid/{}", attachment.id)),
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(128),
@@ -326,6 +309,7 @@ impl FileStorageService for RecordingFileStorageService {
                 id: id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("normalized/uploads/{id}"),
+                object_access: None,
                 url: Some(format!("https://cdn.invalid/uploads/{id}")),
                 mime_type: Some(request.mime_type),
                 size_bytes: Some(request.size_bytes),
@@ -338,6 +322,7 @@ impl FileStorageService for RecordingFileStorageService {
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
+            upload_object_access: None,
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
@@ -385,6 +370,7 @@ impl FileStorageService for RecordingFileStorageService {
                 id: attachment.id.clone(),
                 storage_backend: "test-storage".to_string(),
                 object_key: format!("submitted/{}", attachment.id),
+                object_access: None,
                 url: Some(format!("https://cdn.invalid/{}", attachment.id)),
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(128),
@@ -439,6 +425,7 @@ fn validate_chat_attachments_rejects_internal_metadata_fields() {
         id: "img-test".to_string(),
         storage_backend: "database".to_string(),
         object_key: "rooms/1/chat/img-test".to_string(),
+        object_access: None,
         url: None,
         mime_type: Some("image/png".to_string()),
         size_bytes: Some(1024),
@@ -721,9 +708,9 @@ fn test_chat_service_with_options(
         PermissionService::new_with_runtime(
             RoomMemberRepository::new(pool.clone()),
             RoomRepository::new(pool.clone()),
-            crate::service::permission::PermissionServiceRuntime {
+            crate::service::PermissionServiceRuntime {
                 room_settings_repo: Some(RoomSettingsRepository::new(pool.clone())),
-                ..crate::service::permission::PermissionServiceRuntime::local_only()
+                ..crate::service::PermissionServiceRuntime::local_only()
             },
         ),
         "permission service should build",
@@ -903,7 +890,7 @@ async fn disabled_file_storage_rejects_images() {
             FileStorageContext {
                 user_id: UserId::expect_positive(1),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
-                database_object_route_prefix: "/api/test/objects",
+                object_kind: crate::models::FileObjectKind::Generic,
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -911,6 +898,7 @@ async fn disabled_file_storage_rejects_images() {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
+                object_access: None,
                 url: None,
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(-1),
@@ -931,6 +919,7 @@ fn validate_chat_attachments_rejects_duplicates_in_one_message() {
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
+        object_access: None,
         url: None,
         mime_type: Some("image/webp".to_string()),
         size_bytes: Some(1024),
@@ -969,6 +958,7 @@ fn validate_chat_attachments_rejects_zero_size() {
         id: "image-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "image-1.webp".to_string(),
+        object_access: None,
         url: None,
         mime_type: Some("image/webp".to_string()),
         size_bytes: Some(0),
@@ -1016,7 +1006,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
             FileStorageContext {
                 user_id: UserId::expect_positive(2),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
-                database_object_route_prefix: "/api/test/objects",
+                object_kind: crate::models::FileObjectKind::Generic,
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -1024,6 +1014,7 @@ async fn disabled_file_storage_rejects_prepared_images() {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "rooms/1/chat/2/image-1".to_string(),
+                object_access: None,
                 url: None,
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(1024),
@@ -1105,11 +1096,8 @@ async fn database_file_storage_roundtrips_uploaded_object() {
     let session = expect_upload_session(session, "database upload session should be created");
     assert_eq!(session.file.storage_backend, "database");
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -1131,14 +1119,19 @@ async fn database_file_storage_roundtrips_uploaded_object() {
     assert_eq!(stored.object_key, session.file.object_key);
     assert_eq!(stored.data.as_slice(), payload.as_slice());
     assert_eq!(stored.content_manifest_sha256, expected_manifest_digest);
-    let final_url = ok(
-        service.object_url("database", &stored.object_key, "/api/test/objects"),
-        "database object url should build",
+    let final_access = some(
+        ok(
+            service.file_object_access(
+                "database",
+                &stored.object_key,
+                crate::models::FileObjectKind::ChatAttachment,
+            ),
+            "file object access should build",
+        ),
+        "file object access should exist",
     );
-    let (read_encoded_object_key, read_token) = object_url_parts(some(
-        final_url.as_deref(),
-        "database object url should exist",
-    ));
+    let (read_encoded_object_key, read_token) =
+        (final_access.encoded_object_key, final_access.read_token);
     let loaded = ok(
         service
             .get_object(GetFileObject {
@@ -1156,7 +1149,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: Some("database-attachment-message"),
                 },
                 vec![session.file],
@@ -1165,7 +1158,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
         "uploaded database image should prepare",
     );
     assert_eq!(prepared.len(), 1);
-    assert!(prepared[0].url.is_some());
+    assert!(prepared[0].object_access.is_some());
 
     let reuse_session = ok(
         service
@@ -1217,7 +1210,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
                 FileStorageContext {
                     user_id: user.id,
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: Some("database-attachment-reuse-message"),
                 },
                 vec![reuse_session.file],
@@ -1225,7 +1218,7 @@ async fn database_file_storage_roundtrips_uploaded_object() {
             .await,
         "reused database image should prepare with ownership proof",
     );
-    assert!(prepared[0].url.is_some());
+    assert!(prepared[0].object_access.is_some());
 }
 
 #[tokio::test]
@@ -1293,11 +1286,8 @@ async fn database_file_storage_rejects_checksum_mismatch() {
             .await,
         "database upload session should be created",
     );
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -1398,7 +1388,7 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
             FileStorageContext {
                 user_id: UserId::expect_positive(2),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
-                database_object_route_prefix: "/api/test/objects",
+                object_kind: crate::models::FileObjectKind::Generic,
                 client_request_id: Some("client-1"),
             },
             vec![tampered],
@@ -1467,11 +1457,10 @@ async fn s3_file_storage_creates_resumable_upload_session() {
 
     assert!(session.upload_required);
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "S3 upload session should expose a backend-mediated upload url",
+    let (encoded_object_key, read_token) = upload_access_parts(
+        &session,
+        "S3 upload session should expose a backend-mediated upload access",
     );
-    let (encoded_object_key, read_token) = object_url_parts(upload_url);
     assert_eq!(encoded_object_key, session.encoded_object_key);
     assert!(read_token.starts_with("v1."));
     assert_eq!(
@@ -1673,7 +1662,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(9),
                     storage_scope: TEST_FILE_STORAGE_SCOPE,
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: Some("s3-reuse"),
                 },
                 vec![session.file],
@@ -1720,7 +1709,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
             FileStorageContext {
                 user_id: UserId::expect_positive(1),
                 storage_scope: TEST_FILE_STORAGE_SCOPE,
-                database_object_route_prefix: "/api/test/objects",
+                object_kind: crate::models::FileObjectKind::Generic,
                 client_request_id: Some("client-1"),
             },
             vec![NewStoredFile {
@@ -1728,6 +1717,7 @@ async fn s3_file_storage_rejects_unexpected_backend_on_send() {
                 id: "image-1".to_string(),
                 storage_backend: "database".to_string(),
                 object_key: "image.webp".to_string(),
+                object_access: None,
                 url: Some("https://cdn.example.com/image.webp".to_string()),
                 mime_type: Some("image/webp".to_string()),
                 size_bytes: Some(1024),
@@ -1822,11 +1812,8 @@ async fn metadata_only_attachment_token_is_stripped_before_persistence() {
         "upload session should be created",
     );
     assert!(session.file.metadata.upload_token.is_some());
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers

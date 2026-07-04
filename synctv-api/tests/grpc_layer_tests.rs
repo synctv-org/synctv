@@ -8,7 +8,7 @@
 
 #[test]
 fn test_cluster_auth_interceptor_correct_secret() {
-    use synctv_api::grpc::ClusterAuthInterceptor;
+    use synctv_api::ClusterAuthInterceptor;
 
     let interceptor = ClusterAuthInterceptor::new("my-cluster-secret".to_string());
     let mut request = tonic::Request::new(());
@@ -22,7 +22,7 @@ fn test_cluster_auth_interceptor_correct_secret() {
 
 #[test]
 fn test_cluster_auth_interceptor_wrong_secret() {
-    use synctv_api::grpc::ClusterAuthInterceptor;
+    use synctv_api::ClusterAuthInterceptor;
 
     let interceptor = ClusterAuthInterceptor::new("my-cluster-secret".to_string());
     let mut request = tonic::Request::new(());
@@ -41,7 +41,7 @@ fn test_cluster_auth_interceptor_wrong_secret() {
 
 #[test]
 fn test_cluster_auth_interceptor_missing_header() {
-    use synctv_api::grpc::ClusterAuthInterceptor;
+    use synctv_api::ClusterAuthInterceptor;
 
     let interceptor = ClusterAuthInterceptor::new("my-cluster-secret".to_string());
     let request = tonic::Request::new(());
@@ -57,11 +57,8 @@ fn test_cluster_auth_interceptor_missing_header() {
 
 #[test]
 fn test_logout_blacklist_failure_maps_to_grpc_internal() {
-    let api_err = synctv_api::impls::ApiError::Internal("Blacklist store unavailable".to_string());
+    let api_err = synctv_api::ApiError::Internal("Blacklist store unavailable".to_string());
     let proto_err = api_err.to_proto_error();
-    assert_eq!(
-        proto_err.code,
-        synctv_api::impls::ErrorKind::Internal.to_code()
-    );
+    assert_eq!(proto_err.code, synctv_api::ErrorKind::Internal.to_code());
     assert_eq!(proto_err.message, "Internal error");
 }

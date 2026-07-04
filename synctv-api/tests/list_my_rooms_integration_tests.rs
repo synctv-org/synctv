@@ -9,8 +9,7 @@ use synctv_core::{
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Config,
 };
@@ -54,11 +53,11 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-) -> synctv_api::impls::ClientApiImpl {
+) -> synctv_api::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
-    synctv_api::impls::ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+    synctv_api::ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -68,7 +67,7 @@ fn make_client_api(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -150,7 +149,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(created_only.rooms.len(), 1);
     assert_eq!(
         created_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(created_room.id)
             .unwrap()
     );
@@ -180,7 +179,7 @@ async fn test_list_my_rooms_relation_filter_and_response_relation_are_consistent
     assert_eq!(participating_only.rooms.len(), 1);
     assert_eq!(
         participating_only.rooms[0].room.as_ref().unwrap().id,
-        synctv_core::PublicIdCodec::plain()
+        synctv_api::PublicIdCodec::plain()
             .encode_room_id(participating_room.id)
             .unwrap()
     );

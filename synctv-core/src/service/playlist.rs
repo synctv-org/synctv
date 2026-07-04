@@ -22,11 +22,10 @@ use crate::{
     repository::PlaylistRepository,
     repository::UserProviderCredentialRepository,
     service::{
-        file_storage::FileStorageContext, optimistic_retry, permission::PermissionService,
-        playlist_cover_upload_policy,
+        file_storage::FileStorageContext, optimistic_retry, playlist_cover_upload_policy,
         provider_binding::resolve_credential_provider_instance_binding,
         source_config::validate_source_config_size, FileStorageCleanupOrigin, FileStorageService,
-        ProvidersManager,
+        PermissionService, ProvidersManager,
     },
     Error, Result,
 };
@@ -929,7 +928,7 @@ impl PlaylistService {
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
-                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
+                    object_kind: upload_policy.object_kind,
                     client_request_id: None,
                 },
                 vec![file],

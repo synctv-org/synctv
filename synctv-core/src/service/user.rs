@@ -13,11 +13,10 @@ use crate::{
         EmailRegistrationTokenRepository, UserEmailRepository, UserPasswordRepository,
         UserPreferencesRepository, UserRepository,
     },
-    service::auth::{
+    service::{file_storage::FileStorageService, PermissionService, RequestRateLimiterService},
+    service::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenBlacklistStore,
     },
-    service::rate_limit::RequestRateLimiterService,
-    service::{file_storage::FileStorageService, PermissionService},
 };
 
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
@@ -100,19 +99,19 @@ impl UserServiceRuntimeOptions {
     pub fn test_defaults() -> Self {
         Self {
             cache_invalidation: None,
-            refresh_rate_limiter: Arc::new(crate::service::rate_limit::RateLimiter::local_only(
+            refresh_rate_limiter: Arc::new(crate::service::RateLimiter::local_only(
                 "synctv:test:".to_string(),
             )),
             refresh_rate_limit_config: RefreshRateLimitConfig::default(),
             runtime_settings_store: None,
             password_registration_policy_override: None,
             opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
-            opaque_login_session_store: crate::service::user::local_opaque_login_session_store(),
+            opaque_login_session_store: crate::service::local_opaque_login_session_store(),
             opaque_registration_session_store:
-                crate::service::user::local_opaque_registration_session_store(),
-            mfa_session_store: crate::service::user::local_mfa_session_store(),
+                crate::service::local_opaque_registration_session_store(),
+            mfa_session_store: crate::service::local_mfa_session_store(),
             sensitive_verification_session_store:
-                crate::service::user::local_sensitive_verification_session_store(),
+                crate::service::local_sensitive_verification_session_store(),
             realtime_outbox: None,
             permission_service: None,
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),

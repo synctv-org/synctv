@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, object_key, original_storage_backend, original_object_key,\n                   group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                   is_original, lossy, quality, sort_order,\n                   metadata AS \"metadata!: FileVariantMetadata\", created_at\n            FROM file_object_variants\n            WHERE original_storage_backend = $1 AND original_object_key = $2\n            ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC\n            ",
+  "query": "\n            SELECT storage_backend, object_key, original_storage_backend, original_object_key,\n                   group_id, variant_key, label, url, mime_type, size_bytes, width, height,\n                   is_original, lossy, quality, sort_order,\n                   NULL::JSONB AS \"object_access?: crate::models::FileObjectAccess\",\n                   metadata AS \"metadata!: FileVariantMetadata\",\n                   created_at\n            FROM file_object_variants\n            WHERE original_storage_backend = $1 AND original_object_key = $2\n            ORDER BY sort_order ASC, is_original ASC, size_bytes ASC, variant_key ASC\n            ",
   "describe": {
     "columns": [
       {
@@ -181,6 +181,12 @@
       },
       {
         "ordinal": 16,
+        "name": "object_access?: crate::models::FileObjectAccess",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
         "name": "metadata!: FileVariantMetadata",
         "type_info": "Jsonb",
         "origin": {
@@ -191,7 +197,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -225,9 +231,10 @@
       false,
       true,
       false,
+      null,
       false,
       false
     ]
   },
-  "hash": "c337ee27c0b28f17bf470bfc9a3f0657accd506ca42dfc0888d62b24c559ff1e"
+  "hash": "b776018af443ac654b8197e68c84b6df574b20915da4bf2ad31bc00aee64d74e"
 }

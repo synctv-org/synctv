@@ -13,7 +13,7 @@
 //! Run Docker tests: cargo test --test `distributed_lock_tests` -- --ignored
 
 use std::time::Duration;
-use synctv_core::service::distributed_lock::DistributedLock;
+use synctv_core::service::DistributedLock;
 use synctv_core::Error;
 use synctv_core_testing::start_redis as start_test_redis;
 use synctv_core_testing::{some, TestResultExt};

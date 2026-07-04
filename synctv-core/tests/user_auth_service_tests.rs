@@ -26,12 +26,12 @@ use synctv_core::{
         UserOAuthProviderRepository, UserPasswordRepository, UserRepository,
     },
     service::{
-        auth::{jwt::JwtService, OpaquePasswordService, TokenCredentialBinding},
         local_oauth_state_store, AccountRegistrationOutcome, AuthFactorMethod, AuthenticatedLogin,
-        BruteForceProtection, InMemoryTokenBlacklistStore, OAuth2GithubProviderConfig,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, OAuth2GithubProviderConfig,
         OAuth2GoogleProviderConfig, OAuth2LinkResult, OAuth2ProviderConfig, OAuth2ProviderConfigs,
-        OAuth2ProviderPrivateConfig, OAuth2Service, OAuth2ServiceRuntime, RateLimiter,
-        RuntimeSettingsStore, SettingsService, TokenBlacklistStore, UserService,
+        OAuth2ProviderPrivateConfig, OAuth2Service, OAuth2ServiceRuntime, OpaquePasswordService,
+        RateLimiter, RuntimeSettingsStore, SettingsService, TokenBlacklistStore,
+        TokenCredentialBinding, UserService,
     },
     Error,
 };
@@ -87,7 +87,7 @@ fn create_user_service_with_components(
     pool: &PgPool,
     username_cache: UsernameCache,
     token_blacklist: Arc<dyn TokenBlacklistStore>,
-    runtime: synctv_core::service::user::UserServiceRuntimeOptions,
+    runtime: synctv_core::service::UserServiceRuntimeOptions,
 ) -> UserService {
     let jwt = create_jwt_service();
     let key_builder = KeyBuilder::new("test");
@@ -189,13 +189,13 @@ async fn run_concurrent_refresh_attempts(
     success_count
 }
 
-fn default_test_user_runtime_options() -> synctv_core::service::user::UserServiceRuntimeOptions {
-    synctv_core::service::user::UserServiceRuntimeOptions {
+fn default_test_user_runtime_options() -> synctv_core::service::UserServiceRuntimeOptions {
+    synctv_core::service::UserServiceRuntimeOptions {
         password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {
             enabled: true,
             need_review: false,
         }),
-        ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+        ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
     }
 }
 
@@ -274,6 +274,7 @@ async fn oauth2_service_with_provider_signup(
         false,
         OAuth2ServiceRuntime {
             runtime_settings_store: Some(runtime_settings_store),
+            user_service: Some(Arc::new(create_user_service(pool))),
             ..OAuth2ServiceRuntime::default()
         },
     )
@@ -2291,7 +2292,6 @@ async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_oauth2_users() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(&pool);
     let oauth_service = oauth2_service_with_google_signup(&pool).await;
 
     let provider = OAuth2Provider::Google;
@@ -2309,8 +2309,8 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
         email_verified: true,
     };
 
-    let first = oauth_service.find_or_create_and_link(&user_service, "google", &user_info);
-    let second = oauth_service.find_or_create_and_link(&user_service, "google", &user_info);
+    let first = oauth_service.find_or_create_and_link("google", &user_info);
+    let second = oauth_service.find_or_create_and_link("google", &user_info);
     let (first_result, second_result) = tokio::join!(first, second);
 
     let OAuth2LinkResult::Linked {
@@ -2382,7 +2382,6 @@ async fn test_find_or_create_and_link_concurrent_requests_do_not_commit_orphan_o
 #[ignore = "Requires Docker"]
 async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pending_request() {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(&pool);
     let oauth_service = oauth2_service_with_github_review(&pool).await;
 
     let provider = OAuth2Provider::GitHub;
@@ -2398,11 +2397,11 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
     );
 
     let first = oauth_service
-        .find_or_create_and_link(&user_service, "github", &user_info)
+        .find_or_create_and_link("github", &user_info)
         .await
         .checked("first OAuth2 review signup should create a pending request");
     let second = oauth_service
-        .find_or_create_and_link(&user_service, "github", &user_info)
+        .find_or_create_and_link("github", &user_info)
         .await
         .checked("repeated OAuth2 review signup should return existing pending request");
 
@@ -2424,7 +2423,6 @@ async fn test_find_or_create_and_link_repeated_review_signup_returns_existing_pe
 async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_email_case_insensitive(
 ) {
     let (_container, pool) = create_test_pool().await;
-    let user_service = create_user_service(&pool);
     let oauth_service = oauth2_service_with_github_review(&pool).await;
 
     let shared_email = format!(
@@ -2463,7 +2461,7 @@ async fn test_find_or_create_and_link_review_signup_rejects_existing_pending_ema
     );
 
     let result = oauth_service
-        .find_or_create_and_link(&user_service, "github", &user_info)
+        .find_or_create_and_link("github", &user_info)
         .await;
 
     assert!(
@@ -2518,7 +2516,7 @@ async fn test_find_or_create_and_link_review_signup_skips_existing_usernames() {
     );
 
     let OAuth2LinkResult::PendingReview(pending) = oauth_service
-        .find_or_create_and_link(&user_service, "github", &user_info)
+        .find_or_create_and_link("github", &user_info)
         .await
         .checked("OAuth2 review signup should create a pending request with a suffixed username")
     else {
@@ -2576,7 +2574,7 @@ async fn test_find_or_create_and_link_retries_with_suffixed_username_on_collisio
         user_id: created_user_id,
         is_new,
     } = oauth_service
-        .find_or_create_and_link(&user_service, "google", &user_info)
+        .find_or_create_and_link("google", &user_info)
         .await
         .checked("OAuth2 signup should succeed by choosing a suffixed username")
     else {
@@ -2695,7 +2693,7 @@ async fn test_refresh_token_rate_limit_recovers() {
     runtime.refresh_rate_limiter = Arc::new(RateLimiter::local_only(
         "test-refresh-recover-short-window:".to_string(),
     ));
-    runtime.refresh_rate_limit_config = synctv_core::service::user::RefreshRateLimitConfig {
+    runtime.refresh_rate_limit_config = synctv_core::service::RefreshRateLimitConfig {
         requests: 1,
         window_secs: 1,
     };

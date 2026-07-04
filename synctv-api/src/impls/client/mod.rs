@@ -15,7 +15,6 @@
 
 mod auth;
 pub(crate) use auth::login_outcome_to_proto;
-pub use auth::LogoutOutcome;
 pub(crate) mod file_download;
 pub(crate) mod live_danmaku;
 pub(crate) mod media;
@@ -51,10 +50,10 @@ use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomPermissionSet, RoomStatus};
-use synctv_core::service::auth::{GuestTokenValidator, JwtValidator, TokenType};
 use synctv_core::service::{
     ChatService, ContentReportService, ReviewService, RoomService, UserService,
 };
+use synctv_core::service::{GuestTokenValidator, JwtValidator, TokenType};
 use synctv_core::RedisConnectionRuntime;
 
 // Re-export conversion helpers within the crate.
@@ -98,8 +97,8 @@ pub struct ClientApiConfig {
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
@@ -112,8 +111,24 @@ pub struct ClientApiRuntime {
     pub builtin_stun_url: Option<String>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
+    pub request_executor: Arc<RequestExecutor>,
+    pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
+    pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
+}
+
+pub struct ClientApiRuntimeServices {
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub realtime_event_service: Arc<dyn RealtimeEventService>,
+    pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
+    pub builtin_stun_url: Option<String>,
+    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     pub request_executor: Arc<RequestExecutor>,
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
@@ -121,9 +136,30 @@ pub struct ClientApiRuntime {
 
 impl ClientApiRuntime {
     #[must_use]
+    pub fn new_with_services(services: ClientApiRuntimeServices) -> Self {
+        Self {
+            chat_event_dispatcher: default_chat_event_dispatcher(
+                services.realtime_event_service.clone(),
+            ),
+            realtime_fanout: services.realtime_fanout,
+            realtime_event_service: services.realtime_event_service,
+            redis_runtime: services.redis_runtime,
+            builtin_stun_url: services.builtin_stun_url,
+            webrtc_status: services.webrtc_status,
+            provider_access_service: services.provider_access_service,
+            signing_key: services.signing_key,
+            presence_service: services.presence_service,
+            jwt_validator: services.jwt_validator,
+            request_executor: services.request_executor,
+            ws_ticket_service: services.ws_ticket_service,
+            playback_duration_probe: services.playback_duration_probe,
+        }
+    }
+
+    #[must_use]
     pub fn local_disabled(
         request_executor: Arc<RequestExecutor>,
-        signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+        signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
@@ -138,6 +174,7 @@ impl ClientApiRuntime {
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key,
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
+            jwt_validator: request_executor.jwt_validator().clone(),
             request_executor,
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             playback_duration_probe: None,
@@ -226,13 +263,13 @@ pub struct ClientApiImpl {
     /// Typed provider credential/session access cache
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
-    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
     /// Per-provider stores for signed playback version mappings
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     /// JWT validator for token validation (e.g. live streaming tokens)
-    pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
+    pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
     pub request_executor: Arc<RequestExecutor>,
     /// Shared email API for email-token flows that are exposed by multiple transports.
@@ -257,27 +294,20 @@ impl ClientApiImpl {
             .map_err(ApiError::from)
     }
 
-    pub(crate) fn stored_file_reference_url(
+    pub(crate) fn stored_file_reference_access(
         &self,
         file: &synctv_core::models::StoredFileReference,
         policy: &synctv_core::models::FileUploadPolicy,
-    ) -> Result<Option<String>, ApiError> {
-        let Some(storage) = self
-            .user_service
-            .file_storage_service()
-            .or_else(|| self.room_service.file_storage_service())
-            .or_else(|| self.room_service.playlist_service().file_storage_service())
-            .or_else(|| self.room_service.media_service().file_storage_service())
-        else {
+    ) -> Result<Option<crate::impls::stored_files::StoredFileObjectAccess>, ApiError> {
+        let Some(storage) = crate::impls::stored_files::first_file_storage([
+            self.user_service.file_storage_service(),
+            self.room_service.file_storage_service(),
+            self.room_service.playlist_service().file_storage_service(),
+            self.room_service.media_service().file_storage_service(),
+        ]) else {
             return Ok(None);
         };
-        storage
-            .object_url(
-                &file.storage_backend,
-                &file.object_key,
-                &policy.database_object_route_prefix,
-            )
-            .map_err(ApiError::from)
+        crate::impls::stored_files::stored_file_reference_access(storage.as_ref(), file, policy)
     }
 
     pub(crate) async fn user_public_view_with_loaded_avatar(
@@ -287,17 +317,17 @@ impl ClientApiImpl {
         let avatar = self
             .load_stored_file_reference(user.avatar_file_reference_id)
             .await?;
-        let avatar_url = avatar
+        let avatar_access = avatar
             .as_ref()
             .map(|file| {
-                self.stored_file_reference_url(
+                self.stored_file_reference_access(
                     file,
                     &synctv_core::service::user_avatar_upload_policy(),
                 )
             })
             .transpose()?
             .flatten();
-        convert::try_user_public_view_to_proto(user, avatar_url.as_deref(), &self.public_id_codec)
+        convert::try_user_public_view_to_proto(user, avatar_access.as_ref(), &self.public_id_codec)
     }
 
     /// Batch load user public views with avatars loaded in parallel
@@ -343,17 +373,17 @@ impl ClientApiImpl {
         users
             .iter()
             .map(|user| {
-                let avatar_url = user
+                let avatar_access = user
                     .avatar_file_reference_id
                     .and_then(|ref_id| avatar_files.get(&ref_id))
                     .and_then(|opt| opt.as_ref())
-                    .map(|file| self.stored_file_reference_url(file, &policy))
+                    .map(|file| self.stored_file_reference_access(file, &policy))
                     .transpose()?
                     .flatten();
 
                 convert::try_user_public_view_to_proto(
                     user,
-                    avatar_url.as_deref(),
+                    avatar_access.as_ref(),
                     &self.public_id_codec,
                 )
             })
@@ -381,10 +411,10 @@ impl ClientApiImpl {
         let cover = self
             .load_stored_file_reference(room.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.stored_file_reference_url(
+                self.stored_file_reference_access(
                     file,
                     &synctv_core::service::room_cover_upload_policy(),
                 )
@@ -398,7 +428,7 @@ impl ClientApiImpl {
             member_count,
             creator,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -408,17 +438,17 @@ impl ClientApiImpl {
         room: &synctv_core::models::Room,
         settings: Option<&synctv_core::models::RoomSettings>,
         member_count: Option<i32>,
-        availability: synctv_core::service::room::ClientResourceAvailability,
+        availability: synctv_core::service::ClientResourceAvailability,
         presence: Option<&synctv_core::service::OnlineRoomStats>,
         creator: Option<synctv_proto::client::UserPublicView>,
     ) -> Result<synctv_proto::client::Room, ApiError> {
         let cover = self
             .load_stored_file_reference(room.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.stored_file_reference_url(
+                self.stored_file_reference_access(
                     file,
                     &synctv_core::service::room_cover_upload_policy(),
                 )
@@ -437,7 +467,7 @@ impl ClientApiImpl {
             presence,
             creator,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -451,10 +481,10 @@ impl ClientApiImpl {
         let cover = self
             .load_stored_file_reference(media.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.stored_file_reference_url(
+                self.stored_file_reference_access(
                     file,
                     &synctv_core::service::media_cover_upload_policy(),
                 )
@@ -466,7 +496,7 @@ impl ClientApiImpl {
             is_available,
             viewer_id,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -481,10 +511,10 @@ impl ClientApiImpl {
         let cover = self
             .load_stored_file_reference(playlist.cover_file_reference_id)
             .await?;
-        let cover_url = cover
+        let cover_access = cover
             .as_ref()
             .map(|file| {
-                self.stored_file_reference_url(
+                self.stored_file_reference_access(
                     file,
                     &synctv_core::service::playlist_cover_upload_policy(),
                 )
@@ -497,7 +527,7 @@ impl ClientApiImpl {
             is_available,
             viewer_id,
             cover.as_ref(),
-            cover_url.as_deref(),
+            cover_access.as_ref(),
             &self.public_id_codec,
         )
     }
@@ -716,9 +746,6 @@ impl ClientApiImpl {
             config.user_service.pool().clone(),
             read_pool,
         ));
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-            config.jwt_service.clone(),
-        )));
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
@@ -770,7 +797,7 @@ impl ClientApiImpl {
             provider_access_service: runtime.provider_access_service,
             signing_key: runtime.signing_key,
             provider_stores: config.provider_stores,
-            jwt_validator,
+            jwt_validator: runtime.jwt_validator,
             public_id_codec: config.public_id_codec,
             playback_duration_probe: runtime.playback_duration_probe,
             request_executor: runtime.request_executor,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::impls::admin::response::active_room_stream_media_ids_for_infra;
 use crate::impls::admin::rooms::username_from_loaded_user;
 use crate::impls::ErrorKind;
 use async_trait::async_trait;
@@ -17,10 +18,9 @@ use synctv_core::{
         UserRepository,
     },
     service::{
-        auth::{BruteForceProtection, JwtService},
-        AuditService, EmailService, InMemoryTokenBlacklistStore, PublishKeyService,
-        RemoteProviderManager, RuntimeEmailConfigProvider, RuntimeSettingsStore, SettingsService,
-        UserService,
+        AuditService, BruteForceProtection, EmailService, InMemoryTokenBlacklistStore, JwtService,
+        PublishKeyService, RemoteProviderManager, RuntimeEmailConfigProvider, RuntimeSettingsStore,
+        SettingsService, UserService,
     },
 };
 use synctv_core::{
@@ -96,12 +96,9 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             default_max_chat_messages: 500,
         },
         permissions: synctv_core::service::PermissionRuntimeSettings {
-            admin_default_permissions:
-                synctv_core::service::global_settings::PermissionSet::admin_default(),
-            member_default_permissions:
-                synctv_core::service::global_settings::PermissionSet::member_default(),
-            guest_default_permissions:
-                synctv_core::service::global_settings::PermissionSet::guest_default(),
+            admin_default_permissions: synctv_core::service::PermissionSet::admin_default(),
+            member_default_permissions: synctv_core::service::PermissionSet::member_default(),
+            guest_default_permissions: synctv_core::service::PermissionSet::guest_default(),
         },
         room_creation: synctv_core::service::RoomCreationRuntimeSettings {
             enabled: true,
@@ -150,7 +147,7 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             message_retention_days: 90,
         },
         cors: synctv_core::service::CorsRuntimeSettings {
-            allowed_origins: synctv_core::service::global_settings::CorsAllowedOrigins(vec![
+            allowed_origins: synctv_core::service::CorsAllowedOrigins(vec![
                 "https://app.example.com".to_string(),
             ]),
         },
@@ -699,7 +696,11 @@ async fn test_validate_admin_auth_rejects_banned_user() -> TestResult {
         .await
         .map_err(|error| test_error(error.to_string()))?;
 
-    let err = api_err(validate_admin_auth(&user_service, banned_admin.id, 0, 0).await)?;
+    let err = api_err(
+        AdminAuthValidator::new(&user_service)
+            .validate(banned_admin.id, 0, 0)
+            .await,
+    )?;
 
     assert!(
         matches!(err, ApiError::Authentication(ref msg) if msg == "Authentication failed"),
@@ -727,9 +728,9 @@ async fn make_admin_api_for_delete_user_test(
         Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
         KeyBuilder::new("test"),
         BruteForceProtection::in_memory("test".to_string()),
-        synctv_core::service::user::UserServiceRuntimeOptions {
+        synctv_core::service::UserServiceRuntimeOptions {
             realtime_outbox: Some(realtime_outbox.clone()),
-            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     ));
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(Arc::new(
@@ -756,12 +757,10 @@ async fn make_admin_api_for_delete_user_test(
         pool.clone(),
         (*user_service).clone(),
         Arc::new(providers_manager),
-        synctv_core::service::room::RoomServiceOptions {
+        synctv_core::service::RoomServiceOptions {
             runtime_settings_store: Some(runtime_settings_store.clone()),
             realtime_outbox: Some(realtime_outbox),
-            ..synctv_core::service::room::RoomServiceOptions::test_defaults_with_settings(
-                pool.clone(),
-            )
+            ..synctv_core::service::RoomServiceOptions::test_defaults_with_settings(pool.clone())
         },
     );
     let room_service = fixture_value(room_service, "room service should build");
@@ -801,8 +800,8 @@ async fn make_admin_api_for_delete_user_test(
     (
         AdminApiImpl::new_with_runtime(
             AdminApiConfig {
-                read_pool: None,
                 room_service,
+                read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
                 settings_service,
                 runtime_settings_store: Some(runtime_settings_store),
@@ -813,7 +812,7 @@ async fn make_admin_api_for_delete_user_test(
                 publish_key_service: Some(publish_key_service),
                 config,
                 audit_service,
-                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
@@ -823,7 +822,7 @@ async fn make_admin_api_for_delete_user_test(
                 provider_stores,
                 provider_access_service: crate::impls::disabled_provider_access_service(),
                 signing_key: Arc::new(
-                    synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                    crate::proxy_signature::ProxySigningKey::try_derive_from(
                         b"test-admin-api-signing-key-32-bytes!!",
                     )
                     .expect("test signing key should derive"),
@@ -913,8 +912,8 @@ async fn make_admin_api_with_livestream_for_test(
     (
         AdminApiImpl::new_with_runtime(
             AdminApiConfig {
-                read_pool: None,
                 room_service,
+                read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
                 settings_service,
                 runtime_settings_store: Some(runtime_settings_store),
@@ -925,7 +924,7 @@ async fn make_admin_api_with_livestream_for_test(
                 publish_key_service: Some(publish_key_service),
                 config,
                 audit_service,
-                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
@@ -935,7 +934,7 @@ async fn make_admin_api_with_livestream_for_test(
                 provider_stores,
                 provider_access_service: crate::impls::disabled_provider_access_service(),
                 signing_key: Arc::new(
-                    synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                    crate::proxy_signature::ProxySigningKey::try_derive_from(
                         b"test-admin-api-signing-key-32-bytes!!",
                     )
                     .expect("test signing key should derive"),
@@ -1319,7 +1318,7 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 #[test]
 fn test_admin_room_to_proto_basic() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     let proto = try_managed_room_to_proto(
         &room,
@@ -1363,7 +1362,7 @@ fn test_admin_room_to_proto_basic() -> TestResult {
 #[test]
 fn test_admin_room_to_proto_banned() -> TestResult {
     let mut room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     room.is_banned = true;
     let proto = try_managed_room_to_proto(
@@ -1391,7 +1390,7 @@ fn test_admin_room_to_proto_banned() -> TestResult {
 #[test]
 fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings {
         allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
         ..Default::default()
@@ -1419,7 +1418,7 @@ fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
 fn test_admin_room_to_proto_different_statuses() -> TestResult {
     for status in [RoomStatus::Active, RoomStatus::Closed] {
         let room = make_test_room(status);
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
         let settings = synctv_core::models::RoomSettings::default();
         let proto = try_managed_room_to_proto(
             &room,
@@ -1434,10 +1433,7 @@ fn test_admin_room_to_proto_different_statuses() -> TestResult {
             &public_id_codec,
         )
         .map_err(|error| test_error(format!("{error:?}")))?;
-        assert_eq!(
-            proto.status,
-            synctv_proto::common::RoomStatus::from(status) as i32
-        );
+        assert_eq!(proto.status, i32::from(status));
     }
     Ok(())
 }
@@ -1762,7 +1758,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
         admin_api
             .room_service
             .create_room_with_taxonomy_outbox(
-                synctv_core::service::room::CreateRoomWithTaxonomyRequest {
+                synctv_core::service::CreateRoomWithTaxonomyRequest {
                     name: "management taxonomy room".to_string(),
                     description: String::new(),
                     created_by: owner.id,
@@ -1821,7 +1817,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
 
 #[test]
 fn test_admin_user_to_proto_all_roles() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     for (role, expected) in [
         (UserRole::Root, synctv_proto::common::UserRole::Root as i32),
         (
@@ -1840,7 +1836,7 @@ fn test_admin_user_to_proto_all_roles() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_all_statuses() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     for (status, expected) in [
         (
             UserStatus::Active,
@@ -1861,7 +1857,7 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_fields() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1879,7 +1875,7 @@ fn test_admin_user_to_proto_fields() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     let banned_at = chrono::Utc::now();
     user.is_banned = true;
@@ -1894,7 +1890,7 @@ fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     user.is_banned = true;
 
@@ -1914,7 +1910,7 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
 
 #[test]
 fn test_admin_user_to_proto_no_email() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let user = make_test_user(UserRole::User, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, None, None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1924,7 +1920,7 @@ fn test_admin_user_to_proto_no_email() -> TestResult {
 
 #[test]
 fn review_rows_preserve_absent_optional_fields() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let requested_at = chrono::Utc::now();
 
     let registration = user_registration_review_row_to_proto(
@@ -2072,7 +2068,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 #[test]
 fn test_admin_room_member_to_proto() -> TestResult {
     let member = make_test_member(RoomRole::Admin);
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
@@ -2108,7 +2104,7 @@ fn test_admin_room_member_to_proto_with_permissions() -> TestResult {
     member.removed_permissions = 0x55;
     member.admin_added_permissions = 0xCC;
     member.admin_removed_permissions = 0x33;
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
@@ -2729,9 +2725,14 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
     let failing_fanout = Arc::new(FailingRealtimeFanout::default());
     let admin_api = AdminApiImpl::new_with_runtime(
         AdminApiConfig {
-            read_pool: None,
             room_service: admin_api.room_service.clone(),
             user_service: admin_api.user_service.clone(),
+            read_services: AdminReadServices {
+                system_stats_service: admin_api.system_stats_service.clone(),
+                review_service: admin_api.review_service.clone(),
+                ban_record_service: admin_api.ban_record_service.clone(),
+                content_report_service: admin_api.content_report_service.clone(),
+            },
             settings_service: admin_api.settings_service.clone(),
             runtime_settings_store: admin_api.runtime_settings_store.clone(),
             email_service: admin_api.email_service.clone(),
@@ -3579,7 +3580,7 @@ async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_room
 
 #[test]
 fn test_parse_batch_user_ids_trims_and_preserves_order() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let first = UserId::expect_positive(901);
     let second = UserId::expect_positive(902);
     let parsed = parse_batch_user_ids(
@@ -4056,7 +4057,7 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
 
 #[test]
 fn build_room_stream_list_response_applies_search_sort_and_pagination() -> TestResult {
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let media_ids = vec![
         MediaId::expect_positive(301),
         MediaId::expect_positive(302),
@@ -4303,8 +4304,8 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
         ));
     let admin_api = AdminApiImpl::new_with_runtime(
         AdminApiConfig {
-            read_pool: None,
             room_service,
+            read_services: crate::test_support::admin_read_services(user_service.as_ref()),
             user_service,
             settings_service,
             runtime_settings_store: Some(runtime_settings_store),
@@ -4315,7 +4316,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             publish_key_service: None,
             config: Arc::new(Config::default()),
             audit_service,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         },
         AdminApiRuntime {
             realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
@@ -4323,7 +4324,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             provider_stores: provider_stores.clone(),
             provider_access_service: crate::impls::disabled_provider_access_service(),
             signing_key: Arc::new(
-                synctv_core::proxy_signature::ProxySigningKey::try_derive_from(
+                crate::proxy_signature::ProxySigningKey::try_derive_from(
                     b"test-admin-api-signing-key-32-bytes!!",
                 )
                 .expect("test signing key should derive"),
@@ -4782,7 +4783,7 @@ async fn test_list_playlists_bypasses_room_membership_requirement_for_global_adm
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-a".to_string(),
                     description: String::new(),
@@ -4859,7 +4860,7 @@ async fn test_get_playlist_bypasses_room_membership_requirement_for_global_admin
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-b".to_string(),
                     description: String::new(),
@@ -4925,7 +4926,7 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-before".to_string(),
                     description: String::new(),
@@ -4991,7 +4992,7 @@ async fn test_delete_playlist_bypasses_room_membership_requirement_for_global_ad
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-delete".to_string(),
                     description: String::new(),
@@ -5071,7 +5072,7 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-delete-parent".to_string(),
                     description: String::new(),
@@ -5090,7 +5091,7 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "playlist-delete-child".to_string(),
                     description: String::new(),
@@ -5109,7 +5110,7 @@ async fn test_delete_playlist_publishes_cascaded_playlist_and_media_events_for_g
             .add_media(
                 room.id,
                 owner.id,
-                synctv_core::service::media::AddMediaRequest {
+                synctv_core::service::AddMediaRequest {
                     playlist_id: Some(child_playlist.id),
                     name: "playlist-delete-cascade-media".to_string(),
                     description: String::new(),
@@ -5382,7 +5383,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
             .create_playlist(
                 room.id,
                 owner.id,
-                synctv_core::service::playlist::CreatePlaylistRequest {
+                synctv_core::service::CreatePlaylistRequest {
                     room_id: room.id,
                     name: "Alpha Folder".to_string(),
                     description: String::new(),
@@ -5550,10 +5551,8 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
                 .await
                 .map_err(|error| test_error(format!("notification should arrive: {error}")))?;
             match event {
-                synctv_core::service::notification::RoomEvent::MediaUpdated {
-                    media_id,
-                    username,
-                    ..
+                synctv_core::service::RoomEvent::MediaUpdated {
+                    media_id, username, ..
                 } if media_id == media.id => break Ok::<_, anyhow::Error>(username),
                 _ => {}
             }
@@ -5583,7 +5582,7 @@ async fn test_local_management_actor_preserves_username_in_media_notifications()
                 .await
                 .map_err(|error| test_error(format!("notification should arrive: {error}")))?;
             match event {
-                synctv_core::service::notification::RoomEvent::MediaRemoved {
+                synctv_core::service::RoomEvent::MediaRemoved {
                     media_id,
                     username,
                     user_id,

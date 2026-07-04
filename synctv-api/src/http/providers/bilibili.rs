@@ -509,13 +509,13 @@ pub(crate) async fn logout(
 
 #[cfg(test)]
 mod tests {
-    use synctv_core::models::UserProviderCredential;
+    use synctv_core::provider::BilibiliProvider;
 
     #[test]
     fn bilibili_server_id_is_global_for_all_instances() {
         assert_eq!(
-            UserProviderCredential::bilibili_server_id(),
-            UserProviderCredential::bilibili_server_id()
+            BilibiliProvider::credential_server_id(),
+            BilibiliProvider::credential_server_id()
         );
     }
 }

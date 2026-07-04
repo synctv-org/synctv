@@ -410,7 +410,7 @@ impl RoomService {
         if password_was_set {
             self.revoke_all_guest_access(
                 room_id,
-                crate::service::notification::GuestKickReason::RoomPasswordAdded,
+                crate::service::GuestKickReason::RoomPasswordAdded,
             )
             .await?;
         }

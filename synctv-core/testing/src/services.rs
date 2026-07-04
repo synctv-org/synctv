@@ -12,13 +12,11 @@ use synctv_core::cache::{KeyBuilder, UsernameCache};
 use synctv_core::models::{ProviderInstance, ProviderInstanceListQuery, User};
 use synctv_core::repository::SettingsRepository;
 use synctv_core::service::{
-    auth::{jwt::JwtService, token_blacklist::InMemoryTokenBlacklistStore},
-    rate_limit::RequestRateLimiterService,
-    room::RoomServiceOptions,
-    user::{UserServiceDependencies, UserServiceRuntimeOptions},
     AccountRegistrationOutcome, BruteForceProtection, BruteForceProtectionService,
-    ProviderInstanceStore, RateLimiter, RemoteProviderManager, RoomService, RuntimeSettingsStore,
-    SettingsService, TokenBlacklistStore, UserService,
+    InMemoryTokenBlacklistStore, JwtService, ProviderInstanceStore, RateLimiter,
+    RemoteProviderManager, RequestRateLimiterService, RoomService, RoomServiceOptions,
+    RuntimeSettingsStore, SettingsService, TokenBlacklistStore, UserService,
+    UserServiceDependencies, UserServiceRuntimeOptions,
 };
 
 #[derive(Clone)]

@@ -6,7 +6,7 @@
 use crate::{
     models::{RoomId, UserId},
     repository::room_member::RemovedRoomMember,
-    service::permission::PermissionWriteFence,
+    service::PermissionWriteFence,
     Result,
 };
 use std::sync::Arc;

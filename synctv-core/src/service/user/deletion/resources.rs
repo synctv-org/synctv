@@ -196,7 +196,7 @@ impl UserService {
 
             for room_id in &owned_room_ids {
                 let impact =
-                    crate::service::room::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
+                    crate::service::soft_delete_room_and_cleanup_in_tx(tx, room_id).await?;
                 self.insert_deleted_room_outbox_tx(tx, room_id, deleted_room_outbox_events)
                     .await?;
                 deleted_playlists += impact.deleted_playlist_ids.len();

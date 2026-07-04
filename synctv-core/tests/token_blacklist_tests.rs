@@ -1,9 +1,9 @@
 //! PostgreSQL-backed token blacklist integration tests.
 //!
 //! Pure in-memory and fallback behaviors are covered by the unit tests in
-//! `service::auth::token_blacklist`. This file keeps only the Docker-backed
+//! `service::token_blacklist`. This file keeps only the Docker-backed
 //! integration coverage that exercises the real database implementation.
-use synctv_core::service::{auth::token_blacklist::PgTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core::service::{PgTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::{create_test_pool, ok};
 
 fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {

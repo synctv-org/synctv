@@ -17,8 +17,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use synctv_core::service::{
-    auth::brute_force::{InMemoryAttemptTracker, RedisAttemptTracker},
-    AttemptTracker, BruteForceProtection,
+    AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
 use synctv_core_testing::constants::{brute_force, network};
 use synctv_core_testing::start_redis;
@@ -570,7 +569,7 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     assert_eq!(tracker.degraded_operation_count(), 0);
 }
 
-use synctv_core::service::auth::brute_force::BruteForceConfig;
+use synctv_core::service::BruteForceConfig;
 
 /// Test `BruteForceProtection` uses custom thresholds via config
 #[tokio::test]

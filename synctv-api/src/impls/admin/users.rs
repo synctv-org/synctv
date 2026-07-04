@@ -4,9 +4,9 @@ use synctv_core::models::{
 };
 
 use super::{
-    auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, list_owned_room_ids,
-    proto_admin_sort_direction, proto_admin_user_list_sort_by, proto_user_role_filter,
-    proto_user_status_filter, user_preferences_to_proto, AdminApiImpl, ApiError, RequestContext,
+    auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, proto_admin_sort_direction,
+    proto_admin_user_list_sort_by, proto_user_role_filter, proto_user_status_filter,
+    user_preferences_to_proto, AdminApiImpl, ApiError, RequestContext,
     LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::user_preferences_update_from_proto;
@@ -99,7 +99,8 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::DeleteUserResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
-        let owned_room_ids = list_owned_room_ids(&self.room_service, &uid)
+        let owned_room_ids = self
+            .list_owned_room_ids(&uid)
             .await
             .map_err(ApiError::from)?;
         let (deleted_room_outbox_events, deleted_room_fanout) =

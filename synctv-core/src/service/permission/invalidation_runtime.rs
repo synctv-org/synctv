@@ -9,9 +9,10 @@ use tracing::{info, warn};
 use crate::{
     cache::{CacheInvalidationRuntime, InvalidationMessage, MemberPermissionKey},
     models::{RoomId, UserId},
-    service::permission::PermissionService,
     Error, Result,
 };
+
+use super::PermissionService;
 
 #[derive(Debug)]
 pub(crate) struct PermissionInvalidationRuntime {

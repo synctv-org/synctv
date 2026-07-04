@@ -40,7 +40,7 @@ fn proto_alist_target(relative_path: &str) -> Option<synctv_proto::client::Provi
 
 #[test]
 fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_start_playback_request(
         synctv_proto::client::StartPlaybackRequest {
             media_id: codec_ok(codec.encode_media_id(MediaId::expect_positive(1)))?,
@@ -56,7 +56,7 @@ fn test_build_start_playback_request_rejects_proto_contract_violation() -> TestR
 
 #[test]
 fn test_build_start_playback_request_parses_alist_target() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let playlist_id = PlaylistId::expect_positive(123);
     let playlist_public_id = codec_ok(codec.encode_playlist_id(playlist_id))?;
     let target = ProviderTarget::alist("/tv/ep1.mp4".to_string());
@@ -77,7 +77,7 @@ fn test_build_start_playback_request_parses_alist_target() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_rejects_missing_type() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest::default(),
         &codec,
@@ -93,7 +93,7 @@ fn test_build_playback_state_update_rejects_missing_type() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_rejects_unknown_type() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: 99,
@@ -114,7 +114,7 @@ fn test_build_playback_state_update_rejects_unknown_type() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_rejects_playing_false_for_play() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Play as i32,
@@ -135,7 +135,7 @@ fn test_build_playback_state_update_rejects_playing_false_for_play() -> TestResu
 
 #[test]
 fn test_build_playback_state_update_play_defaults_to_playing() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let parsed = api_ok(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Play as i32,
@@ -170,7 +170,7 @@ fn test_build_playback_state_update_play_defaults_to_playing() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_pause_defaults_to_paused() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let parsed = api_ok(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Pause as i32,
@@ -205,7 +205,7 @@ fn test_build_playback_state_update_pause_defaults_to_paused() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_seek_requires_position() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Seek as i32,
@@ -226,7 +226,7 @@ fn test_build_playback_state_update_seek_requires_position() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_speed_requires_speed() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let err = api_err(build_playback_state_update(
         synctv_proto::client::UpdatePlaybackStateRequest {
             r#type: synctv_proto::client::PlaybackUpdateType::Speed as i32,
@@ -247,7 +247,7 @@ fn test_build_playback_state_update_speed_requires_speed() -> TestResult {
 
 #[test]
 fn test_build_playback_state_update_seek_parses_full_state() -> TestResult {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let media_id = MediaId::expect_positive(55);
     let media_public_id = codec_ok(codec.encode_media_id(media_id))?;
     let parsed = api_ok(build_playback_state_update(
@@ -330,7 +330,7 @@ fn test_static_media_source_provider_accepts_default_instance_binding() -> TestR
 #[test]
 fn test_build_start_playback_request_converts_proto_validated_ids_without_reparsing() -> TestResult
 {
-    let codec = synctv_core::PublicIdCodec::plain();
+    let codec = crate::public_id::PublicIdCodec::plain();
     let media_id = MediaId::expect_positive(123);
     let target = api_ok(build_start_playback_request(
         synctv_proto::client::StartPlaybackRequest {

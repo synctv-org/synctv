@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::rate_limit::{RateLimitError, RateLimiter};
+use synctv_core::service::{RateLimitError, RateLimiter};
 
 /// Email rate limit constants (must match the values in email.rs)
 const EMAIL_IP_MAX_REQUESTS: u32 = 5;

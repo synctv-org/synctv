@@ -1,7 +1,7 @@
 use crate::{
     models::{SignupMethod, User, UserId},
     repository::PasswordCredentialMaterial,
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

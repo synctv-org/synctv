@@ -6,8 +6,8 @@ use std::sync::Arc;
 use synctv_core::models::EmailTokenType;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{
-    rate_limit::RateLimitError, AuthFactorMethod, AuthenticatedLogin, EmailService,
-    EmailTokenService, RequestRateLimiterService, UserService,
+    AuthFactorMethod, AuthenticatedLogin, EmailService, EmailTokenService, RateLimitError,
+    RequestRateLimiterService, UserService,
 };
 use synctv_proto::client::{
     ConfirmPasswordResetResponse, FinishOpaquePasswordResetRequest,
@@ -44,21 +44,19 @@ pub trait EmailDeliveryService: Send + Sync {
         control: Option<&ExecutionControl>,
     ) -> synctv_core::Result<()>;
 
-    async fn send_password_reset_email_with_control(
+    async fn send_password_reset_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String>;
+    ) -> synctv_core::Result<()>;
 
-    async fn send_email_login_email_with_control(
+    async fn send_email_login_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String>;
+    ) -> synctv_core::Result<()>;
 
     async fn send_email_registration_token_email_with_control(
         &self,
@@ -79,38 +77,23 @@ impl EmailDeliveryService for EmailService {
         EmailService::send_email_bind_token_email_with_control(self, email, token, control).await
     }
 
-    async fn send_password_reset_email_with_control(
+    async fn send_password_reset_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String> {
-        EmailService::send_password_reset_email_with_control(
-            self,
-            email,
-            token_service,
-            user_id,
-            control,
-        )
-        .await
+    ) -> synctv_core::Result<()> {
+        EmailService::send_password_reset_token_email_with_control(self, email, token, control)
+            .await
     }
 
-    async fn send_email_login_email_with_control(
+    async fn send_email_login_token_email_with_control(
         &self,
         email: &str,
-        token_service: &EmailTokenService,
-        user_id: &synctv_core::models::UserId,
+        token: &str,
         control: Option<&ExecutionControl>,
-    ) -> synctv_core::Result<String> {
-        EmailService::send_email_login_email_with_control(
-            self,
-            email,
-            token_service,
-            user_id,
-            control,
-        )
-        .await
+    ) -> synctv_core::Result<()> {
+        EmailService::send_email_login_token_email_with_control(self, email, token, control).await
     }
 
     async fn send_email_registration_token_email_with_control(
@@ -130,7 +113,7 @@ pub struct EmailApiImpl {
     pub email_service: Arc<dyn EmailDeliveryService>,
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
 }
 
 /// Request password reset result
@@ -167,26 +150,6 @@ pub struct ConfirmEmailLoginResult {
 pub struct RequestMfaEmailCodeResult {
     pub message: String,
     pub masked_email: String,
-}
-
-#[must_use]
-pub fn build_shared_email_api(
-    user_service: Arc<UserService>,
-    email_service: Option<Arc<EmailService>>,
-    email_token_service: Option<Arc<EmailTokenService>>,
-    rate_limiter: Arc<dyn RequestRateLimiterService>,
-    public_id_codec: Arc<synctv_core::PublicIdCodec>,
-) -> Option<Arc<EmailApiImpl>> {
-    match (email_service, email_token_service) {
-        (Some(email_service), Some(email_token_service)) => Some(Arc::new(EmailApiImpl::new(
-            user_service,
-            email_service,
-            email_token_service,
-            rate_limiter,
-            public_id_codec,
-        ))),
-        _ => None,
-    }
 }
 
 impl EmailApiImpl {
@@ -262,7 +225,7 @@ impl EmailApiImpl {
         email_service: Arc<dyn EmailDeliveryService>,
         email_token_service: Arc<EmailTokenService>,
         rate_limiter: Arc<dyn RequestRateLimiterService>,
-        public_id_codec: Arc<synctv_core::PublicIdCodec>,
+        public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     ) -> Self {
         Self {
             user_service,
@@ -279,6 +242,54 @@ impl EmailApiImpl {
             .map_err(|error| {
                 ApiError::Internal(format!("Failed to encode user public id: {error}"))
             })
+    }
+
+    pub async fn send_tokenized_email_with_control(
+        &self,
+        email: &str,
+        user_id: &synctv_core::models::UserId,
+        token_type: EmailTokenType,
+        control: Option<&ExecutionControl>,
+    ) -> Result<String, ApiError> {
+        let token = self
+            .email_token_service
+            .generate_token_with_control(user_id, token_type, control)
+            .await
+            .map_err(ApiError::from)?;
+
+        let send_result = match token_type {
+            EmailTokenType::EmailBind => {
+                self.email_service
+                    .send_email_bind_token_email_with_control(email, &token, control)
+                    .await
+            }
+            EmailTokenType::PasswordReset => {
+                self.email_service
+                    .send_password_reset_token_email_with_control(email, &token, control)
+                    .await
+            }
+            EmailTokenType::EmailLogin => {
+                self.email_service
+                    .send_email_login_token_email_with_control(email, &token, control)
+                    .await
+            }
+        };
+
+        if let Err(error) = send_result {
+            tracing::error!(
+                email = %synctv_core::service::mask_email(email),
+                token_type = %token_type.as_str(),
+                error = %error,
+                "Failed to send tokenized email, invalidating generated token"
+            );
+            self.email_token_service
+                .invalidate_specific_token(&token, user_id, token_type)
+                .await
+                .map_err(ApiError::from)?;
+            return Err(ApiError::from(error));
+        }
+
+        Ok(String::new())
     }
 
     /// Request a password reset email.
@@ -314,15 +325,13 @@ impl EmailApiImpl {
         };
 
         let _token = self
-            .email_service
-            .send_password_reset_email_with_control(
+            .send_tokenized_email_with_control(
                 email,
-                &self.email_token_service,
                 &user.id,
+                EmailTokenType::PasswordReset,
                 control,
             )
-            .await
-            .map_err(ApiError::from)?;
+            .await?;
 
         tracing::info!("Password reset requested for user {}", user.id);
 
@@ -382,15 +391,8 @@ impl EmailApiImpl {
         }
 
         let _token = self
-            .email_service
-            .send_email_login_email_with_control(
-                email,
-                &self.email_token_service,
-                &user.id,
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
+            .send_tokenized_email_with_control(email, &user.id, EmailTokenType::EmailLogin, control)
+            .await?;
 
         tracing::info!(
             "Sent email login code to {}",
@@ -665,15 +667,8 @@ impl EmailApiImpl {
         let email = email.as_str();
         self.check_email_rate_limit(email, control).await?;
         let _token = self
-            .email_service
-            .send_email_login_email_with_control(
-                email,
-                &self.email_token_service,
-                &user.id,
-                control,
-            )
-            .await
-            .map_err(ApiError::from)?;
+            .send_tokenized_email_with_control(email, &user.id, EmailTokenType::EmailLogin, control)
+            .await?;
         Ok(RequestMfaEmailCodeResult {
             message: GENERIC_EMAIL_LOGIN_MESSAGE.to_string(),
             masked_email: synctv_core::service::mask_email(email),
@@ -753,11 +748,11 @@ mod tests {
     };
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
-    use synctv_core::models::{EmailTokenType, SignupMethod, User, UserId, UserRole, UserStatus};
+    use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
     use synctv_core::service::AuthenticatedLogin;
     use synctv_core::service::{
-        auth::BruteForceProtection, user::UserServiceRuntimeOptions, EmailTokenService,
-        InMemoryTokenBlacklistStore, JwtService, RateLimiter, UserService,
+        BruteForceProtection, EmailTokenService, InMemoryTokenBlacklistStore, JwtService,
+        RateLimiter, UserService, UserServiceRuntimeOptions,
     };
 
     type TestResult<T = ()> = anyhow::Result<T>;
@@ -788,28 +783,22 @@ mod tests {
             Ok(())
         }
 
-        async fn send_password_reset_email_with_control(
+        async fn send_password_reset_token_email_with_control(
             &self,
             _email: &str,
-            token_service: &EmailTokenService,
-            user_id: &UserId,
+            _token: &str,
             _control: Option<&synctv_core::provider::ExecutionControl>,
-        ) -> synctv_core::Result<String> {
-            token_service
-                .generate_token(user_id, EmailTokenType::PasswordReset)
-                .await
+        ) -> synctv_core::Result<()> {
+            Ok(())
         }
 
-        async fn send_email_login_email_with_control(
+        async fn send_email_login_token_email_with_control(
             &self,
             _email: &str,
-            token_service: &EmailTokenService,
-            user_id: &UserId,
+            _token: &str,
             _control: Option<&synctv_core::provider::ExecutionControl>,
-        ) -> synctv_core::Result<String> {
-            token_service
-                .generate_token(user_id, EmailTokenType::EmailLogin)
-                .await
+        ) -> synctv_core::Result<()> {
+            Ok(())
         }
 
         async fn send_email_registration_token_email_with_control(
@@ -859,7 +848,7 @@ mod tests {
                         need_review: false,
                     },
                 ),
-                ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+                ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
             },
         );
         let user_service = Arc::new(user_service);
@@ -869,7 +858,7 @@ mod tests {
             Arc::new(TestEmailDeliveryService),
             Arc::new(EmailTokenService::new(pool)),
             Arc::new(RateLimiter::local_only("email-api-tests:".to_string())),
-            Arc::new(synctv_core::PublicIdCodec::plain()),
+            Arc::new(crate::public_id::PublicIdCodec::plain()),
         ))
     }
 

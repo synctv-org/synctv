@@ -85,7 +85,7 @@ pub type MediaProviderFactory = Box<
 /// 1. Create `ProvidersManager` with `RemoteProviderManager`
 /// 2. Load provider configurations from Config
 /// 3. Create provider instances (singleton per type)
-/// 4. Pass to synctv-api layer for route registration
+/// 4. Pass to the transport layer for route registration
 ///
 /// # Architecture
 /// ```text
@@ -94,9 +94,9 @@ pub type MediaProviderFactory = Box<
 /// ├── Instances (singleton MediaProvider instances)
 /// └── RemoteProviderManager (for local/remote dispatch)
 ///
-/// synctv-api layer
+/// Transport layer
 /// ├── Gets provider instances from ProvidersManager
-/// ├── Registers HTTP/gRPC routes for each provider
+/// ├── Exposes registered providers through transport adapters
 /// └── No hardcoded provider types
 /// ```
 pub struct ProvidersManager {

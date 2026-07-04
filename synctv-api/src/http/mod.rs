@@ -5,29 +5,30 @@
 // path. File downloads still look like ordinary binary HTTP responses; the
 // body is backed by FileObjectDownload streams from core storage services.
 
-pub mod admin;
+pub(crate) mod admin;
 pub(crate) mod admin_execute;
-pub mod auth;
-pub mod email;
-pub mod error;
-pub mod health;
-pub mod metrics_auth;
-pub mod middleware;
-pub mod notifications;
-pub mod oauth2;
-pub mod public;
-pub mod room;
-pub mod room_extra;
-pub mod ticket;
-pub mod user;
-pub mod validation;
-pub mod webrtc;
-pub mod websocket;
+pub(crate) mod auth;
+pub(crate) mod email;
+pub(crate) mod error;
+pub(crate) mod health;
+pub(crate) mod middleware;
+pub(crate) mod notifications;
+pub(crate) mod oauth2;
+pub(crate) mod public;
+pub(crate) mod room;
+pub(crate) mod room_extra;
+pub(crate) mod ticket;
+pub(crate) mod user;
+pub(crate) mod validation;
+pub(crate) mod webrtc;
+pub(crate) mod websocket;
 
 // Provider HTTP routes
 // Provider-specific HTTP endpoints are registered from provider instances
-pub mod providers;
+pub(crate) mod providers;
 
+use crate::api_runtime::SharedApiRuntime;
+use crate::proxy_signature::ProxySigningKey;
 use crate::realtime_fanout::RealtimeFanoutService;
 use crate::runtime::RealtimeEventService;
 use axum::{
@@ -40,15 +41,14 @@ use axum::{
 };
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
-use synctv_core::provider::playback_transport::PlaybackTransportServices;
+use synctv_core::provider::PlaybackTransportServices;
 use synctv_core::provider::ProviderSet;
-use synctv_core::proxy_signature::ProxySigningKey;
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{
     AlistPlaybackProviderService, BilibiliPlaybackProviderService,
     DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
-    LiveProxyPlaybackProviderService, PlaybackProviderServiceDeps, RemoteProviderManager,
-    RoomService, RtmpPlaybackProviderService, UserService,
+    LiveProxyPlaybackProviderService, RemoteProviderManager, RoomService,
+    RtmpPlaybackProviderService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_realtime::sync::ConnectionRuntime;
@@ -58,7 +58,11 @@ use tower_http::cors::CorsLayer;
 use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
 
-pub use error::{AppError, AppResult};
+pub use auth::extract_client_ip;
+pub use error::{map_api_error, AppError, AppResult};
+pub use health::{create_metrics_router, liveness_check};
+pub use middleware::{hsts_header, security_headers_middleware};
+pub use websocket::{websocket_handler, AuthMethod};
 
 pub(crate) fn required_header_str<'a>(
     headers: &'a HeaderMap,
@@ -265,11 +269,22 @@ pub struct RouterConfig {
     pub content_filter: synctv_core::service::ContentFilter,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
+    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub providers: ProviderSet,
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_manager: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_service: synctv_core::service::JwtService,
+    pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
+    pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub request_executor: Arc<crate::impls::RequestExecutor>,
+    pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
+    pub client_api: Arc<crate::impls::ClientApiImpl>,
+    pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
+    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
+    pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
+    pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     pub realtime_fanout_service: Arc<dyn RealtimeFanoutService>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
@@ -288,7 +303,18 @@ pub struct RouterConfig {
     /// Shared runtime for playback caching and other shared-state lookups.
     pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
     /// Shared provider playback store registry reused across transports.
-    pub shared_provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub shared_provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
+    pub playback_transport_services: Arc<PlaybackTransportServices>,
+    pub alist_playback_provider_service: Arc<AlistPlaybackProviderService>,
+    pub bilibili_playback_provider_service: Arc<BilibiliPlaybackProviderService>,
+    pub direct_url_playback_provider_service: Arc<DirectUrlPlaybackProviderService>,
+    pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
+    pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
+    pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,
+    pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
+    pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
+    pub alist_api: Arc<crate::impls::AlistApiImpl>,
+    pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     /// Shared proxy signing key reused across transports.
     pub shared_proxy_signing_key: Arc<ProxySigningKey>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -316,76 +342,13 @@ pub struct RouterConfig {
     pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
 }
 
-/// Shared transport-agnostic API runtime derived from `RouterConfig`.
-///
-/// HTTP, gRPC, and management transports reuse these instances instead of
-/// constructing parallel API impls, validators, caches, or provider stores.
-/// Keep request parsing and response encoding in transport modules; business
-/// behavior belongs in `impls` and core services so HTTP and gRPC expose the
-/// same capabilities through the same execution path.
-#[derive(Clone)]
-pub struct SharedApiRuntime {
-    /// Redis runtime abstraction derived from the shared connection when available.
-    pub redis_runtime: Option<Arc<dyn synctv_core::RedisConnectionRuntime>>,
-    /// Shared rate limit config (created once at startup, not per-request)
-    pub rate_limit_config: Arc<synctv_core::RequestRateLimitConfig>,
-    /// Shared messaging rate limit config for WebSocket chat messages.
-    pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
-    /// Shared content filter configured at startup.
-    pub content_filter: Arc<synctv_core::service::ContentFilter>,
-    pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
-    /// Shared JWT validator (created once at startup, not per-request)
-    pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
-    /// Shared security pipeline for post-JWT checks (password, user status)
-    pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
-    /// Shared impl-level request executor for auth, rate limiting, and timeout.
-    pub request_executor: Arc<crate::impls::RequestExecutor>,
-    // Unified API implementation layer
-    pub client_api: Arc<crate::impls::ClientApiImpl>,
-    pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
-    pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
-    pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
-    pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
-    pub provider_common_api: Arc<crate::impls::ProviderCommonApiImpl>,
-    // Provider API implementations are stored once in shared runtime.
-    pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
-    pub alist_api: Arc<crate::impls::AlistApiImpl>,
-    pub emby_api: Arc<crate::impls::EmbyApiImpl>,
-    /// Repository shared by provider transports for bind lookups.
-    pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
-    /// Typed provider credential/session access cache.
-    pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    /// Per-provider stores for caching and distributed locking (lazy creation)
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
-    /// Services available to providers during proxy resolution (DB access)
-    pub playback_transport_services: Arc<PlaybackTransportServices>,
-    /// Core Alist playback-provider service shared by HTTP and gRPC transports.
-    pub alist_playback_provider_service: Arc<AlistPlaybackProviderService>,
-    /// Core Bilibili playback-provider service shared by HTTP and gRPC transports.
-    pub bilibili_playback_provider_service: Arc<BilibiliPlaybackProviderService>,
-    /// Core DirectUrl playback-provider service shared by HTTP and gRPC transports.
-    pub direct_url_playback_provider_service: Arc<DirectUrlPlaybackProviderService>,
-    /// Core Emby playback-provider service shared by HTTP and gRPC transports.
-    pub emby_playback_provider_service: Arc<EmbyPlaybackProviderService>,
-    /// Core RTMP playback-provider service shared by HTTP and gRPC transports.
-    pub rtmp_playback_provider_service: Arc<RtmpPlaybackProviderService>,
-    /// Core LiveProxy playback-provider service shared by HTTP and gRPC transports.
-    pub live_proxy_playback_provider_service: Arc<LiveProxyPlaybackProviderService>,
-    /// HMAC signing key for proxy URL authentication
-    pub proxy_signing_key: Arc<ProxySigningKey>,
-    /// Structured WebRTC/STUN runtime state shared across transports.
-    pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
-}
-
 #[derive(Clone)]
 pub struct AppState {
     /// Common service configuration (shared cheaply via `Arc`).
     pub router_config: Arc<RouterConfig>,
     /// Shared transport-agnostic runtime reused across HTTP, gRPC, and management.
     pub shared_api_runtime: Arc<SharedApiRuntime>,
-    pub metrics_access_controller: Arc<metrics_auth::MetricsAccessController>,
+    pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
     #[cfg(test)]
     test_database_leases: Arc<std::sync::Mutex<Vec<synctv_core_testing::TestDatabase>>>,
 }
@@ -494,7 +457,7 @@ fn build_app_state(config: RouterConfig) -> anyhow::Result<AppState> {
     Ok(AppState {
         router_config: Arc::new(config),
         shared_api_runtime: shared_api_runtime.clone(),
-        metrics_access_controller: Arc::new(metrics_auth::MetricsAccessController::new()),
+        metrics_access_controller: shared_api_runtime.metrics_access_controller.clone(),
         #[cfg(test)]
         test_database_leases: Arc::new(std::sync::Mutex::new(Vec::new())),
     })
@@ -505,226 +468,17 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
     let proxy_signing_key = config.shared_proxy_signing_key.clone();
     let provider_stores = config.shared_provider_stores.clone();
     let credential_repo = config.user_provider_credential_repository.clone();
-    let provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService> = Arc::new(
-        synctv_core::provider::CachedProviderAccessService::new(
-            credential_repo.clone(),
-            config.providers.alist.clone(),
-        )
-        .with_store(provider_stores.load("credentials"))
-        .with_credential_encryption(config.credential_encryption.clone()),
-    );
-
-    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new_with_runtime(
-        config.user_service.clone(),
-        synctv_core::service::SecurityPipelineRuntime {
-            user_cache: Some(config.user_cache.clone()),
-            token_blacklist: config.user_service.token_blacklist_store(),
-            key_builder: config.user_service.key_builder().clone(),
-        },
-    ));
-
-    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
-        config.jwt_service.clone(),
-    )));
-    let public_id_codec = Arc::new(
-        synctv_core::PublicIdCodec::from_config(&config.config.public_ids)
-            .map_err(|error| anyhow::anyhow!("Invalid public ID configuration: {error}"))?,
-    );
-    let request_executor = Arc::new(crate::impls::RequestExecutor::new(
-        config.config.clone(),
-        jwt_validator.clone(),
-        security_pipeline.clone(),
-        config.rate_limiter.clone(),
-    ));
-
-    let email_api = crate::impls::email::build_shared_email_api(
-        config.user_service.clone(),
-        config.email_service.clone(),
-        config.email_token_service.clone(),
-        config.rate_limiter.clone(),
-        public_id_codec.clone(),
-    );
-    let realtime_event_service = config.event_service.clone();
-    let chat_event_dispatcher =
-        crate::chat_event_dispatcher::default_chat_event_dispatcher(realtime_event_service.clone());
-
-    let client_api = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
-            user_service: config.user_service.clone(),
-            read_pool: config.read_pool.clone(),
-            room_service: config.room_service.clone(),
-            connection_service: config.connection_manager.clone(),
-            config: config.config.clone(),
-            publish_key_service: config.publish_key_service.clone(),
-            jwt_service: config.jwt_service.clone(),
-            live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
-            runtime_settings_store: config.runtime_settings_store.clone(),
-            public_id_codec: public_id_codec.clone(),
-            chat_service: config.chat_service.clone(),
-            provider_stores: provider_stores.clone(),
-            email_api: email_api.clone(),
-            passkey_service: config.passkey_service.clone(),
-        },
-        crate::impls::ClientApiRuntime {
-            realtime_fanout: config.realtime_fanout_service.clone(),
-            realtime_event_service: realtime_event_service.clone(),
-            chat_event_dispatcher,
-            redis_runtime: redis_runtime.clone(),
-            builtin_stun_url: config.builtin_stun_url.clone(),
-            webrtc_status: config.webrtc_status.clone(),
-            provider_access_service: provider_access_service.clone(),
-            signing_key: proxy_signing_key.clone(),
-            presence_service: config.presence_service.clone(),
-            request_executor: request_executor.clone(),
-            ws_ticket_service: config.ws_ticket_service.clone(),
-            playback_duration_probe: config.playback_duration_probe.clone(),
-        },
-    ));
-
-    let admin_api = if let Some(settings_svc) = config.settings_service.as_ref() {
-        let email_svc = if let Some(email_service) = config.email_service.clone() {
-            email_service
-        } else {
-            let runtime_settings_store =
-                config.runtime_settings_store.clone().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "runtime_settings_store is required to build the admin email service"
-                    )
-                })?;
-            Arc::new(
-                synctv_core::service::EmailService::new(Arc::new(
-                    synctv_core::service::RuntimeEmailConfigProvider::new(&runtime_settings_store),
-                ))
-                .map_err(|error| {
-                    anyhow::anyhow!("Failed to build runtime admin email service: {error}")
-                })?,
-            )
-        };
-        let admin_api = crate::impls::AdminApiImpl::new_with_runtime(
-            crate::impls::AdminApiConfig {
-                room_service: config.room_service.clone(),
-                user_service: config.user_service.clone(),
-                read_pool: config.read_pool.clone(),
-                settings_service: settings_svc.clone(),
-                runtime_settings_store: config.runtime_settings_store.clone(),
-                email_service: email_svc,
-                connection_service: config.connection_manager.clone(),
-                provider_instance_manager: config.provider_instance_manager.clone(),
-                live_streaming_infrastructure: config.live_streaming_infrastructure.clone(),
-                publish_key_service: config.publish_key_service.clone(),
-                config: config.config.clone(),
-                audit_service: config.audit_service.clone(),
-                public_id_codec: public_id_codec.clone(),
-            },
-            crate::impls::AdminApiRuntime {
-                realtime_fanout: config.realtime_fanout_service.clone(),
-                realtime_event_service: realtime_event_service.clone(),
-                provider_stores: provider_stores.clone(),
-                provider_access_service: provider_access_service.clone(),
-                signing_key: proxy_signing_key.clone(),
-                presence_service: config.presence_service.clone(),
-                request_executor: request_executor.clone(),
-            },
-        );
-        Some(Arc::new(admin_api))
-    } else {
-        None
-    };
-    // Create shared NotificationApiImpl for HTTP and gRPC.
-    let notification_api = config.notification_service.as_ref().map(|notif_svc| {
-        Arc::new(crate::impls::NotificationApiImpl::new(
-            notif_svc.clone(),
-            public_id_codec.clone(),
-        ))
-    });
-
-    // Create shared OAuth2ApiImpl
-    let oauth2_api = config.oauth2_service.as_ref().map(|oauth2_svc| {
-        Arc::new(crate::impls::OAuth2ApiImpl::new(
-            oauth2_svc.clone(),
-            config.user_service.clone(),
-            public_id_codec.clone(),
-        ))
-    });
-
-    let provider_common_api = Arc::new(crate::impls::ProviderCommonApiImpl::new_with_runtime(
-        config.provider_instance_manager.clone(),
-        config.user_service.clone(),
-        config.audit_service.clone(),
-        crate::impls::ProviderCommonApiRuntime {
-            providers_manager: config.providers_manager.clone(),
-            request_executor: request_executor.clone(),
-        },
-    ));
-
-    let provider_api_runtime = crate::impls::ProviderApiRuntime {
-        access_service: provider_access_service.clone(),
-        event_service: config.event_service.clone(),
-    };
-
-    // Create shared provider API implementations once at startup.
-    let bilibili_api = Arc::new(
-        crate::impls::BilibiliApiImpl::new_with_runtime(
-            config.providers.bilibili.clone(),
-            credential_repo.clone(),
-            config.config.jwt.secret.as_bytes(),
-            provider_api_runtime.clone(),
-        )
-        .map_err(|error| anyhow::anyhow!("Failed to initialize Bilibili API: {error}"))?,
-    );
-    let alist_api = Arc::new(crate::impls::AlistApiImpl::new_with_runtime(
-        config.providers.alist.clone(),
-        credential_repo.clone(),
-        provider_api_runtime.clone(),
-    ));
-    let emby_api = Arc::new(crate::impls::EmbyApiImpl::new_with_runtime(
-        config.providers.emby.clone(),
-        credential_repo.clone(),
-        provider_api_runtime,
-    ));
+    let provider_access_service = config.provider_access_service.clone();
+    let security_pipeline = config.security_pipeline.clone();
+    let jwt_validator = config.jwt_validator.clone();
+    let public_id_codec = config.public_id_codec.clone();
+    let request_executor = config.request_executor.clone();
 
     // Create shared RateLimitConfig from the config file.
     let rate_limit_config = Arc::new(config.config.request_rate_limits.clone());
 
     // Create shared messaging rate limit config for WebSocket chat messages.
     let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
-
-    // Create PlaybackTransportServices for playback-provider handlers.
-    let playback_transport_services = Arc::new(PlaybackTransportServices {
-        room_service: config.room_service.clone(),
-        permission_service: config.room_service.permission_service().clone(),
-        credential_encryption: config.credential_encryption.clone(),
-        credential_repo: credential_repo.clone(),
-        provider_access_service: provider_access_service.clone(),
-        signing_key: proxy_signing_key.clone(),
-        public_id_codec: public_id_codec.clone(),
-    });
-    let playback_provider_deps = PlaybackProviderServiceDeps {
-        providers: config.providers.clone(),
-        provider_stores: provider_stores.clone(),
-        playback_transport_services: playback_transport_services.clone(),
-        public_id_codec: public_id_codec.clone(),
-        signing_key: proxy_signing_key.clone(),
-        provider_access_service: provider_access_service.clone(),
-    };
-    let alist_playback_provider_service = Arc::new(AlistPlaybackProviderService::new(
-        playback_provider_deps.clone(),
-    ));
-    let bilibili_playback_provider_service = Arc::new(BilibiliPlaybackProviderService::new(
-        playback_provider_deps.clone(),
-    ));
-    let direct_url_playback_provider_service = Arc::new(DirectUrlPlaybackProviderService::new(
-        playback_provider_deps.clone(),
-    ));
-    let emby_playback_provider_service = Arc::new(EmbyPlaybackProviderService::new(
-        playback_provider_deps.clone(),
-    ));
-    let rtmp_playback_provider_service = Arc::new(RtmpPlaybackProviderService::new(
-        playback_provider_deps.clone(),
-    ));
-    let live_proxy_playback_provider_service = Arc::new(LiveProxyPlaybackProviderService::new(
-        playback_provider_deps,
-    ));
 
     Ok(SharedApiRuntime {
         redis_runtime,
@@ -736,25 +490,26 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         security_pipeline,
         public_id_codec,
         request_executor,
-        client_api,
-        admin_api,
-        email_api,
-        notification_api,
-        oauth2_api,
-        provider_common_api,
-        bilibili_api,
-        alist_api,
-        emby_api,
+        metrics_access_controller: config.metrics_access_controller.clone(),
+        client_api: config.client_api.clone(),
+        admin_api: config.admin_api.clone(),
+        email_api: config.email_api.clone(),
+        notification_api: config.notification_api.clone(),
+        oauth2_api: config.oauth2_api.clone(),
+        provider_common_api: config.provider_common_api.clone(),
+        bilibili_api: config.bilibili_api.clone(),
+        alist_api: config.alist_api.clone(),
+        emby_api: config.emby_api.clone(),
         user_provider_credential_repository: credential_repo,
         provider_access_service,
         provider_stores,
-        playback_transport_services,
-        alist_playback_provider_service,
-        bilibili_playback_provider_service,
-        direct_url_playback_provider_service,
-        emby_playback_provider_service,
-        rtmp_playback_provider_service,
-        live_proxy_playback_provider_service,
+        playback_transport_services: config.playback_transport_services.clone(),
+        alist_playback_provider_service: config.alist_playback_provider_service.clone(),
+        bilibili_playback_provider_service: config.bilibili_playback_provider_service.clone(),
+        direct_url_playback_provider_service: config.direct_url_playback_provider_service.clone(),
+        emby_playback_provider_service: config.emby_playback_provider_service.clone(),
+        rtmp_playback_provider_service: config.rtmp_playback_provider_service.clone(),
+        live_proxy_playback_provider_service: config.live_proxy_playback_provider_service.clone(),
         proxy_signing_key,
         webrtc_status: config.webrtc_status.clone(),
     })
@@ -1631,9 +1386,7 @@ fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
                 axum::http::header::CONTENT_RANGE,
                 axum::http::header::RANGE,
                 axum::http::HeaderName::from_static("x-request-id"),
-                axum::http::HeaderName::from_static(
-                    synctv_core::service::file_storage::FILE_UPLOAD_TOKEN_HEADER,
-                ),
+                axum::http::HeaderName::from_static(synctv_core::service::FILE_UPLOAD_TOKEN_HEADER),
                 axum::http::HeaderName::from_static("traceparent"),
                 axum::http::HeaderName::from_static("tracestate"),
             ])

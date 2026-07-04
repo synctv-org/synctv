@@ -10,7 +10,7 @@ use synctv_core::{
     },
     repository::{FileStorageRepository, RoomRepository, UpsertFileObject, UserRepository},
     service::{
-        db_maintenance::DatabaseMaintenanceOptions, AlwaysLeader, DatabaseMaintenanceService,
+        AlwaysLeader, DatabaseMaintenanceOptions, DatabaseMaintenanceService,
         FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
     },
     Error,

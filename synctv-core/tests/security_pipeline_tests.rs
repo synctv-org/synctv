@@ -15,10 +15,8 @@ use synctv_core::{
     models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{
-            jwt::JwtService, AuthenticatedToken, Claims, SecurityPipeline, SecurityPipelineRuntime,
-        },
-        BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
+        AuthenticatedToken, BruteForceProtection, Claims, InMemoryTokenBlacklistStore, JwtService,
+        SecurityPipeline, SecurityPipelineRuntime, TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
 };

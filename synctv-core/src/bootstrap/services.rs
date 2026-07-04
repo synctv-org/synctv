@@ -205,9 +205,9 @@ fn build_email_token_service(
 
 fn build_brute_force_protection(
     profile: &SharedStateProfile,
-) -> Result<Arc<dyn crate::service::auth::BruteForceProtectionService>, anyhow::Error> {
-    let service: Arc<dyn crate::service::auth::BruteForceProtectionService> = Arc::new(
-        crate::service::auth::BruteForceProtection::from_shared_state_profile(profile)
+) -> Result<Arc<dyn crate::service::BruteForceProtectionService>, anyhow::Error> {
+    let service: Arc<dyn crate::service::BruteForceProtectionService> = Arc::new(
+        crate::service::BruteForceProtection::from_shared_state_profile(profile)
             .map_err(anyhow::Error::from)?,
     );
     match profile.state_mode() {
@@ -426,7 +426,7 @@ pub async fn init_services_with_options(
     let brute_force = build_brute_force_protection(&shared_state_profile)?;
 
     // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
-    let token_blacklist: Arc<dyn crate::service::auth::TokenBlacklistStore> =
+    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> =
         Arc::new(TieredTokenBlacklistStore::from_shared_state_profile(
             PgTokenBlacklistStore::new(pool.clone()),
             &shared_state_profile,
@@ -667,14 +667,6 @@ pub async fn init_services_with_options(
 
     let notification_service = Arc::new(notification_service);
 
-    let oauth2_service = init_oauth2_service(
-        &pool,
-        Arc::clone(&runtime_settings_store),
-        &shared_state_profile,
-        options.ssrf_guard.clone(),
-    )?;
-    info!("OAuth2 service initialized");
-
     let file_storage_repo = Arc::new(FileStorageRepository::new(pool.clone()));
     let file_upload_token_secret =
         file_upload_token_secret(&config.file_storage.upload_token_secret, &config.jwt.secret);
@@ -749,16 +741,15 @@ pub async fn init_services_with_options(
             .map_err(|error| anyhow::anyhow!("failed to route playlist cover storage: {error}"))?,
     );
 
-    let opaque_password_service = Arc::new(
-        crate::service::auth::OpaquePasswordService::derive_from_secret(
+    let opaque_password_service =
+        Arc::new(crate::service::OpaquePasswordService::derive_from_secret(
             config.security.opaque_server_setup_secret.as_bytes(),
-        ),
-    );
+        ));
 
     let user_permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
-        crate::service::permission::PermissionServiceRuntime {
+        crate::service::PermissionServiceRuntime {
             runtime_settings_store: Some(Arc::clone(&runtime_settings_store)),
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
@@ -774,7 +765,7 @@ pub async fn init_services_with_options(
 
     let user_service = Arc::new(UserService::new_with_brute_force_service_and_runtime(
         &pool,
-        crate::service::user::UserServiceDependencies {
+        crate::service::UserServiceDependencies {
             jwt_service: jwt_service.clone(),
             username_cache: username_cache.clone(),
             token_blacklist,
@@ -782,27 +773,27 @@ pub async fn init_services_with_options(
             brute_force: brute_force.clone(),
             password_complexity: config.password_complexity.clone(),
         },
-        crate::service::user::UserServiceRuntimeOptions {
+        crate::service::UserServiceRuntimeOptions {
             cache_invalidation: Some(cache_invalidation.clone()),
             refresh_rate_limiter,
-            refresh_rate_limit_config: crate::service::user::RefreshRateLimitConfig::default(),
+            refresh_rate_limit_config: crate::service::RefreshRateLimitConfig::default(),
             runtime_settings_store: Some(Arc::clone(&runtime_settings_store)),
             password_registration_policy_override: None,
             realtime_outbox: options.realtime_outbox.clone(),
             opaque_password_service: opaque_password_service.clone(),
             opaque_login_session_store:
-                crate::service::user::opaque_login_session_store_from_shared_state_profile(
+                crate::service::opaque_login_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
             opaque_registration_session_store:
-                crate::service::user::opaque_registration_session_store_from_shared_state_profile(
+                crate::service::opaque_registration_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
-            mfa_session_store: crate::service::user::mfa_session_store_from_shared_state_profile(
+            mfa_session_store: crate::service::mfa_session_store_from_shared_state_profile(
                 &shared_state_profile,
             )?,
             sensitive_verification_session_store:
-                crate::service::user::sensitive_verification_session_store_from_shared_state_profile(
+                crate::service::sensitive_verification_session_store_from_shared_state_profile(
                     &shared_state_profile,
                 )?,
             version_fence: version_fence.clone(),
@@ -812,6 +803,15 @@ pub async fn init_services_with_options(
         },
     ));
     info!("UserService initialized with construction-time dependencies");
+
+    let oauth2_service = init_oauth2_service(
+        &pool,
+        Arc::clone(&runtime_settings_store),
+        Arc::clone(&user_service),
+        &shared_state_profile,
+        options.ssrf_guard.clone(),
+    )?;
+    info!("OAuth2 service initialized");
 
     let passkey_service = if config.webauthn.enabled {
         let session_store =
@@ -850,11 +850,11 @@ pub async fn init_services_with_options(
         user_notification_service: Some(Arc::clone(&notification_service)),
         opaque_password_service,
         room_opaque_password_registration_session_store:
-            crate::service::room::room_opaque_password_registration_session_store_from_shared_state_profile(
+            crate::service::room_opaque_password_registration_session_store_from_shared_state_profile(
                 &shared_state_profile,
             )?,
         room_opaque_password_login_session_store:
-            crate::service::room::room_opaque_password_login_session_store_from_shared_state_profile(
+            crate::service::room_opaque_password_login_session_store_from_shared_state_profile(
                 &shared_state_profile,
             )?,
         realtime_outbox: options.realtime_outbox.clone(),
@@ -900,12 +900,12 @@ pub async fn init_services_with_options(
         .map_err(|error| anyhow::anyhow!("failed to route chat attachment storage: {error}"))?;
     let chat_service = ChatService::new(
         chat_repo.clone(),
-        crate::service::chat::ChatRuntime {
+        crate::service::ChatRuntime {
             rate_limiter: rate_limiter.clone(),
             rate_limit_config: rate_limit_config.clone(),
             content_filter: content_filter.clone(),
         },
-        crate::service::chat::ChatDependencies {
+        crate::service::ChatDependencies {
             permission_service: permission_service_for_chat,
             room_settings_service: room_settings_service_for_chat,
             user_service: user_service.clone(),
@@ -964,6 +964,7 @@ pub async fn init_services_with_options(
 fn init_oauth2_service(
     pool: &PgPool,
     runtime_settings_store: Arc<RuntimeSettingsStore>,
+    user_service: Arc<UserService>,
     profile: &SharedStateProfile,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
@@ -981,6 +982,7 @@ fn init_oauth2_service(
         crate::service::oauth2::OAuth2ServiceRuntime {
             allowed_redirect_domains: Vec::new(),
             runtime_settings_store: Some(runtime_settings_store),
+            user_service: Some(user_service),
         },
     )
     .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
@@ -1036,15 +1038,15 @@ struct RoomServiceBuildArgs {
     provider_access_service: Arc<dyn ProviderAccessService>,
     providers_manager: Arc<ProvidersManager>,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
-    brute_force: Arc<dyn crate::service::auth::BruteForceProtectionService>,
+    brute_force: Arc<dyn crate::service::BruteForceProtectionService>,
     audit_service: Option<Arc<AuditService>>,
     runtime_settings_store: Arc<RuntimeSettingsStore>,
     user_notification_service: Option<Arc<UserNotificationService>>,
-    opaque_password_service: Arc<crate::service::auth::OpaquePasswordService>,
+    opaque_password_service: Arc<crate::service::OpaquePasswordService>,
     room_opaque_password_registration_session_store:
-        Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore>,
+        Arc<dyn crate::service::RoomOpaquePasswordRegistrationSessionStore>,
     room_opaque_password_login_session_store:
-        Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore>,
+        Arc<dyn crate::service::RoomOpaquePasswordLoginSessionStore>,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     media_file_storage_service: Option<Arc<dyn FileStorageService>>,
     room_file_storage_service: Option<Arc<dyn FileStorageService>>,
@@ -1055,7 +1057,7 @@ struct RoomServiceBuildArgs {
 }
 
 struct RoomServiceRuntime {
-    distributed_lock: Option<Arc<dyn crate::service::distributed_lock::CoordinationLock>>,
+    distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
     playback_l2_cache: crate::cache::PlaybackStateCache,
     room_settings_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
     room_settings_cache_key_prefix: String,
@@ -1104,7 +1106,7 @@ fn build_room_service_runtime(
                     deployment_mode,
                     crate::config::RedisDeploymentMode::Sentinel
                 ),
-            )) as Arc<dyn crate::service::distributed_lock::CoordinationLock>,
+            )) as Arc<dyn crate::service::CoordinationLock>,
         )
     } else {
         None
@@ -1163,7 +1165,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
     let permission_service = PermissionService::new_with_runtime(
         RoomMemberRepository::new(pool.clone()),
         RoomRepository::new(pool.clone()),
-        crate::service::permission::PermissionServiceRuntime {
+        crate::service::PermissionServiceRuntime {
             runtime_settings_store: Some(runtime_settings_store.clone()),
             cache_size: PermissionService::DEFAULT_CACHE_SIZE,
             cache_ttl_secs: PermissionService::DEFAULT_CACHE_TTL_SECS,
@@ -1182,7 +1184,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
             user_service,
             providers_manager,
             permission_service,
-            crate::service::room::RoomServiceOptions {
+            crate::service::RoomServiceOptions {
                 read_pool,
                 distributed_lock: runtime.distributed_lock,
                 cache_invalidation: Some(cache_invalidation),
@@ -1316,7 +1318,7 @@ mod tests {
             username_cache,
             token_blacklist,
             crate::cache::KeyBuilder::new("test"),
-            crate::service::auth::BruteForceProtection::in_memory("test:user".to_string()),
+            crate::service::BruteForceProtection::in_memory("test:user".to_string()),
         )
     }
 
@@ -1335,17 +1337,17 @@ mod tests {
     }
 
     fn test_room_opaque_registration_store(
-    ) -> Arc<dyn crate::service::room::RoomOpaquePasswordRegistrationSessionStore> {
-        crate::service::room::local_room_opaque_password_registration_session_store()
+    ) -> Arc<dyn crate::service::RoomOpaquePasswordRegistrationSessionStore> {
+        crate::service::local_room_opaque_password_registration_session_store()
     }
 
-    fn test_room_opaque_login_store(
-    ) -> Arc<dyn crate::service::room::RoomOpaquePasswordLoginSessionStore> {
-        crate::service::room::local_room_opaque_password_login_session_store()
+    fn test_room_opaque_login_store() -> Arc<dyn crate::service::RoomOpaquePasswordLoginSessionStore>
+    {
+        crate::service::local_room_opaque_password_login_session_store()
     }
 
-    fn test_room_brute_force() -> Arc<dyn crate::service::auth::BruteForceProtectionService> {
-        Arc::new(crate::service::auth::BruteForceProtection::in_memory(
+    fn test_room_brute_force() -> Arc<dyn crate::service::BruteForceProtectionService> {
+        Arc::new(crate::service::BruteForceProtection::in_memory(
             "test:room".to_string(),
         ))
     }
@@ -1591,7 +1593,7 @@ mod tests {
             runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1657,7 +1659,7 @@ mod tests {
             runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1702,7 +1704,7 @@ mod tests {
             runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1762,7 +1764,7 @@ mod tests {
             runtime_settings_store: Arc::clone(&runtime_settings_store),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1810,7 +1812,7 @@ mod tests {
             runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1866,7 +1868,7 @@ mod tests {
             runtime_settings_store: test_runtime_settings_store(&pool),
             user_notification_service: None,
             opaque_password_service: Arc::new(
-                crate::service::auth::OpaquePasswordService::new_ephemeral_for_process(),
+                crate::service::OpaquePasswordService::new_ephemeral_for_process(),
             ),
             room_opaque_password_registration_session_store: test_room_opaque_registration_store(),
             room_opaque_password_login_session_store: test_room_opaque_login_store(),
@@ -1955,6 +1957,7 @@ mod tests {
         let service = init_oauth2_service(
             &pool,
             runtime_settings_store,
+            Arc::new(test_user_service(&pool)),
             &profile,
             synctv_common::ssrf::SsrfGuard::strict_policy(),
         )

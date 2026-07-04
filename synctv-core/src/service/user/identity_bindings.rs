@@ -5,7 +5,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     models::{SignupMethod, User, UserAuthFactors, UserId},
     repository::UserOAuthProviderRepository,
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

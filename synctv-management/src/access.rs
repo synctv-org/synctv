@@ -28,9 +28,8 @@ impl ManagementAccessController {
             .to_str()
             .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
 
-        let provided_token =
-            synctv_core::service::auth::JwtValidator::extract_bearer_token(header_value)
-                .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
+        let provided_token = synctv_core::service::JwtValidator::extract_bearer_token(header_value)
+            .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
 
         if constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
             Ok(())

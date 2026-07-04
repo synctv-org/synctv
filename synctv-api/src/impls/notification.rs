@@ -2,6 +2,7 @@
 //!
 //! Used by both HTTP and gRPC handlers to avoid duplicating notification logic.
 
+use crate::public_id::PublicIdCodec;
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
@@ -11,7 +12,6 @@ use synctv_core::models::notification::{
 use synctv_core::models::PageParams;
 use synctv_core::models::SortDirection as CoreSortDirection;
 use synctv_core::service::UserNotificationService;
-use synctv_core::PublicIdCodec;
 
 use crate::impls::ApiError;
 use synctv_proto::client::SortDirection as ProtoSortDirection;

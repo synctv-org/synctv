@@ -10,7 +10,7 @@ use tonic::transport::Server;
 use tracing::warn;
 use tracing::{debug, info};
 
-use synctv_api::impls::{
+use synctv_api::{
     AdminApiImpl, AlistApiImpl, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl,
 };
 use synctv_core::{

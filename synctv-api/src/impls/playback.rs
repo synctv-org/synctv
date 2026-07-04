@@ -3,10 +3,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use synctv_core::models::{PlaybackSourceIdentity, RoomId, RoomPlaybackState, UserId};
-use synctv_core::provider::{
-    store::{ProviderStoreResolver, StoreError},
-    ProviderCredentialDependency,
-};
+use synctv_core::provider::{ProviderCredentialDependency, ProviderStoreResolver, StoreError};
 
 use crate::impls::ApiError;
 

@@ -188,6 +188,7 @@ fn expect_upload_session(
 fn oversized_test_upload_policy() -> FileUploadPolicy {
     FileUploadPolicy {
         kind: "test_file".to_string(),
+        object_kind: crate::models::FileObjectKind::Generic,
         max_size_bytes: i64::try_from(MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES)
             .expect("part cap should fit")
             + 1,
@@ -200,13 +201,13 @@ fn oversized_test_upload_policy() -> FileUploadPolicy {
         allowed_mime_prefixes: Vec::new(),
         allowed_mime_types: vec!["application/pdf".to_string()],
         storage_namespace: "test/files".to_string(),
-        database_object_route_prefix: "/api/test/file-objects".to_string(),
     }
 }
 
 fn large_test_upload_policy(max_size_bytes: i64, mime_type: &str) -> FileUploadPolicy {
     FileUploadPolicy {
         kind: "test_file".to_string(),
+        object_kind: crate::models::FileObjectKind::Generic,
         max_size_bytes,
         max_width: None,
         max_height: None,
@@ -217,7 +218,6 @@ fn large_test_upload_policy(max_size_bytes: i64, mime_type: &str) -> FileUploadP
         allowed_mime_prefixes: Vec::new(),
         allowed_mime_types: vec![mime_type.to_string()],
         storage_namespace: "test/files".to_string(),
-        database_object_route_prefix: "/api/test/file-objects".to_string(),
     }
 }
 
@@ -268,40 +268,24 @@ async fn upsert_uncompressed_blob(
     );
 }
 
-fn object_url_parts(upload_url: &str) -> (String, String) {
-    let parsed = ok(
-        url::Url::parse(&format!("http://localhost{upload_url}")),
-        "upload url should parse",
-    );
-    let encoded_object_key = some(
-        parsed
-            .path_segments()
-            .and_then(|mut segments| segments.next_back())
-            .map(str::to_string),
-        "encoded object key should exist",
-    );
-    let read_token = some(
-        parsed
-            .query_pairs()
-            .find_map(|(key, value)| (key == "token").then(|| value.into_owned())),
-        "read token should exist",
-    );
-    (encoded_object_key, read_token)
+fn upload_access_parts(session: &FileUploadSession, context: &str) -> (String, String) {
+    let access = some(session.upload_object_access.as_ref(), context);
+    (access.encoded_object_key.clone(), access.read_token.clone())
 }
 
-fn database_object_read_url_parts(
+fn file_object_access_parts(
     storage: &DatabaseFileStorageService,
     storage_backend: &str,
     object_key: &str,
 ) -> (String, String) {
-    let object_url = ok(
-        storage.object_url(storage_backend, object_key, "/api/test/objects"),
-        "database object url should build",
+    let access = some(
+        ok(
+            storage.file_object_access(storage_backend, object_key, FileObjectKind::Generic),
+            "file object access should build",
+        ),
+        "file object access should exist",
     );
-    object_url_parts(some(
-        object_url.as_deref(),
-        "database object url should exist",
-    ))
+    (access.encoded_object_key, access.read_token)
 }
 
 fn backend_object_read_url_parts(
@@ -309,11 +293,11 @@ fn backend_object_read_url_parts(
     object_key: &str,
     secret: &str,
 ) -> (String, String) {
-    let object_url = ok(
-        database_file_object_url("/api/test/objects", storage_backend, object_key, secret),
-        "backend object url should build",
+    let access = ok(
+        file_object_access(FileObjectKind::Generic, storage_backend, object_key, secret),
+        "backend object access should build",
     );
-    object_url_parts(&object_url)
+    (access.encoded_object_key, access.read_token)
 }
 
 fn jpeg_test_image(width: u32, height: u32) -> Vec<u8> {
@@ -505,6 +489,7 @@ fn valid_new_stored_file() -> NewStoredFile {
         id: "file-1".to_string(),
         storage_backend: "database".to_string(),
         object_key: "objects/file-1".to_string(),
+        object_access: None,
         url: None,
         mime_type: Some("image/png".to_string()),
         size_bytes: Some(7),
@@ -566,7 +551,7 @@ async fn routed_storage_accepts_empty_submitted_file_references_without_reposito
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "rooms/1/chat/attachments",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: Some("empty-attachments"),
                 },
                 Vec::new(),
@@ -618,13 +603,18 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
             .await,
         "upload session should be created",
     );
-    let object_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
+    let upload_access = some(
+        session.upload_object_access.as_ref(),
+        "object upload access should be returned",
     );
-    assert!(object_url.starts_with("/api/test/file-objects/"));
+    assert_eq!(
+        upload_access.object_kind,
+        crate::models::FileObjectKind::Generic
+    );
+    assert!(!upload_access.encoded_object_key.is_empty());
+    assert!(!upload_access.read_token.is_empty());
 
-    let (encoded_upload_session_key, _) = object_url_parts(object_url);
+    let encoded_upload_session_key = upload_access.encoded_object_key.clone();
     let upload_token = some(
         session
             .upload_headers
@@ -646,7 +636,7 @@ async fn routed_database_storage_reads_objects_from_token_backend() {
     );
 
     let (encoded_object_key, read_token) =
-        database_object_read_url_parts(database.as_ref(), "database", &session.file.object_key);
+        file_object_access_parts(database.as_ref(), "database", &session.file.object_key);
     let loaded = ok(
         routed
             .get_object(GetFileObject {
@@ -694,7 +684,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
     );
     let session = expect_upload_session(session, "upload session should be created");
     let upload_session_key = ok(
-        decode_database_file_object_key(&session.encoded_object_key),
+        decode_file_object_key(&session.encoded_object_key),
         "upload session key should decode",
     );
     let session_record = some(
@@ -711,11 +701,8 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
         FileUploadSessionKind::DatabaseSingle
     );
     assert!(!session.resumable);
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -786,7 +773,7 @@ async fn database_storage_default_zstd_compresses_blob_and_returns_original_payl
     );
 
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &stored.object_key);
+        file_object_access_parts(&storage, "database", &stored.object_key);
     let loaded = ok(
         storage
             .get_object(GetFileObject {
@@ -831,11 +818,8 @@ async fn database_storage_rejects_parts_above_database_part_cap() {
             .await,
         "database storage should create large multipart session",
     );
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -895,11 +879,8 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
             .await,
         "upload session should be created",
     );
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -946,7 +927,7 @@ async fn database_storage_lz4_compresses_blob_and_returns_original_payload() {
     );
 
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &stored.object_key);
+        file_object_access_parts(&storage, "database", &stored.object_key);
     let loaded = ok(
         storage
             .get_object(GetFileObject {
@@ -1023,19 +1004,19 @@ async fn database_storage_generates_useful_image_variants() {
             && variant.lossy
             && variant.width.is_some_and(|width| width <= 1280)
             && variant.size_bytes < blob.size_bytes
-            && variant
-                .url
-                .as_deref()
-                .is_some_and(|url| url.starts_with("/api/chat/attachment-objects/"))
+            && variant.object_access.as_ref().is_some_and(|access| {
+                access.object_kind == crate::models::FileObjectKind::ChatAttachment
+            })
     }));
 
+    let upload_policy = chat_attachment_upload_policy();
     let variants_after_reprocess = ok(
         storage
             .process_object_variants(
                 &blob.storage_backend,
                 &blob.object_key,
-                "/api/chat/attachment-objects",
-                &chat_attachment_upload_policy(),
+                upload_policy.object_kind,
+                &upload_policy,
             )
             .await,
         "image variants should process idempotently",
@@ -1120,7 +1101,7 @@ async fn image_processing_rejects_actual_dimensions_over_policy() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/user/avatar-objects",
+                    object_kind: crate::models::FileObjectKind::UserAvatar,
                     client_request_id: None,
                 },
                 vec![reference],
@@ -1338,7 +1319,7 @@ async fn audio_processing_rejects_actual_duration_over_policy() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "rooms/1/chat/attachments",
-                    database_object_route_prefix: "/api/chat/attachment-objects",
+                    object_kind: crate::models::FileObjectKind::ChatAttachment,
                     client_request_id: None,
                 },
                 vec![reference],
@@ -1548,11 +1529,8 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
     let session = expect_upload_session(session, "upload session should be created");
     assert!(session.file.metadata.upload_token.is_some());
 
-    let upload_url = some(
-        session.upload_url.as_deref(),
-        "database upload url should be returned",
-    );
-    let (encoded_object_key, _) = object_url_parts(upload_url);
+    let (encoded_object_key, _) =
+        upload_access_parts(&session, "object upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -1578,7 +1556,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
                 vec![session.file],
@@ -1587,7 +1565,7 @@ async fn database_storage_strips_upload_token_from_prepared_files() {
         "file should prepare",
     );
     let metadata = &prepared[0].metadata;
-    assert!(prepared[0].url.is_some());
+    assert!(prepared[0].object_access.is_some());
     assert!(metadata.upload_token.is_none());
     assert!(metadata.ownership_proof.is_none());
     assert_eq!(metadata.blurhash.as_deref(), Some("abc"));
@@ -1661,7 +1639,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
                 vec![session.file],
@@ -1670,7 +1648,7 @@ async fn database_storage_strips_ownership_proof_from_prepared_files() {
         "file should prepare",
     );
     let metadata = &prepared[0].metadata;
-    assert!(prepared[0].url.is_some());
+    assert!(prepared[0].object_access.is_some());
     assert!(metadata.upload_token.is_none());
     assert!(metadata.ownership_proof.is_none());
     assert_eq!(metadata.blurhash.as_deref(), Some("abc"));
@@ -1764,7 +1742,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
         storage
             .complete_upload_session(CompleteFileUploadSession {
                 file_id: Some(first.file.id.clone()),
-                encoded_object_key: encode_database_file_object_key(&first.file.object_key),
+                encoded_object_key: encode_file_object_key(&first.file.object_key),
                 upload_token: first_upload_token,
                 upload_id: None,
                 ownership_proof: Some(first_proof),
@@ -1780,7 +1758,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
                 vec![submitted_file_reference_from_session_file(&first.file)
@@ -1796,7 +1774,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
                 vec![submitted_file_reference_from_session_file(&second.file)
@@ -1837,7 +1815,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
         storage
             .complete_upload_session(CompleteFileUploadSession {
                 file_id: Some(second.file.id.clone()),
-                encoded_object_key: encode_database_file_object_key(&second.file.object_key),
+                encoded_object_key: encode_file_object_key(&second.file.object_key),
                 upload_token: second_upload_token,
                 upload_id: None,
                 ownership_proof: Some(second_proof),
@@ -1852,7 +1830,7 @@ async fn database_instant_upload_proof_state_is_scoped_to_reference() {
                 FileStorageContext {
                     user_id: UserId::expect_positive(1),
                     storage_scope: "users/1/avatars",
-                    database_object_route_prefix: "/api/test/objects",
+                    object_kind: crate::models::FileObjectKind::Generic,
                     client_request_id: None,
                 },
                 vec![submitted_file_reference_from_session_file(&second.file)
@@ -2422,10 +2400,7 @@ async fn database_storage_skips_compression_below_threshold() {
             .await,
         "upload session should be created",
     );
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -2505,10 +2480,7 @@ async fn database_storage_skips_low_savings_compression() {
             .await,
         "upload session should be created",
     );
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -2583,10 +2555,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         "upload session should be created",
     );
     assert!(session.resumable);
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -2665,7 +2634,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
     assert_eq!(blob.content_manifest_sha256, content_manifest_sha256);
     assert!(blob.data.is_empty());
     let upload_session_key =
-        decode_database_file_object_key(&encoded_object_key).expect("session key should decode");
+        decode_file_object_key(&encoded_object_key).expect("session key should decode");
     let completed_parts = ok(
         repository
             .list_upload_session_parts("database", &upload_session_key)
@@ -2708,7 +2677,7 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
         vec![0, 1]
     );
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &blob.object_key);
+        file_object_access_parts(&storage, "database", &blob.object_key);
     let loaded = ok(
         storage
             .get_object(GetFileObject {
@@ -2798,7 +2767,7 @@ async fn database_storage_cleans_expired_partial_upload_session() {
         "first upload part should store",
     );
     let upload_session_key =
-        decode_database_file_object_key(&session.encoded_object_key).expect("session key decodes");
+        decode_file_object_key(&session.encoded_object_key).expect("session key decodes");
     ok(
         sqlx::query!(
             "UPDATE file_upload_sessions SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE storage_backend = $1 AND upload_session_key = $2",
@@ -2878,10 +2847,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
         storage.create_upload_session(request).await,
         "upload session should be created",
     );
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -2915,7 +2881,7 @@ async fn database_storage_streams_completed_blob_parts_without_single_buffer() {
     }
     let blob = some(completed, "multipart upload should complete");
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &blob.object_key);
+        file_object_access_parts(&storage, "database", &blob.object_key);
     let download = ok(
         storage
             .get_object_stream(GetFileObject {
@@ -3015,9 +2981,12 @@ async fn database_storage_resumable_fingerprint_is_scoped_to_uploader_and_scope(
     assert_eq!(resumed.file.object_key, first.file.object_key);
     assert_eq!(second_user.file.object_key, first.file.object_key);
     assert_eq!(second_scope.file.object_key, first.file.object_key);
-    assert_eq!(resumed.upload_url, first.upload_url);
-    assert_ne!(second_user.upload_url, first.upload_url);
-    assert_ne!(second_scope.upload_url, first.upload_url);
+    assert_eq!(resumed.upload_object_access, first.upload_object_access);
+    assert_ne!(second_user.upload_object_access, first.upload_object_access);
+    assert_ne!(
+        second_scope.upload_object_access,
+        first.upload_object_access
+    );
 }
 
 #[tokio::test]
@@ -3053,10 +3022,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
         storage.create_upload_session(request).await,
         "upload session should be created",
     );
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -3094,7 +3060,7 @@ async fn database_storage_multipart_stores_manifest_identity() {
     assert_eq!(blob.content_manifest_sha256, content_manifest_sha256);
     assert!(blob.data.is_empty());
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &blob.object_key);
+        file_object_access_parts(&storage, "database", &blob.object_key);
     let loaded = ok(
         storage
             .get_object(GetFileObject {
@@ -3155,10 +3121,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
         storage.create_upload_session(request).await,
         "upload session should be created",
     );
-    let (encoded_object_key, _) = object_url_parts(some(
-        session.upload_url.as_deref(),
-        "upload url should be returned",
-    ));
+    let (encoded_object_key, _) = upload_access_parts(&session, "upload access should be returned");
     let upload_token = some(
         session
             .upload_headers
@@ -3193,7 +3156,7 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
     }
     let blob = some(completed, "multipart upload should complete");
     let (read_encoded_object_key, read_token) =
-        database_object_read_url_parts(&storage, "database", &blob.object_key);
+        file_object_access_parts(&storage, "database", &blob.object_key);
 
     let requested = FileByteRange {
         start: 1024,
@@ -3264,8 +3227,10 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
         storage.create_upload_session(request).await,
         "upload session should be created",
     );
-    assert!(session.upload_url.as_deref().is_some_and(|url| {
-        url.starts_with("/api/test/file-objects/") && url.contains("?token=")
+    assert!(session.upload_object_access.as_ref().is_some_and(|access| {
+        access.object_kind == crate::models::FileObjectKind::Generic
+            && !access.encoded_object_key.is_empty()
+            && !access.read_token.is_empty()
     }));
     assert_eq!(session.upload_method.as_deref(), Some("PUT"));
     assert_eq!(
@@ -3345,7 +3310,7 @@ async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
     assert!(session.upload_id.is_none());
     assert!(session.part_urls.is_empty());
     let upload_session_key = ok(
-        decode_database_file_object_key(&session.encoded_object_key),
+        decode_file_object_key(&session.encoded_object_key),
         "upload session key should decode",
     );
     let session_record = some(
@@ -3585,16 +3550,16 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
             .await,
         "object validation should load"
     ));
-    let read_url = ok(
-        database_file_object_url(
-            "/api/test/file-objects",
+    let read_access = ok(
+        file_object_access(
+            FileObjectKind::Generic,
             "s3_public",
             &session.file.object_key,
             "test-file-storage-secret",
         ),
-        "read object url should be generated",
+        "read object access should be generated",
     );
-    let (encoded_object_key, read_token) = object_url_parts(&read_url);
+    let (encoded_object_key, read_token) = (read_access.encoded_object_key, read_access.read_token);
     let loaded = ok(
         storage
             .get_object(GetFileObject {
@@ -3898,10 +3863,8 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         first_session.encoded_object_key,
         second_session.encoded_object_key
     );
-    let (url_encoded_session_key, _) = object_url_parts(some(
-        first_session.upload_url.as_deref(),
-        "first upload url should exist",
-    ));
+    let (url_encoded_session_key, _) =
+        upload_access_parts(&first_session, "first upload access should exist");
     assert_eq!(url_encoded_session_key, first_session.encoded_object_key);
     assert_ne!(url_encoded_session_key, second_session.encoded_object_key);
 
@@ -3936,9 +3899,9 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
         panic!("first part should be accepted without completing");
     };
     assert_eq!(uploaded_parts, vec![1]);
-    let first_session_key = decode_database_file_object_key(&first_session.encoded_object_key)
+    let first_session_key = decode_file_object_key(&first_session.encoded_object_key)
         .expect("first session key should decode");
-    let second_session_key = decode_database_file_object_key(&second_session.encoded_object_key)
+    let second_session_key = decode_file_object_key(&second_session.encoded_object_key)
         .expect("second session key should decode");
     assert_eq!(
         ok(

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT i.id,\n               i.kind AS \"kind!: crate::models::ChatAttachmentKind\",\n               i.room_id AS \"room_id!: crate::models::RoomId\",\n               i.message_id,\n               i.message_created_at,\n               i.filename,\n               i.storage_backend,\n               i.object_key,\n               i.url,\n               i.mime_type,\n               i.size_bytes,\n               i.width,\n               i.height,\n               i.metadata AS \"metadata!: crate::models::FileMetadata\",\n               i.created_at,\n               NULL::TEXT AS \"reuse_token?\",\n               NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n        FROM chat_message_attachments i\n        JOIN UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[]) AS c(id, created_at)\n          ON c.id = i.message_id\n         AND c.created_at = i.message_created_at\n        ORDER BY i.message_created_at, i.message_id, i.created_at\n        ",
+  "query": "\n        SELECT i.id,\n               i.kind AS \"kind!: crate::models::ChatAttachmentKind\",\n               i.room_id AS \"room_id!: crate::models::RoomId\",\n               i.message_id,\n               i.message_created_at,\n               i.filename,\n               i.storage_backend,\n               i.object_key,\n               i.url,\n               i.mime_type,\n               i.size_bytes,\n               i.width,\n               i.height,\n               i.metadata AS \"metadata!: crate::models::FileMetadata\",\n               i.created_at,\n               NULL::JSONB AS \"object_access?: crate::models::FileObjectAccess\",\n\n               NULL::TEXT AS \"reuse_token?\",\n               NULL::TIMESTAMPTZ AS \"reuse_expires_at?\"\n        FROM chat_message_attachments i\n        JOIN UNNEST($1::BIGINT[], $2::TIMESTAMPTZ[]) AS c(id, created_at)\n          ON c.id = i.message_id\n         AND c.created_at = i.message_created_at\n        ORDER BY i.message_created_at, i.message_id, i.created_at\n        ",
   "describe": {
     "columns": [
       {
@@ -170,12 +170,18 @@
       },
       {
         "ordinal": 15,
+        "name": "object_access?: crate::models::FileObjectAccess",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
         "name": "reuse_token?",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "reuse_expires_at?",
         "type_info": "Timestamptz",
         "origin": "Expression"
@@ -204,8 +210,9 @@
       false,
       false,
       null,
+      null,
       null
     ]
   },
-  "hash": "57c42ee8e668dfcb1d2bc05c3ab07d1b7e066dfe7c4d02f1d8f6e508cfbdcee3"
+  "hash": "cd5d0cfffa4fe7f5260096223ec96b5f0fa106106af18764be8fb5cd151f4076"
 }

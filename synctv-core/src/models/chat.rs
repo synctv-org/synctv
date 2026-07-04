@@ -311,6 +311,9 @@ pub struct ChatAttachment {
     pub filename: Option<String>,
     pub storage_backend: String,
     pub object_key: String,
+    #[sqlx(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_access: Option<super::file_storage::FileObjectAccess>,
     pub url: Option<String>,
     pub mime_type: Option<String>,
     pub size_bytes: Option<i64>,

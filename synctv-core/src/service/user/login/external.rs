@@ -5,11 +5,11 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::{User, UserId},
     service::{
-        auth::TokenCredentialBinding,
         user::{
             session_types::{AuthFactorMethod, AuthenticatedLogin},
             UserService,
         },
+        TokenCredentialBinding,
     },
     Error, Result,
 };

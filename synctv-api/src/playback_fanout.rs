@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 use synctv_core::models::{RoomPlaybackState, UserId};
-use synctv_core::service::playback::RealtimeOutboxPlaybackStateEventFactory;
+use synctv_core::service::RealtimeOutboxPlaybackStateEventFactory;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::RealtimeFanoutService;

@@ -1,6 +1,6 @@
 // Media Provider System
 // Three-tier architecture:
-// Tier 1: synctv-media-providers (Pure provider HTTP clients)
+// Tier 1: synctv-media-providers (provider upstream clients)
 //   - alist::AlistClient, bilibili::BilibiliClient, emby::EmbyClient
 //   - Independent libraries with no MediaProvider dependency
 //   - Used by local adapters and remote provider servers as transport clients
@@ -12,26 +12,29 @@
 //   - Factory pattern for local providers and integration with RemoteProviderManager
 
 // Core traits and types
-pub mod access;
-pub mod context;
-pub mod credential_resolver;
-pub mod error;
-pub mod playback_profile;
-pub mod playback_transport;
-pub mod provider_client;
-pub mod store;
-pub mod traits;
+pub(crate) mod access;
+pub(crate) mod context;
+pub(crate) mod credential_resolver;
+pub(crate) mod error;
+pub(crate) mod playback_profile;
+pub(crate) mod playback_transport;
+pub(crate) mod provider_client;
+pub(crate) mod remote_provider_clients;
+pub(crate) mod remote_transport;
+pub(crate) mod store;
+pub(crate) mod traits;
+pub(crate) mod upstream_transport;
 
 // Shared helpers
 mod live_helpers;
 
 // MediaProvider implementations (adapters)
-pub mod alist;
-pub mod bilibili;
-pub mod direct_url;
-pub mod emby;
-pub mod live_proxy;
-pub mod rtmp;
+mod alist;
+mod bilibili;
+mod direct_url;
+mod emby;
+mod live_proxy;
+mod rtmp;
 
 use std::sync::LazyLock;
 
@@ -45,7 +48,7 @@ pub use playback_profile::{
     PlaybackAudioCapability, PlaybackClientProfile, PlaybackContainer, PlaybackStreamPreference,
     PlaybackSubtitlePreference, PlaybackVideoCodec,
 };
-pub use playback_transport::{PlaybackTransportAction, PlaybackTransportServices};
+pub use playback_transport::{LiveFlvAccess, PlaybackTransportAction, PlaybackTransportServices};
 pub use provider_client::ProviderClientManager;
 pub use store::{
     InMemoryProviderStore, PrefixedProviderStore, ProviderStore, ProviderStoreExt,
@@ -55,9 +58,10 @@ pub use store::{
 pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
-    BilibiliLiveDanmakuStream, DirectoryItem, DynamicBrowsePathSegment, DynamicFolder,
-    DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
-    PreparedSourceConfig, ProviderCredentialDependency, SourceConfig, SourceConfigKind,
+    BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment,
+    DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
+    PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency, SourceConfig,
+    SourceConfigKind,
 };
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
@@ -77,10 +81,29 @@ pub(crate) fn subtitle_headers_for_proxy(
 }
 
 // Re-export providers
-pub use alist::AlistProvider;
-pub use bilibili::BilibiliProvider;
+pub use alist::{
+    AlistListItem, AlistListRequest, AlistListResponse, AlistLoginAndPersistRequest,
+    AlistLoginCredential, AlistLoginRequest, AlistMeRequest, AlistMeResponse,
+    AlistPersistLoginCredentialRequest, AlistPersistedLoginResponse, AlistProvider,
+    AlistSearchItem, AlistSearchRequest, AlistSearchResponse,
+};
+pub use bilibili::{
+    BilibiliCaptchaResponse, BilibiliDashManifestMode, BilibiliDashProxyUrlMapper,
+    BilibiliLiveDanmuHost, BilibiliLiveDanmuInfoRequest, BilibiliLiveDanmuInfoResponse,
+    BilibiliMatchRequest, BilibiliMatchResponse, BilibiliPageInfo, BilibiliParseLivePageRequest,
+    BilibiliParsePgcPageRequest, BilibiliParseVideoPageRequest, BilibiliPersistedQrLoginResponse,
+    BilibiliProvider, BilibiliQrCodeResponse, BilibiliQrLoginRequest, BilibiliQrLoginResponse,
+    BilibiliQrLoginStatus, BilibiliSmsLoginRequest, BilibiliSmsLoginResponse,
+    BilibiliSmsLoginTokenCodec, BilibiliSmsRequest, BilibiliSmsResponse, BilibiliUserInfoRequest,
+    BilibiliUserInfoResponse, BilibiliVideoInfo, DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT,
+    LIVE_DANMAKU_TRACK_NAME,
+};
 pub use direct_url::DirectUrlProvider;
-pub use emby::EmbyProvider;
+pub use emby::{
+    EmbyListItem, EmbyListRequest, EmbyListResponse, EmbyLoginAndPersistRequest,
+    EmbyLoginCredential, EmbyLoginRequest, EmbyLoginResponse, EmbyMeRequest, EmbyMeResponse,
+    EmbyPersistedLoginResponse, EmbyProvider, EmbyUserPolicy,
+};
 pub use live_proxy::LiveProxyProvider;
 pub use rtmp::RtmpProvider;
 
@@ -387,11 +410,11 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
     }
 }
 
-/// Standard Bilibili HTTP headers required for CDN requests.
+/// Standard Bilibili upstream headers required for CDN requests.
 ///
 /// These headers must be sent with all Bilibili media requests (video, audio, subtitles)
-/// to avoid being blocked by Bilibili's CDN. Shared between the provider layer
-/// (playback result headers) and the API proxy layer.
+/// to avoid being blocked by Bilibili's CDN. Shared between playback result
+/// metadata and transport adapters.
 #[must_use]
 pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     let mut headers = std::collections::HashMap::new();

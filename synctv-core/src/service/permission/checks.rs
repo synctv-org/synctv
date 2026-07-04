@@ -1,8 +1,9 @@
 use crate::{
     models::{RoomId, RoomPermission, RoomPermissionSet, RoomRole, UserId},
-    service::permission::PermissionService,
     Error, Result,
 };
+
+use super::PermissionService;
 
 impl PermissionService {
     async fn ensure_room_accepts_member_actions(&self, room_id: &RoomId) -> Result<()> {

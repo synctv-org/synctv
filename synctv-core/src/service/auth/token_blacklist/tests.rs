@@ -1,5 +1,5 @@
+use super::stores::parse_l2_blacklist_value;
 use super::*;
-use crate::service::auth::token_blacklist::stores::parse_l2_blacklist_value;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

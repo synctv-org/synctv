@@ -11,13 +11,6 @@ const LIVESTREAM_UNAVAILABLE_MESSAGE: &str = "Live streaming is not available on
 const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
     "Publish key service is not available on this server.";
 
-fn parse_room_id(
-    room_id: &str,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_core::models::RoomId, ApiError> {
-    crate::impls::parse_room_id_param(room_id, "room_id", public_id_codec)
-}
-
 #[must_use]
 pub(crate) fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
     let rtmp_host = config.public_rtmp_host();
@@ -33,40 +26,88 @@ pub(crate) fn publish_key_service_unavailable_error() -> ApiError {
     ApiError::ServiceUnavailable(PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE.to_string())
 }
 
-fn build_create_publish_key_request(
-    req: CreatePublishKeyRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<(String, MediaId), ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    Ok((
-        req.room_id,
-        crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
-    ))
+struct RtmpProviderApiCodec<'a> {
+    public_id_codec: &'a crate::public_id::PublicIdCodec,
 }
 
-fn build_get_stream_info_request(
-    req: GetStreamInfoRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<(String, MediaId), ApiError> {
-    crate::impls::validate_proto_request(&req)?;
-    Ok((
-        req.room_id,
-        crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
-    ))
-}
+impl<'a> RtmpProviderApiCodec<'a> {
+    const fn new(public_id_codec: &'a crate::public_id::PublicIdCodec) -> Self {
+        Self { public_id_codec }
+    }
 
-fn encode_public_stream_ids(
-    public_id_codec: &synctv_core::PublicIdCodec,
-    room_id: synctv_core::models::RoomId,
-    media_id: MediaId,
-) -> Result<(String, String), ApiError> {
-    let room_id = public_id_codec
-        .encode_room_id(room_id)
-        .map_err(|e| ApiError::Internal(format!("Failed to encode room id: {e}")))?;
-    let media_id = public_id_codec
-        .encode_media_id(media_id)
-        .map_err(|e| ApiError::Internal(format!("Failed to encode media id: {e}")))?;
-    Ok((room_id, media_id))
+    fn parse_room_id(&self, room_id: &str) -> Result<synctv_core::models::RoomId, ApiError> {
+        crate::impls::parse_room_id_param(room_id, "room_id", self.public_id_codec)
+    }
+
+    fn build_create_publish_key_request(
+        &self,
+        req: CreatePublishKeyRequest,
+    ) -> Result<(String, MediaId), ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        Ok((
+            req.room_id,
+            crate::impls::proto_validated_media_id(req.media_id, self.public_id_codec)?,
+        ))
+    }
+
+    fn build_get_stream_info_request(
+        &self,
+        req: GetStreamInfoRequest,
+    ) -> Result<(String, MediaId), ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        Ok((
+            req.room_id,
+            crate::impls::proto_validated_media_id(req.media_id, self.public_id_codec)?,
+        ))
+    }
+
+    fn encode_public_stream_ids(
+        &self,
+        room_id: synctv_core::models::RoomId,
+        media_id: MediaId,
+    ) -> Result<(String, String), ApiError> {
+        let room_id = self
+            .public_id_codec
+            .encode_room_id(room_id)
+            .map_err(|e| ApiError::Internal(format!("Failed to encode room id: {e}")))?;
+        let media_id = self
+            .public_id_codec
+            .encode_media_id(media_id)
+            .map_err(|e| ApiError::Internal(format!("Failed to encode media id: {e}")))?;
+        Ok((room_id, media_id))
+    }
+
+    async fn fetch_stream_info(
+        &self,
+        infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<GetStreamInfoResponse, ApiError> {
+        match infrastructure.find_publisher(room_id, media_id).await {
+            Ok(Some(pub_info)) => {
+                let user_id = self
+                    .public_id_codec
+                    .encode_user_id(pub_info.user_id.parse::<UserId>().map_err(|error| {
+                        ApiError::Internal(format!("Invalid active publisher user id: {error}"))
+                    })?)
+                    .map_err(ApiError::Internal)?;
+                Ok(GetStreamInfoResponse {
+                    active: true,
+                    publisher: Some(StreamPublisherInfo {
+                        user_id,
+                        started_at: pub_info.started_at.timestamp(),
+                    }),
+                })
+            }
+            Ok(None) => Ok(GetStreamInfoResponse {
+                active: false,
+                publisher: None,
+            }),
+            Err(error) => Err(ApiError::Internal(format!(
+                "Failed to get stream info: {error}"
+            ))),
+        }
+    }
 }
 
 fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiError> {
@@ -81,46 +122,16 @@ fn ensure_room_accepts_live_publish(room: &Room) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub(crate) async fn fetch_stream_info(
-    infrastructure: &synctv_livestream::LiveStreamingInfrastructure,
-    public_id_codec: &synctv_core::PublicIdCodec,
-    room_id: &str,
-    media_id: &str,
-) -> Result<GetStreamInfoResponse, ApiError> {
-    match infrastructure.find_publisher(room_id, media_id).await {
-        Ok(Some(pub_info)) => {
-            let user_id = public_id_codec
-                .encode_user_id(pub_info.user_id.parse::<UserId>().map_err(|error| {
-                    ApiError::Internal(format!("Invalid active publisher user id: {error}"))
-                })?)
-                .map_err(ApiError::Internal)?;
-            Ok(GetStreamInfoResponse {
-                active: true,
-                publisher: Some(StreamPublisherInfo {
-                    user_id,
-                    started_at: pub_info.started_at.timestamp(),
-                }),
-            })
-        }
-        Ok(None) => Ok(GetStreamInfoResponse {
-            active: false,
-            publisher: None,
-        }),
-        Err(error) => Err(ApiError::Internal(format!(
-            "Failed to get stream info: {error}"
-        ))),
-    }
-}
-
 impl ClientApiImpl {
     pub async fn create_publish_key(
         &self,
         user_id: &UserId,
         req: CreatePublishKeyRequest,
     ) -> Result<CreatePublishKeyResponse, ApiError> {
+        let codec = RtmpProviderApiCodec::new(&self.public_id_codec);
         let uid = *user_id;
-        let (room_id, media_id) = build_create_publish_key_request(req, &self.public_id_codec)?;
-        let rid = parse_room_id(&room_id, &self.public_id_codec)?;
+        let (room_id, media_id) = codec.build_create_publish_key_request(req)?;
+        let rid = codec.parse_room_id(&room_id)?;
 
         let media = self
             .room_service
@@ -162,8 +173,7 @@ impl ClientApiImpl {
             .generate_publish_key(&rid, &media_id, &uid)
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
 
-        let (room_id_key, media_id_key) =
-            encode_public_stream_ids(&self.public_id_codec, rid, media_id)?;
+        let (room_id_key, media_id_key) = codec.encode_public_stream_ids(rid, media_id)?;
         let rtmp_url = build_publish_rtmp_url(&self.config, &room_id_key);
         let stream_key = format!("{}?token={}", media_id_key, publish_key.token);
 
@@ -183,14 +193,15 @@ impl ClientApiImpl {
         let bearer_token = format!("Bearer {token}");
         let user_id = self
             .jwt_validator
-            .validate_http_extract_user_id(&bearer_token)
+            .validate_authorization_header_extract_user_id(&bearer_token)
             .map_err(|_| {
                 ApiError::Authentication(
                     synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
                 )
             })?;
 
-        let rid = parse_room_id(room_id, &self.public_id_codec)?;
+        let codec = RtmpProviderApiCodec::new(&self.public_id_codec);
+        let rid = codec.parse_room_id(room_id)?;
         let is_member = self
             .room_service
             .member_service()
@@ -213,15 +224,13 @@ impl ClientApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<GetStreamInfoResponse, ApiError> {
-        let (room_id, media_id) = build_get_stream_info_request(
-            GetStreamInfoRequest {
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-            },
-            &self.public_id_codec,
-        )?;
+        let codec = RtmpProviderApiCodec::new(&self.public_id_codec);
+        let (room_id, media_id) = codec.build_get_stream_info_request(GetStreamInfoRequest {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+        })?;
         let uid = *user_id;
-        let rid = parse_room_id(&room_id, &self.public_id_codec)?;
+        let rid = codec.parse_room_id(&room_id)?;
 
         self.room_service
             .check_membership(&rid, &uid)
@@ -235,13 +244,9 @@ impl ClientApiImpl {
 
         let room_id_key = rid.to_string();
         let media_id_key = media_id.to_string();
-        fetch_stream_info(
-            infrastructure,
-            &self.public_id_codec,
-            &room_id_key,
-            &media_id_key,
-        )
-        .await
+        codec
+            .fetch_stream_info(infrastructure, &room_id_key, &media_id_key)
+            .await
     }
 
     #[must_use]
@@ -258,8 +263,9 @@ impl AdminApiImpl {
         req: CreatePublishKeyRequest,
         actor_user_id: &UserId,
     ) -> Result<CreatePublishKeyResponse, ApiError> {
-        let (room_id, media_id) = build_create_publish_key_request(req, &self.public_id_codec)?;
-        let rid = parse_room_id(&room_id, &self.public_id_codec)?;
+        let codec = RtmpProviderApiCodec::new(&self.public_id_codec);
+        let (room_id, media_id) = codec.build_create_publish_key_request(req)?;
+        let rid = codec.parse_room_id(&room_id)?;
 
         let _media = self
             .room_service
@@ -285,8 +291,7 @@ impl AdminApiImpl {
             .generate_publish_key(&rid, &media_id, actor_user_id)
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
         let token = publish_key.token.clone();
-        let (room_id_key, media_id_key) =
-            encode_public_stream_ids(&self.public_id_codec, rid, media_id)?;
+        let (room_id_key, media_id_key) = codec.encode_public_stream_ids(rid, media_id)?;
         let stream_key = format!("{media_id_key}?token={token}");
 
         Ok(CreatePublishKeyResponse {
@@ -302,14 +307,12 @@ impl AdminApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<GetStreamInfoResponse, ApiError> {
-        let (room_id, media_id) = build_get_stream_info_request(
-            GetStreamInfoRequest {
-                room_id: room_id.to_string(),
-                media_id: media_id.to_string(),
-            },
-            &self.public_id_codec,
-        )?;
-        let rid = parse_room_id(&room_id, &self.public_id_codec)?;
+        let codec = RtmpProviderApiCodec::new(&self.public_id_codec);
+        let (room_id, media_id) = codec.build_get_stream_info_request(GetStreamInfoRequest {
+            room_id: room_id.to_string(),
+            media_id: media_id.to_string(),
+        })?;
+        let rid = codec.parse_room_id(&room_id)?;
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -317,13 +320,9 @@ impl AdminApiImpl {
 
         let room_id_key = rid.to_string();
         let media_id_key = media_id.to_string();
-        fetch_stream_info(
-            infrastructure,
-            &self.public_id_codec,
-            &room_id_key,
-            &media_id_key,
-        )
-        .await
+        codec
+            .fetch_stream_info(infrastructure, &room_id_key, &media_id_key)
+            .await
     }
 }
 
@@ -354,17 +353,18 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_rejects_invalid_media_id() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
-        let err = api_err(build_get_stream_info_request(
-            GetStreamInfoRequest {
-                room_id: codec_ok(
-                    public_id_codec
-                        .encode_room_id(synctv_core::models::RoomId::expect_positive(123)),
-                )?,
-                media_id: "bad-media".to_string(),
-            },
-            &public_id_codec,
-        ))?;
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let codec = RtmpProviderApiCodec::new(&public_id_codec);
+        let err =
+            api_err(
+                codec.build_get_stream_info_request(GetStreamInfoRequest {
+                    room_id: codec_ok(
+                        public_id_codec
+                            .encode_room_id(synctv_core::models::RoomId::expect_positive(123)),
+                    )?,
+                    media_id: "bad-media".to_string(),
+                }),
+            )?;
 
         assert!(
             matches!(&err, ApiError::InvalidInput(message) if message.contains("media_id")),
@@ -375,18 +375,17 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_accepts_valid_request() -> TestResult {
-        let public_id_codec = synctv_core::PublicIdCodec::plain();
+        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let codec = RtmpProviderApiCodec::new(&public_id_codec);
         let expected_room_id = codec_ok(
             public_id_codec.encode_room_id(synctv_core::models::RoomId::expect_positive(123)),
         )?;
         let expected_media_id = synctv_core::models::MediaId::expect_positive(123);
-        let (room_id, media_id) = api_ok(build_get_stream_info_request(
-            GetStreamInfoRequest {
+        let (room_id, media_id) =
+            api_ok(codec.build_get_stream_info_request(GetStreamInfoRequest {
                 room_id: expected_room_id.clone(),
                 media_id: codec_ok(public_id_codec.encode_media_id(expected_media_id))?,
-            },
-            &public_id_codec,
-        ))?;
+            }))?;
 
         assert_eq!(room_id, expected_room_id);
         assert_eq!(media_id, expected_media_id);

@@ -46,7 +46,7 @@ use crate::impls::{
 };
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::auth::{AuthErrorCategory, JwtValidator};
+use synctv_core::service::{AuthErrorCategory, JwtValidator};
 use synctv_core::service::{ContentFilter, PendingValidatedTicket, ValidatedGuestTicket};
 use synctv_proto::client::{ClientMessage, ServerMessage};
 use synctv_realtime::sync::ConnectionRuntime;
@@ -403,7 +403,7 @@ async fn extract_handshake_auth(
 
 #[cfg(test)]
 fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
-    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
+    match synctv_core::service::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_token(),
         AuthErrorCategory::Authorization => {
             crate::http::error::map_auth_authorization_error(&error)
@@ -413,7 +413,7 @@ fn map_security_pipeline_error(error: synctv_core::Error) -> AppError {
 }
 
 fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError {
-    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
+    match synctv_core::service::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => AppError::invalid_or_expired_ticket(),
         AuthErrorCategory::Authorization => {
             crate::http::error::map_auth_authorization_error(&error)
@@ -423,7 +423,7 @@ fn map_websocket_ticket_validation_error(error: synctv_core::Error) -> AppError 
 }
 
 fn map_websocket_ticket_validation_api_error(error: synctv_core::Error) -> ApiError {
-    match synctv_core::service::auth::SecurityPipeline::classify_auth_error(&error) {
+    match synctv_core::service::SecurityPipeline::classify_auth_error(&error) {
         AuthErrorCategory::Authentication => {
             ApiError::Authentication("Invalid or expired ticket".to_string())
         }

@@ -12,13 +12,9 @@ use crate::{
         media::MediaService,
         member::MemberService,
         notification::NotificationService,
-        permission::{PermissionService, PermissionServiceRuntime},
-        playback::PlaybackService,
-        playlist::PlaylistService,
-        room::{RoomService, RoomServiceOptions},
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
-        user::UserService,
-        ProvidersManager,
+        PermissionService, PermissionServiceRuntime, PlaybackService, PlaylistService,
+        ProvidersManager, RoomService, RoomServiceOptions, UserService,
     },
     Result,
 };
@@ -159,7 +155,7 @@ impl RoomService {
             permission_service.clone(),
             providers_manager,
             notification_service.clone(),
-            crate::service::media::MediaServiceRuntime {
+            crate::service::MediaServiceRuntime {
                 credential_encryption: options.credential_encryption.clone(),
                 credential_repo: options.credential_repo.clone(),
                 provider_access_service: options.provider_access_service.clone(),
@@ -173,7 +169,7 @@ impl RoomService {
             permission_service.clone(),
             media_service.clone(),
             user_service.clone(),
-            crate::service::playback::PlaybackServiceRuntime {
+            crate::service::PlaybackServiceRuntime {
                 invalidation_service: options.cache_invalidation.clone(),
                 l2_cache: Some(options.playback_l2_cache.clone()),
                 version_fence: options.version_fence.clone(),

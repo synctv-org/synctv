@@ -178,6 +178,38 @@ impl Config {
         Self::validate_rate_limit_scopes("request_rate_limits", &config.scopes, errors);
     }
 
+    fn validate_external_ids(&self, errors: &mut Vec<String>) {
+        let Some(sqids) = self.external_ids.sqids.as_ref() else {
+            return;
+        };
+
+        let Some(alphabet) = sqids
+            .alphabet
+            .as_deref()
+            .map(str::trim)
+            .filter(|alphabet| !alphabet.is_empty())
+        else {
+            return;
+        };
+
+        if alphabet.chars().count() < 3 {
+            errors
+                .push("external_ids.sqids.alphabet must contain at least 3 characters".to_string());
+        }
+
+        if !alphabet.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            errors.push(
+                "external_ids.sqids.alphabet must contain only ASCII alphanumeric characters"
+                    .to_string(),
+            );
+        }
+
+        let mut seen = std::collections::BTreeSet::new();
+        if !alphabet.chars().all(|character| seen.insert(character)) {
+            errors.push("external_ids.sqids.alphabet must contain unique characters".to_string());
+        }
+    }
+
     fn validate_with_env(
         &self,
         get_env: &impl Fn(&str) -> Option<String>,
@@ -193,41 +225,6 @@ impl Config {
             if *port == 0 {
                 errors.push(format!("{name} must be between 1 and 65535, got 0"));
             }
-        }
-
-        if let Some(sqids) = self.public_ids.sqids.as_ref() {
-            if let Some(alphabet) = sqids.alphabet.as_ref() {
-                if alphabet.is_empty() {
-                    errors.push("public_ids.sqids.alphabet must not be empty when set".to_string());
-                } else if alphabet.chars().any(|ch| ch.len_utf8() > 1) {
-                    errors.push(
-                        "public_ids.sqids.alphabet must contain only single-byte characters"
-                            .to_string(),
-                    );
-                } else if alphabet.chars().any(|ch| !ch.is_ascii_alphanumeric()) {
-                    errors.push(
-                        "public_ids.sqids.alphabet must contain only ASCII alphanumeric characters"
-                            .to_string(),
-                    );
-                } else if alphabet
-                    .chars()
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
-                    != alphabet.chars().count()
-                {
-                    errors.push(
-                        "public_ids.sqids.alphabet must not contain duplicate characters"
-                            .to_string(),
-                    );
-                } else if alphabet.chars().count() < 3 {
-                    errors.push(
-                        "public_ids.sqids.alphabet must contain at least 3 characters".to_string(),
-                    );
-                }
-            }
-        }
-        if let Err(error) = crate::PublicIdCodec::from_config(&self.public_ids) {
-            errors.push(error);
         }
 
         if self.password_complexity.zxcvbn_min_score > 4 {
@@ -265,6 +262,7 @@ impl Config {
                 opaque_secret.len()
             ));
         }
+        self.validate_external_ids(&mut errors);
         for range in &self.security.ssrf.allowed_ip_ranges {
             if range.parse::<ipnet::IpNet>().is_err() {
                 errors.push(format!(
@@ -465,7 +463,7 @@ impl Config {
             }
         }
 
-        // Validate gRPC max message size (prevent OOM attacks)
+        // Validate remote transport max message size (prevent OOM attacks)
         if self.server.grpc_max_message_size_bytes < MIN_GRPC_MESSAGE_SIZE {
             errors.push(format!(
                 "server.grpc_max_message_size_bytes ({}) must be at least {} (1 MB)",
@@ -1026,13 +1024,13 @@ impl Config {
                 HlsStorageBackend::File => {
                     tracing::warn!(
                         "Cluster mode is enabled with livestream.hls_storage_backend='file'. \
-                         HLS remains functional through publisher-node gRPC proxying, but shared_file or OSS is recommended for production multi-replica HLS."
+                         HLS remains functional through publisher-node proxying, but shared_file or OSS is recommended for production multi-replica HLS."
                     );
                 }
                 HlsStorageBackend::Memory => {
                     tracing::warn!(
                         "Cluster mode is enabled with livestream.hls_storage_backend='memory'. \
-                         HLS remains functional through publisher-node gRPC proxying, but memory storage is node-local and lost on restart. \
+                         HLS remains functional through publisher-node proxying, but memory storage is node-local and lost on restart. \
                          Use livestream.hls_storage_backend='shared_file' or 'oss' for production multi-replica HLS."
                     );
                 }
@@ -1050,13 +1048,13 @@ impl Config {
 
         // Require cluster.secret when distributed mode is enabled.
         // An empty `cluster.secret` means that ANY node claiming to be part of the
-        // cluster can call inter-node gRPC endpoints without authentication.
+        // cluster can call inter-node transport endpoints without authentication.
         // In standalone mode, `cluster.secret` is not required even with Redis
-        // configured, because there are no inter-node gRPC endpoints to protect.
+        // configured, because there are no inter-node transport endpoints to protect.
         if self.cluster.enabled && self.cluster.secret.is_empty() {
             errors.push(
                 "cluster.secret must be set when distributed mode is enabled. \
-                 An empty cluster.secret leaves inter-node gRPC endpoints unauthenticated. \
+                 An empty cluster.secret leaves inter-node transport endpoints unauthenticated. \
                  Generate a secret with: openssl rand -hex 32 \
                  and set it as SYNCTV_CLUSTER_SECRET or cluster.secret in your config."
                     .to_string(),
@@ -1093,7 +1091,7 @@ impl Config {
         if self.cluster.enabled && self.advertise_host_with(get_env) == "0.0.0.0" {
             errors.push(
                 "server.advertise_host must resolve to a routable address when distributed mode is enabled. \
-                 The current advertise host resolves to 0.0.0.0, which other replicas cannot reach for gRPC/HLS proxying. \
+                 The current advertise host resolves to 0.0.0.0, which other replicas cannot reach for cluster/HLS proxying. \
                  Set SYNCTV_SERVER_ADVERTISE_HOST (or server.advertise_host) to the pod IP, node IP, or service-reachable hostname."
                     .to_string(),
             );

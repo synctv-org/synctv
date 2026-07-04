@@ -943,7 +943,7 @@ struct OpenListFixture {
 
 fn openlist_image() -> (String, String) {
     let image = std::env::var("SYNCTV_OPENLIST_IMAGE")
-        .unwrap_or_else(|_| "openlistteam/openlist".to_string());
+        .unwrap_or_else(|_| "ghcr.io/openlistteam/openlist-git".to_string());
     let tag = std::env::var("SYNCTV_OPENLIST_TAG").unwrap_or_else(|_| "latest".to_string());
     (image, tag)
 }

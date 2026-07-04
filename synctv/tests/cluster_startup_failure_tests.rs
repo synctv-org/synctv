@@ -9,9 +9,9 @@
 #![allow(clippy::unwrap_used)]
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ChatConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, FileStorageConfig, HlsStorageBackend, JwtConfig,
-    LivestreamConfig, LoggingConfig, MediaProvidersConfig, MessagingRateLimitConfig,
-    PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig, RedisConfig,
+    ConnectionLimitsConfig, DatabaseConfig, ExternalIdsConfig, FileStorageConfig,
+    HlsStorageBackend, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
+    MessagingRateLimitConfig, PasswordComplexityConfig, ProxySliceCacheConfig, RedisConfig,
     RequestRateLimitConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
@@ -85,7 +85,7 @@ fn standalone_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        public_ids: PublicIdsConfig::default(),
+        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
                 .to_string(),
@@ -158,7 +158,7 @@ fn cluster_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        public_ids: PublicIdsConfig::default(),
+        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
                 .to_string(),

@@ -6,9 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::provider::ExecutionControl;
-use synctv_core::service::auth::{
-    AuthErrorCategory, AuthenticatedToken, JwtValidator, SecurityPipeline,
-};
+use synctv_core::service::{AuthErrorCategory, AuthenticatedToken, JwtValidator, SecurityPipeline};
 use synctv_core::service::{RateLimitError, RequestRateLimiterService};
 use synctv_core::{Config, RateLimitScopeStrategy};
 
@@ -382,6 +380,11 @@ impl RequestExecutor {
         }
     }
 
+    #[must_use]
+    pub fn jwt_validator(&self) -> &Arc<JwtValidator> {
+        &self.jwt_validator
+    }
+
     pub async fn authenticate_required(
         &self,
         metadata: &RequestMetadata,
@@ -444,7 +447,7 @@ impl RequestExecutor {
     ) -> Result<AuthenticatedToken, ApiError> {
         let claims = self
             .jwt_validator
-            .validate_http(authorization)
+            .validate_authorization_header(authorization)
             .map_err(|_| {
                 ApiError::Authentication(
                     synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),

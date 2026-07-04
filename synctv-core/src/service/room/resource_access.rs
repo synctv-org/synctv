@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     models::{Media, MediaId, Playlist, PlaylistId, Room, RoomId, UserId},
     repository::{media::MediaListItem, playlist::PlaylistListItem},
-    service::room::{ClientResourceAvailability, RoomService},
+    service::{ClientResourceAvailability, RoomService},
     Error, Result,
 };
 

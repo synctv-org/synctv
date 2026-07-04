@@ -5,7 +5,7 @@ use synctv_common::ExecutionControl;
 use crate::{
     models::{OpaquePasswordRecord, SignupMethod, User},
     repository::PasswordCredentialMaterial,
-    service::user::UserService,
+    service::UserService,
     Error, Result,
 };
 

@@ -137,6 +137,8 @@ async fn chat_cleanup_attachments_for_candidates(
                i.height,
                i.metadata AS "metadata!: crate::models::FileMetadata",
                i.created_at,
+               NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+
                NULL::TEXT AS "reuse_token?",
                NULL::TIMESTAMPTZ AS "reuse_expires_at?"
         FROM chat_message_attachments i

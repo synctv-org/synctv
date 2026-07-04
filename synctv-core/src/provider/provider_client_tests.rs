@@ -1,12 +1,9 @@
 use super::*;
 use crate::test_helpers::TestResultExt;
-use reqwest::StatusCode;
-use synctv_media_providers::ProviderClientError;
-use tonic::metadata::MetadataValue;
 
-/// Test that `resolve_alist_client` returns local client when no channel is provided
+/// Test that `resolve_alist_client` returns local client when no remote connection is provided
 #[test]
-fn test_resolve_alist_client_returns_local_when_no_channel() {
+fn test_resolve_alist_client_returns_local_without_remote_connection() {
     let manager =
         ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
     let local_client = manager.local_alist_client();
@@ -15,9 +12,9 @@ fn test_resolve_alist_client_returns_local_when_no_channel() {
     assert!(Arc::ptr_eq(&local_client, &resolved_client));
 }
 
-/// Test that `resolve_bilibili_client` returns local client when no channel is provided
+/// Test that `resolve_bilibili_client` returns local client when no remote connection is provided
 #[test]
-fn test_resolve_bilibili_client_returns_local_when_no_channel() {
+fn test_resolve_bilibili_client_returns_local_without_remote_connection() {
     let manager =
         ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
     let local_client = manager.local_bilibili_client();
@@ -26,9 +23,9 @@ fn test_resolve_bilibili_client_returns_local_when_no_channel() {
     assert!(Arc::ptr_eq(&local_client, &resolved_client));
 }
 
-/// Test that `resolve_emby_client` returns local client when no channel is provided
+/// Test that `resolve_emby_client` returns local client when no remote connection is provided
 #[test]
-fn test_resolve_emby_client_returns_local_when_no_channel() {
+fn test_resolve_emby_client_returns_local_without_remote_connection() {
     let manager =
         ProviderClientManager::new_for_tests().checked("default provider HTTP client should build");
     let local_client = manager.local_emby_client();
@@ -74,26 +71,6 @@ fn test_custom_clients_injection() {
 }
 
 #[test]
-fn test_build_grpc_request_inserts_x_provider_secret() {
-    let request = build_grpc_request(Some("shared-secret"), 42_u32).checked("request should build");
-    assert_eq!(request.get_ref(), &42_u32);
-    assert_eq!(
-        request.metadata().get("x-provider-secret"),
-        Some(&MetadataValue::from_static("shared-secret"))
-    );
-}
-
-#[test]
-fn test_build_grpc_request_omits_header_when_secret_is_blank() {
-    let request = build_grpc_request(Some("   "), 42_u32).checked("request should build");
-    assert_eq!(request.get_ref(), &42_u32);
-    assert!(
-        request.metadata().get("x-provider-secret").is_none(),
-        "blank secrets must not produce a malformed header"
-    );
-}
-
-#[test]
 fn test_validate_auth_secret_rejects_empty_secret() {
     let error = validate_auth_secret(Some("   ")).failed("empty secret must fail");
     assert!(matches!(
@@ -121,7 +98,7 @@ fn test_validate_auth_secret_rejects_non_ascii_secret() {
     assert!(matches!(
         error,
         ProviderError::InvalidConfig(message)
-            if message.contains("valid ASCII gRPC metadata")
+            if message.contains("valid ASCII remote transport metadata")
     ));
 }
 
@@ -131,49 +108,6 @@ fn test_validate_auth_secret_rejects_control_characters() {
     assert!(matches!(
         error,
         ProviderError::InvalidConfig(message)
-            if message.contains("valid ASCII gRPC metadata")
-    ));
-}
-
-#[test]
-fn test_map_grpc_status_unauthenticated_to_auth() {
-    let error = map_grpc_status("login", &Status::unauthenticated("Invalid provider secret"));
-    assert!(matches!(
-        error,
-        ProviderClientError::Auth(message) if message == "Invalid provider secret"
-    ));
-}
-
-#[test]
-fn test_map_grpc_status_invalid_argument_to_invalid_config() {
-    let error = map_grpc_status(
-        "fs_get",
-        &Status::invalid_argument("missing host parameter"),
-    );
-    assert!(matches!(
-        error,
-        ProviderClientError::InvalidConfig(message) if message == "missing host parameter"
-    ));
-}
-
-#[test]
-fn test_map_grpc_status_not_found_to_http_404() {
-    let error = map_grpc_status("me", &Status::not_found("user not found"));
-    assert!(matches!(
-        error,
-        ProviderClientError::Http { status, ref url, ref body, retry_after_secs: None }
-            if status == StatusCode::NOT_FOUND
-                && url == "http://remote/me"
-                && body == "user not found"
-    ));
-}
-
-#[test]
-fn test_map_grpc_status_unimplemented_to_api_501() {
-    let error = map_grpc_status("future_method", &Status::unimplemented("rpc unavailable"));
-    assert!(matches!(
-        error,
-        ProviderClientError::Api { code: 501, message }
-            if message == "gRPC future_method: rpc unavailable"
+            if message.contains("valid ASCII remote transport metadata")
     ));
 }

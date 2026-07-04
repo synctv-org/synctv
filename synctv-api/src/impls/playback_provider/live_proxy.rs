@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::StreamExt;
 use synctv_core::provider::{ExecutionControl, PlaybackTransportAction};
 use synctv_core::service::LiveProxyPlaybackProviderService;
@@ -9,11 +7,12 @@ use synctv_proto::playback_provider::live_proxy::{
 };
 
 use super::common::{
-    get_live_hls_playlist_chunks, get_live_hls_segment_chunks,
+    get_live_hls_playlist_chunks, get_live_hls_segment_chunks, live_flv_access_from_claims,
     playback_transport_action_to_chunk_stream, stream_live_flv_chunks,
     verify_playback_provider_access_with_deps, HasLivePlaybackFields,
     HasPlaybackProviderAccessFields, LiveFlvChunksRequest, LiveHlsPlaylistChunksRequest,
-    LiveHlsSegmentChunksRequest, PlaybackProviderAccessRequest, PlaybackTransportExecutorDeps,
+    LiveHlsSegmentChunksRequest, LivePlaybackApiRuntime, PlaybackProviderAccessRequest,
+    PlaybackProviderApiRuntime, PlaybackTransportExecutorDeps,
 };
 use crate::impls::ApiError;
 
@@ -21,21 +20,9 @@ const PROVIDER: &str = synctv_core::provider::LiveProxyProvider::NAME;
 
 pub struct LiveProxyPlaybackProviderDeps<'a> {
     pub playback_provider_service: &'a LiveProxyPlaybackProviderService,
-    pub proxy_signing_key: &'a synctv_core::proxy_signature::ProxySigningKey,
-    pub public_id_codec: &'a synctv_core::PublicIdCodec,
-    pub provider_stores: &'a dyn synctv_core::provider::store::ProviderStoreResolver,
-    pub user_service: &'a synctv_core::service::UserService,
-    pub playback_transport_services:
-        &'a synctv_core::provider::playback_transport::PlaybackTransportServices,
+    pub runtime: PlaybackProviderApiRuntime<'a>,
+    pub live_runtime: LivePlaybackApiRuntime<'a>,
     pub request_control: Option<&'a ExecutionControl>,
-    pub proxy_http_client: &'a reqwest::Client,
-    pub ssrf_guard: &'a synctv_common::ssrf::SsrfGuard,
-    pub proxy_slice_cache: &'a synctv_proxy::slice_cache::SliceCache,
-    pub live_streaming_infrastructure:
-        Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
-    pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
-    pub livestream_config: &'a synctv_core::config::LivestreamConfig,
-    pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
 pub type LiveProxyFlvStreamResponseStream = std::pin::Pin<
@@ -194,8 +181,9 @@ async fn resolve_live_proxy_flv_stream_action(
         },
     )
     .await?;
+    let access = live_flv_access_from_claims(deps.runtime.public_id_codec, &claims)?;
     deps.playback_provider_service
-        .flv_stream_action(&req.version, store, &claims, deps.request_control)
+        .flv_stream_action(&req.version, store, access, deps.request_control)
         .await
         .map_err(ApiError::from)
 }
@@ -251,8 +239,8 @@ async fn verify_live_proxy_access(
     request: PlaybackProviderAccessRequest<'_>,
 ) -> Result<
     (
-        std::sync::Arc<dyn synctv_core::provider::store::ProviderStore>,
-        synctv_core::proxy_signature::ProxyUrlClaims,
+        std::sync::Arc<dyn synctv_core::provider::ProviderStore>,
+        crate::proxy_signature::ProxyUrlClaims,
     ),
     ApiError,
 > {
@@ -264,10 +252,10 @@ crate::impl_has_playback_provider_access_fields!(LiveProxyPlaybackProviderDeps<'
 impl<'a> LiveProxyPlaybackProviderDeps<'a> {
     fn chunk_deps(&self) -> PlaybackTransportExecutorDeps<'a> {
         PlaybackTransportExecutorDeps {
-            proxy_signing_key: self.proxy_signing_key,
-            proxy_http_client: self.proxy_http_client,
-            ssrf_guard: self.ssrf_guard,
-            proxy_slice_cache: self.proxy_slice_cache,
+            proxy_signing_key: self.runtime.proxy_signing_key,
+            proxy_http_client: self.runtime.proxy_http_client,
+            ssrf_guard: self.runtime.ssrf_guard,
+            proxy_slice_cache: self.runtime.proxy_slice_cache,
             request_control: self.request_control,
             hls_rewrite: None,
         }

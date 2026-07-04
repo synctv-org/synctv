@@ -13,8 +13,7 @@ use synctv_core::{
     },
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Config,
 };
@@ -57,13 +56,13 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
 fn make_client_api(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-) -> synctv_api::impls::ClientApiImpl {
+) -> synctv_api::ClientApiImpl {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     let mut runtime = support::client_api_runtime();
     runtime.presence_service = connection_manager.presence_service();
 
-    synctv_api::impls::ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+    synctv_api::ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -73,7 +72,7 @@ fn make_client_api(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -88,13 +87,13 @@ fn make_client_api(
 fn make_client_api_with_connections(
     user_service: Arc<UserService>,
     room_service: Arc<RoomService>,
-) -> (synctv_api::impls::ClientApiImpl, Arc<ConnectionManager>) {
+) -> (synctv_api::ClientApiImpl, Arc<ConnectionManager>) {
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
     let mut runtime = support::client_api_runtime();
     runtime.presence_service = connection_manager.presence_service();
 
-    let client_api = synctv_api::impls::ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+    let client_api = synctv_api::ClientApiImpl::new_with_runtime(
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -104,7 +103,7 @@ fn make_client_api_with_connections(
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -167,7 +166,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let err = client_api
         .get_room_members(
@@ -186,7 +185,7 @@ async fn test_get_room_members_requires_view_member_list_permission() {
         .unwrap_err();
 
     assert!(
-        matches!(err, synctv_api::impls::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
+        matches!(err, synctv_api::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
         "reading member list without VIEW_MEMBER_LIST must be forbidden, got: {err:?}"
     );
 }
@@ -243,7 +242,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let response = client_api
         .get_room_members(
@@ -289,7 +288,7 @@ async fn test_get_room_members_hides_pending_members_from_non_moderators() {
         .unwrap_err();
 
     assert!(
-        matches!(err, synctv_api::impls::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
+        matches!(err, synctv_api::ApiError::Authorization(ref msg) if msg == "Forbidden: Permission denied"),
         "non-moderators must not list room join reviews, got: {err:?}"
     );
 
@@ -366,7 +365,7 @@ async fn test_get_room_members_returns_stable_version_until_membership_changes()
         sort_direction: 0,
     };
 
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let first = client_api
         .get_room_members(&owner.id, &room_id, request.clone())
@@ -449,7 +448,7 @@ async fn test_get_room_members_marks_realtime_connections_online() {
         .await
         .unwrap();
 
-    let public_id_codec = synctv_core::PublicIdCodec::plain();
+    let public_id_codec = synctv_api::PublicIdCodec::plain();
     let room_id = public_id_codec.encode_room_id(room.id).unwrap();
     let online_user_id = public_id_codec.encode_user_id(online_user.id).unwrap();
     let offline_user_id = public_id_codec.encode_user_id(offline_user.id).unwrap();

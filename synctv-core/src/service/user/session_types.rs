@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     models::UserId,
-    service::auth::{TokenAuthContext, TokenCredentialBinding},
+    service::{TokenAuthContext, TokenCredentialBinding},
 };
 
 pub(super) const OPAQUE_LOGIN_SESSION_TTL_SECS: u64 = 300;

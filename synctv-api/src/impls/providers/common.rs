@@ -1,38 +1,23 @@
 use std::sync::Arc;
 use synctv_core::models::{
-    normalize_provider_instance_name, validate_provider_instance_name, AuditDetails,
-    NewProviderInstance, ProviderCredential, ProviderInstance, UserProviderCredential,
+    normalize_provider_instance_name, resolve_provider_instance_binding,
+    validate_provider_instance_name, AuditDetails, CredentialProviderInstanceName,
+    NewProviderInstance, ProviderInstance,
 };
 use synctv_core::models::{SortDirection as CoreSortDirection, UserId};
+use synctv_core::provider::ExecutionControl;
 use synctv_core::provider::ProviderError;
-use synctv_core::provider::{ExecutionControl, ProviderAccessService};
-use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{
     AuditEventParams, AuditService, ProvidersManager, RemoteProviderManager, UserService,
 };
 use synctv_proto::providers::common::ProviderInstanceQuery;
 
-use crate::impls::admin::{validate_admin_auth, RequestContext, ValidatedAdmin};
+use crate::impls::admin::{AdminAuthValidator, RequestContext, ValidatedAdmin};
 use crate::impls::source_provider::{
     core_source_provider_vec_to_proto, proto_source_provider_filter,
     proto_source_provider_required, proto_source_provider_vec,
 };
 use crate::impls::{ApiError, EndpointRateLimitCategory, RequestExecutor, RequestMetadata};
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct ProviderBind {
-    pub(crate) id: String,
-    pub(crate) server_id: String,
-    pub(crate) host: String,
-    pub(crate) label_key: String,
-    pub(crate) label_value: String,
-    pub(crate) created_at: i64,
-    pub(crate) created_at_str: String,
-    pub(crate) provider_instance_name: String,
-}
-
-const PROVIDER_BINDS_UNAVAILABLE_MESSAGE: &str =
-    "Provider bind information is temporarily unavailable";
 
 #[must_use]
 pub(crate) fn provider_instance_name_for_response(value: Option<String>) -> String {
@@ -43,115 +28,12 @@ fn i64_to_i32(value: i64, field: &'static str) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-fn filter_provider_binds(
-    credentials: Vec<UserProviderCredential>,
-    user_field_key: &str,
-) -> Result<Vec<ProviderBind>, ApiError> {
-    credentials
-        .into_iter()
-        .map(|credential| {
-            let (host, label_value) = match (&credential.credential_data, user_field_key) {
-                (ProviderCredential::Alist { host, username, .. }, "username") => {
-                    (host.clone(), username.clone())
-                }
-                (ProviderCredential::Emby { host, api_key, .. }, "api_key") => {
-                    (host.clone(), api_key.clone())
-                }
-                (
-                    ProviderCredential::Emby {
-                        host, emby_user_id, ..
-                    },
-                    "emby_user_id",
-                ) => (host.clone(), emby_user_id.clone()),
-                _ => {
-                    return Err(ApiError::Internal(format!(
-                        "Provider credential {} for {} has unexpected credential shape",
-                        credential.id, credential.provider
-                    )));
-                }
-            };
-            let host = host.trim();
-            let label_value = label_value.trim();
-            if host.is_empty() || label_value.is_empty() {
-                return Err(ApiError::Internal(format!(
-                    "Provider credential {} for {} has empty bind fields",
-                    credential.id, credential.provider
-                )));
-            }
-
-            Ok(ProviderBind {
-                id: credential.id.to_string(),
-                server_id: credential.server_id,
-                host: host.to_string(),
-                label_key: user_field_key.to_string(),
-                label_value: label_value.to_string(),
-                created_at: credential.created_at.timestamp(),
-                created_at_str: synctv_common::time::format_datetime_rfc3339(credential.created_at),
-                provider_instance_name: provider_instance_name_for_response(
-                    credential.provider_instance_name,
-                ),
-            })
-        })
-        .collect()
-}
-
-pub(crate) async fn get_provider_credentials(
-    repo: &Arc<UserProviderCredentialRepository>,
-    user_id: &UserId,
-    provider_name: &str,
-    instance_name: Option<&str>,
-) -> Result<Vec<UserProviderCredential>, ApiError> {
-    let requested_instance_name = provider_instance_name_from_optional_value(instance_name)?;
-    let credentials = repo
-        .get_readable_by_provider(*user_id, provider_name)
-        .await
-        .map_err(|error| {
-            tracing::error!(
-                user_id = %user_id,
-                provider_name,
-                error = %error,
-                "Failed to query provider credentials"
-            );
-            ApiError::ServiceUnavailable(PROVIDER_BINDS_UNAVAILABLE_MESSAGE.to_string())
-        })?;
-
-    Ok(credentials
-        .into_iter()
-        .filter(|credential| {
-            requested_instance_name.is_none_or(|requested| {
-                normalize_provider_instance_name(credential.provider_instance_name.as_deref())
-                    == Some(requested)
-            })
-        })
-        .collect())
-}
-
-pub(crate) async fn get_provider_binds(
-    repo: &Arc<UserProviderCredentialRepository>,
-    user_id: &UserId,
-    provider_name: &str,
-    user_field_key: &str,
-    instance_name: Option<&str>,
-) -> Result<Vec<ProviderBind>, ApiError> {
-    let credentials = get_provider_credentials(repo, user_id, provider_name, instance_name).await?;
-    filter_provider_binds(credentials, user_field_key)
-}
-
 pub(crate) fn provider_instance_name_from_value(value: &str) -> Result<Option<&str>, ApiError> {
     let Some(instance_name) = normalize_provider_instance_name(Some(value)) else {
         return Ok(None);
     };
     validate_provider_instance_name(instance_name).map_err(ApiError::InvalidInput)?;
     Ok(Some(instance_name))
-}
-
-pub(crate) fn provider_instance_name_from_optional_value(
-    value: Option<&str>,
-) -> Result<Option<&str>, ApiError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    provider_instance_name_from_value(value)
 }
 
 pub(crate) fn provider_instance_name_for_provider(
@@ -174,21 +56,11 @@ pub(crate) fn resolve_bound_instance_name(
     requested_instance_name: Option<&str>,
     credential_instance_name: Option<&str>,
 ) -> Result<Option<String>, ProviderError> {
-    let requested = normalize_provider_instance_name(requested_instance_name);
-    let credential = normalize_provider_instance_name(credential_instance_name);
-
-    match (requested, credential) {
-        (Some(requested), Some(credential)) if requested != credential => Err(
-            ProviderError::InvalidConfig(format!(
-                "Stored credential is bound to provider instance '{credential}', but request specified '{requested}'"
-            )),
-        ),
-        (_, Some(credential)) => Ok(Some(credential.to_string())),
-        (Some(requested), None) => Err(ProviderError::InvalidConfig(format!(
-            "Stored credential is not bound to a provider instance; omit instance_name '{requested}' and log in again if you need an instance-scoped credential"
-        ))),
-        (None, None) => Ok(None),
-    }
+    resolve_provider_instance_binding(
+        requested_instance_name,
+        CredentialProviderInstanceName::CredentialBacked(credential_instance_name),
+    )
+    .map_err(|error| ProviderError::InvalidConfig(error.to_string()))
 }
 
 #[derive(Clone)]
@@ -273,13 +145,13 @@ impl ProviderCommonApiImpl {
             metadata,
             EndpointRateLimitCategory::Admin,
             move |request_control, authenticated| async move {
-                let validated = validate_admin_auth(
-                    user_service.as_ref(),
-                    authenticated.user_id,
-                    authenticated.claims.pv,
-                    authenticated.claims.iat,
-                )
-                .await?;
+                let validated = AdminAuthValidator::new(user_service.as_ref())
+                    .validate(
+                        authenticated.user_id,
+                        authenticated.claims.pv,
+                        authenticated.claims.iat,
+                    )
+                    .await?;
                 if !validated.role.is_admin_or_above() {
                     return Err(ApiError::Authorization("Admin role required".to_string()));
                 }
@@ -457,9 +329,9 @@ impl ProviderCommonApiImpl {
             .list_instances_with_total(&query)
             .await
             .map_err(ApiError::from)?;
-        let health = self
-            .provider_instance_manager
-            .health_check_instances(&instances)
+        let provider_instance_manager = Arc::clone(&self.provider_instance_manager);
+        let health = provider_instance_manager
+            .health_check_instances_owned(instances.clone())
             .await;
 
         Ok(
@@ -901,41 +773,6 @@ fn mask_url_credentials(endpoint: &str) -> String {
     }
 }
 
-pub(crate) async fn delete_credential_and_notify(
-    credential_repo: &Arc<UserProviderCredentialRepository>,
-    access_service: &Arc<dyn ProviderAccessService>,
-    event_service: &Arc<dyn crate::runtime::RealtimeEventService>,
-    caller_user_id: &UserId,
-    provider_name: &str,
-    server_id: &str,
-) -> Result<(), synctv_core::provider::ProviderError> {
-    if let Some(existing) = credential_repo
-        .get_by_provider_and_server(*caller_user_id, provider_name, server_id)
-        .await
-        .map_err(|e| {
-            synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to query credential: {e}"
-            ))
-        })?
-    {
-        credential_repo.delete(existing.id).await.map_err(|e| {
-            synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to delete credential: {e}"
-            ))
-        })?;
-        access_service
-            .invalidate(*caller_user_id, provider_name, server_id)
-            .await?;
-        super::publish_provider_credential_changed(
-            event_service,
-            *caller_user_id,
-            provider_name,
-            server_id,
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,7 +782,7 @@ mod tests {
     use synctv_core::models::ProviderInstance;
     use synctv_core::repository::ProviderInstanceRepository;
     use synctv_core::service::{
-        auth::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore, ProvidersManager,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
     };
     use synctv_core_testing::create_test_pool;
 
@@ -961,25 +798,6 @@ mod tests {
 
     fn core_ok<T>(result: synctv_core::Result<T>) -> TestResult<T> {
         result.map_err(|error| test_error(error.to_string()))
-    }
-
-    fn provider_credential_with_data(
-        id: i64,
-        credential_data: ProviderCredential,
-    ) -> UserProviderCredential {
-        let now = Utc::now();
-
-        UserProviderCredential {
-            id,
-            user_id: UserId::expect_positive(42),
-            provider: "alist".to_string(),
-            server_id: "server-1".to_string(),
-            provider_instance_name: Some("alist-main".to_string()),
-            credential_data,
-            expires_at: None,
-            created_at: now,
-            updated_at: now,
-        }
     }
 
     #[test]
@@ -1001,86 +819,6 @@ mod tests {
                 if message.contains("provider instance name")
         ));
         Ok(())
-    }
-
-    #[test]
-    fn filter_provider_binds_uses_required_credential_fields() -> TestResult {
-        let credential = provider_credential_with_data(
-            7,
-            ProviderCredential::alist(
-                " https://alist.example ".to_string(),
-                " alice ".to_string(),
-                "hashed-password".to_string(),
-                None,
-            ),
-        );
-
-        let binds = api_ok(filter_provider_binds(vec![credential], "username"))?;
-
-        assert_eq!(binds.len(), 1);
-        assert_eq!(binds[0].id, "7");
-        assert_eq!(binds[0].host, "https://alist.example");
-        assert_eq!(binds[0].label_key, "username");
-        assert_eq!(binds[0].label_value, "alice");
-        assert_eq!(binds[0].provider_instance_name, "alist-main");
-        Ok(())
-    }
-
-    #[test]
-    fn filter_provider_binds_uses_emby_user_id() -> TestResult {
-        let credential = provider_credential_with_data(
-            8,
-            ProviderCredential::emby(
-                " http://127.0.0.1:8096 ".to_string(),
-                "api-key-secret".to_string(),
-                " emby-user-1 ".to_string(),
-            ),
-        );
-
-        let binds = api_ok(filter_provider_binds(vec![credential], "emby_user_id"))?;
-
-        assert_eq!(binds.len(), 1);
-        assert_eq!(binds[0].id, "8");
-        assert_eq!(binds[0].host, "http://127.0.0.1:8096");
-        assert_eq!(binds[0].label_key, "emby_user_id");
-        assert_eq!(binds[0].label_value, "emby-user-1");
-        assert_eq!(binds[0].provider_instance_name, "alist-main");
-        Ok(())
-    }
-
-    #[test]
-    fn filter_provider_binds_rejects_unexpected_credential_shape() {
-        let credential =
-            provider_credential_with_data(9, ProviderCredential::bilibili(Default::default()));
-
-        assert!(matches!(
-            filter_provider_binds(vec![credential], "username"),
-            Err(ApiError::Internal(message))
-                if message.contains("credential 9")
-                    && message.contains("alist")
-                    && message.contains("unexpected credential shape")
-        ));
-    }
-
-    #[test]
-    fn filter_provider_binds_rejects_empty_label_value() {
-        let credential = provider_credential_with_data(
-            10,
-            ProviderCredential::alist(
-                "https://alist.example".to_string(),
-                "   ".to_string(),
-                "hashed-password".to_string(),
-                None,
-            ),
-        );
-
-        assert!(matches!(
-            filter_provider_binds(vec![credential], "username"),
-            Err(ApiError::Internal(message))
-                if message.contains("credential 10")
-                    && message.contains("alist")
-                    && message.contains("empty bind fields")
-        ));
     }
 
     fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {

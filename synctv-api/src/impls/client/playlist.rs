@@ -3,7 +3,7 @@ use synctv_core::models::{
     PlaylistListSortBy as CorePlaylistListSortBy, SortDirection as CoreSortDirection,
     StoreFileUploadResult, UserId,
 };
-use synctv_core::service::playlist::{
+use synctv_core::service::{
     CreatePlaylistRequest as CoreCreatePlaylistRequest,
     MovePlaylistRequest as CoreMovePlaylistRequest, SetPlaylistRequest as CoreSetPlaylistRequest,
 };
@@ -94,7 +94,7 @@ fn optional_trimmed_string(value: &str) -> Option<String> {
 pub(crate) fn build_create_playlist_request(
     room_id: &synctv_core::models::RoomId,
     req: synctv_proto::client::CreatePlaylistRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<CoreCreatePlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::CreatePlaylistRequest {
@@ -138,7 +138,7 @@ pub(crate) fn build_create_playlist_request(
 
 pub(crate) fn build_update_playlist_request(
     req: synctv_proto::client::UpdatePlaylistRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<CoreSetPlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     if req.name.trim().is_empty() && req.description.trim().is_empty() {
@@ -156,7 +156,7 @@ pub(crate) fn build_update_playlist_request(
 
 pub(crate) fn build_move_playlist_request(
     req: synctv_proto::client::MovePlaylistRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<CoreMovePlaylistRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::MovePlaylistRequest {
@@ -196,7 +196,7 @@ pub(crate) fn build_move_playlist_request(
 
 pub(crate) fn build_delete_playlist_request(
     req: synctv_proto::client::DeletePlaylistRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<(synctv_core::models::PlaylistId, bool), ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
@@ -382,7 +382,7 @@ impl ClientApiImpl {
                 rid,
                 playlist_id,
                 *user_id,
-                synctv_core::service::playlist::CreatePlaylistCoverUploadSession {
+                synctv_core::service::CreatePlaylistCoverUploadSession {
                     client_cover_id: optional_trimmed_string(&req.client_cover_id),
                     mime_type: req.mime_type,
                     size_bytes: req.size_bytes,
@@ -891,7 +891,7 @@ mod tests {
 
     #[test]
     fn build_create_playlist_request_rejects_invalid_proto_payload() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_create_playlist_request(
             &RoomId::new(),
             synctv_proto::client::CreatePlaylistRequest {
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn build_create_playlist_request_parses_dynamic_payload() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let room_id = RoomId::new();
         let request = api_ok(build_create_playlist_request(
             &room_id,
@@ -956,7 +956,7 @@ mod tests {
 
     #[test]
     fn build_create_playlist_request_parses_proto_validated_parent_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let room_id = RoomId::new();
         let parent_id = PlaylistId::expect_positive(123);
         let parent_public_id = codec_ok(codec.encode_playlist_id(parent_id))?;
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn build_update_playlist_request_rejects_long_name() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_update_playlist_request(
             synctv_proto::client::UpdatePlaylistRequest {
                 playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
@@ -1000,7 +1000,7 @@ mod tests {
 
     #[test]
     fn build_move_playlist_request_requires_anchor() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_move_playlist_request(
             synctv_proto::client::MovePlaylistRequest {
                 playlist_id: codec_ok(codec.encode_playlist_id(PlaylistId::expect_positive(1)))?,
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn build_delete_playlist_request_rejects_invalid_playlist_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let error = api_err(build_delete_playlist_request(
             synctv_proto::client::DeletePlaylistRequest {
                 playlist_id: "bad-playlist".into(),
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn build_delete_playlist_request_parses_playlist_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let request = api_ok(build_delete_playlist_request(
             synctv_proto::client::DeletePlaylistRequest {

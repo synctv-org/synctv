@@ -7,8 +7,8 @@ use crate::{
         RoomSettings, RoomWithCount, UserId,
     },
     service::{
-        permission::PermissionService, playlist::PlaylistService, room::RoomService,
-        room_settings::RoomSettingsService, user::UserService,
+        room::RoomService, room_settings::RoomSettingsService, user::UserService,
+        PermissionService, PlaylistService,
     },
     Error, Result,
 };

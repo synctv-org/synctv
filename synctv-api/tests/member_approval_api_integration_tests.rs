@@ -5,7 +5,7 @@ mod support;
 use std::sync::Arc;
 
 use chrono::Utc;
-use synctv_api::impls::{AdminApiConfig, AdminApiImpl, ApiError, ClientApiImpl};
+use synctv_api::{AdminApiConfig, AdminApiImpl, ApiError, ClientApiImpl};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -14,11 +14,9 @@ use synctv_core::{
     },
     repository::{ProviderInstanceRepository, SettingsRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        AuditService, EmailConfig, EmailConfigProvider, EmailService, InMemoryTokenBlacklistStore,
-        PublishKeyService, RemoteProviderManager, RoomService, RuntimeSettingsStore,
-        SettingsService, UserService,
+        AuditService, BruteForceProtection, EmailConfig, EmailConfigProvider, EmailService,
+        InMemoryTokenBlacklistStore, JwtService, PublishKeyService, RemoteProviderManager,
+        RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
     Config,
 };
@@ -67,8 +65,8 @@ fn make_user_service(pool: &sqlx::PgPool) -> UserService {
     )
 }
 
-fn public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::plain()
 }
 
 fn review_request_public_id(id: i64) -> String {
@@ -144,7 +142,7 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -202,8 +200,8 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
 
     AdminApiImpl::new_with_runtime(
         AdminApiConfig {
-            read_pool: None,
             room_service: Arc::new(room_service),
+            read_services: support::admin_read_services(user_service.as_ref()),
             user_service,
             settings_service,
             runtime_settings_store: Some(runtime_settings_store),
@@ -405,7 +403,7 @@ async fn test_admin_member_approval_api_contracts() {
                 notify: false,
             },
             &root_admin.id,
-            &synctv_api::impls::admin::RequestContext::default(),
+            &synctv_api::AdminRequestContext::default(),
         )
         .await
         .unwrap()
@@ -431,7 +429,7 @@ async fn test_admin_member_approval_api_contracts() {
                 request_id: review_request_public_id(approve_request_id),
             },
             &root_admin.id,
-            &synctv_api::impls::admin::RequestContext::default(),
+            &synctv_api::AdminRequestContext::default(),
         )
         .await
         .unwrap()
@@ -454,7 +452,7 @@ async fn test_admin_member_approval_api_contracts() {
                 reason: "policy violation".to_string(),
             },
             &root_admin.id,
-            &synctv_api::impls::admin::RequestContext::default(),
+            &synctv_api::AdminRequestContext::default(),
         )
         .await
         .unwrap();
@@ -602,7 +600,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
                 reason: "first request rejected".to_string(),
             },
             &root_admin.id,
-            &synctv_api::impls::admin::RequestContext::default(),
+            &synctv_api::AdminRequestContext::default(),
         )
         .await
         .unwrap();
@@ -620,7 +618,7 @@ async fn test_admin_room_join_review_uses_request_id_not_user_id() {
                 request_id: review_request_public_id(old_request_id),
             },
             &root_admin.id,
-            &synctv_api::impls::admin::RequestContext::default(),
+            &synctv_api::AdminRequestContext::default(),
         )
         .await
         .expect_err("reviewing a non-pending historical request must fail");

@@ -12,11 +12,11 @@ use sha2::{Digest, Sha256};
 use crate::{
     models::{
         CompleteFileUploadPart, CompleteFileUploadSession, CompleteFileUploadSessionResult,
-        CreateFileUploadSession, FileBlob, FileBlobCompression, FileObjectDownload,
-        FileObjectMetadata, FileOwnershipProofRange, FileReferenceTarget, FileUploadManifestPart,
-        FileUploadOwnershipProofMetadata, FileUploadPartUrl, FileUploadSession,
-        FileUploadSessionCreateResult, FileUploadSessionKind, GetFileObject, NewStoredFile,
-        StoreFileUpload, StoreFileUploadResult,
+        CreateFileUploadSession, FileBlob, FileBlobCompression, FileObjectAccess,
+        FileObjectDownload, FileObjectKind, FileObjectMetadata, FileOwnershipProofRange,
+        FileReferenceTarget, FileUploadManifestPart, FileUploadOwnershipProofMetadata,
+        FileUploadPartUrl, FileUploadSession, FileUploadSessionCreateResult, FileUploadSessionKind,
+        GetFileObject, NewStoredFile, StoreFileUpload, StoreFileUploadResult,
     },
     repository::{
         FileStorageRepository, UpsertFileObject, UpsertFileUploadSession,
@@ -24,22 +24,21 @@ use crate::{
     },
     service::file_storage::{
         attach_file_ownership_proof_token, attach_prepared_file_urls, collect_file_object_download,
-        constant_time_eq, database_file_object_url, decode_database_file_object_key,
-        encode_database_file_object_key, file_object_key, file_ownership_proof_digest,
-        file_part_manifest_digest, file_reuse_grant, file_storage_object_base_path,
-        mark_upload_session_ownership_proof_verified, new_public_file_id,
+        constant_time_eq, decode_file_object_key, encode_file_object_key, file_object_access,
+        file_object_key, file_ownership_proof_digest, file_part_manifest_digest, file_reuse_grant,
+        file_storage_object_base_path, mark_upload_session_ownership_proof_verified, new_file_id,
         optional_file_storage_public_url, payload_len_i64, register_upload_session_reference,
         strip_internal_file_metadata, upload_manifest_is_single_object,
-        upload_manifest_parts_from_metadata, upload_media_type, upload_session_is_multipart,
-        upload_session_is_single_object, upload_session_metadata,
+        upload_manifest_parts_from_metadata, upload_media_type, upload_session_file_id,
+        upload_session_is_multipart, upload_session_is_single_object, upload_session_metadata,
         upload_session_metadata_with_manifest, upload_session_object_metadata,
         upload_session_parts_progress, upload_session_policy, upload_session_progress,
-        upload_session_public_file_id, validate_create_file_upload_session,
-        validate_database_file_read_token, validate_database_file_upload_token,
-        validate_file_mime_type, validate_file_reuse_grant, validate_file_upload_token_context,
-        validate_s3_file_storage_config, validate_session_file_for_storage, validate_stored_files,
-        validate_upload_range, validated_upload_manifest, CreateFileReuseGrant, FileObjectReader,
-        FileReuseGrant, FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
+        validate_create_file_upload_session, validate_file_mime_type,
+        validate_file_object_read_token, validate_file_reuse_grant, validate_file_upload_token,
+        validate_file_upload_token_context, validate_s3_file_storage_config,
+        validate_session_file_for_storage, validate_stored_files, validate_upload_range,
+        validated_upload_manifest, CreateFileReuseGrant, FileObjectReader, FileReuseGrant,
+        FileStorageCleanupOrigin, FileStorageContext, FileStorageService,
         UploadSessionMetadataInput, ValidatedFileReuseGrant, FILE_UPLOAD_EXPIRES_SECONDS,
     },
     Error, Result,
@@ -524,8 +523,8 @@ impl S3CompatibleFileStorageService {
     }
 
     async fn object_download(&self, request: GetFileObject) -> Result<FileObjectDownload> {
-        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        validate_database_file_read_token(
+        let object_key = decode_file_object_key(&request.encoded_object_key)?;
+        validate_file_object_read_token(
             &self.config.storage_backend,
             &object_key,
             &request.read_token,
@@ -967,20 +966,37 @@ impl FileStorageService for S3CompatibleFileStorageService {
         &self.config.storage_backend
     }
 
+    fn supports_reuse_grants(&self) -> bool {
+        true
+    }
+
     fn repository(&self) -> Option<Arc<FileStorageRepository>> {
         self.repository.clone()
     }
 
-    fn object_url(
-        &self,
-        storage_backend: &str,
-        object_key: &str,
-        _database_object_route_prefix: &str,
-    ) -> Result<Option<String>> {
+    fn public_object_url(&self, storage_backend: &str, object_key: &str) -> Result<Option<String>> {
         if storage_backend != self.config.storage_backend {
             return Ok(None);
         }
         optional_file_storage_public_url(&self.config, object_key)
+    }
+
+    fn file_object_access(
+        &self,
+        storage_backend: &str,
+        object_key: &str,
+        object_kind: FileObjectKind,
+    ) -> Result<Option<FileObjectAccess>> {
+        if storage_backend != self.config.storage_backend {
+            return Ok(None);
+        }
+        file_object_access(
+            object_kind,
+            &self.config.storage_backend,
+            object_key,
+            &self.config.upload_token_secret,
+        )
+        .map(Some)
     }
 
     async fn create_upload_session(
@@ -998,9 +1014,9 @@ impl FileStorageService for S3CompatibleFileStorageService {
             request.policy.max_size_bytes,
             &request.parts,
         )?;
-        let public_file_id = new_public_file_id();
+        let file_id = new_file_id();
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
-            public_file_id: &public_file_id,
+            file_id: &file_id,
             user_id: request.user_id,
             storage_scope: &request.storage_scope,
             client_file_id: request.client_file_id.as_deref(),
@@ -1028,10 +1044,11 @@ impl FileStorageService for S3CompatibleFileStorageService {
             if self.operator.stat(&existing.object_key).await.is_ok() {
                 validate_file_mime_type(&request.policy, &existing.mime_type)?;
                 let mut file = NewStoredFile {
-                    id: public_file_id,
+                    id: file_id,
                     filename: request.filename.clone(),
                     storage_backend: self.config.storage_backend.clone(),
                     object_key: existing.object_key.clone(),
+                    object_access: None,
                     url: None,
                     mime_type: Some(existing.mime_type),
                     size_bytes: Some(existing.size_bytes),
@@ -1065,11 +1082,12 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .await?;
                 return Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
                     file,
-                    encoded_object_key: encode_database_file_object_key(&existing.object_key),
+                    encoded_object_key: encode_file_object_key(&existing.object_key),
                     upload_required: false,
                     ownership_proof_required: true,
                     ownership_proof_nonce: Some(nonce),
                     ownership_proof_ranges: ranges,
+                    upload_object_access: None,
                     upload_url: None,
                     upload_method: None,
                     upload_headers: Default::default(),
@@ -1106,12 +1124,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
         let upload_session_key = if let Some(existing) = existing_session.as_ref() {
             existing.upload_session_key.clone()
         } else {
-            file_object_key(
-                &object_base_path,
-                "sessions",
-                &public_file_id,
-                &request.mime_type,
-            )
+            file_object_key(&object_base_path, "sessions", &file_id, &request.mime_type)
         };
         let single_object_upload =
             upload_manifest_is_single_object(request.size_bytes, &request.parts);
@@ -1134,13 +1147,13 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     .await?,
             )
         };
-        let public_file_id = if let Some(existing) = existing_session.as_ref() {
-            upload_session_public_file_id(&existing.metadata)?
+        let file_id = if let Some(existing) = existing_session.as_ref() {
+            upload_session_file_id(&existing.metadata)?
         } else {
-            public_file_id
+            file_id
         };
         let session_metadata = upload_session_metadata(UploadSessionMetadataInput {
-            public_file_id: &public_file_id,
+            file_id: &file_id,
             user_id: request.user_id,
             storage_scope: &request.storage_scope,
             client_file_id: request.client_file_id.as_deref(),
@@ -1181,10 +1194,11 @@ impl FileStorageService for S3CompatibleFileStorageService {
             .await?;
         let public_url = optional_file_storage_public_url(&self.config, &object_key)?;
         let mut file = NewStoredFile {
-            id: public_file_id,
+            id: file_id,
             filename: request.filename,
             storage_backend: self.config.storage_backend.clone(),
             object_key,
+            object_access: None,
             url: public_url,
             mime_type: Some(request.mime_type),
             size_bytes: Some(request.size_bytes),
@@ -1243,20 +1257,21 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 token.to_string(),
             );
         }
-        let upload_url = database_file_object_url(
-            &request.policy.database_object_route_prefix,
+        let upload_object_access = file_object_access(
+            request.policy.object_kind,
             &self.config.storage_backend,
             &upload_session_key,
             &self.config.upload_token_secret,
         )?;
         Ok(FileUploadSessionCreateResult::Session(FileUploadSession {
-            encoded_object_key: encode_database_file_object_key(&upload_session_key),
+            encoded_object_key: encode_file_object_key(&upload_session_key),
             file,
             upload_required: true,
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
-            upload_url: Some(upload_url),
+            upload_object_access: Some(upload_object_access),
+            upload_url: None,
             upload_method: Some("PUT".to_string()),
             upload_headers,
             expires_at: Some(expires_at),
@@ -1318,13 +1333,20 @@ impl FileStorageService for S3CompatibleFileStorageService {
         }
         strip_internal_file_metadata(&mut files);
         validate_stored_files(&files)?;
-        attach_prepared_file_urls(self, &mut files, context.database_object_route_prefix)?;
+        attach_prepared_file_urls(self, &mut files)?;
+        for file in &mut files {
+            file.object_access = self.file_object_access(
+                &file.storage_backend,
+                &file.object_key,
+                context.object_kind,
+            )?;
+        }
         if let Some(repository) = self.repository.as_ref() {
             super::media_processing::attach_variants_to_files(
                 self,
                 repository.as_ref(),
                 &mut files,
-                context.database_object_route_prefix,
+                context.object_kind,
             )
             .await?;
         }
@@ -1464,7 +1486,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             .delete_upload_session_parts(&self.config.storage_backend, &session.upload_session_key)
             .await?;
         let (_, reference_id) =
-            super::upload_session_reference_target(session.metadata.public_file_id.as_str());
+            super::upload_session_reference_target(session.metadata.file_id.as_str());
         if !reference_id.is_empty() {
             repository
                 .release_reference(
@@ -1510,8 +1532,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 "file upload part must be non-empty".to_string(),
             ));
         }
-        let upload_session_key = decode_database_file_object_key(&encoded_object_key)?;
-        let payload = validate_database_file_upload_token(
+        let upload_session_key = decode_file_object_key(&encoded_object_key)?;
+        let payload = validate_file_upload_token(
             &self.config.storage_backend,
             &upload_token,
             &upload_session_key,
@@ -1688,8 +1710,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
         request: CompleteFileUploadSession,
     ) -> Result<CompleteFileUploadSessionResult> {
         let repository = self.repository()?;
-        let object_key = decode_database_file_object_key(&request.encoded_object_key)?;
-        let _payload = validate_database_file_upload_token(
+        let object_key = decode_file_object_key(&request.encoded_object_key)?;
+        let _payload = validate_file_upload_token(
             &self.config.storage_backend,
             &request.upload_token,
             &object_key,
@@ -1764,31 +1786,49 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 .get_active_reference_metadata_by_target(reference_kind, &reference_id)
                 .await?
                 .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
-            if reference.storage_backend != self.config.storage_backend
-                || reference.object_key != object_key
-            {
+            if reference.storage_backend != self.config.storage_backend {
                 return Err(Error::InvalidInput(
                     "file reference does not match upload session".to_string(),
                 ));
             }
-            let crate::models::FileReferenceMetadata::UploadSession(metadata) = reference.metadata
-            else {
-                return Err(Error::InvalidInput(
-                    "file reference was not found".to_string(),
-                ));
-            };
-            let ownership_proof = metadata
-                .ownership_proof
-                .clone()
-                .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
-            Some((
-                reference.object_key,
-                reference.mime_type,
-                reference.size_bytes,
-                reference.content_manifest_sha256,
-                metadata,
-                ownership_proof,
-            ))
+            if reference.object_key == object_key {
+                let crate::models::FileReferenceMetadata::UploadSession(metadata) =
+                    reference.metadata
+                else {
+                    return Err(Error::InvalidInput(
+                        "file reference was not found".to_string(),
+                    ));
+                };
+                let ownership_proof = metadata.ownership_proof.clone().ok_or_else(|| {
+                    Error::InvalidInput("file reference was not found".to_string())
+                })?;
+                Some((
+                    reference.object_key,
+                    reference.mime_type,
+                    reference.size_bytes,
+                    reference.content_manifest_sha256,
+                    metadata,
+                    ownership_proof,
+                ))
+            } else {
+                let session = repository
+                    .get_upload_session(&self.config.storage_backend, &object_key)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::InvalidInput(
+                            "file reference does not match upload session".to_string(),
+                        )
+                    })?;
+                if session.object_key != reference.object_key
+                    || upload_session_file_id(&session.metadata)? != reference_id
+                {
+                    return Err(Error::InvalidInput(
+                        "file reference does not match upload session".to_string(),
+                    ));
+                }
+                reference_session = Some(session);
+                None
+            }
         };
         if let Some((
             reference_object_key,
@@ -1861,6 +1901,14 @@ impl FileStorageService for S3CompatibleFileStorageService {
         let session = reference_session
             .take()
             .ok_or_else(|| Error::InvalidInput("file reference was not found".to_string()))?;
+        if upload_session_is_single_object(session.session_kind) {
+            let blob = self.complete_single_upload_session(&session).await?;
+            return Ok(CompleteFileUploadSessionResult {
+                object: Some(blob),
+                uploaded_size_bytes: session.size_bytes,
+                uploaded_parts: vec![1],
+            });
+        }
         if !upload_session_is_multipart(session.session_kind) {
             return Err(Error::InvalidInput(
                 "file upload session kind is invalid".to_string(),
@@ -1930,13 +1978,13 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 self.config.storage_backend
             )));
         }
-        let read_token = super::database_file_read_token(
+        let read_token = super::file_object_read_token(
             &self.config.storage_backend,
             object_key,
             &self.config.upload_token_secret,
         )?;
         self.get_object(GetFileObject {
-            encoded_object_key: encode_database_file_object_key(object_key),
+            encoded_object_key: encode_file_object_key(object_key),
             read_token,
             range: None,
         })
@@ -2059,7 +2107,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
         &self,
         storage_backend: &str,
         object_key: &str,
-        database_object_route_prefix: &str,
+        object_kind: FileObjectKind,
         upload_policy: &crate::models::FileUploadPolicy,
     ) -> Result<Vec<crate::models::FileObjectVariant>> {
         if storage_backend != self.config.storage_backend {
@@ -2071,7 +2119,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             repository.clone(),
             storage_backend,
             object_key,
-            database_object_route_prefix,
+            object_kind,
             upload_policy,
         )
         .await

@@ -266,6 +266,9 @@ pub struct FileObjectVariant {
     pub group_id: String,
     pub variant_key: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(default)]
+    pub object_access: Option<FileObjectAccess>,
     pub url: Option<String>,
     pub mime_type: String,
     pub size_bytes: i64,
@@ -562,10 +565,23 @@ pub struct FileOwnershipProofRange {
     pub length: i32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileObjectKind {
+    ChatAttachment,
+    UserAvatar,
+    MediaCover,
+    RoomCover,
+    PlaylistCover,
+    #[default]
+    Generic,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileUploadPolicy {
     pub kind: String,
+    pub object_kind: FileObjectKind,
     pub max_size_bytes: i64,
     pub max_width: Option<i32>,
     pub max_height: Option<i32>,
@@ -576,7 +592,63 @@ pub struct FileUploadPolicy {
     pub allowed_mime_prefixes: Vec<String>,
     pub allowed_mime_types: Vec<String>,
     pub storage_namespace: String,
-    pub database_object_route_prefix: String,
+}
+
+impl<'de> Deserialize<'de> for FileUploadPolicy {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Default, Deserialize)]
+        #[serde(default, rename_all = "camelCase")]
+        struct WireFileUploadPolicy {
+            kind: String,
+            object_kind: Option<FileObjectKind>,
+            max_size_bytes: i64,
+            max_width: Option<i32>,
+            max_height: Option<i32>,
+            require_image_dimensions: bool,
+            max_audio_duration_seconds: Option<i32>,
+            max_audio_bitrate_bps: Option<i32>,
+            require_audio_metadata: bool,
+            allowed_mime_prefixes: Vec<String>,
+            allowed_mime_types: Vec<String>,
+            storage_namespace: String,
+        }
+
+        let wire = WireFileUploadPolicy::deserialize(deserializer)?;
+        let object_kind = match wire.object_kind {
+            Some(object_kind) => object_kind,
+            None => file_object_kind_for_upload_policy(&wire.kind).ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown file upload policy kind: {}", wire.kind))
+            })?,
+        };
+        Ok(Self {
+            object_kind,
+            kind: wire.kind,
+            max_size_bytes: wire.max_size_bytes,
+            max_width: wire.max_width,
+            max_height: wire.max_height,
+            require_image_dimensions: wire.require_image_dimensions,
+            max_audio_duration_seconds: wire.max_audio_duration_seconds,
+            max_audio_bitrate_bps: wire.max_audio_bitrate_bps,
+            require_audio_metadata: wire.require_audio_metadata,
+            allowed_mime_prefixes: wire.allowed_mime_prefixes,
+            allowed_mime_types: wire.allowed_mime_types,
+            storage_namespace: wire.storage_namespace,
+        })
+    }
+}
+
+fn file_object_kind_for_upload_policy(kind: &str) -> Option<FileObjectKind> {
+    match kind {
+        "chat_attachment" => Some(FileObjectKind::ChatAttachment),
+        "user_avatar" => Some(FileObjectKind::UserAvatar),
+        "media_cover" => Some(FileObjectKind::MediaCover),
+        "room_cover" => Some(FileObjectKind::RoomCover),
+        "playlist_cover" => Some(FileObjectKind::PlaylistCover),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -585,6 +657,8 @@ pub struct NewStoredFile {
     pub filename: Option<String>,
     pub storage_backend: String,
     pub object_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_access: Option<FileObjectAccess>,
     pub url: Option<String>,
     pub mime_type: Option<String>,
     pub size_bytes: Option<i64>,
@@ -642,7 +716,8 @@ pub struct FileUploadOwnershipProofMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileUploadSessionMetadata {
-    pub public_file_id: String,
+    #[serde(alias = "publicFileId")]
+    pub file_id: String,
     pub user_id: UserId,
     pub storage_scope: String,
     pub client_file_id: Option<String>,
@@ -708,6 +783,32 @@ pub struct FileUploadPartUrl {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileObjectAccess {
+    pub object_kind: FileObjectKind,
+    pub encoded_object_key: String,
+    pub read_token: String,
+}
+
+impl Type<Postgres> for FileObjectAccess {
+    fn type_info() -> PgTypeInfo {
+        <sqlx::types::Json<FileObjectAccess> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &PgTypeInfo) -> bool {
+        <sqlx::types::Json<FileObjectAccess> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for FileObjectAccess {
+    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let sqlx::types::Json(access) =
+            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
+        Ok(access)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileUploadSession {
     pub file: NewStoredFile,
@@ -716,6 +817,7 @@ pub struct FileUploadSession {
     pub ownership_proof_required: bool,
     pub ownership_proof_nonce: Option<String>,
     pub ownership_proof_ranges: Vec<FileOwnershipProofRange>,
+    pub upload_object_access: Option<FileObjectAccess>,
     pub upload_url: Option<String>,
     pub upload_method: Option<String>,
     pub upload_headers: BTreeMap<String, String>,
@@ -872,4 +974,109 @@ pub struct CompleteFileUploadSessionResult {
     pub object: Option<FileBlob>,
     pub uploaded_size_bytes: i64,
     pub uploaded_parts: Vec<i32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_object_access_uses_camel_case_json_fields() {
+        let access = FileObjectAccess {
+            object_kind: FileObjectKind::MediaCover,
+            encoded_object_key: "encoded-key".to_string(),
+            read_token: "read-token".to_string(),
+        };
+
+        let json = serde_json::to_value(&access).expect("access should serialize");
+
+        assert_eq!(json["objectKind"], "media_cover");
+        assert_eq!(json["encodedObjectKey"], "encoded-key");
+        assert_eq!(json["readToken"], "read-token");
+        assert!(json.get("encoded_object_key").is_none());
+        assert!(json.get("read_token").is_none());
+    }
+
+    #[test]
+    fn file_upload_policy_derives_object_kind_from_known_kind() {
+        let json = serde_json::json!({
+            "kind": "media_cover",
+            "maxSizeBytes": 2048,
+            "maxWidth": 1920,
+            "maxHeight": 1080,
+            "requireImageDimensions": true,
+            "maxAudioDurationSeconds": null,
+            "maxAudioBitrateBps": null,
+            "requireAudioMetadata": false,
+            "allowedMimePrefixes": ["image/"],
+            "allowedMimeTypes": [],
+            "storageNamespace": "media-covers"
+        });
+
+        let policy: FileUploadPolicy =
+            serde_json::from_value(json).expect("policy should deserialize");
+
+        assert_eq!(policy.kind, "media_cover");
+        assert_eq!(policy.object_kind, FileObjectKind::MediaCover);
+        assert_eq!(policy.max_size_bytes, 2048);
+    }
+
+    #[test]
+    fn file_upload_policy_rejects_unknown_kind_without_object_kind() {
+        let json = serde_json::json!({
+            "kind": "custom_file",
+            "maxSizeBytes": 2048,
+            "allowedMimeTypes": ["application/octet-stream"],
+            "storageNamespace": "custom-files"
+        });
+
+        let error =
+            serde_json::from_value::<FileUploadPolicy>(json).expect_err("policy should fail");
+
+        assert!(error
+            .to_string()
+            .contains("unknown file upload policy kind"));
+    }
+
+    #[test]
+    fn file_reference_metadata_derives_upload_policy_object_kind() {
+        let json = serde_json::json!({
+            "kind": "uploadSession",
+            "data": {
+                "fileId": "file-1",
+                "userId": 1,
+                "storageScope": "room:1",
+                "clientFileId": null,
+                "filename": "cover.webp",
+                "width": 320,
+                "height": 180,
+                "metadata": {},
+                "uploadPolicy": {
+                    "kind": "room_cover",
+                    "maxSizeBytes": 4096,
+                    "maxWidth": 1920,
+                    "maxHeight": 1080,
+                    "requireImageDimensions": true,
+                    "maxAudioDurationSeconds": null,
+                    "maxAudioBitrateBps": null,
+                    "requireAudioMetadata": false,
+                    "allowedMimePrefixes": ["image/"],
+                    "allowedMimeTypes": [],
+                    "storageNamespace": "room-covers"
+                },
+                "manifestParts": [],
+                "ownershipProof": null,
+                "ownershipProofVerified": false
+            }
+        });
+
+        let metadata: FileReferenceMetadata =
+            serde_json::from_value(json).expect("reference metadata should deserialize");
+
+        let FileReferenceMetadata::UploadSession(session) = metadata else {
+            panic!("metadata should be upload session");
+        };
+        assert_eq!(session.file_id, "file-1");
+        assert_eq!(session.upload_policy.object_kind, FileObjectKind::RoomCover);
+    }
 }

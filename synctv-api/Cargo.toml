@@ -99,6 +99,7 @@ tonic-types.workspace = true
 prost.workspace = true
 opaque-ke.workspace = true
 sha2_010.workspace = true
+sqids.workspace = true
 prost-types.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 pbjson-types.workspace = true

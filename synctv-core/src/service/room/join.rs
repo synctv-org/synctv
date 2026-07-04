@@ -6,7 +6,7 @@ use crate::{
         RoomMemberWithUser, RoomRole, RoomSettings, RoomStatus, UserId,
     },
     repository::ReviewRepository,
-    service::room::{RealtimeOutboxPermissionChangedEventFactory, RoomService},
+    service::{RealtimeOutboxPermissionChangedEventFactory, RoomService},
     Error, Result,
 };
 
@@ -104,65 +104,60 @@ impl RoomService {
 
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("join_room:{room_id}:{user_id}");
-            return crate::service::distributed_lock::with_coordination_lock(
-                lock.as_ref(),
-                &lock_key,
-                10,
-                || {
-                    let password_proof = password_proof.clone();
-                    let outbox_event_factory = outbox_event_factory.clone();
-                    async move {
-                        let fresh_ctx = self
-                            .room_repo
-                            .get_join_context(&room_id, &user_id)
-                            .await?
-                            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+            return crate::service::with_coordination_lock(lock.as_ref(), &lock_key, 10, || {
+                let password_proof = password_proof.clone();
+                let outbox_event_factory = outbox_event_factory.clone();
+                async move {
+                    let fresh_ctx = self
+                        .room_repo
+                        .get_join_context(&room_id, &user_id)
+                        .await?
+                        .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-                        self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
-                            .await?;
+                    self.ensure_room_creator_is_active_for_access(&fresh_ctx.room, &user_id)
+                        .await?;
 
-                        if fresh_ctx.room.is_banned {
-                            return Err(Error::Authorization("Room is banned".to_string()));
-                        }
-
-                        if fresh_ctx.room.status != RoomStatus::Active {
-                            return Err(Error::InvalidInput("Room is closed".to_string()));
-                        }
-                        if fresh_ctx.is_in_kick_cooldown {
-                            return Err(Error::Authorization(
-                                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
-                                    .to_string(),
-                            ));
-                        }
-                        if self
-                            .member_repo
-                            .is_in_kick_cooldown(&room_id, &user_id)
-                            .await?
-                        {
-                            return Err(Error::Authorization(
-                                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
-                                    .to_string(),
-                            ));
-                        }
-
-                        self.verify_room_password_join_proof(
-                            &fresh_ctx,
-                            &room_id,
-                            &user_id,
-                            &password_proof,
-                        )?;
-
-                        self.do_join_room(
-                            fresh_ctx.room,
-                            fresh_ctx.settings,
-                            room_id,
-                            user_id,
-                            outbox_event_factory,
-                        )
-                        .await
+                    if fresh_ctx.room.is_banned {
+                        return Err(Error::Authorization("Room is banned".to_string()));
                     }
-                },
-            )
+
+                    if fresh_ctx.room.status != RoomStatus::Active {
+                        return Err(Error::InvalidInput("Room is closed".to_string()));
+                    }
+                    if fresh_ctx.is_in_kick_cooldown {
+                        return Err(Error::Authorization(
+                            crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
+                                .to_string(),
+                        ));
+                    }
+                    if self
+                        .member_repo
+                        .is_in_kick_cooldown(&room_id, &user_id)
+                        .await?
+                    {
+                        return Err(Error::Authorization(
+                            crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
+                                .to_string(),
+                        ));
+                    }
+
+                    self.verify_room_password_join_proof(
+                        &fresh_ctx,
+                        &room_id,
+                        &user_id,
+                        &password_proof,
+                    )?;
+
+                    self.do_join_room(
+                        fresh_ctx.room,
+                        fresh_ctx.settings,
+                        room_id,
+                        user_id,
+                        outbox_event_factory,
+                    )
+                    .await
+                }
+            })
             .await;
         }
 

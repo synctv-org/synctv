@@ -590,7 +590,7 @@ pub async fn prometheus_metrics(
 
     match auth_result {
         Ok(()) => {}
-        Err(crate::http::metrics_auth::MetricsAccessError::Unauthorized) => {
+        Err(crate::metrics_auth::MetricsAccessError::Unauthorized) => {
             return (
                 StatusCode::UNAUTHORIZED,
                 [(
@@ -601,7 +601,7 @@ pub async fn prometheus_metrics(
             )
                 .into_response();
         }
-        Err(crate::http::metrics_auth::MetricsAccessError::Forbidden) => {
+        Err(crate::metrics_auth::MetricsAccessError::Forbidden) => {
             return (
                 StatusCode::FORBIDDEN,
                 [(
@@ -612,7 +612,7 @@ pub async fn prometheus_metrics(
             )
                 .into_response();
         }
-        Err(crate::http::metrics_auth::MetricsAccessError::Internal) => {
+        Err(crate::metrics_auth::MetricsAccessError::Internal) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(

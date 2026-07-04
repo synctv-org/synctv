@@ -5,12 +5,11 @@ use crate::{
         FileUploadRange, FileUploadSessionCreateResult, GetFileObject, Media, MediaId, RoomId,
         StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
     },
-    service::{
-        media::{ensure_media_creator_can_edit, MediaService},
-        media_cover_upload_policy, FileStorageCleanupOrigin, FileStorageContext,
-    },
+    service::{media_cover_upload_policy, FileStorageCleanupOrigin, FileStorageContext},
     Error, Result,
 };
+
+use super::{ensure_media_creator_can_edit, MediaService};
 
 const MEDIA_COVER_REFERENCE_KIND: &str = "media_cover";
 
@@ -190,7 +189,7 @@ impl MediaService {
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
-                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
+                    object_kind: upload_policy.object_kind,
                     client_request_id: None,
                 },
                 vec![file],

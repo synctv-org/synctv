@@ -20,11 +20,10 @@ use synctv_core::repository::{
     ChatRepository, RoomMemberRepository, RoomRepository, RoomResourceEventSummary,
     RoomResourceEventSummaryDetails, RoomResourceKind, RoomSettingsRepository, UserRepository,
 };
-use synctv_core::service::user_notification::NotificationCreatedEvent;
+use synctv_core::service::NotificationCreatedEvent;
 use synctv_core::service::{
-    chat::{ChatDependencies, ChatRuntime},
-    ChatService, ContentFilter, NotificationService, PermissionService, RateLimitConfig,
-    RateLimiter, RoomService, RoomSettingsService,
+    ChatDependencies, ChatRuntime, ChatService, ContentFilter, NotificationService,
+    PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
 };
 use synctv_core_testing::{
     create_test_request_rate_limiter, opaque_register_user, TestOptionExt, TestResultExt,
@@ -127,8 +126,8 @@ fn user_id() -> UserId {
 fn media_id() -> MediaId {
     MediaId::expect_positive(1)
 }
-fn public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn public_id_codec() -> crate::public_id::PublicIdCodec {
+    crate::public_id::PublicIdCodec::plain()
 }
 fn public_media_id() -> String {
     public_id_codec()
@@ -218,6 +217,7 @@ fn chat_attachment() -> ChatAttachment {
         filename: Some("chat-attachment-1.png".to_string()),
         storage_backend: "database".to_string(),
         object_key: "chat/attachments/chat-attachment-1".to_string(),
+        object_access: None,
         url: Some("https://cdn.example.test/chat-attachment-1.png".to_string()),
         mime_type: Some("image/png".to_string()),
         size_bytes: Some(1024),
@@ -1194,9 +1194,9 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
     let permission_service = PermissionService::new_with_runtime(
         member_repo,
         room_repo,
-        synctv_core::service::permission::PermissionServiceRuntime {
+        synctv_core::service::PermissionServiceRuntime {
             room_settings_repo: Some(room_settings_repo.clone()),
-            ..synctv_core::service::permission::PermissionServiceRuntime::local_only()
+            ..synctv_core::service::PermissionServiceRuntime::local_only()
         },
     )
     .checked("permission service should build");
@@ -2026,7 +2026,7 @@ fn test_message_handler_for_user_with_runtime_and_concurrency(
             rate_limiter: Arc::new(RateLimiter::local_only("test:handler:".to_string())),
             rate_limit_config: Arc::new(RateLimitConfig::default()),
             content_filter: Arc::new(ContentFilter::new()),
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             sender,
             concurrency_config,
         },
@@ -2087,7 +2087,7 @@ fn test_guest_message_handler_with_runtime(
             rate_limiter: Arc::new(RateLimiter::local_only("test:guest-handler:".to_string())),
             rate_limit_config: Arc::new(RateLimitConfig::default()),
             content_filter: Arc::new(ContentFilter::new()),
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             sender,
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
@@ -2344,7 +2344,7 @@ where
                 rate_limiter: Arc::new(RateLimiter::local_only(format!("test:fixture:{node_id}:"))),
                 rate_limit_config: Arc::new(RateLimitConfig::default()),
                 content_filter: Arc::new(ContentFilter::new()),
-                public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
                 sender,
                 concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
             },
@@ -2833,7 +2833,7 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
         rate_limiter: Arc::new(RateLimiter::local_only("test:chat-replay:".to_string())),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: message_sender.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -2933,7 +2933,7 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: message_sender.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -4464,7 +4464,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         .set_playlist(
             handler.room_id,
             handler.user_id,
-            synctv_core::service::playlist::SetPlaylistRequest {
+            synctv_core::service::SetPlaylistRequest {
                 playlist_id: playlist.id,
                 name: Some("observe-playback-playlist-update-v2".to_string()),
                 description: None,
@@ -5471,7 +5471,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: failing_sender.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -5492,7 +5492,7 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: healthy_sender.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -5870,7 +5870,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         rate_limiter: Arc::new(RateLimiter::local_only("test:hub:a:".to_string())),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: sender_a.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -5886,7 +5886,7 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         rate_limiter: Arc::new(RateLimiter::local_only("test:hub:b:".to_string())),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: sender_b.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -6005,7 +6005,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: sender_a.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -6023,7 +6023,7 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: sender_b.clone(),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     })
@@ -7546,14 +7546,14 @@ async fn test_guest_token_blacklist_disconnects_live_guest() {
         .await
         .checked("blacklist guest token");
 
-    let reason = super::guest_token_blacklist_denial_reason(
-        &handler.room_service,
-        &handler.room_id,
-        &handler.user_id,
-        &identity.token_jti,
-    )
-    .await
-    .checked("blacklist check should succeed");
+    let reason = super::RealtimeMembershipProbe::new(&handler.room_service)
+        .guest_token_blacklist_denial_reason(
+            &handler.room_id,
+            &handler.user_id,
+            &identity.token_jti,
+        )
+        .await
+        .checked("blacklist check should succeed");
 
     assert_eq!(reason.as_deref(), Some("Guest token has been revoked"));
 
@@ -8079,7 +8079,7 @@ async fn test_pre_join_after_registration_rejects_closed_room_on_final_revalidat
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: FailingMessageSender::fail_after(usize::MAX),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -8160,7 +8160,7 @@ async fn test_pre_join_after_registration_rejects_room_with_inactive_creator() {
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: FailingMessageSender::fail_after(usize::MAX),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -8240,7 +8240,7 @@ async fn test_pre_join_after_registration_rejects_banned_user_on_final_revalidat
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: FailingMessageSender::fail_after(usize::MAX),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -8322,7 +8322,7 @@ async fn test_pre_join_after_registration_rolls_back_when_room_event_subscriptio
         )),
         rate_limit_config: Arc::new(RateLimitConfig::default()),
         content_filter: Arc::new(ContentFilter::new()),
-        public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+        public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         sender: FailingMessageSender::fail_after(usize::MAX),
         concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
     });
@@ -8615,7 +8615,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         max_total: 10,
         ..ConnectionLimits::default()
     }));
-    let public_id_codec = Arc::new(synctv_core::PublicIdCodec::plain());
+    let public_id_codec = Arc::new(crate::public_id::PublicIdCodec::plain());
 
     let owner = register_test_user(
         &user_service,
@@ -8655,7 +8655,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
         let (
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
+            _room_members_snapshot_service,
             room_settings_snapshot_service,
         ) = test_resource_watch_runtime_fields();
         ResourceWatchSession::new(ResourceWatchSessionConfig {
@@ -8670,7 +8670,6 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
             sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
             playback_service,
             playlist_items_snapshot_service,
-            room_members_snapshot_service,
             room_settings_snapshot_service,
         })
     };
@@ -8716,7 +8715,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
     let user_service = room_service.user_service().clone();
     let event_service = test_realtime_manager("watch_prepare_missing_resource").await;
     let connection_service = test_connection_manager();
-    let public_id_codec = Arc::new(synctv_core::PublicIdCodec::plain());
+    let public_id_codec = Arc::new(crate::public_id::PublicIdCodec::plain());
 
     let owner = register_test_user(
         &user_service,
@@ -8738,7 +8737,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
     let (
         playback_service,
         playlist_items_snapshot_service,
-        room_members_snapshot_service,
+        _room_members_snapshot_service,
         room_settings_snapshot_service,
     ) = test_resource_watch_runtime_fields();
     let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
@@ -8753,7 +8752,6 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
         sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
         playback_service,
         playlist_items_snapshot_service,
-        room_members_snapshot_service,
         room_settings_snapshot_service,
     });
     let observe = synctv_proto::client::ObserveResource {
@@ -8792,7 +8790,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
     let user_service = room_service.user_service().clone();
     let event_service = test_realtime_manager("watch_chat_events_permission").await;
     let connection_service = test_connection_manager();
-    let public_id_codec = Arc::new(synctv_core::PublicIdCodec::plain());
+    let public_id_codec = Arc::new(crate::public_id::PublicIdCodec::plain());
 
     let owner = register_test_user(
         &user_service,
@@ -8843,7 +8841,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
     let (
         playback_service,
         playlist_items_snapshot_service,
-        room_members_snapshot_service,
+        _room_members_snapshot_service,
         room_settings_snapshot_service,
     ) = test_resource_watch_runtime_fields();
     let session = ResourceWatchSession::new(ResourceWatchSessionConfig {
@@ -8858,7 +8856,6 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         sender: RecordingMessageSender::new() as Arc<dyn MessageSender>,
         playback_service,
         playlist_items_snapshot_service,
-        room_members_snapshot_service,
         room_settings_snapshot_service,
     });
 

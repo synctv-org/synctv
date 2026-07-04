@@ -947,13 +947,12 @@ pub async fn logout(
                         synctv_common::messages::AUTHENTICATION_REQUIRED.to_string(),
                     )
                 })?;
-                let token =
-                    synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
-                        .map_err(|_| {
-                            ApiError::Authentication(
-                                synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
-                            )
-                        })?;
+                let token = synctv_core::service::JwtValidator::extract_bearer_token(auth_value)
+                    .map_err(|_| {
+                        ApiError::Authentication(
+                            synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
+                        )
+                    })?;
                 client_api.logout(&token).await
             },
         )

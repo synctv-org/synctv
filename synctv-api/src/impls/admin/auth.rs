@@ -14,69 +14,71 @@ pub(in crate::impls::admin) struct AdminActor {
     pub(in crate::impls::admin) role: UserRole,
 }
 
-/// Result of validating an admin user's authentication.
-///
-/// Returned by [`validate_admin_auth`] and consumed by both HTTP and gRPC
-/// admin auth layers.
 pub struct ValidatedAdmin {
     pub user_id: UserId,
     pub role: UserRole,
 }
 
-/// Shared admin auth validation: look up the user, check banned/deleted
-/// status, and verify the token has not been invalidated by a password change.
-///
-/// Both transports must resolve `user_id` and `token_iat` from their own
-/// request metadata before calling this function.
-pub async fn validate_admin_auth(
-    user_service: &UserService,
-    user_id: UserId,
-    token_pv: i32,
-    _token_iat: i64,
-) -> Result<ValidatedAdmin, ApiError> {
-    let user = user_service.get_user(&user_id).await.map_err(|e| {
-        tracing::debug!(
-            user_id = %user_id,
-            error = %e,
-            "Admin auth rejected: failed to look up user"
-        );
-        AdminApiImpl::map_admin_auth_user_lookup_error(e)
-    })?;
+pub struct AdminAuthValidator<'a> {
+    user_service: &'a UserService,
+}
 
-    if user.is_deleted() || user.is_banned || user.status == UserStatus::Banned {
-        tracing::debug!(
-            user_id = %user_id,
-            status = ?user.status,
-            deleted = user.is_deleted(),
-            "Admin auth rejected: user is deleted or not in an active status"
-        );
-        return Err(ApiError::Authentication(
-            "Authentication failed".to_string(),
-        ));
+impl<'a> AdminAuthValidator<'a> {
+    pub const fn new(user_service: &'a UserService) -> Self {
+        Self { user_service }
     }
 
-    let password_version = user_service
-        .get_password_credential_state(&user_id)
-        .await
-        .map_err(ApiError::from)?
-        .version;
+    pub async fn validate(
+        &self,
+        user_id: UserId,
+        token_pv: i32,
+        _token_iat: i64,
+    ) -> Result<ValidatedAdmin, ApiError> {
+        let user = self.user_service.get_user(&user_id).await.map_err(|e| {
+            tracing::debug!(
+                user_id = %user_id,
+                error = %e,
+                "Admin auth rejected: failed to look up user"
+            );
+            AdminApiImpl::map_admin_auth_user_lookup_error(e)
+        })?;
 
-    if token_pv < password_version {
-        tracing::debug!(
-            user_id = %user_id,
-            token_pv = token_pv,
-            current_pv = password_version,
-            "Admin auth rejected: token password version outdated"
-        );
-        return Err(ApiError::Authentication(
-            "Token invalidated due to password change. Please log in again.".to_string(),
-        ));
+        if user.is_deleted() || user.is_banned || user.status == UserStatus::Banned {
+            tracing::debug!(
+                user_id = %user_id,
+                status = ?user.status,
+                deleted = user.is_deleted(),
+                "Admin auth rejected: user is deleted or not in an active status"
+            );
+            return Err(ApiError::Authentication(
+                "Authentication failed".to_string(),
+            ));
+        }
+
+        let password_version = self
+            .user_service
+            .get_password_credential_state(&user_id)
+            .await
+            .map_err(ApiError::from)?
+            .version;
+
+        if token_pv < password_version {
+            tracing::debug!(
+                user_id = %user_id,
+                token_pv = token_pv,
+                current_pv = password_version,
+                "Admin auth rejected: token password version outdated"
+            );
+            return Err(ApiError::Authentication(
+                "Token invalidated due to password change. Please log in again.".to_string(),
+            ));
+        }
+
+        Ok(ValidatedAdmin {
+            user_id,
+            role: user.role,
+        })
     }
-
-    Ok(ValidatedAdmin {
-        user_id,
-        role: user.role,
-    })
 }
 
 impl AdminApiImpl {
@@ -112,13 +114,13 @@ impl AdminApiImpl {
             metadata,
             EndpointRateLimitCategory::Admin,
             move |request_control, authenticated| async move {
-                let validated = validate_admin_auth(
-                    user_service.as_ref(),
-                    authenticated.user_id,
-                    authenticated.claims.pv,
-                    authenticated.claims.iat,
-                )
-                .await?;
+                let validated = AdminAuthValidator::new(user_service.as_ref())
+                    .validate(
+                        authenticated.user_id,
+                        authenticated.claims.pv,
+                        authenticated.claims.iat,
+                    )
+                    .await?;
                 if !validated.role.is_admin_or_above() {
                     return Err(ApiError::Authorization("Admin role required".to_string()));
                 }

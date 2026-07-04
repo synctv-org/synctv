@@ -7,8 +7,7 @@ use synctv_core::{
     models::{Media, MediaId, RoomId, SourceProvider, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, RoomPlaybackStateRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
 };
 use synctv_core_testing::ok;

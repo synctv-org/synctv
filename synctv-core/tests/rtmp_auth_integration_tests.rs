@@ -24,8 +24,8 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        auth::{jwt::JwtService, BruteForceProtection},
-        InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, PublishKeyService,
+        RoomService, UserService,
     },
 };
 use synctv_core_testing::{create_test_pool, ok, some, start_redis, RedisContainer, TestContainer};

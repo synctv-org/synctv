@@ -1,7 +1,7 @@
 //! RTMP `MediaProvider`
 //!
 //! Provides HTTP-FLV and HLS playback media resources for SyncTV live streams published over RTMP.
-//! URLs point to synctv's own HTTP-FLV and HLS endpoints.
+//! Playback output references SyncTV live delivery resources.
 
 use super::{
     playback_transport::PlaybackTransportAction, MediaProvider, PlaybackResult, ProviderContext,
@@ -9,7 +9,6 @@ use super::{
 };
 use crate::models::media::{PlaybackMediaProvider, PlaybackRtmpMedia};
 use crate::models::{MediaId, RoomId};
-use crate::PublicIdCodec;
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -141,18 +140,11 @@ impl RtmpProvider {
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
         request_context: Option<&super::ExecutionControl>,
-        claims: &crate::proxy_signature::ProxyUrlClaims,
-        public_id_codec: &PublicIdCodec,
+        access: super::playback_transport::LiveFlvAccess,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_flv_action(
-            Self::NAME,
-            &versioned,
-            claims,
-            public_id_codec,
-            "RTMP",
-        )
+        super::live_helpers::build_flv_action(Self::NAME, &versioned, access)
     }
 
     pub async fn get_hls_playlist(
@@ -160,16 +152,10 @@ impl RtmpProvider {
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
         request_context: Option<&super::ExecutionControl>,
-        public_id_codec: &PublicIdCodec,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_playlist_action(
-            Self::NAME,
-            &versioned,
-            public_id_codec,
-            "RTMP",
-        )
+        super::live_helpers::build_hls_playlist_action(Self::NAME, &versioned)
     }
 
     pub async fn get_hls_segment(
@@ -178,16 +164,9 @@ impl RtmpProvider {
         version: &str,
         segment_name: &str,
         request_context: Option<&super::ExecutionControl>,
-        public_id_codec: &PublicIdCodec,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_segment_action(
-            Self::NAME,
-            &versioned,
-            segment_name,
-            public_id_codec,
-            "RTMP",
-        )
+        super::live_helpers::build_hls_segment_action(Self::NAME, &versioned, segment_name)
     }
 }

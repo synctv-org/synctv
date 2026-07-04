@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{models::UserId, service::user::UserService, Error, Result};
+use crate::{models::UserId, service::UserService, Error, Result};
 
 impl UserService {
     pub(crate) async fn cache_username_best_effort(

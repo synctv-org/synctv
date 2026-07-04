@@ -7,7 +7,7 @@ use crate::{
     config::BootstrapConfig,
     models::{SignupMethod, User, UserRole},
     repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-    service::auth::OpaquePasswordService,
+    service::OpaquePasswordService,
     Error, Result,
 };
 

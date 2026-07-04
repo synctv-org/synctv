@@ -19,9 +19,8 @@ use synctv_core::{
     },
     repository::{MediaRepository, RoomPlaybackStateRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService,
+        RoomServiceOptions, UserService,
     },
 };
 use synctv_core_testing::{

@@ -2,7 +2,7 @@ use std::{net::IpAddr, time::Duration};
 
 use synctv_common::ExecutionControl;
 
-use crate::{service::user::UserService, Error, Result};
+use crate::{service::UserService, Error, Result};
 
 use super::{
     identity_policy::password_binding,

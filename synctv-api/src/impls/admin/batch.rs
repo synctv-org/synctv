@@ -1,8 +1,8 @@
 use synctv_core::models::{AuditDetails, UserId, UserRole};
 
 use super::{
-    check_role_hierarchy, list_owned_room_ids, usize_to_i32_api, AdminApiImpl, ApiError,
-    BatchResultsAccumulator, RequestContext,
+    check_role_hierarchy, usize_to_i32_api, AdminApiImpl, ApiError, BatchResultsAccumulator,
+    RequestContext,
 };
 
 impl AdminApiImpl {
@@ -93,7 +93,7 @@ impl AdminApiImpl {
         }
 
         for (user_id, uid) in allowed_ids {
-            let owned_room_ids = match list_owned_room_ids(&self.room_service, &uid).await {
+            let owned_room_ids = match self.list_owned_room_ids(&uid).await {
                 Ok(room_ids) => room_ids,
                 Err(error) => {
                     accumulator.record_err(user_id, ApiError::from(error));

@@ -10,12 +10,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::LeaderCheck;
-use crate::bootstrap::acquire_unbounded_ddl_connection;
 use crate::repository::query_builder::trusted_dynamic_sql;
 use crate::service::partitioning::{
-    add_months, current_database_date, len_to_i32, quote_ident, size_centi_gib, size_centi_mib,
-    start_of_month, table_exists, wait_for_initial_leader, PartitionNameRow, PartitionSizeRow,
-    STARTUP_RUNS_RETENTION_CLEANUP,
+    acquire_unbounded_ddl_connection, add_months, current_database_date, len_to_i32, quote_ident,
+    size_centi_gib, size_centi_mib, start_of_month, table_exists, wait_for_initial_leader,
+    PartitionNameRow, PartitionSizeRow, STARTUP_RUNS_RETENTION_CLEANUP,
 };
 use crate::{Error, InternalExt, Result};
 

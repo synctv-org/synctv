@@ -18,7 +18,7 @@ use synctv_core::{
         UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
-    service::{member::MemberService, permission::PermissionService, NotificationService},
+    service::{MemberService, NotificationService, PermissionService},
     Error,
 };
 use synctv_core_testing::{create_test_pool, ok, some};

@@ -269,6 +269,7 @@ pub(super) fn new_chat_attachment_to_proto(
     Ok(synctv_proto::client::ChatAttachment {
         id: attachment.id.clone(),
         url: fields.url,
+        object_access: fields.object_access,
         mime_type: fields.mime_type,
         size_bytes: fields.size_bytes,
         width: fields.width,
@@ -456,6 +457,7 @@ pub(super) fn upload_session_to_proto(
         attachment_reference: Some(upload_session_chat_attachment_to_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
         upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
         expires_at: fields.expires_at,
@@ -677,7 +679,7 @@ pub(super) async fn chat_message_read_receipts_to_proto(
 
 pub(super) fn build_public_room_list_query(
     req: synctv_proto::client::ListRoomsRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomListQuery, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
@@ -706,7 +708,7 @@ pub(super) fn build_public_room_list_query(
 
 pub(crate) fn parse_optional_room_category_id(
     value: &str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::RoomCategoryId>, ApiError> {
     if value.trim().is_empty() {
         return Ok(None);
@@ -719,7 +721,7 @@ pub(crate) fn parse_optional_room_category_id(
 
 pub(crate) fn parse_required_room_category_id(
     value: &str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomCategoryId, ApiError> {
     parse_optional_room_category_id(value, public_id_codec)?
         .ok_or_else(|| ApiError::InvalidInput("category_id is required".to_string()))
@@ -727,7 +729,7 @@ pub(crate) fn parse_required_room_category_id(
 
 pub(crate) fn parse_room_label_ids(
     values: &[String],
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::RoomLabelId>, ApiError> {
     values
         .iter()
@@ -767,7 +769,7 @@ pub(super) fn build_my_room_list_query(
 
 pub(super) fn build_transfer_room_ownership_request(
     req: synctv_proto::client::TransferRoomOwnershipRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<UserId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     crate::impls::proto_validated_user_id(req.new_owner_user_id, public_id_codec)
@@ -775,7 +777,7 @@ pub(super) fn build_transfer_room_ownership_request(
 
 pub(super) fn build_check_room_request(
     req: synctv_proto::client::CheckRoomRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     crate::impls::proto_validated_room_id(req.room_id, public_id_codec)
@@ -783,7 +785,7 @@ pub(super) fn build_check_room_request(
 
 pub(crate) fn build_create_websocket_ticket_request(
     req: &synctv_proto::client::CreateWebSocketTicketRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     crate::impls::validate_proto_request(req)?;
     crate::impls::proto_validated_room_id(req.room_id.clone(), public_id_codec)
@@ -821,7 +823,7 @@ pub(super) fn build_get_chat_history_request(
 pub(super) fn build_search_chat_messages_query(
     room_id: synctv_core::models::RoomId,
     req: &synctv_proto::client::SearchChatMessagesRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::ChatSearchMessagesQuery, ApiError> {
     crate::impls::validate_proto_request(req)?;
     let limit = if req.limit > 0 { req.limit } else { 50 };
@@ -849,7 +851,7 @@ pub(super) fn build_search_chat_messages_query(
 
 pub(super) fn build_list_chat_reaction_users_request(
     req: &synctv_proto::client::ListChatReactionUsersRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<(i32, Option<ChatReactionUsersCursor>), ApiError> {
     crate::impls::validate_proto_request(req)?;
 

@@ -222,28 +222,6 @@ impl From<crate::provider::ProviderError> for Error {
     }
 }
 
-impl From<Error> for tonic::Status {
-    fn from(err: Error) -> Self {
-        match err {
-            Error::NotFound(msg) => Self::not_found(msg),
-            Error::Authentication(msg) => Self::unauthenticated(msg),
-            Error::Authorization(msg) => Self::permission_denied(msg),
-            Error::InvalidInput(msg) => Self::invalid_argument(msg),
-            Error::RangeNotSatisfiable { .. } => Self::invalid_argument(err.to_string()),
-            Error::AlreadyExists(msg) => Self::already_exists(msg),
-            Error::Conflict(msg) | Error::LockConflict(msg) => Self::aborted(msg),
-            Error::RateLimited(msg) => Self::resource_exhausted(msg),
-            Error::ServiceUnavailable(msg) => Self::unavailable(msg),
-            Error::OptimisticLockConflict => Self::aborted("Resource modified concurrently"),
-            Error::Timeout(msg) => Self::deadline_exceeded(msg),
-            other => {
-                tracing::error!("Internal error: {other}");
-                Self::internal("Internal error")
-            }
-        }
-    }
-}
-
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Extension trait for convenient error mapping to Internal
@@ -421,54 +399,6 @@ mod tests {
         let err = make_db_error("42000", "syntax error");
         let core_err: Error = err.into();
         assert!(matches!(core_err, Error::Database(_)));
-    }
-
-    #[test]
-    fn test_tonic_status_not_found() {
-        let status: tonic::Status = Error::NotFound("test".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::NotFound);
-    }
-
-    #[test]
-    fn test_tonic_status_authentication() {
-        let status: tonic::Status = Error::Authentication("bad creds".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    }
-
-    #[test]
-    fn test_tonic_status_authorization() {
-        let status: tonic::Status = Error::Authorization("denied".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::PermissionDenied);
-    }
-
-    #[test]
-    fn test_tonic_status_invalid_input() {
-        let status: tonic::Status = Error::InvalidInput("bad field".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
-    fn test_tonic_status_already_exists() {
-        let status: tonic::Status = Error::AlreadyExists("dup".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::AlreadyExists);
-    }
-
-    #[test]
-    fn test_tonic_status_optimistic_lock() {
-        let status: tonic::Status = Error::OptimisticLockConflict.into();
-        assert_eq!(status.code(), tonic::Code::Aborted);
-    }
-
-    #[test]
-    fn test_tonic_status_internal_errors() {
-        let status: tonic::Status = Error::Internal("boom".to_string()).into();
-        assert_eq!(status.code(), tonic::Code::Internal);
-
-        let Err(serialization_error) = serde_json::from_str::<serde_json::Value>("invalid") else {
-            std::panic::panic_any("invalid JSON should fail to deserialize");
-        };
-        let status: tonic::Status = Error::Serialization(serialization_error).into();
-        assert_eq!(status.code(), tonic::Code::Internal);
     }
 
     #[test]
@@ -678,30 +608,5 @@ mod tests {
         let provider_err = crate::provider::ProviderError::UnsupportedFormat("avi".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-    }
-
-    #[test]
-    fn test_provider_error_to_tonic_status_preserves_error_type() {
-        // Network error -> ServiceUnavailable -> upstream provider path is unavailable.
-        let provider_err = crate::provider::ProviderError::NetworkError("timeout".to_string());
-        let core_err: Error = provider_err.into();
-        let status: tonic::Status = core_err.into();
-        assert_eq!(status.code(), tonic::Code::Unavailable);
-
-        let core_err = Error::Timeout("request budget exceeded".to_string());
-        let status: tonic::Status = core_err.into();
-        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
-
-        // Auth error -> Authentication -> Unauthenticated
-        let provider_err = crate::provider::ProviderError::AuthRequired;
-        let core_err: Error = provider_err.into();
-        let status: tonic::Status = core_err.into();
-        assert_eq!(status.code(), tonic::Code::Unauthenticated);
-
-        // Invalid config -> InvalidInput -> InvalidArgument
-        let provider_err = crate::provider::ProviderError::InvalidConfig("bad".to_string());
-        let core_err: Error = provider_err.into();
-        let status: tonic::Status = core_err.into();
-        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 }

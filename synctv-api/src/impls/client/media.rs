@@ -15,16 +15,16 @@ use synctv_core::models::{
 };
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::media::{
+use synctv_core::service::MediaService;
+use synctv_core::service::{
     AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
     MoveMediaRequest as CoreMoveMediaRequest,
 };
-use synctv_core::service::room::{
+use synctv_core::service::{
     DeleteEntriesPlan, DeleteEntriesRequest as CoreDeleteEntriesRequest,
     MemberResourceCleanupResult, RealtimeOutboxDeleteEntriesEventFactory,
     RealtimeOutboxMemberResourceCleanupEventFactory,
 };
-use synctv_core::service::MediaService;
 
 use super::convert::try_playlist_path_node_to_proto;
 use super::convert::{
@@ -40,7 +40,7 @@ use crate::realtime_fanout::RealtimeFanoutService;
 
 #[derive(Debug)]
 struct AddMediaBatchBuildResult {
-    items: Vec<synctv_core::service::media::AddMediaRequest>,
+    items: Vec<synctv_core::service::AddMediaRequest>,
     playlist_id: Option<synctv_core::models::PlaylistId>,
 }
 
@@ -52,6 +52,7 @@ fn optional_trimmed_string(value: &str) -> Option<String> {
 #[cfg(test)]
 pub(crate) struct RequiredStoredFileFields {
     pub url: String,
+    pub object_access: Option<synctv_proto::client::FileObjectAccess>,
     pub mime_type: String,
     pub size_bytes: i64,
     pub width: i32,
@@ -69,6 +70,10 @@ pub(crate) fn required_stored_file_fields(
     let size_bytes = required_stored_file_size_bytes(file)?;
     Ok(RequiredStoredFileFields {
         url,
+        object_access: file
+            .object_access
+            .as_ref()
+            .map(crate::impls::stored_files::file_object_access_to_proto),
         mime_type,
         size_bytes,
         width: stored_file_dimension(file.width, "width")?,
@@ -85,11 +90,18 @@ fn required_stored_file_url(file: &NewStoredFile) -> Result<String, ApiError> {
         .url
         .as_deref()
         .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| {
+            file.object_access
+                .as_ref()
+                .and_then(crate::impls::stored_files::render_file_object_access_url)
+        })
         .ok_or_else(|| ApiError::Internal("stored file url is missing".to_string()))?;
     if url.is_empty() {
         return Err(ApiError::Internal("stored file url is empty".to_string()));
     }
-    Ok(url.to_string())
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -130,6 +142,7 @@ fn stored_file_dimension(value: Option<i32>, field: &'static str) -> Result<i32,
 
 pub(crate) struct UploadSessionFields {
     pub upload_url: Option<String>,
+    pub upload_object_access: Option<synctv_proto::client::FileObjectAccess>,
     pub upload_method: Option<String>,
     pub expires_at: Option<i64>,
     pub ownership_proof_nonce: Option<String>,
@@ -293,19 +306,36 @@ pub(crate) fn upload_session_fields(
     } else {
         None
     };
-    let (upload_url, upload_method) = if session.upload_required {
+    let (upload_url, upload_object_access, upload_method) = if session.upload_required {
+        let upload_object_access = session
+            .upload_object_access
+            .as_ref()
+            .map(crate::impls::stored_files::file_object_access_to_proto);
+        let upload_url = session
+            .upload_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                session
+                    .upload_object_access
+                    .as_ref()
+                    .and_then(crate::impls::stored_files::render_file_object_upload_url)
+            })
+            .ok_or_else(|| {
+                ApiError::Internal("upload session is missing upload_url".to_string())
+            })?;
         (
-            Some(required_upload_session_string(
-                session.upload_url.as_deref(),
-                "upload_url",
-            )?),
+            Some(upload_url),
+            upload_object_access,
             Some(required_upload_session_string(
                 session.upload_method.as_deref(),
                 "upload_method",
             )?),
         )
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     let ownership_proof_nonce = if session.ownership_proof_required {
@@ -319,6 +349,7 @@ pub(crate) fn upload_session_fields(
 
     Ok(UploadSessionFields {
         upload_url,
+        upload_object_access,
         upload_method,
         expires_at,
         ownership_proof_nonce,
@@ -349,6 +380,7 @@ pub(crate) fn stored_file_to_file_cover_proto(
     Ok(synctv_proto::client::FileCover {
         id: file.id.clone(),
         url: fields.url,
+        object_access: fields.object_access,
         mime_type: fields.mime_type,
         size_bytes: fields.size_bytes,
         width: fields.width,
@@ -404,6 +436,7 @@ pub(crate) fn media_cover_upload_session_to_proto(
         cover_reference: Some(upload_session_media_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
         upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
         expires_at: fields.expires_at,
@@ -495,6 +528,7 @@ pub(crate) fn file_upload_session_to_room_cover_proto(
         cover_reference: Some(upload_session_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
         upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
         expires_at: fields.expires_at,
@@ -532,6 +566,7 @@ pub(crate) fn file_upload_session_to_playlist_cover_proto(
         cover_reference: Some(upload_session_file_cover_proto(&session.file)?),
         upload_required: session.upload_required,
         upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
         upload_method: fields.upload_method,
         upload_headers: session.upload_headers.into_iter().collect(),
         expires_at: fields.expires_at,
@@ -858,56 +893,68 @@ fn i64_to_i32_api(value: i64, field: &'static str) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
 }
 
-pub(crate) async fn build_move_media_fanout_plan(
-    media_service: &MediaService,
-    room_id: &RoomId,
-    request: &CoreMoveMediaRequest,
-) -> Result<MoveMediaFanoutPlan, ApiError> {
-    let original_media = if request.all_from_scope {
-        match request.source_playlist_id.as_ref() {
-            Some(playlist_id) => media_service
-                .get_room_playlist_media(room_id, playlist_id)
-                .await
-                .map_err(ApiError::from)?,
-            None => media_service
-                .get_room_root_media(room_id)
-                .await
-                .map_err(ApiError::from)?,
-        }
-    } else {
-        media_service
-            .get_room_media_batch(room_id, &request.media_ids)
-            .await
-            .map_err(ApiError::from)?
-    };
+pub(crate) struct MoveMediaFanoutPlanner<'a> {
+    media_service: &'a MediaService,
+}
 
-    if original_media.is_empty() {
-        return Ok(MoveMediaFanoutPlan::None);
+impl<'a> MoveMediaFanoutPlanner<'a> {
+    pub(crate) fn new(media_service: &'a MediaService) -> Self {
+        Self { media_service }
     }
 
-    if !request.all_from_scope && original_media.len() != request.media_ids.len() {
-        return Err(ApiError::NotFound("Media not found".to_string()));
-    }
-
-    let target_scope = request.target_playlist_id;
-    let moved_within_same_scope = original_media
-        .iter()
-        .all(|media| media.playlist_id == target_scope);
-
-    if moved_within_same_scope && original_media.len() > 1 {
-        return Ok(MoveMediaFanoutPlan::Reordered);
-    }
-
-    let mut steps = Vec::with_capacity(original_media.len());
-    for media in original_media {
-        if media.playlist_id == target_scope {
-            steps.push(MoveMediaFanoutStep::Updated { media_id: media.id });
+    pub(crate) async fn build(
+        &self,
+        room_id: &RoomId,
+        request: &CoreMoveMediaRequest,
+    ) -> Result<MoveMediaFanoutPlan, ApiError> {
+        let original_media = if request.all_from_scope {
+            match request.source_playlist_id.as_ref() {
+                Some(playlist_id) => self
+                    .media_service
+                    .get_room_playlist_media(room_id, playlist_id)
+                    .await
+                    .map_err(ApiError::from)?,
+                None => self
+                    .media_service
+                    .get_room_root_media(room_id)
+                    .await
+                    .map_err(ApiError::from)?,
+            }
         } else {
-            steps.push(MoveMediaFanoutStep::RemovedAndAdded { media_id: media.id });
-        }
-    }
+            self.media_service
+                .get_room_media_batch(room_id, &request.media_ids)
+                .await
+                .map_err(ApiError::from)?
+        };
 
-    Ok(MoveMediaFanoutPlan::PerMedia(steps))
+        if original_media.is_empty() {
+            return Ok(MoveMediaFanoutPlan::None);
+        }
+
+        if !request.all_from_scope && original_media.len() != request.media_ids.len() {
+            return Err(ApiError::NotFound("Media not found".to_string()));
+        }
+
+        let target_scope = request.target_playlist_id;
+        let moved_within_same_scope = original_media
+            .iter()
+            .all(|media| media.playlist_id == target_scope);
+
+        if moved_within_same_scope && original_media.len() > 1 {
+            return Ok(MoveMediaFanoutPlan::Reordered);
+        }
+
+        let mut steps = Vec::with_capacity(original_media.len());
+        for media in original_media {
+            if media.playlist_id == target_scope {
+                steps.push(MoveMediaFanoutStep::Updated { media_id: media.id });
+            } else {
+                steps.push(MoveMediaFanoutStep::RemovedAndAdded { media_id: media.id });
+            }
+        }
+
+        Ok(MoveMediaFanoutPlan::PerMedia(steps))
+    }
 }
 
 fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> {
@@ -1028,7 +1075,7 @@ pub(crate) fn validate_dynamic_playlist_query_support(
 
 pub(crate) fn build_move_media_request(
     req: synctv_proto::client::MoveMediaRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<CoreMoveMediaRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::MoveMediaRequest {
@@ -1060,7 +1107,7 @@ pub(crate) fn build_move_media_request(
 
 pub(crate) fn build_add_media_request(
     req: synctv_proto::client::AddMediaRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<CoreAddMediaRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::AddMediaRequest {
@@ -1107,7 +1154,7 @@ pub(crate) fn build_add_media_request(
 
 pub(crate) fn build_delete_entries_request(
     req: synctv_proto::client::DeleteEntriesRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<(CoreDeleteEntriesRequest, Vec<String>, Vec<String>), ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::DeleteEntriesRequest {
@@ -1133,7 +1180,7 @@ pub(crate) fn build_delete_entries_request(
 
 fn build_add_media_batch_request(
     req: synctv_proto::client::AddMediaBatchRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<AddMediaBatchBuildResult, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
@@ -1181,7 +1228,7 @@ pub(crate) fn build_delete_media_request(
 
 pub(crate) fn build_clear_playlist_request(
     req: synctv_proto::client::ClearPlaylistRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     if req.playlist_id.is_empty() {
@@ -1192,8 +1239,8 @@ pub(crate) fn build_clear_playlist_request(
 
 pub(crate) fn build_edit_media_request(
     req: synctv_proto::client::EditMediaRequest,
-    public_id_codec: &synctv_core::PublicIdCodec,
-) -> Result<synctv_core::service::media::EditMediaRequest, ApiError> {
+    public_id_codec: &crate::public_id::PublicIdCodec,
+) -> Result<synctv_core::service::EditMediaRequest, ApiError> {
     crate::impls::validate_proto_request(&req)?;
 
     let name = if req.name.is_empty() {
@@ -1205,7 +1252,7 @@ pub(crate) fn build_edit_media_request(
         )
     };
 
-    Ok(synctv_core::service::media::EditMediaRequest {
+    Ok(synctv_core::service::EditMediaRequest {
         media_id: crate::impls::proto_validated_media_id(req.media_id, public_id_codec)?,
         name,
         description: (!req.description.trim().is_empty()).then_some(req.description),
@@ -1719,9 +1766,9 @@ impl ClientApiImpl {
             )
             .await
             .map_err(Self::map_room_access_error)?;
-        let media_fanout_plan =
-            build_move_media_fanout_plan(self.room_service.media_service(), &rid, &service_req)
-                .await?;
+        let media_fanout_plan = MoveMediaFanoutPlanner::new(self.room_service.media_service())
+            .build(&rid, &service_req)
+            .await?;
 
         let actor_username = self.media_actor_username_for_event(&uid).await?;
         let prepared_outbox_fanout = self.media_fanout.prepare_move_outbox_fanout(
@@ -1985,15 +2032,6 @@ impl ClientApiImpl {
 
             let page = page_i32_to_usize(req.page)?;
             let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-            let public_credential_owner_id = playlist
-                .creator_id
-                .map(|creator_id| self.public_id_codec.encode_user_id(creator_id))
-                .transpose()
-                .map_err(|error| {
-                    ApiError::Internal(format!(
-                        "Failed to encode credential owner public id: {error}"
-                    ))
-                })?;
             let items = self
                 .room_service
                 .media_service()
@@ -2008,7 +2046,6 @@ impl ClientApiImpl {
                         search: normalize_non_empty_filter(&req.search),
                         refresh: req.refresh,
                     },
-                    public_credential_owner_id.as_deref(),
                 )
                 .await
                 .map_err(ApiError::from)?;
@@ -2017,13 +2054,18 @@ impl ClientApiImpl {
             let dynamic_items: Vec<_> = items
                 .into_iter()
                 .map(|item| {
-                    use synctv_core::provider::ItemType;
+                    use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
                     let item_type = match item.item_type {
                         ItemType::Playlist => synctv_proto::client::ItemType::Playlist as i32,
                         ItemType::Media => synctv_proto::client::ItemType::Media as i32,
                     };
                     let thumbnail = match item.thumbnail {
-                        Some(thumbnail) => {
+                        Some(DirectoryItemThumbnail::Url(thumbnail)) => Some(thumbnail),
+                        Some(DirectoryItemThumbnail::Emby {
+                            server_id,
+                            credential_owner_id,
+                            item_id,
+                        }) => {
                             let public_room_id =
                                 self.public_id_codec.encode_room_id(rid).map_err(|error| {
                                     ApiError::Internal(format!(
@@ -2036,8 +2078,21 @@ impl ClientApiImpl {
                                         "Failed to encode user public id: {error}"
                                     ))
                                 })?;
+                            let public_credential_owner_id = self
+                                .public_id_codec
+                                .encode_user_id(credential_owner_id)
+                                .map_err(|error| {
+                                    ApiError::Internal(format!(
+                                        "Failed to encode credential owner public id: {error}"
+                                    ))
+                                })?;
+                            let thumbnail = crate::emby_thumbnail_urls::emby_thumbnail_url(
+                                &server_id,
+                                &public_credential_owner_id,
+                                &item_id,
+                            );
                             Some(
-                                crate::http::providers::emby::sign_emby_thumbnail_url(
+                                crate::emby_thumbnail_urls::sign_emby_thumbnail_url(
                                     &thumbnail,
                                     &public_room_id,
                                     &public_user_id,
@@ -2472,7 +2527,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_requires_source_provider() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -2490,7 +2545,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_parses_dynamic_payload() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
@@ -2523,7 +2578,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_maps_empty_provider_instance_to_none() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -2546,7 +2601,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_request_does_not_infer_title_from_source_config() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
@@ -2565,7 +2620,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_batch_request_rejects_invalid_nested_playlist_id() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_add_media_batch_request(
             synctv_proto::client::AddMediaBatchRequest {
                 items: vec![synctv_proto::client::AddMediaRequest {
@@ -2585,7 +2640,7 @@ mod tests {
 
     #[test]
     fn test_build_add_media_batch_request_reuses_single_item_builder_semantics() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let result = api_ok(build_add_media_batch_request(
             synctv_proto::client::AddMediaBatchRequest {
@@ -2613,7 +2668,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_entries_request_rejects_empty_target_set() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_delete_entries_request(
             synctv_proto::client::DeleteEntriesRequest {
                 playlist_ids: Vec::new(),
@@ -2628,7 +2683,7 @@ mod tests {
 
     #[test]
     fn test_build_delete_entries_request_parses_ids() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let playlist_id = PlaylistId::expect_positive(123);
         let media_id = MediaId::expect_positive(456);
         let playlist_public_id = codec_ok(codec.encode_playlist_id(playlist_id))?;
@@ -2668,7 +2723,7 @@ mod tests {
     #[test]
     fn test_build_delete_media_request_maps_to_delete_entries_request() -> TestResult {
         let media_id = codec_ok(
-            synctv_core::PublicIdCodec::plain().encode_media_id(MediaId::expect_positive(123)),
+            crate::public_id::PublicIdCodec::plain().encode_media_id(MediaId::expect_positive(123)),
         )?;
         let request = api_ok(build_delete_media_request(
             synctv_proto::client::DeleteMediaRequest {
@@ -2685,7 +2740,7 @@ mod tests {
 
     #[test]
     fn test_build_edit_media_request_rejects_invalid_media_id() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_edit_media_request(
             synctv_proto::client::EditMediaRequest {
                 media_id: "bad-media".to_string(),
@@ -2700,7 +2755,7 @@ mod tests {
 
     #[test]
     fn test_build_edit_media_request_parses_title_and_id() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let media_id = MediaId::expect_positive(123);
         let request = api_ok(build_edit_media_request(
             synctv_proto::client::EditMediaRequest {
@@ -2722,6 +2777,7 @@ mod tests {
             id: "file-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "objects/file-1".to_string(),
+            object_access: None,
             url: Some("/objects/file-1".to_string()),
             mime_type: Some("image/png".to_string()),
             size_bytes: Some(7),
@@ -2742,6 +2798,7 @@ mod tests {
             ownership_proof_required: false,
             ownership_proof_nonce: None,
             ownership_proof_ranges: Vec::new(),
+            upload_object_access: None,
             upload_url: Some("https://upload.example.test/file-1".to_string()),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
@@ -2826,6 +2883,29 @@ mod tests {
             upload_session_fields(&missing_url),
             Err(crate::impls::ApiError::Internal(message)) if message.contains("upload_url")
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn upload_session_fields_render_upload_url_from_object_access() -> TestResult {
+        let mut session = make_upload_session();
+        session.upload_url = None;
+        session.upload_object_access = Some(synctv_core::models::FileObjectAccess {
+            object_kind: synctv_core::models::FileObjectKind::MediaCover,
+            encoded_object_key: "encoded-upload".to_string(),
+            read_token: "read-token".to_string(),
+        });
+
+        let fields = api_ok(upload_session_fields(&session))?;
+
+        assert_eq!(
+            fields.upload_url.as_deref(),
+            Some("/api/media/cover-objects/encoded-upload")
+        );
+        assert!(!fields
+            .upload_url
+            .as_deref()
+            .is_some_and(|url| url.contains("token=")));
         Ok(())
     }
 
@@ -3012,7 +3092,7 @@ mod tests {
 
     #[test]
     fn test_build_move_media_request_rejects_invalid_proto_payload() {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_move_media_request(
             synctv_proto::client::MoveMediaRequest {
                 media_ids: Vec::new(),
@@ -3033,7 +3113,7 @@ mod tests {
 
     #[test]
     fn test_build_move_media_request_parses_ids() -> TestResult {
-        let codec = synctv_core::PublicIdCodec::plain();
+        let codec = crate::public_id::PublicIdCodec::plain();
         let media_id = MediaId::expect_positive(123);
         let playlist_id = PlaylistId::expect_positive(456);
         let after_media_id = MediaId::expect_positive(789);

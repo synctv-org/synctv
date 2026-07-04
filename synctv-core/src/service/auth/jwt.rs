@@ -164,7 +164,7 @@ impl JwtService {
     /// * `guest_token_duration_hours` - Guest token lifetime in hours
     /// * `clock_skew_leeway_secs` - Allowed clock skew in seconds
     /// * `issuer` - Optional issuer identifier (e.g., "synctv")
-    /// * `audience` - Optional audience identifier (e.g., "synctv-api")
+    /// * `audience` - Optional audience identifier (e.g., "primary-api")
     pub fn with_durations_and_claims(
         secret: &str,
         access_token_duration_hours: u64,

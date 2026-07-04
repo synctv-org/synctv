@@ -11,12 +11,12 @@ use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
         FileAudioMetadata, FileBlob, FileBlobCompression, FileByteRange, FileCleanupMetadata,
-        FileMetadata, FileObjectDownload, FileObjectMetadata, FileOwnershipProofRange,
-        FileRangeRequest, FileReferenceMetadata, FileReferenceTarget, FileUploadManifestPart,
-        FileUploadPlan, FileUploadPlanPart, FileUploadRange, FileUploadSessionCreateResult,
-        FileUploadSessionKind, FileUploadSessionMetadata, FileUploadSessionRecord, GetFileObject,
-        NewStoredFile, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference,
-        SubmittedFileReferenceKind, UserId,
+        FileMetadata, FileObjectDownload, FileObjectKind, FileObjectMetadata,
+        FileOwnershipProofRange, FileRangeRequest, FileReferenceMetadata, FileReferenceTarget,
+        FileUploadManifestPart, FileUploadPlan, FileUploadPlanPart, FileUploadRange,
+        FileUploadSessionCreateResult, FileUploadSessionKind, FileUploadSessionMetadata,
+        FileUploadSessionRecord, GetFileObject, NewStoredFile, StoreFileUpload,
+        StoreFileUploadResult, SubmittedFileReference, SubmittedFileReferenceKind, UserId,
     },
     repository::FileStorageRepository,
     Error, Result,
@@ -51,7 +51,7 @@ const FILE_UPLOAD_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_VERSION: &str = "v1";
 const FILE_REUSE_TOKEN_KIND: &str = "synctv-file-reuse-grant";
 pub const FILE_UPLOAD_TOKEN_HEADER: &str = "x-synctv-file-upload-token";
-const DATABASE_FILE_READ_TOKEN_VERSION: &str = "v1";
+const FILE_OBJECT_READ_TOKEN_VERSION: &str = "v1";
 pub(super) const MAX_DATABASE_FILE_UPLOAD_PART_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const DEFAULT_RESUMABLE_UPLOAD_PART_SIZE_BYTES: i64 = 8 * 1024 * 1024;
 pub(super) const FILE_UPLOAD_CHECKSUM_ALGORITHM_SHA256: &str = "sha256";
@@ -94,7 +94,7 @@ pub(super) struct FileReuseTokenPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct DatabaseFileReadTokenPayload {
+pub(super) struct FileObjectReadTokenPayload {
     pub(super) storage_backend: String,
     pub(super) object_key: String,
 }
@@ -113,8 +113,8 @@ pub(super) struct DatabaseFileReadTokenPayload {
 // - Single-object sessions upload one complete object through SyncTV; S3
 //   multipart sessions return direct client-to-S3 presigned part URLs.
 //   SyncTV proxy upload/download paths remain available as a deployment fallback.
-// - downloads return FileObjectDownload streams; HTTP wraps that as a normal
-//   binary body and gRPC wraps it as protobuf chunks.
+// - downloads return FileObjectDownload streams; entrypoints render those
+//   streams into their response envelopes.
 // See docs/src/content/docs/en/develop/implementation-contracts.mdx.
 
 pub(super) fn payload_len_i64(len: usize) -> Result<i64> {
@@ -202,7 +202,7 @@ pub(crate) async fn complete_uploaded_file_object(
         .process_object_variants(
             &object.storage_backend,
             &object.object_key,
-            &upload_policy.database_object_route_prefix,
+            upload_policy.object_kind,
             upload_policy,
         )
         .await?;
@@ -465,7 +465,7 @@ pub(super) fn session_record_blob(
     }
 }
 
-pub(super) fn new_public_file_id() -> String {
+pub(super) fn new_file_id() -> String {
     format!("file_{}", synctv_common::snanoid!(24))
 }
 
@@ -508,7 +508,7 @@ pub struct ValidatedFileReuseGrant {
 pub struct FileStorageContext<'a> {
     pub user_id: UserId,
     pub storage_scope: &'a str,
-    pub database_object_route_prefix: &'a str,
+    pub object_kind: crate::models::FileObjectKind,
     pub client_request_id: Option<&'a str>,
 }
 
@@ -549,6 +549,8 @@ impl FileStorageCleanupOrigin {
     }
 }
 
+const FILE_REUSE_GRANTS_UNSUPPORTED: &str = "file reuse grants are not supported by this storage";
+
 #[async_trait::async_trait]
 pub trait FileStorageService: Send + Sync {
     fn backend_name(&self) -> &str;
@@ -557,12 +559,24 @@ pub trait FileStorageService: Send + Sync {
         None
     }
 
-    fn object_url(
+    fn supports_reuse_grants(&self) -> bool {
+        false
+    }
+
+    fn public_object_url(
         &self,
         _storage_backend: &str,
         _object_key: &str,
-        _database_object_route_prefix: &str,
     ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn file_object_access(
+        &self,
+        _storage_backend: &str,
+        _object_key: &str,
+        _object_kind: crate::models::FileObjectKind,
+    ) -> Result<Option<crate::models::FileObjectAccess>> {
         Ok(None)
     }
 
@@ -624,7 +638,7 @@ pub trait FileStorageService: Send + Sync {
 
     fn create_reuse_grant(&self, _request: CreateFileReuseGrant<'_>) -> Result<FileReuseGrant> {
         Err(Error::InvalidInput(
-            "file reuse grants are not supported by this storage".to_string(),
+            FILE_REUSE_GRANTS_UNSUPPORTED.to_string(),
         ))
     }
 
@@ -634,7 +648,7 @@ pub trait FileStorageService: Send + Sync {
         _context: FileStorageContext<'_>,
     ) -> Result<ValidatedFileReuseGrant> {
         Err(Error::InvalidInput(
-            "file reuse grants are not supported by this storage".to_string(),
+            FILE_REUSE_GRANTS_UNSUPPORTED.to_string(),
         ))
     }
 
@@ -757,7 +771,7 @@ pub trait FileStorageService: Send + Sync {
         &self,
         _storage_backend: &str,
         _object_key: &str,
-        _database_object_route_prefix: &str,
+        _object_kind: FileObjectKind,
         _upload_policy: &crate::models::FileUploadPolicy,
     ) -> Result<Vec<crate::models::FileObjectVariant>> {
         Ok(Vec::new())
@@ -888,14 +902,21 @@ pub(super) fn file_upload_token_for_object_key(
 pub(super) fn attach_prepared_file_urls(
     storage: &dyn FileStorageService,
     files: &mut [NewStoredFile],
-    database_object_route_prefix: &str,
 ) -> Result<()> {
     for file in files {
-        file.url = storage.object_url(
-            &file.storage_backend,
-            &file.object_key,
-            database_object_route_prefix,
-        )?;
+        file.url = storage.public_object_url(&file.storage_backend, &file.object_key)?;
+    }
+    Ok(())
+}
+
+pub(super) fn attach_prepared_file_object_access(
+    storage: &dyn FileStorageService,
+    files: &mut [NewStoredFile],
+    object_kind: crate::models::FileObjectKind,
+) -> Result<()> {
+    for file in files {
+        file.object_access =
+            storage.file_object_access(&file.storage_backend, &file.object_key, object_kind)?;
     }
     Ok(())
 }
@@ -966,7 +987,7 @@ fn public_file_metadata(file: &NewStoredFile) -> FileMetadata {
 }
 
 pub(super) struct UploadSessionMetadataInput<'a> {
-    pub public_file_id: &'a str,
+    pub file_id: &'a str,
     pub user_id: UserId,
     pub storage_scope: &'a str,
     pub client_file_id: Option<&'a str>,
@@ -981,7 +1002,7 @@ pub(super) fn upload_session_metadata(
     input: UploadSessionMetadataInput<'_>,
 ) -> FileUploadSessionMetadata {
     FileUploadSessionMetadata {
-        public_file_id: input.public_file_id.to_string(),
+        file_id: input.file_id.to_string(),
         user_id: input.user_id,
         storage_scope: input.storage_scope.to_string(),
         client_file_id: input
@@ -1013,15 +1034,13 @@ pub(super) fn upload_session_metadata_with_manifest(
     metadata
 }
 
-pub(super) fn upload_session_public_file_id(
-    metadata: &FileUploadSessionMetadata,
-) -> Result<String> {
+pub(super) fn upload_session_file_id(metadata: &FileUploadSessionMetadata) -> Result<String> {
     metadata
-        .public_file_id
+        .file_id
         .trim()
         .is_empty()
         .then(|| Error::InvalidInput("file upload session metadata is invalid".to_string()))
-        .map_or_else(|| Ok(metadata.public_file_id.clone()), Err)
+        .map_or_else(|| Ok(metadata.file_id.clone()), Err)
 }
 
 pub(super) fn upload_session_policy(
@@ -1068,6 +1087,7 @@ pub(super) fn upload_session_record_to_new_file(
         filename: fields.filename,
         storage_backend: session.storage_backend.clone(),
         object_key: session.object_key.clone(),
+        object_access: None,
         url: None,
         mime_type: Some(session.mime_type.clone()),
         size_bytes: Some(session.size_bytes),
@@ -1135,6 +1155,7 @@ pub(super) async fn prepare_upload_reference_file(
         filename: fields.filename,
         storage_backend: reference.storage_backend,
         object_key: reference.object_key,
+        object_access: None,
         url: None,
         mime_type: Some(reference.mime_type),
         size_bytes: Some(reference.size_bytes),
@@ -1572,42 +1593,38 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-pub(super) fn encode_database_file_object_key(object_key: &str) -> String {
+pub(super) fn encode_file_object_key(object_key: &str) -> String {
     base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         object_key.as_bytes(),
     )
 }
 
-pub(super) fn decode_database_file_object_key(encoded: &str) -> Result<String> {
+pub(super) fn decode_file_object_key(encoded: &str) -> Result<String> {
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, encoded)
         .map_err(|_| Error::InvalidInput("invalid file object key".to_string()))?;
     String::from_utf8(bytes).map_err(|_| Error::InvalidInput("invalid file object key".to_string()))
 }
 
-pub(super) fn database_file_object_url(
-    route_prefix: &str,
+pub(super) fn file_object_access(
+    object_kind: crate::models::FileObjectKind,
     storage_backend: &str,
     object_key: &str,
     secret: &str,
-) -> Result<String> {
-    let encoded_key = encode_database_file_object_key(object_key);
-    let read_token = database_file_read_token(storage_backend, object_key, secret)?;
-    let route_prefix = route_prefix.trim().trim_end_matches('/');
-    if !route_prefix.starts_with('/') {
-        return Err(Error::InvalidInput(
-            "database object route prefix must be absolute".to_string(),
-        ));
-    }
-    Ok(format!("{route_prefix}/{encoded_key}?token={read_token}"))
+) -> Result<crate::models::FileObjectAccess> {
+    Ok(crate::models::FileObjectAccess {
+        object_kind,
+        encoded_object_key: encode_file_object_key(object_key),
+        read_token: file_object_read_token(storage_backend, object_key, secret)?,
+    })
 }
 
-pub(super) fn database_file_read_token(
+pub(super) fn file_object_read_token(
     storage_backend: &str,
     object_key: &str,
     secret: &str,
 ) -> Result<String> {
-    let payload = DatabaseFileReadTokenPayload {
+    let payload = FileObjectReadTokenPayload {
         storage_backend: storage_backend.to_string(),
         object_key: object_key.to_string(),
     };
@@ -1621,28 +1638,28 @@ pub(super) fn database_file_read_token(
         payload_bytes,
     );
     Ok(format!(
-        "{DATABASE_FILE_READ_TOKEN_VERSION}.{encoded_payload}.{signature}"
+        "{FILE_OBJECT_READ_TOKEN_VERSION}.{encoded_payload}.{signature}"
     ))
 }
 
-pub(super) fn database_file_read_token_storage_backend(token: &str) -> Result<String> {
-    let payload: DatabaseFileReadTokenPayload =
-        decode_versioned_hmac_token_payload(token, DATABASE_FILE_READ_TOKEN_VERSION)?;
+pub(super) fn file_object_read_token_storage_backend(token: &str) -> Result<String> {
+    let payload: FileObjectReadTokenPayload =
+        decode_versioned_hmac_token_payload(token, FILE_OBJECT_READ_TOKEN_VERSION)?;
     if payload.storage_backend.trim().is_empty() {
         return Err(Error::InvalidInput("invalid file read token".to_string()));
     }
     Ok(payload.storage_backend)
 }
 
-pub(super) fn validate_database_file_read_token(
+pub(super) fn validate_file_object_read_token(
     storage_backend: &str,
     object_key: &str,
     token: &str,
     secret: &str,
 ) -> Result<()> {
-    let payload: DatabaseFileReadTokenPayload = validate_versioned_hmac_token(
+    let payload: FileObjectReadTokenPayload = validate_versioned_hmac_token(
         token,
-        DATABASE_FILE_READ_TOKEN_VERSION,
+        FILE_OBJECT_READ_TOKEN_VERSION,
         format!("synctv:file-read:{secret}").as_bytes(),
         "invalid file read token",
     )?;
@@ -1691,7 +1708,7 @@ pub(super) fn validate_file_upload_token_context(
     Ok(payload)
 }
 
-pub(super) fn validate_database_file_upload_token(
+pub(super) fn validate_file_upload_token(
     storage_backend: &str,
     token: &str,
     object_key: &str,

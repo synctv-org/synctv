@@ -50,28 +50,9 @@ impl std::fmt::Display for MemberStatus {
     }
 }
 
-impl From<MemberStatus> for synctv_proto::common::MemberStatus {
-    fn from(_: MemberStatus) -> Self {
-        Self::Active
-    }
-}
-
 impl From<MemberStatus> for i32 {
-    fn from(value: MemberStatus) -> Self {
-        synctv_proto::common::MemberStatus::from(value) as Self
-    }
-}
-
-impl TryFrom<synctv_proto::common::MemberStatus> for MemberStatus {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::MemberStatus) -> Result<Self, Self::Error> {
-        match value {
-            synctv_proto::common::MemberStatus::Active => Ok(Self::Active),
-            synctv_proto::common::MemberStatus::Unspecified => {
-                Err(format!("Unknown member status: {}", value as i32))
-            }
-        }
+    fn from(_: MemberStatus) -> Self {
+        1
     }
 }
 
@@ -79,9 +60,10 @@ impl TryFrom<i32> for MemberStatus {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::MemberStatus::try_from(value)
-            .map_err(|_| format!("Unknown member status: {value}"))?;
-        Self::try_from(proto)
+        match value {
+            1 => Ok(Self::Active),
+            _ => Err(format!("Unknown member status: {value}")),
+        }
     }
 }
 
@@ -439,13 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn member_status_proto_conversions_reject_unspecified_input() {
-        assert_eq!(
-            i32::from(MemberStatus::Active),
-            synctv_proto::common::MemberStatus::Active as i32
-        );
-        assert!(MemberStatus::try_from(synctv_proto::common::MemberStatus::Unspecified).is_err());
+    fn member_status_i32_conversions_reject_unknown_input() {
+        assert_eq!(i32::from(MemberStatus::Active), 1);
         assert!(MemberStatus::try_from(0).is_err());
+        assert!(MemberStatus::try_from(2).is_err());
     }
 
     #[test]

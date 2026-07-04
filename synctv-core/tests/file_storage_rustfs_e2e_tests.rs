@@ -48,6 +48,7 @@ fn manifest_parts_from_payload(
 fn pdf_upload_policy(max_size_bytes: i64) -> synctv_core::models::FileUploadPolicy {
     synctv_core::models::FileUploadPolicy {
         kind: "rustfs_e2e_file".to_string(),
+        object_kind: synctv_core::models::FileObjectKind::Generic,
         max_size_bytes,
         max_width: None,
         max_height: None,
@@ -58,7 +59,6 @@ fn pdf_upload_policy(max_size_bytes: i64) -> synctv_core::models::FileUploadPoli
         allowed_mime_prefixes: Vec::new(),
         allowed_mime_types: vec!["application/pdf".to_string()],
         storage_namespace: "e2e/files".to_string(),
-        database_object_route_prefix: "/api/test/file-objects".to_string(),
     }
 }
 

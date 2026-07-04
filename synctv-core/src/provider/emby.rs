@@ -3,17 +3,23 @@
 //! Adapter that calls `EmbyClient` to implement `MediaProvider` trait
 
 use super::{
+    access::EmbyAccess,
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
-    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    PreparedSourceConfig, ProviderContext, ProviderCredentialDependency, ProviderError,
-    SourceConfig,
+    DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicFolder,
+    DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo,
+    PlaybackResult, PreparedSourceConfig, ProviderContext, ProviderCredentialDependency,
+    ProviderError, SourceConfig,
 };
 use crate::models::media::{
     EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
     PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::{EmbyMediaSourceConfig, EmbyPlaylistSourceConfig, MediaSourceConfig};
+use crate::models::{
+    normalize_provider_instance_name, validate_provider_instance_name, EmbyMediaSourceConfig,
+    EmbyPlaylistSourceConfig, MediaSourceConfig, ProviderCredential, UserId,
+    UserProviderCredential,
+};
+use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -22,7 +28,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use urlencoding;
+
+use super::upstream_transport::emby as emby_upstream;
 
 const EMBY_TICKS_PER_SECOND: u128 = 10_000_000;
 
@@ -57,7 +64,7 @@ fn dynamic_list_start_index(page: usize, page_size: usize) -> Result<u64, Provid
     usize_to_u64(start_index, "Emby pagination start")
 }
 
-fn optional_i64_to_proto_absent_zero(value: Option<i64>) -> i64 {
+fn optional_i64_to_upstream_absent_zero(value: Option<i64>) -> i64 {
     value.unwrap_or(0)
 }
 
@@ -153,13 +160,13 @@ fn mark_emby_playback_resources(result: &mut PlaybackResult, version: &str, expi
     }
 }
 
-/// Build an absolute Emby URL from a configured server URL and an API path.
+/// Build an absolute Emby upstream URL from a configured server URL and item path.
 ///
 /// `host` may point at either a root deployment (`https://media.example.com`) or
 /// a reverse-proxy base path (`https://media.example.com/emby`). Provider
 /// responses may include paths with or without that base path, so this helper
 /// preserves the configured base path without duplicating it.
-pub fn emby_server_url(host: &str, path_or_url: &str) -> Result<String, ProviderError> {
+pub(crate) fn emby_server_url(host: &str, path_or_url: &str) -> Result<String, ProviderError> {
     let path_or_url = path_or_url.trim();
     if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
         return Ok(path_or_url.to_string());
@@ -190,19 +197,45 @@ pub fn emby_server_url(host: &str, path_or_url: &str) -> Result<String, Provider
     Ok(format!("{}{}", origin.trim_end_matches('/'), path))
 }
 
-struct GrpcPlaybackRequestHints {
+struct EmbyPlaybackRequestHints {
     max_audio_channels: Option<i32>,
     enable_direct_play: Option<bool>,
     enable_direct_stream: Option<bool>,
     enable_transcoding: Option<bool>,
-    device_profile: Option<synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile>,
+    device_profile: Option<EmbyPlaybackDeviceProfile>,
 }
 
-fn grpc_playback_request_hints(
+struct EmbyPlaybackDeviceProfile {
+    direct_play_profiles: Vec<EmbyDirectPlayProfileHint>,
+    transcoding_container: String,
+    transcoding_protocol: String,
+    transcoding_video_codec: String,
+    transcoding_audio_codec: String,
+    subtitle_profiles: Vec<EmbySubtitleProfileHint>,
+}
+
+struct EmbyDirectPlayProfileHint {
+    container: String,
+    video_codecs: Vec<String>,
+    audio_codecs: Vec<String>,
+}
+
+struct EmbySubtitleProfileHint {
+    format: String,
+    method: EmbySubtitleDeliveryMethod,
+}
+
+#[derive(Clone, Copy)]
+enum EmbySubtitleDeliveryMethod {
+    External,
+    Embed,
+}
+
+fn emby_playback_request_hints(
     profile: Option<&PlaybackClientProfile>,
-) -> GrpcPlaybackRequestHints {
+) -> EmbyPlaybackRequestHints {
     profile.map_or(
-        GrpcPlaybackRequestHints {
+        EmbyPlaybackRequestHints {
             max_audio_channels: None,
             enable_direct_play: None,
             enable_direct_stream: None,
@@ -221,18 +254,16 @@ fn grpc_playback_request_hints(
             };
             let subtitle_methods = match profile.subtitle_preference {
                 super::PlaybackSubtitlePreference::External => {
-                    vec![
-                        synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::External as i32,
-                    ]
+                    vec![EmbySubtitleDeliveryMethod::External]
                 }
                 super::PlaybackSubtitlePreference::EmbeddedOrExternal => vec![
-                    synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::External as i32,
-                    synctv_media_providers::grpc::emby::SubtitleDeliveryMethod::Embed as i32,
+                    EmbySubtitleDeliveryMethod::External,
+                    EmbySubtitleDeliveryMethod::Embed,
                 ],
                 super::PlaybackSubtitlePreference::None => Vec::new(),
             };
 
-            GrpcPlaybackRequestHints {
+            EmbyPlaybackRequestHints {
                 max_audio_channels: profile.max_audio_channels,
                 enable_direct_play: Some(!matches!(
                     profile.stream_preference,
@@ -246,123 +277,98 @@ fn grpc_playback_request_hints(
                     profile.stream_preference,
                     super::PlaybackStreamPreference::DirectPlay
                 )),
-                device_profile: Some(
-                    synctv_media_providers::grpc::emby::PlaybackInfoDeviceProfile {
-                        direct_play_profiles: profile
-                            .supported_containers
-                            .iter()
-                            .map(|container| match container {
-                                super::PlaybackContainer::Mp4 => {
-                                    synctv_media_providers::grpc::emby::DirectPlayProfileHint {
-                                        container: "mp4,m4v".to_string(),
-                                        video_codecs: profile
-                                            .supported_video_codecs
-                                            .iter()
-                                            .map(|codec| match codec {
-                                                super::PlaybackVideoCodec::H264 => {
-                                                    "h264".to_string()
-                                                }
-                                                super::PlaybackVideoCodec::Hevc => {
-                                                    "hevc".to_string()
-                                                }
-                                                super::PlaybackVideoCodec::Vp9 => "vp9".to_string(),
-                                                super::PlaybackVideoCodec::Av1 => "av1".to_string(),
-                                            })
-                                            .collect(),
-                                        audio_codecs: match profile.audio_capability {
-                                            super::PlaybackAudioCapability::Stereo => {
-                                                vec!["aac".to_string(), "mp3".to_string()]
-                                            }
-                                            super::PlaybackAudioCapability::Surround => vec![
-                                                "aac".to_string(),
-                                                "mp3".to_string(),
-                                                "ac3".to_string(),
-                                                "eac3".to_string(),
-                                            ],
-                                            super::PlaybackAudioCapability::LosslessSurround => {
-                                                vec![
-                                                    "aac".to_string(),
-                                                    "mp3".to_string(),
-                                                    "ac3".to_string(),
-                                                    "eac3".to_string(),
-                                                    "flac".to_string(),
-                                                    "alac".to_string(),
-                                                ]
-                                            }
-                                        },
+                device_profile: Some(EmbyPlaybackDeviceProfile {
+                    direct_play_profiles: profile
+                        .supported_containers
+                        .iter()
+                        .map(|container| match container {
+                            super::PlaybackContainer::Mp4 => EmbyDirectPlayProfileHint {
+                                container: "mp4,m4v".to_string(),
+                                video_codecs: profile
+                                    .supported_video_codecs
+                                    .iter()
+                                    .map(|codec| match codec {
+                                        super::PlaybackVideoCodec::H264 => "h264".to_string(),
+                                        super::PlaybackVideoCodec::Hevc => "hevc".to_string(),
+                                        super::PlaybackVideoCodec::Vp9 => "vp9".to_string(),
+                                        super::PlaybackVideoCodec::Av1 => "av1".to_string(),
+                                    })
+                                    .collect(),
+                                audio_codecs: match profile.audio_capability {
+                                    super::PlaybackAudioCapability::Stereo => {
+                                        vec!["aac".to_string(), "mp3".to_string()]
                                     }
-                                }
-                                super::PlaybackContainer::Mkv => {
-                                    synctv_media_providers::grpc::emby::DirectPlayProfileHint {
-                                        container: "mkv".to_string(),
-                                        video_codecs: profile
-                                            .supported_video_codecs
-                                            .iter()
-                                            .map(|codec| match codec {
-                                                super::PlaybackVideoCodec::H264 => {
-                                                    "h264".to_string()
-                                                }
-                                                super::PlaybackVideoCodec::Hevc => {
-                                                    "hevc".to_string()
-                                                }
-                                                super::PlaybackVideoCodec::Vp9 => "vp9".to_string(),
-                                                super::PlaybackVideoCodec::Av1 => "av1".to_string(),
-                                            })
-                                            .collect(),
-                                        audio_codecs: direct_play_audio_codecs
-                                            .iter()
-                                            .map(|codec| (*codec).to_string())
-                                            .collect(),
+                                    super::PlaybackAudioCapability::Surround => vec![
+                                        "aac".to_string(),
+                                        "mp3".to_string(),
+                                        "ac3".to_string(),
+                                        "eac3".to_string(),
+                                    ],
+                                    super::PlaybackAudioCapability::LosslessSurround => {
+                                        vec![
+                                            "aac".to_string(),
+                                            "mp3".to_string(),
+                                            "ac3".to_string(),
+                                            "eac3".to_string(),
+                                            "flac".to_string(),
+                                            "alac".to_string(),
+                                        ]
                                     }
-                                }
-                                super::PlaybackContainer::Webm => {
-                                    synctv_media_providers::grpc::emby::DirectPlayProfileHint {
-                                        container: "webm".to_string(),
-                                        video_codecs: profile
-                                            .supported_video_codecs
-                                            .iter()
-                                            .filter_map(|codec| match codec {
-                                                super::PlaybackVideoCodec::H264
-                                                | super::PlaybackVideoCodec::Hevc => None,
-                                                super::PlaybackVideoCodec::Vp9 => {
-                                                    Some("vp9".to_string())
-                                                }
-                                                super::PlaybackVideoCodec::Av1 => {
-                                                    Some("av1".to_string())
-                                                }
-                                            })
-                                            .collect(),
-                                        audio_codecs: vec![
-                                            "vorbis".to_string(),
-                                            "opus".to_string(),
-                                        ],
-                                    }
-                                }
-                            })
-                            .collect(),
-                        transcoding_container: "ts".to_string(),
-                        transcoding_protocol: "hls".to_string(),
-                        transcoding_video_codec: "h264".to_string(),
-                        transcoding_audio_codec: "aac".to_string(),
-                        subtitle_profiles: match profile.subtitle_preference {
-                            super::PlaybackSubtitlePreference::None => Vec::new(),
-                            super::PlaybackSubtitlePreference::External
-                            | super::PlaybackSubtitlePreference::EmbeddedOrExternal => {
-                                subtitle_methods
-                                    .into_iter()
-                                    .flat_map(|method| {
-                                        ["srt", "vtt", "ass"].into_iter().map(move |format| {
-                                    synctv_media_providers::grpc::emby::SubtitleProfileHint {
+                                },
+                            },
+                            super::PlaybackContainer::Mkv => EmbyDirectPlayProfileHint {
+                                container: "mkv".to_string(),
+                                video_codecs: profile
+                                    .supported_video_codecs
+                                    .iter()
+                                    .map(|codec| match codec {
+                                        super::PlaybackVideoCodec::H264 => "h264".to_string(),
+                                        super::PlaybackVideoCodec::Hevc => "hevc".to_string(),
+                                        super::PlaybackVideoCodec::Vp9 => "vp9".to_string(),
+                                        super::PlaybackVideoCodec::Av1 => "av1".to_string(),
+                                    })
+                                    .collect(),
+                                audio_codecs: direct_play_audio_codecs
+                                    .iter()
+                                    .map(|codec| (*codec).to_string())
+                                    .collect(),
+                            },
+                            super::PlaybackContainer::Webm => EmbyDirectPlayProfileHint {
+                                container: "webm".to_string(),
+                                video_codecs: profile
+                                    .supported_video_codecs
+                                    .iter()
+                                    .filter_map(|codec| match codec {
+                                        super::PlaybackVideoCodec::H264
+                                        | super::PlaybackVideoCodec::Hevc => None,
+                                        super::PlaybackVideoCodec::Vp9 => Some("vp9".to_string()),
+                                        super::PlaybackVideoCodec::Av1 => Some("av1".to_string()),
+                                    })
+                                    .collect(),
+                                audio_codecs: vec!["vorbis".to_string(), "opus".to_string()],
+                            },
+                        })
+                        .collect(),
+                    transcoding_container: "ts".to_string(),
+                    transcoding_protocol: "hls".to_string(),
+                    transcoding_video_codec: "h264".to_string(),
+                    transcoding_audio_codec: "aac".to_string(),
+                    subtitle_profiles: match profile.subtitle_preference {
+                        super::PlaybackSubtitlePreference::None => Vec::new(),
+                        super::PlaybackSubtitlePreference::External
+                        | super::PlaybackSubtitlePreference::EmbeddedOrExternal => subtitle_methods
+                            .into_iter()
+                            .flat_map(|method| {
+                                ["srt", "vtt", "ass"].into_iter().map(move |format| {
+                                    EmbySubtitleProfileHint {
                                         format: format.to_string(),
                                         method,
                                     }
                                 })
-                                    })
-                                    .collect()
-                            }
-                        },
+                            })
+                            .collect(),
                     },
-                ),
+                }),
             }
         },
     )
@@ -372,17 +378,314 @@ fn emby_auth_headers(token: &str) -> HashMap<String, String> {
     HashMap::from([("X-Emby-Token".to_string(), token.to_string())])
 }
 
+fn emby_get_item_request(
+    resolved: &ResolvedEmbyConfig,
+    item_id: &str,
+) -> emby_upstream::GetItemReq {
+    emby_upstream::GetItemReq {
+        host: resolved.host.clone(),
+        token: resolved.token.clone(),
+        item_id: item_id.to_string(),
+        user_id: resolved.user_id.clone(),
+    }
+}
+
+fn emby_playback_info_request(
+    config: &ResolvedEmbyConfig,
+    playback_client_profile: Option<&PlaybackClientProfile>,
+    playback_hints: EmbyPlaybackRequestHints,
+) -> emby_upstream::PlaybackInfoReq {
+    emby_upstream::PlaybackInfoReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        user_id: config.user_id.clone(),
+        item_id: config.item_id.clone(),
+        media_source_id: String::new(),
+        audio_stream_index: 0,
+        subtitle_stream_index: 0,
+        max_streaming_bitrate: optional_i64_to_upstream_absent_zero(
+            playback_client_profile.and_then(|profile| profile.max_streaming_bitrate),
+        ),
+        max_audio_channels: playback_hints.max_audio_channels,
+        enable_direct_play: playback_hints.enable_direct_play,
+        enable_direct_stream: playback_hints.enable_direct_stream,
+        enable_transcoding: playback_hints.enable_transcoding,
+        device_profile: playback_hints
+            .device_profile
+            .map(emby_device_profile_to_upstream),
+    }
+}
+
+fn emby_device_profile_to_upstream(
+    profile: EmbyPlaybackDeviceProfile,
+) -> emby_upstream::PlaybackInfoDeviceProfile {
+    emby_upstream::PlaybackInfoDeviceProfile {
+        direct_play_profiles: profile
+            .direct_play_profiles
+            .into_iter()
+            .map(|hint| emby_upstream::DirectPlayProfileHint {
+                container: hint.container,
+                video_codecs: hint.video_codecs,
+                audio_codecs: hint.audio_codecs,
+            })
+            .collect(),
+        transcoding_container: profile.transcoding_container,
+        transcoding_protocol: profile.transcoding_protocol,
+        transcoding_video_codec: profile.transcoding_video_codec,
+        transcoding_audio_codec: profile.transcoding_audio_codec,
+        subtitle_profiles: profile
+            .subtitle_profiles
+            .into_iter()
+            .map(|hint| emby_upstream::SubtitleProfileHint {
+                format: hint.format,
+                method: emby_subtitle_delivery_method_to_upstream(hint.method),
+            })
+            .collect(),
+    }
+}
+
+fn emby_subtitle_delivery_method_to_upstream(method: EmbySubtitleDeliveryMethod) -> i32 {
+    match method {
+        EmbySubtitleDeliveryMethod::External => {
+            emby_upstream::SubtitleDeliveryMethod::External as i32
+        }
+        EmbySubtitleDeliveryMethod::Embed => emby_upstream::SubtitleDeliveryMethod::Embed as i32,
+    }
+}
+
+fn emby_dynamic_list_request(
+    resolved: &ResolvedEmbyConfig,
+    path: String,
+    page: usize,
+    page_size: usize,
+    search_term: String,
+) -> Result<emby_upstream::FsListReq, ProviderError> {
+    Ok(emby_upstream::FsListReq {
+        host: resolved.host.clone(),
+        token: resolved.token.clone(),
+        path,
+        start_index: dynamic_list_start_index(page, page_size)?,
+        limit: usize_to_u64(page_size, "Emby page size")?,
+        search_term,
+        user_id: resolved.user_id.clone(),
+    })
+}
+
+fn emby_fs_list_request(req: EmbyListRequest) -> emby_upstream::FsListReq {
+    emby_upstream::FsListReq {
+        host: req.host,
+        token: req.token,
+        path: req.path,
+        start_index: req.start_index,
+        limit: req.limit,
+        search_term: req.search_term,
+        user_id: req.user_id,
+    }
+}
+
+fn emby_report_playback_start_request(
+    config: &ResolvedEmbyConfig,
+    session_id: &str,
+) -> emby_upstream::ReportPlaybackStartReq {
+    emby_upstream::ReportPlaybackStartReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        item_id: config.item_id.clone(),
+        play_session_id: session_id.to_string(),
+        media_source_id: String::new(),
+        position_ticks: 0,
+    }
+}
+
+fn emby_report_playback_stop_request(
+    config: &ResolvedEmbyConfig,
+    session_id: &str,
+    position_ticks: i64,
+) -> emby_upstream::ReportPlaybackStopReq {
+    emby_upstream::ReportPlaybackStopReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        item_id: config.item_id.clone(),
+        play_session_id: session_id.to_string(),
+        position_ticks,
+    }
+}
+
+fn emby_delete_active_encodings_request(
+    config: &ResolvedEmbyConfig,
+    session_id: &str,
+) -> emby_upstream::DeleteActiveEncodingsReq {
+    emby_upstream::DeleteActiveEncodingsReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        play_session_id: session_id.to_string(),
+    }
+}
+
+fn emby_report_playback_progress_request(
+    config: &ResolvedEmbyConfig,
+    session_id: &str,
+    position_ticks: i64,
+    is_paused: bool,
+) -> emby_upstream::ReportPlaybackProgressReq {
+    emby_upstream::ReportPlaybackProgressReq {
+        host: config.host.clone(),
+        token: config.token.clone(),
+        item_id: config.item_id.clone(),
+        play_session_id: session_id.to_string(),
+        media_source_id: String::new(),
+        position_ticks,
+        is_paused,
+    }
+}
+
 /// Emby `MediaProvider`
 ///
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct EmbyProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
+    credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum EmbyLoginCredential {
+    Password(String),
+    ApiKey(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyLoginRequest {
+    pub host: String,
+    pub username: String,
+    pub credential: EmbyLoginCredential,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyUserPolicy {
+    pub is_administrator: bool,
+    pub is_hidden: bool,
+    pub is_disabled: bool,
+    pub enable_all_folders: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyLoginResponse {
+    pub token: String,
+    pub user_id: String,
+    pub username: String,
+    pub server_id: String,
+    pub policy: Option<EmbyUserPolicy>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyPersistedLoginResponse {
+    pub login: EmbyLoginResponse,
+    pub server_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyLoginAndPersistRequest {
+    pub user_id: UserId,
+    pub host: String,
+    pub username: String,
+    pub password: Option<String>,
+    pub api_key: Option<String>,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyBind {
+    pub id: i64,
+    pub server_id: String,
+    pub host: String,
+    pub emby_user_id: String,
+    pub created_at: i64,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyListRequest {
+    pub host: String,
+    pub token: String,
+    pub path: String,
+    pub start_index: u64,
+    pub limit: u64,
+    pub search_term: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyListItem {
+    pub name: String,
+    pub id: String,
+    pub item_type: String,
+    pub parent_id: String,
+    pub series_name: String,
+    pub series_id: String,
+    pub season_name: String,
+    pub season_id: String,
+    pub is_folder: bool,
+    pub collection_type: String,
+    pub has_thumbnail: bool,
+    pub description: String,
+    pub duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyListResponse {
+    pub items: Vec<EmbyListItem>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone)]
+struct EmbyItem {
+    name: String,
+    id: String,
+    item_type: String,
+    parent_id: String,
+    series_name: String,
+    series_id: String,
+    season_name: String,
+    season_id: String,
+    is_folder: bool,
+    collection_type: String,
+    has_thumbnail: bool,
+    description: String,
+    duration_seconds: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyMeRequest {
+    pub host: String,
+    pub token: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EmbyMeResponse {
+    pub id: String,
+    pub name: String,
+    pub server_id: String,
+    pub policy: Option<EmbyUserPolicy>,
 }
 
 impl EmbyProvider {
     /// Provider type name constant.
     pub const NAME: &'static str = "emby";
+
+    #[must_use]
+    pub fn credential_server_id_for_instance(
+        host: &str,
+        provider_instance_name: Option<&str>,
+    ) -> String {
+        match normalize_provider_instance_name(provider_instance_name) {
+            Some(instance_name) => hex::encode(Sha256::digest(
+                format!("{host}\n{instance_name}").as_bytes(),
+            )),
+            None => hex::encode(Sha256::digest(host.as_bytes())),
+        }
+    }
 
     /// Create a new `EmbyProvider` with `RemoteProviderManager`
     pub fn new(
@@ -391,6 +694,7 @@ impl EmbyProvider {
         Ok(Self {
             provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -402,7 +706,26 @@ impl EmbyProvider {
         Self {
             provider_instance_manager,
             client_manager,
+            credential_repo: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_credential_repo(
+        &self,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            provider_instance_manager: self.provider_instance_manager.clone(),
+            client_manager: self.client_manager.clone(),
+            credential_repo: Some(credential_repo),
+        }
+    }
+
+    fn credential_repo(&self) -> Result<&UserProviderCredentialRepository, ProviderError> {
+        self.credential_repo.as_deref().ok_or_else(|| {
+            ProviderError::Internal("Emby credential repository is not configured".to_string())
+        })
     }
 
     #[cfg(test)]
@@ -411,6 +734,7 @@ impl EmbyProvider {
             provider_instance_manager:
                 crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -435,42 +759,344 @@ impl EmbyProvider {
     }
 
     /// Login to Emby and return a validated provider credential payload.
+    pub fn resolve_login_request(
+        host: String,
+        username: String,
+        password: Option<&str>,
+        api_key: Option<&str>,
+    ) -> Result<EmbyLoginRequest, ProviderError> {
+        if username.trim().is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby username must not be empty".to_string(),
+            ));
+        }
+
+        let credential = match (password, api_key) {
+            (Some(password), None) => EmbyLoginCredential::Password(password.to_string()),
+            (None, Some(api_key)) => EmbyLoginCredential::ApiKey(api_key.to_string()),
+            _ => {
+                return Err(ProviderError::InvalidConfig(
+                    "Emby login requires exactly one credential".to_string(),
+                ));
+            }
+        };
+
+        Ok(EmbyLoginRequest {
+            host,
+            username,
+            credential,
+        })
+    }
+
+    /// Login to Emby and return a validated provider credential payload.
     pub async fn login_with_context(
         &self,
-        req: synctv_media_providers::grpc::emby::LoginReq,
+        req: EmbyLoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::emby::LoginResp, ProviderError> {
+    ) -> Result<EmbyLoginResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.login(req).await.map_err(std::convert::Into::into)
+        let credential = match req.credential {
+            EmbyLoginCredential::Password(password) => {
+                emby_upstream::login_req::Credential::Password(password)
+            }
+            EmbyLoginCredential::ApiKey(api_key) => {
+                emby_upstream::login_req::Credential::ApiKey(api_key)
+            }
+        };
+        let resp = client
+            .login(emby_upstream::LoginReq {
+                host: req.host,
+                username: req.username,
+                credential: Some(credential),
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(EmbyLoginResponse {
+            token: resp.token,
+            user_id: resp.user_id,
+            username: resp.username,
+            server_id: resp.server_id,
+            policy: resp.policy.map(Self::emby_user_policy_from_provider),
+        })
+    }
+
+    pub async fn persist_login_credential(
+        &self,
+        user_id: UserId,
+        host: String,
+        api_key: String,
+        emby_user_id: String,
+        provider_instance_name: Option<&str>,
+    ) -> Result<String, ProviderError> {
+        let server_id = Self::credential_server_id_for_instance(&host, provider_instance_name);
+        let credential_data = ProviderCredential::Emby {
+            host,
+            api_key,
+            emby_user_id,
+        };
+        let now = Utc::now();
+        let credential = UserProviderCredential {
+            id: 0,
+            user_id,
+            provider: Self::NAME.to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: provider_instance_name.map(ToString::to_string),
+            credential_data,
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.credential_repo()?
+            .upsert_by_user_provider_server(&credential)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to persist emby credential: {error}"))
+            })?;
+
+        Ok(server_id)
+    }
+
+    pub async fn login_and_persist_with_context(
+        &self,
+        request: EmbyLoginAndPersistRequest,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<EmbyPersistedLoginResponse, ProviderError> {
+        let provider_instance_name = request.provider_instance_name.as_deref();
+        let login_req = Self::resolve_login_request(
+            request.host.clone(),
+            request.username,
+            request.password.as_deref(),
+            request.api_key.as_deref(),
+        )?;
+        let login = self
+            .login_with_context(login_req, provider_instance_name, request_context)
+            .await?;
+        let server_id = self
+            .persist_login_credential(
+                request.user_id,
+                request.host,
+                login.token.clone(),
+                login.user_id.clone(),
+                provider_instance_name,
+            )
+            .await?;
+
+        Ok(EmbyPersistedLoginResponse { login, server_id })
+    }
+
+    pub async fn delete_credential(
+        &self,
+        user_id: UserId,
+        server_id: &str,
+    ) -> Result<bool, ProviderError> {
+        let Some(existing) = self
+            .credential_repo()?
+            .get_by_provider_and_server(user_id, Self::NAME, server_id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query emby credential: {error}"))
+            })?
+        else {
+            return Ok(false);
+        };
+
+        self.credential_repo()?
+            .delete(existing.id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to delete emby credential: {error}"))
+            })?;
+        Ok(true)
+    }
+
+    pub async fn list_binds(
+        &self,
+        user_id: UserId,
+        provider_instance_name: Option<&str>,
+    ) -> Result<Vec<EmbyBind>, ProviderError> {
+        let requested_instance_name = match normalize_provider_instance_name(provider_instance_name)
+        {
+            Some(instance_name) => {
+                validate_provider_instance_name(instance_name)
+                    .map_err(ProviderError::InvalidConfig)?;
+                Some(instance_name)
+            }
+            None => None,
+        };
+        let credentials = self
+            .credential_repo()?
+            .get_readable_by_provider(user_id, Self::NAME)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query emby credentials: {error}"))
+            })?;
+
+        credentials
+            .into_iter()
+            .filter(|credential| {
+                requested_instance_name.is_none_or(|requested| {
+                    normalize_provider_instance_name(credential.provider_instance_name.as_deref())
+                        == Some(requested)
+                })
+            })
+            .map(|credential| {
+                let ProviderCredential::Emby {
+                    host, emby_user_id, ..
+                } = credential.credential_data
+                else {
+                    return Err(ProviderError::InvalidCredentialType);
+                };
+                let host = host.trim();
+                let emby_user_id = emby_user_id.trim();
+                if host.is_empty() || emby_user_id.is_empty() {
+                    return Err(ProviderError::InvalidConfig(format!(
+                        "Emby credential {} has empty bind fields",
+                        credential.id
+                    )));
+                }
+
+                Ok(EmbyBind {
+                    id: credential.id,
+                    server_id: credential.server_id,
+                    host: host.to_string(),
+                    emby_user_id: emby_user_id.to_string(),
+                    created_at: credential.created_at.timestamp(),
+                    provider_instance_name: credential.provider_instance_name,
+                })
+            })
+            .collect()
+    }
+
+    pub fn access_from_stored_credential(
+        user_id: UserId,
+        server_id: &str,
+        credential: ProviderCredential,
+        credential_revision: String,
+        stored_provider_instance_name: Option<String>,
+        requested_provider_instance_name: Option<&str>,
+    ) -> Result<EmbyAccess, ProviderError> {
+        let provider_instance_name = requested_provider_instance_name
+            .map(std::string::ToString::to_string)
+            .or(stored_provider_instance_name);
+        match credential {
+            ProviderCredential::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => Ok(EmbyAccess {
+                host,
+                api_key,
+                emby_user_id,
+                server_id: server_id.to_string(),
+                credential_owner_id: user_id.to_string(),
+                credential_revision,
+                provider_instance_name,
+            }),
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
     }
 
     /// List Emby library items
     pub async fn fs_list_with_context(
         &self,
-        req: synctv_media_providers::grpc::emby::FsListReq,
+        req: EmbyListRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::emby::FsListResp, ProviderError> {
+    ) -> Result<EmbyListResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.fs_list(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .fs_list(emby_fs_list_request(req))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(EmbyListResponse {
+            items: resp
+                .items
+                .into_iter()
+                .map(Self::emby_list_item_from_provider)
+                .collect(),
+            total: resp.total,
+        })
     }
 
     /// Get Emby user info
     pub async fn me_with_context(
         &self,
-        req: synctv_media_providers::grpc::emby::MeReq,
+        req: EmbyMeRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
+    ) -> Result<EmbyMeResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.me(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .me(emby_upstream::MeReq {
+                host: req.host,
+                token: req.token,
+                user_id: req.user_id,
+            })
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(EmbyMeResponse {
+            id: resp.id,
+            name: resp.name,
+            server_id: resp.server_id,
+            policy: resp.policy.map(Self::emby_user_policy_from_provider),
+        })
+    }
+
+    fn emby_user_policy_from_provider(policy: emby_upstream::UserPolicy) -> EmbyUserPolicy {
+        EmbyUserPolicy {
+            is_administrator: policy.is_administrator,
+            is_hidden: policy.is_hidden,
+            is_disabled: policy.is_disabled,
+            enable_all_folders: policy.enable_all_folders,
+        }
+    }
+
+    fn emby_item_from_provider(item: emby_upstream::Item) -> EmbyItem {
+        EmbyItem {
+            name: item.name,
+            id: item.id,
+            item_type: item.r#type,
+            parent_id: item.parent_id,
+            series_name: item.series_name,
+            series_id: item.series_id,
+            season_name: item.season_name,
+            season_id: item.season_id,
+            is_folder: item.is_folder,
+            collection_type: item.collection_type,
+            has_thumbnail: item.has_thumbnail,
+            description: item.description,
+            duration_seconds: item.duration_seconds,
+        }
+    }
+
+    fn emby_list_item_from_provider(item: emby_upstream::Item) -> EmbyListItem {
+        Self::emby_list_item_from_item(Self::emby_item_from_provider(item))
+    }
+
+    fn emby_list_item_from_item(item: EmbyItem) -> EmbyListItem {
+        EmbyListItem {
+            name: item.name,
+            id: item.id,
+            item_type: item.item_type,
+            parent_id: item.parent_id,
+            series_name: item.series_name,
+            series_id: item.series_id,
+            season_name: item.season_name,
+            season_id: item.season_id,
+            is_folder: item.is_folder,
+            collection_type: item.collection_type,
+            has_thumbnail: item.has_thumbnail,
+            description: item.description,
+            duration_seconds: item.duration_seconds,
+        }
     }
 
     fn encode_target(item_id: &str) -> Result<crate::models::ProviderTarget, ProviderError> {
@@ -508,36 +1134,27 @@ impl EmbyProvider {
         resolved: &ResolvedEmbyConfig,
         item_id: &str,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::emby::Item, ProviderError> {
+    ) -> Result<EmbyItem, ProviderError> {
         let client = self
             .get_client_with_context(resolved.provider_instance_name.as_deref(), request_context)
             .await?;
-        let request = synctv_media_providers::grpc::emby::GetItemReq {
-            host: resolved.host.clone(),
-            token: resolved.token.clone(),
-            item_id: item_id.to_string(),
-            user_id: resolved.user_id.clone(),
-        };
-        client.get_item(request).await.map_err(Into::into)
+        let request = emby_get_item_request(resolved, item_id);
+        client
+            .get_item(request)
+            .await
+            .map(Self::emby_item_from_provider)
+            .map_err(Into::into)
     }
 
-    fn item_type_from_listing(item: &synctv_media_providers::grpc::emby::Item) -> Option<ItemType> {
+    fn item_type_from_listing(item: &EmbyItem) -> Option<ItemType> {
         if item.is_folder {
             Some(ItemType::Playlist)
         } else {
-            match item.r#type.as_str() {
+            match item.item_type.as_str() {
                 "Movie" | "Episode" | "Video" | "Audio" | "MusicAlbum" => Some(ItemType::Media),
                 _ => None,
             }
         }
-    }
-
-    fn build_thumbnail_url(server_id: &str, credential_owner_id: &str, item_id: &str) -> String {
-        format!(
-            "/api/providers/emby/thumbnail/{item_id}?serverId={server_id}&credentialOwnerId={credential_owner_id}&maxHeight=300",
-            server_id = urlencoding::encode(server_id),
-            credential_owner_id = urlencoding::encode(credential_owner_id),
-        )
     }
 
     fn build_next_source_config(
@@ -618,46 +1235,29 @@ impl EmbyProvider {
             .await?;
 
         // Get item details first
-        let item_request = synctv_media_providers::grpc::emby::GetItemReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            item_id: config.item_id.clone(),
-            user_id: config.user_id.clone(),
-        };
+        let item_request = emby_get_item_request(config, &config.item_id);
 
-        let item = client.get_item(item_request).await?;
+        let item = client
+            .get_item(item_request)
+            .await
+            .map(Self::emby_item_from_provider)?;
 
         let mut metadata = PlaybackMetadata {
-            name: Some(item.name),
+            name: Some(item.name.clone()),
             emby: Some(EmbyPlaybackMetadata {
-                item_type: Some(item.r#type),
-                series_name: (!item.series_name.is_empty()).then_some(item.series_name),
-                season_name: (!item.season_name.is_empty()).then_some(item.season_name),
+                item_type: Some(item.item_type.clone()),
+                series_name: (!item.series_name.is_empty()).then_some(item.series_name.clone()),
+                season_name: (!item.season_name.is_empty()).then_some(item.season_name.clone()),
                 play_session_id: None,
             }),
             ..Default::default()
         };
 
-        let playback_hints = grpc_playback_request_hints(playback_client_profile);
+        let playback_hints = emby_playback_request_hints(playback_client_profile);
 
         // Get playback info
-        let playback_request = synctv_media_providers::grpc::emby::PlaybackInfoReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            user_id: config.user_id.clone(),
-            item_id: config.item_id.clone(),
-            media_source_id: String::new(), // Use default media source
-            audio_stream_index: 0,
-            subtitle_stream_index: 0,
-            max_streaming_bitrate: optional_i64_to_proto_absent_zero(
-                playback_client_profile.and_then(|profile| profile.max_streaming_bitrate),
-            ),
-            max_audio_channels: playback_hints.max_audio_channels,
-            enable_direct_play: playback_hints.enable_direct_play,
-            enable_direct_stream: playback_hints.enable_direct_stream,
-            enable_transcoding: playback_hints.enable_transcoding,
-            device_profile: playback_hints.device_profile,
-        };
+        let playback_request =
+            emby_playback_info_request(config, playback_client_profile, playback_hints);
 
         let playback_info = client.playback_info(playback_request).await?;
 
@@ -1049,14 +1649,7 @@ impl MediaProvider for EmbyProvider {
             .await?;
 
         let item_id = config.item_id.clone();
-        let req = synctv_media_providers::grpc::emby::ReportPlaybackStartReq {
-            host: config.host,
-            token: config.token,
-            item_id: config.item_id,
-            play_session_id: session_id.to_string(),
-            media_source_id: String::new(),
-            position_ticks: 0,
-        };
+        let req = emby_report_playback_start_request(&config, session_id);
 
         if let Err(e) = client.report_playback_start(req).await {
             tracing::warn!(
@@ -1112,13 +1705,7 @@ impl MediaProvider for EmbyProvider {
         let item_id = config.item_id.clone();
 
         // Report playback stopped
-        let stop_req = synctv_media_providers::grpc::emby::ReportPlaybackStopReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            item_id: config.item_id.clone(),
-            play_session_id: session_id.to_string(),
-            position_ticks,
-        };
+        let stop_req = emby_report_playback_stop_request(&config, session_id, position_ticks);
 
         if let Err(e) = client.report_playback_stop(stop_req).await {
             tracing::warn!(
@@ -1131,11 +1718,7 @@ impl MediaProvider for EmbyProvider {
         }
 
         // Also clean up active encodings (best effort, do not fail if this errors)
-        let delete_req = synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq {
-            host: config.host,
-            token: config.token,
-            play_session_id: session_id.to_string(),
-        };
+        let delete_req = emby_delete_active_encodings_request(&config, session_id);
 
         if let Err(e) = client.delete_active_encodings(delete_req).await {
             tracing::warn!(
@@ -1191,15 +1774,8 @@ impl MediaProvider for EmbyProvider {
         let position_ticks = seconds_to_emby_ticks(position)?;
 
         let item_id = config.item_id.clone();
-        let req = synctv_media_providers::grpc::emby::ReportPlaybackProgressReq {
-            host: config.host,
-            token: config.token,
-            item_id: config.item_id,
-            play_session_id: session_id.to_string(),
-            media_source_id: String::new(),
-            position_ticks,
-            is_paused,
-        };
+        let req =
+            emby_report_playback_progress_request(&config, session_id, position_ticks, is_paused);
 
         if let Err(e) = client.report_playback_progress(req).await {
             tracing::debug!(
@@ -1227,6 +1803,55 @@ impl MediaProvider for EmbyProvider {
 }
 
 impl EmbyProvider {
+    pub fn thumbnail_proxy_action(
+        item_id: &str,
+        host: &str,
+        api_key: &str,
+        max_height: u32,
+        max_width: u32,
+    ) -> Result<super::playback_transport::PlaybackTransportAction, ProviderError> {
+        let item_id = item_id.trim();
+        if item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby thumbnail item_id must not be empty".to_string(),
+            ));
+        }
+        let mut url = url::Url::parse(host).map_err(|error| {
+            ProviderError::InvalidUrl(format!("Invalid Emby host URL: {error}"))
+        })?;
+        url.set_query(None);
+        url.set_fragment(None);
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| ProviderError::InvalidUrl("Invalid Emby host URL path".to_string()))?;
+            segments
+                .push("Items")
+                .push(item_id)
+                .push("Images")
+                .push("Primary");
+        }
+        {
+            let mut query = url.query_pairs_mut();
+            if max_height > 0 {
+                query.append_pair("maxHeight", &max_height.to_string());
+            }
+            if max_width > 0 {
+                query.append_pair("maxWidth", &max_width.to_string());
+            }
+            query.append_pair("quality", "90");
+        }
+        let url = url.to_string();
+
+        Ok(
+            super::playback_transport::PlaybackTransportAction::FetchAndForward {
+                url,
+                headers: HashMap::from([("X-Emby-Token".to_string(), api_key.to_string())]),
+                range_header: None,
+            },
+        )
+    }
+
     pub async fn get_media_stream(
         &self,
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
@@ -1363,20 +1988,19 @@ impl DynamicFolder for EmbyProvider {
 
         let page = query.page.max(1);
         let page_size = query.page_size.max(1);
-        let list_req = synctv_media_providers::grpc::emby::FsListReq {
-            host: resolved.host.clone(),
-            token: resolved.token.clone(),
-            path: target_item_id,
-            start_index: dynamic_list_start_index(page, page_size)?,
-            limit: usize_to_u64(page_size, "Emby page size")?,
-            search_term: query.search.unwrap_or_default(),
-            user_id: resolved.user_id.clone(),
-        };
+        let list_req = emby_dynamic_list_request(
+            &resolved,
+            target_item_id,
+            page,
+            page_size,
+            query.search.unwrap_or_default(),
+        )?;
 
         let response = client.fs_list(list_req).await?;
         let items = response
             .items
             .into_iter()
+            .map(Self::emby_item_from_provider)
             .filter_map(|item| {
                 let item_type = Self::item_type_from_listing(&item)?;
                 Some((item, item_type))
@@ -1385,21 +2009,16 @@ impl DynamicFolder for EmbyProvider {
                 let credential_owner_id = ctx
                     .credential_owner_id()
                     .ok_or(ProviderError::CredentialRequired)?;
-                let public_credential_owner_id = ctx
-                    .public_credential_owner_id()
-                    .map_or_else(|| credential_owner_id.to_string(), str::to_owned);
-                let thumbnail_url = Self::build_thumbnail_url(
-                    &base_config.server_id,
-                    &public_credential_owner_id,
-                    &item.id,
-                );
-
                 Ok(DirectoryItem {
                     name: item.name,
                     target: Self::encode_target(&item.id)?,
                     item_type,
                     size: None,
-                    thumbnail: Some(thumbnail_url),
+                    thumbnail: Some(DirectoryItemThumbnail::Emby {
+                        server_id: base_config.server_id.clone(),
+                        credential_owner_id: *credential_owner_id,
+                        item_id: item.id,
+                    }),
                     description: (!item.description.trim().is_empty()).then_some(item.description),
                     modified_at: None,
                 })

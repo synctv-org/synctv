@@ -2,7 +2,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{ReviewStatus, SignupMethod, UserId},
-    service::user::UserService,
+    service::UserService,
     Result,
 };
 

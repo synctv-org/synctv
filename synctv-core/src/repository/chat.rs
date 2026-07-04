@@ -3066,6 +3066,8 @@ impl ChatRepository {
                           height,
                           metadata AS "metadata!: crate::models::FileMetadata",
                           created_at AS "created_at!",
+                          NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+
                           NULL::TEXT AS "reuse_token?",
                           NULL::TIMESTAMPTZ AS "reuse_expires_at?"
                 "#,
@@ -3573,6 +3575,8 @@ impl ChatRepository {
                    height,
                    metadata AS "metadata!: crate::models::FileMetadata",
                    created_at AS "created_at!",
+                   NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments
@@ -3827,6 +3831,8 @@ impl ChatRepository {
                    height,
                    metadata AS "metadata!: crate::models::FileMetadata",
                    created_at AS "created_at!",
+                   NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments
@@ -3871,6 +3877,8 @@ impl ChatRepository {
                    a.height,
                    a.metadata AS "metadata!: crate::models::FileMetadata",
                    a.created_at AS "created_at!",
+                   NULL::JSONB AS "object_access?: crate::models::FileObjectAccess",
+
                    NULL::TEXT AS "reuse_token?",
                    NULL::TIMESTAMPTZ AS "reuse_expires_at?"
             FROM chat_message_attachments a
@@ -4620,6 +4628,7 @@ mod tests {
             id: "attachment-1".to_string(),
             storage_backend: "database".to_string(),
             object_key: "database/chat/attachments/attachment-1.webp".to_string(),
+            object_access: None,
             url: None,
             mime_type: Some("image/webp".to_string()),
             size_bytes: Some(1),

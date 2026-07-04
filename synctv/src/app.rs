@@ -17,10 +17,8 @@ use tracing::{error, info, warn};
 use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, LeadershipEvent};
 use synctv_core::{
     bootstrap::{
-        bootstrap_root_user,
-        database::{init_database_with_read_pool_and_cancel, DatabasePools},
-        has_any_admin_users, init_redis,
-        services::{init_services_with_options, InitServicesOptions},
+        bootstrap_root_user, has_any_admin_users, init_database_with_read_pool_and_cancel,
+        init_redis, init_services_with_options, DatabasePools, InitServicesOptions,
     },
     cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
     repository::realtime_outbox::RealtimeOutboxRepository,
@@ -34,10 +32,10 @@ use synctv_realtime::sync::{
     RealtimeManagerRuntime, RoomMessageRuntime,
 };
 
-use synctv_api::realtime_fanout::{
-    distributed_realtime_fanout_service, local_realtime_fanout_service, RealtimeFanoutService,
+use synctv_api::{
+    distributed_realtime_fanout_service, local_realtime_fanout_service, RealtimeEventService,
+    RealtimeFanoutService,
 };
-use synctv_api::runtime::RealtimeEventService;
 use synctv_realtime::sync::ConnectionRuntime;
 
 use crate::bootstrap::cluster::{
@@ -67,7 +65,7 @@ struct Infrastructure {
 
 /// Core services from `synctv-core`.
 struct CoreState {
-    services: synctv_core::bootstrap::services::Services,
+    services: synctv_core::bootstrap::Services,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
 }
 
@@ -1151,19 +1149,19 @@ impl Application {
         );
         info!("Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)");
 
-        let cleanup_config = synctv_core::service::cleanup::CleanupConfig {
+        let cleanup_config = synctv_core::service::CleanupConfig {
             unreferenced_file_retention_seconds: infra
                 .config
                 .file_storage
                 .unreferenced_object_retention_seconds,
-            ..synctv_core::service::cleanup::CleanupConfig::default()
+            ..synctv_core::service::CleanupConfig::default()
         };
         let file_storage_service = core.services.chat_service.file_storage_service();
         let cleanup_service = synctv_core::service::CleanupService::new_with_options(
             infra.pool.clone(),
             cleanup_config.clone(),
             leader.leader_runtime.clone(),
-            synctv_core::service::cleanup::CleanupServiceOptions {
+            synctv_core::service::CleanupServiceOptions {
                 runtime_settings_store: Some(core.services.runtime_settings_store.clone()),
                 file_storage_service: Some(file_storage_service.clone()),
             },
@@ -1177,7 +1175,7 @@ impl Application {
         let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new_with_options(
             infra.pool.clone(),
             leader.leader_runtime.clone(),
-            synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
+            synctv_core::service::DatabaseMaintenanceOptions {
                 config: cleanup_config.clone(),
                 runtime_settings_store: Some(core.services.runtime_settings_store.clone()),
                 file_storage_service: Some(file_storage_service.clone()),
@@ -1211,7 +1209,7 @@ impl Application {
                         pool.clone(),
                         cleanup_config.clone(),
                         leader_runtime.clone(),
-                        synctv_core::service::cleanup::CleanupServiceOptions {
+                        synctv_core::service::CleanupServiceOptions {
                             runtime_settings_store: Some(runtime_settings_store.clone()),
                             file_storage_service: Some(file_storage_service.clone()),
                         },
@@ -1236,7 +1234,7 @@ impl Application {
                         synctv_core::service::DatabaseMaintenanceService::new_with_options(
                             pool,
                             leader_runtime,
-                            synctv_core::service::db_maintenance::DatabaseMaintenanceOptions {
+                            synctv_core::service::DatabaseMaintenanceOptions {
                                 config: cleanup_config.clone(),
                                 runtime_settings_store: Some(runtime_settings_store),
                                 file_storage_service: Some(file_storage_service),
@@ -1595,14 +1593,14 @@ mod tests {
     use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-        MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig, PublicIdsConfig,
+        ConnectionLimitsConfig, DatabaseConfig, ExternalIdsConfig, JwtConfig, LivestreamConfig,
+        LoggingConfig, MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig,
         RedisConfig, RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
     use synctv_core::{
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
-        service::auth::OpaquePasswordService,
+        service::OpaquePasswordService,
         RedisConnectionRuntime, SharedRedisConnectionRuntime,
     };
     use synctv_core_testing::test_redis_key_prefix;
@@ -1766,7 +1764,7 @@ mod tests {
             proxy_slice_cache: ProxySliceCacheConfig::default(),
             messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
             request_rate_limits: RequestRateLimitConfig::default(),
-            public_ids: PublicIdsConfig::default(),
+            external_ids: ExternalIdsConfig::default(),
             security: synctv_core::config::SecurityConfig {
                 opaque_server_setup_secret: "test-opaque-server-setup-secret-for-app-startup-tests"
                     .to_string(),

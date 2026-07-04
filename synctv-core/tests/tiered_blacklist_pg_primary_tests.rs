@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use redis::AsyncCommands;
-use synctv_core::service::{auth::token_blacklist::TieredTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core::service::{TieredTokenBlacklistStore, TokenBlacklistStore};
 use synctv_core_testing::{ok, redis_connection_manager, start_redis_with_client};
 use tokio::sync::RwLock;
 

@@ -3,7 +3,7 @@
 //! This module implements a database-compatible permission bitmask system.
 //!
 //! Key features:
-//! - Uses `u64` at API/domain boundaries while keeping defined permission bits
+//! - Uses `u64` at service/domain boundaries while keeping defined permission bits
 //!   in the PostgreSQL `BIGINT` range used by persistence
 //! - Telegram-style permission inheritance
 //! - Role and Status separation
@@ -722,35 +722,13 @@ impl std::fmt::Display for Role {
     }
 }
 
-impl From<Role> for synctv_proto::common::RoomMemberRole {
-    fn from(value: Role) -> Self {
-        match value {
-            Role::Creator => Self::Creator,
-            Role::Admin => Self::Admin,
-            Role::Member => Self::Member,
-            Role::Guest => Self::Guest,
-        }
-    }
-}
-
 impl From<Role> for i32 {
     fn from(value: Role) -> Self {
-        synctv_proto::common::RoomMemberRole::from(value) as Self
-    }
-}
-
-impl TryFrom<synctv_proto::common::RoomMemberRole> for Role {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::RoomMemberRole) -> Result<Self, Self::Error> {
         match value {
-            synctv_proto::common::RoomMemberRole::Creator => Ok(Self::Creator),
-            synctv_proto::common::RoomMemberRole::Admin => Ok(Self::Admin),
-            synctv_proto::common::RoomMemberRole::Member => Ok(Self::Member),
-            synctv_proto::common::RoomMemberRole::Guest => Ok(Self::Guest),
-            synctv_proto::common::RoomMemberRole::Unspecified => {
-                Err(format!("Unknown room member role: {}", value as i32))
-            }
+            Role::Creator => 1,
+            Role::Admin => 2,
+            Role::Member => 3,
+            Role::Guest => 4,
         }
     }
 }
@@ -759,9 +737,13 @@ impl TryFrom<i32> for Role {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::RoomMemberRole::try_from(value)
-            .map_err(|_| format!("Unknown room member role: {value}"))?;
-        Self::try_from(proto).map_err(|_| format!("Unknown room member role: {value}"))
+        match value {
+            1 => Ok(Self::Creator),
+            2 => Ok(Self::Admin),
+            3 => Ok(Self::Member),
+            4 => Ok(Self::Guest),
+            _ => Err(format!("Unknown room member role: {value}")),
+        }
     }
 }
 

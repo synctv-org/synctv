@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use synctv_core::cache::KeyBuilder;
 use synctv_core::models::RoomId;
-use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
-use synctv_core::service::auth::{GuestTokenValidator, JwtService, TokenBlacklistStore};
+use synctv_core::service::InMemoryTokenBlacklistStore;
+use synctv_core::service::{GuestTokenValidator, JwtService, TokenBlacklistStore};
 use synctv_core::Error;
 
 #[tokio::test]
@@ -102,7 +102,7 @@ async fn test_guest_blacklist_storage_error_surfaces_service_unavailable() {
 
 #[test]
 fn test_api_error_internal_sanitized_for_grpc() {
-    use synctv_api::impls::ApiError;
+    use synctv_api::ApiError;
 
     let api_err = ApiError::Internal(
         "error returned from database: connection refused (os error 111)".to_string(),

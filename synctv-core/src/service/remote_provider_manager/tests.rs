@@ -172,7 +172,7 @@ fn normalized_transport_endpoint_preserves_http() {
 
     let normalized = ok(
         RemoteProviderManager::normalized_transport_endpoint(&config),
-        "http:// endpoint should normalize to a tonic transport URL",
+        "http:// endpoint should normalize to a remote transport URL",
     );
 
     assert_eq!(normalized, "http://provider.example.com:50051");

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use synctv_api::impls::ClientApiImpl;
+use synctv_api::{ClientApiImpl, ProxySigningKey};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
@@ -19,13 +19,10 @@ use synctv_core::{
         DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
         MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
     },
-    proxy_signature::ProxySigningKey,
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, ProvidersManager, RemoteProviderManager, RoomService,
-        UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, ProvidersManager,
+        RemoteProviderManager, RoomService, RoomServiceOptions, UserService,
     },
     Config,
 };
@@ -68,8 +65,8 @@ fn decode_alist_target(target: &ProviderTarget) -> String {
 
 const NEXT_ITEM_SOURCE_CONFIG_SECRET: &str = "dynamic-next-item-secret";
 
-fn public_id_codec() -> synctv_core::PublicIdCodec {
-    synctv_core::PublicIdCodec::plain()
+fn public_id_codec() -> synctv_api::PublicIdCodec {
+    synctv_api::PublicIdCodec::plain()
 }
 
 fn make_user(username: &str) -> User {
@@ -509,7 +506,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -519,7 +516,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -648,7 +645,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -658,7 +655,7 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -751,7 +748,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -761,7 +758,7 @@ async fn test_dynamic_playlist_get_playback_uses_bound_provider_instance() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -872,7 +869,7 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
         "test:provider:".to_string(),
     ));
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -882,13 +879,13 @@ async fn test_static_provider_playback_with_signing_key_uses_provider_store_regi
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores,
             email_api: None,
             passkey_service: None,
         },
-        synctv_api::impls::ClientApiRuntime {
+        synctv_api::ClientApiRuntime {
             signing_key: Arc::new(
                 ProxySigningKey::try_derive_from(b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
                     .expect("test proxy signing key should derive"),
@@ -970,7 +967,7 @@ async fn test_get_playback_without_active_media_returns_idle_playback_info() {
     let room_public_id = public_id_codec().encode_room_id(room.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -980,7 +977,7 @@ async fn test_get_playback_without_active_media_returns_idle_playback_info() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -1079,7 +1076,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
     let media_public_id = codec.encode_media_id(media.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -1089,7 +1086,7 @@ async fn test_get_playback_returns_state_when_playback_info_generation_fails() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -1185,7 +1182,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
     let media_public_id = codec.encode_media_id(media.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -1195,7 +1192,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -1232,7 +1229,7 @@ async fn test_get_playback_returns_error_for_invalid_live_proxy_source_config() 
 
     assert!(matches!(
         error,
-        synctv_api::impls::ApiError::InvalidInput(message)
+        synctv_api::ApiError::InvalidInput(message)
             if message.contains("Invalid LiveProxy source URL")
     ));
 }
@@ -1282,7 +1279,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
     let playlist_public_id = codec.encode_playlist_id(playlist.id).unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service: room_service.clone(),
@@ -1292,7 +1289,7 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",
@@ -1400,7 +1397,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         .unwrap();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::impls::ClientApiConfig {
+        synctv_api::ClientApiConfig {
             read_pool: None,
             user_service,
             room_service,
@@ -1410,7 +1407,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
             runtime_settings_store: None,
-            public_id_codec: Arc::new(synctv_core::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
             chat_service: None,
             provider_stores: Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
                 "test:provider:",

@@ -616,6 +616,7 @@ pub async fn watch_bilibili_live_danmaku(
                             playback_provider_service: &state
                                 .shared_api_runtime
                                 .bilibili_playback_provider_service,
+                            identity_runtime: super::playback_provider_identity_runtime(&state),
                             actor_user_id: authenticated.user_id,
                             request_control: Some(&request_control),
                         },
@@ -651,14 +652,7 @@ fn bilibili_deps<'a>(
 ) -> crate::impls::playback_provider::bilibili::BilibiliPlaybackProviderDeps<'a> {
     crate::impls::playback_provider::bilibili::BilibiliPlaybackProviderDeps {
         playback_provider_service: &state.shared_api_runtime.bilibili_playback_provider_service,
-        proxy_signing_key: &state.shared_api_runtime.proxy_signing_key,
-        public_id_codec: &state.shared_api_runtime.public_id_codec,
-        provider_stores: state.shared_api_runtime.provider_stores.as_ref(),
-        user_service: &state.shared_api_runtime.client_api.user_service,
-        playback_transport_services: &state.shared_api_runtime.playback_transport_services,
+        runtime: super::playback_provider_api_runtime(state),
         request_control,
-        proxy_http_client: &state.proxy_http_client,
-        ssrf_guard: &state.ssrf_guard,
-        proxy_slice_cache: &state.proxy_slice_cache,
     }
 }

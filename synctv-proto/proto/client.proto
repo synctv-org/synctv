@@ -248,6 +248,7 @@ message User {
   bool is_banned = 7;
   string avatar_url = 8;
   UserAvatar avatar = 9;
+  FileObjectAccess avatar_access = 10;
 }
 
 // Public user view - safe to return in any context (room member lists, chat, etc.).
@@ -259,6 +260,7 @@ message UserPublicView {
   int64 created_at = 4;
   string avatar_url = 5;
   UserAvatar avatar = 6;
+  FileObjectAccess avatar_access = 7;
 }
 
 enum PlayMode {
@@ -437,6 +439,7 @@ message ResourceCover {
   string url = 1;
   FileMetadata metadata = 2;
   repeated FileObjectVariant variants = 3;
+  FileObjectAccess object_access = 4;
 }
 
 enum ResourceAvailability {
@@ -2728,6 +2731,22 @@ enum ChatAttachmentReferenceKind {
   CHAT_ATTACHMENT_REFERENCE_KIND_REUSE = 2;
 }
 
+enum FileObjectAccessKind {
+  FILE_OBJECT_ACCESS_KIND_UNSPECIFIED = 0;
+  FILE_OBJECT_ACCESS_KIND_CHAT_ATTACHMENT = 1;
+  FILE_OBJECT_ACCESS_KIND_USER_AVATAR = 2;
+  FILE_OBJECT_ACCESS_KIND_MEDIA_COVER = 3;
+  FILE_OBJECT_ACCESS_KIND_ROOM_COVER = 4;
+  FILE_OBJECT_ACCESS_KIND_PLAYLIST_COVER = 5;
+  FILE_OBJECT_ACCESS_KIND_GENERIC = 6;
+}
+
+message FileObjectAccess {
+  FileObjectAccessKind object_kind = 1;
+  string encoded_object_key = 2;
+  string read_token = 3;
+}
+
 message ChatAttachment {
   string id = 1;
   string url = 2;
@@ -2741,6 +2760,7 @@ message ChatAttachment {
   string reuse_token = 10;
   optional int64 reuse_expires_at = 11;
   repeated FileObjectVariant variants = 12;
+  FileObjectAccess object_access = 13;
 }
 
 message FileObjectVariant {
@@ -2755,6 +2775,7 @@ message FileObjectVariant {
   bool lossy = 9;
   optional int32 quality = 10;
   FileMetadata metadata = 11;
+  FileObjectAccess object_access = 12;
 }
 
 message ChatAttachmentReference {
@@ -2834,6 +2855,7 @@ message ChatAttachmentUploadSession {
   repeated FileUploadPartUrl part_urls = 17;
   string upload_token = 18;
   string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
 }
 
 message ChatAttachmentOwnershipProofRange {
@@ -2925,6 +2947,7 @@ message UserAvatar {
   int32 height = 6;
   FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
 }
 
 message CreateUserAvatarUploadSessionRequest {
@@ -2958,6 +2981,7 @@ message UserAvatarUploadSession {
   repeated FileUploadPartUrl part_urls = 17;
   string upload_token = 18;
   string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
 }
 
 message UserAvatarOwnershipProofRange {
@@ -3032,6 +3056,7 @@ message FileCover {
   int32 height = 6;
   FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
 }
 
 message MediaCover {
@@ -3043,6 +3068,7 @@ message MediaCover {
   int32 height = 6;
   FileMetadata metadata = 7;
   repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
 }
 
 message CreateMediaCoverUploadSessionRequest {
@@ -3078,6 +3104,7 @@ message MediaCoverUploadSession {
   repeated FileUploadPartUrl part_urls = 17;
   string upload_token = 18;
   string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
 }
 
 message MediaCoverOwnershipProofRange {
@@ -3180,6 +3207,7 @@ message RoomCoverUploadSession {
   repeated FileUploadPartUrl part_urls = 17;
   string upload_token = 18;
   string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
 }
 
 message CreateRoomCoverUploadSessionResponse {
@@ -3276,6 +3304,7 @@ message PlaylistCoverUploadSession {
   repeated FileUploadPartUrl part_urls = 17;
   string upload_token = 18;
   string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
 }
 
 message CreatePlaylistCoverUploadSessionResponse {

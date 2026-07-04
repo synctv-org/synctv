@@ -22,15 +22,15 @@ impl RemoteProviderManager {
             return Ok(());
         }
 
-        let cache = Arc::clone(&self.channel_cache);
+        let cache = Arc::clone(&self.connection_cache);
         let cancel = self.invalidation_cancel.child_token();
         let mut receiver = invalidation_service.subscribe();
 
         // The shared invalidation service may already have consumed durable
         // stream entries before this manager attaches its local broadcast
-        // receiver. Drop all cached channels now so the next access reloads the
+        // receiver. Drop all cached connections now so the next access reloads the
         // latest DB state instead of serving a stale pre-listener snapshot.
-        self.channel_cache.invalidate_all();
+        self.connection_cache.invalidate_all();
 
         let handle = crate::spawn::spawn_monitored("provider_invalidation_listener", async move {
             loop {
@@ -58,7 +58,7 @@ impl RemoteProviderManager {
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                                 tracing::warn!(
                                     skipped,
-                                    "Provider invalidation listener lagged; invalidating all cached provider channels"
+                                    "Provider invalidation listener lagged; invalidating all cached provider connections"
                                 );
                                 cache.invalidate_all();
                             }

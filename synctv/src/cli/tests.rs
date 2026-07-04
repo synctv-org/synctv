@@ -4962,8 +4962,12 @@ fn config_json_output_uses_lower_camel_case_keys() {
         "config JSON output should expose lowerCamelCase keys: {rendered_text}"
     );
     assert!(
-        rendered["publicIds"].is_object(),
-        "config JSON output should include lowerCamelCase publicIds: {rendered_text}"
+        rendered.get("publicIds").is_none(),
+        "config JSON output should use externalIds after config rename: {rendered_text}"
+    );
+    assert!(
+        rendered["externalIds"].is_object(),
+        "config JSON output should include lowerCamelCase externalIds: {rendered_text}"
     );
 }
 

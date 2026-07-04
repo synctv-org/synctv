@@ -3,33 +3,52 @@
 //! Adapter that calls `BilibiliClient` to implement `MediaProvider` trait
 
 use super::{
+    access::BilibiliAccess,
     provider_client::{create_remote_bilibili_client, BilibiliClientArc, ProviderClientManager},
     MediaProvider, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
     ProviderCredentialDependency, ProviderError, SourceConfig,
 };
+use aes_gcm::{
+    aead::{Aead, AeadCore, Generate, KeyInit as AeadKeyInit},
+    Aes256Gcm, Key, Nonce,
+};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Utc;
 use futures::StreamExt;
-use serde::Serialize;
+use hmac::{Hmac, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::models::media::{
-    BilibiliDashManifestSlot, BilibiliPlaybackMetadata, PlaybackBilibiliDanmaku,
-    PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku, PlaybackDanmakuProvider,
-    PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider, PlaybackMetadata,
-    PlaybackSubtitle, PlaybackSubtitleProvider,
+    BilibiliDashAudioStream, BilibiliDashManifest, BilibiliDashManifestSlot,
+    BilibiliDashSegmentBase, BilibiliDashVideoStream, BilibiliPlaybackMetadata,
+    PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackBilibiliSubtitle, PlaybackDanmaku,
+    PlaybackDanmakuProvider, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
-use crate::models::{BilibiliMediaSourceConfig as BilibiliSourceConfig, MediaSourceConfig, UserId};
+use crate::models::{
+    normalize_provider_instance_name, validate_provider_instance_name,
+    BilibiliMediaSourceConfig as BilibiliSourceConfig, MediaSourceConfig, ProviderCredential,
+    UserId, UserProviderCredential,
+};
+use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
 
-use synctv_media_providers::grpc::bilibili as bilibili_proto;
+use super::upstream_transport::bilibili as bilibili_upstream;
 
 pub const DASH_MANIFEST_METADATA_KEY: &str = "bilibili_dash_manifests";
 pub const LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
 pub const LIVE_DANMAKU_TRACK_NAME: &str = "Bilibili Live Danmaku";
+const SMS_LOGIN_SESSION_TTL_SECONDS: i64 = 10 * 60;
+const SMS_LOGIN_SESSION_VERSION: &str = "v2";
+const SMS_LOGIN_DOMAIN_SEPARATOR: &[u8] = b"synctv-bilibili-sms-login";
+const SMS_LOGIN_TOKEN_NONCE_SIZE: usize = 12;
+type HmacSha256 = Hmac<sha2::Sha256>;
 
 /// Bilibili `MediaProvider`
 ///
@@ -37,6 +56,7 @@ pub const LIVE_DANMAKU_TRACK_NAME: &str = "Bilibili Live Danmaku";
 pub struct BilibiliProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
     client_manager: Arc<ProviderClientManager>,
+    credential_repo: Option<Arc<UserProviderCredentialRepository>>,
 }
 
 /// Bilibili video info
@@ -58,9 +78,411 @@ pub struct BilibiliPageInfo {
     pub videos: Vec<BilibiliVideoInfo>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BilibiliMatchRequest {
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliMatchResponse {
+    pub content_type: String,
+    pub id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliParseVideoPageRequest {
+    pub cookies: HashMap<String, String>,
+    pub aid: u64,
+    pub bvid: String,
+    pub sections: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliParsePgcPageRequest {
+    pub cookies: HashMap<String, String>,
+    pub ssid: u64,
+    pub epid: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliParseLivePageRequest {
+    pub cookies: HashMap<String, String>,
+    pub room_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliQrCodeResponse {
+    pub url: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliQrLoginRequest {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BilibiliQrLoginStatus {
+    Unknown,
+    Expired,
+    NotScanned,
+    Scanned,
+    Success,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliQrLoginResponse {
+    pub status: BilibiliQrLoginStatus,
+    pub cookies: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliPersistedQrLoginResponse {
+    pub status: BilibiliQrLoginStatus,
+    pub server_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliBind {
+    pub id: i64,
+    pub server_id: String,
+    pub created_at: i64,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliCaptchaResponse {
+    pub token: String,
+    pub gt: String,
+    pub challenge: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsRequest {
+    pub phone: String,
+    pub token: String,
+    pub challenge: String,
+    pub validate: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsResponse {
+    pub captcha_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsLoginRequest {
+    pub phone: String,
+    pub code: String,
+    pub captcha_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsLoginResponse {
+    pub cookies: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsLoginStart {
+    pub session_token: String,
+    pub gt: String,
+    pub challenge: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsSessionUpdate {
+    pub session_token: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliSmsSessionLoginResponse {
+    pub server_id: String,
+    pub provider_instance_name: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BilibiliSmsLoginSession {
+    token: String,
+    challenge: String,
+    phone: Option<String>,
+    captcha_key: Option<String>,
+    instance_name: Option<String>,
+    expires_at: i64,
+}
+
+pub struct BilibiliSmsLoginTokenCodec {
+    cipher: Aes256Gcm,
+}
+
+impl BilibiliSmsLoginTokenCodec {
+    pub fn derive_from(secret: &[u8]) -> Result<Self, ProviderError> {
+        let mut derivation_mac = HmacSha256::new_from_slice(secret).map_err(|error| {
+            ProviderError::Internal(format!(
+                "Failed to derive Bilibili SMS login token key: {error}"
+            ))
+        })?;
+        derivation_mac.update(SMS_LOGIN_DOMAIN_SEPARATOR);
+        let derived = derivation_mac.finalize().into_bytes();
+        let key = Key::<Aes256Gcm>::try_from(derived.as_slice()).map_err(|error| {
+            ProviderError::Internal(format!(
+                "Failed to derive Bilibili SMS login token key: {error}"
+            ))
+        })?;
+        Ok(Self {
+            cipher: Aes256Gcm::new(&key),
+        })
+    }
+
+    fn encode(&self, session: &BilibiliSmsLoginSession) -> Result<String, ProviderError> {
+        let payload = serde_json::to_vec(session).map_err(|error| {
+            ProviderError::Internal(format!(
+                "Failed to serialize Bilibili SMS login session: {error}"
+            ))
+        })?;
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::generate();
+        let ciphertext = self.cipher.encrypt(&nonce, payload.as_ref()).map_err(|_| {
+            ProviderError::Internal("Failed to encrypt Bilibili SMS login session".to_string())
+        })?;
+        let mut token = Vec::with_capacity(SMS_LOGIN_TOKEN_NONCE_SIZE + ciphertext.len());
+        token.extend_from_slice(&nonce);
+        token.extend_from_slice(&ciphertext);
+
+        Ok(format!(
+            "{SMS_LOGIN_SESSION_VERSION}.{}",
+            URL_SAFE_NO_PAD.encode(token)
+        ))
+    }
+
+    fn decode(&self, session_token: &str) -> Result<BilibiliSmsLoginSession, ProviderError> {
+        let invalid = || {
+            ProviderError::Authentication(
+                "Bilibili SMS login session is invalid or expired".to_string(),
+            )
+        };
+        let mut parts = session_token.split('.');
+        let version = parts.next().ok_or_else(invalid)?;
+        let token = parts.next().ok_or_else(invalid)?;
+        if version != SMS_LOGIN_SESSION_VERSION || parts.next().is_some() {
+            return Err(invalid());
+        }
+
+        let token = URL_SAFE_NO_PAD.decode(token).map_err(|_| invalid())?;
+        if token.len() <= SMS_LOGIN_TOKEN_NONCE_SIZE {
+            return Err(invalid());
+        }
+        let (nonce_bytes, ciphertext) = token.split_at(SMS_LOGIN_TOKEN_NONCE_SIZE);
+        let nonce = Nonce::<<Aes256Gcm as AeadCore>::NonceSize>::try_from(nonce_bytes)
+            .map_err(|_| invalid())?;
+        let payload = self
+            .cipher
+            .decrypt(&nonce, ciphertext)
+            .map_err(|_| invalid())?;
+        let session: BilibiliSmsLoginSession =
+            serde_json::from_slice(&payload).map_err(|_| invalid())?;
+        if Utc::now().timestamp() >= session.expires_at {
+            return Err(invalid());
+        }
+        Ok(session)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliUserInfoRequest {
+    pub cookies: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliUserInfoResponse {
+    pub is_login: bool,
+    pub username: String,
+    pub face: String,
+    pub is_vip: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliLiveDanmuInfoRequest {
+    pub room_id: u64,
+    pub cookies: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliLiveDanmuHost {
+    pub host: String,
+    pub port: u32,
+    pub wss_port: u32,
+    pub ws_port: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BilibiliLiveDanmuInfoResponse {
+    pub token: String,
+    pub host_list: Vec<BilibiliLiveDanmuHost>,
+}
+
+fn bilibili_match_request(req: BilibiliMatchRequest) -> bilibili_upstream::MatchReq {
+    bilibili_upstream::MatchReq { url: req.url }
+}
+
+fn bilibili_parse_video_page_request(
+    req: BilibiliParseVideoPageRequest,
+) -> bilibili_upstream::ParseVideoPageReq {
+    bilibili_upstream::ParseVideoPageReq {
+        cookies: req.cookies,
+        aid: req.aid,
+        bvid: req.bvid,
+        sections: req.sections,
+    }
+}
+
+fn bilibili_parse_pgc_page_request(
+    req: BilibiliParsePgcPageRequest,
+) -> bilibili_upstream::ParsePgcPageReq {
+    bilibili_upstream::ParsePgcPageReq {
+        cookies: req.cookies,
+        ssid: req.ssid,
+        epid: req.epid,
+    }
+}
+
+fn bilibili_parse_live_page_request(
+    req: BilibiliParseLivePageRequest,
+) -> bilibili_upstream::ParseLivePageReq {
+    bilibili_upstream::ParseLivePageReq {
+        cookies: req.cookies,
+        room_id: req.room_id,
+    }
+}
+
+fn bilibili_empty_request() -> bilibili_upstream::Empty {
+    bilibili_upstream::Empty {}
+}
+
+fn bilibili_qr_login_request(req: BilibiliQrLoginRequest) -> bilibili_upstream::LoginWithQrCodeReq {
+    bilibili_upstream::LoginWithQrCodeReq { key: req.key }
+}
+
+fn bilibili_sms_request(req: BilibiliSmsRequest) -> bilibili_upstream::NewSmsReq {
+    bilibili_upstream::NewSmsReq {
+        phone: req.phone,
+        token: req.token,
+        challenge: req.challenge,
+        validate: req.validate,
+    }
+}
+
+fn bilibili_sms_login_request(req: BilibiliSmsLoginRequest) -> bilibili_upstream::LoginWithSmsReq {
+    bilibili_upstream::LoginWithSmsReq {
+        phone: req.phone,
+        code: req.code,
+        captcha_key: req.captcha_key,
+    }
+}
+
+fn bilibili_user_info_request(req: BilibiliUserInfoRequest) -> bilibili_upstream::UserInfoReq {
+    bilibili_upstream::UserInfoReq {
+        cookies: req.cookies,
+    }
+}
+
+fn bilibili_live_danmu_info_request(
+    req: BilibiliLiveDanmuInfoRequest,
+) -> bilibili_upstream::GetLiveDanmuInfoReq {
+    bilibili_upstream::GetLiveDanmuInfoReq {
+        cookies: req.cookies,
+        room_id: req.room_id,
+    }
+}
+
 impl BilibiliProvider {
     /// Provider type name constant.
     pub const NAME: &'static str = "bilibili";
+
+    #[must_use]
+    pub fn credential_server_id() -> String {
+        hex::encode(sha2::Sha256::digest(Self::NAME.as_bytes()))
+    }
+
+    pub fn sms_login_token_codec_from_secret(
+        secret: &[u8],
+    ) -> Result<BilibiliSmsLoginTokenCodec, ProviderError> {
+        BilibiliSmsLoginTokenCodec::derive_from(secret)
+    }
+
+    fn provider_instance_name_for_provider(
+        value: Option<&str>,
+    ) -> Result<Option<&str>, ProviderError> {
+        let Some(value) = normalize_provider_instance_name(value) else {
+            return Ok(None);
+        };
+        validate_provider_instance_name(value).map_err(ProviderError::InvalidConfig)?;
+        Ok(Some(value))
+    }
+
+    pub fn qr_login_status_cache_key(
+        instance_name: Option<&str>,
+        key: &str,
+    ) -> Result<String, ProviderError> {
+        let instance_name = Self::provider_instance_name_for_provider(instance_name)?.unwrap_or("");
+        Ok(format!("{instance_name}:{key}"))
+    }
+
+    pub fn ensure_login_cookies_present(
+        cookies: &HashMap<String, String>,
+        method: &str,
+    ) -> Result<(), ProviderError> {
+        if cookies.is_empty() {
+            return Err(ProviderError::Authentication(format!(
+                "Bilibili {method} login did not return session cookies"
+            )));
+        }
+        Ok(())
+    }
+
+    fn sanitize_sms_validate(validate: &str) -> Result<String, ProviderError> {
+        let validate = validate.trim().to_string();
+        if validate.is_empty() {
+            return Err(ProviderError::Authentication(
+                "Bilibili SMS verification result is empty".to_string(),
+            ));
+        }
+        Ok(validate)
+    }
+
+    fn verify_sms_instance_name(
+        requested: Option<&str>,
+        session: &BilibiliSmsLoginSession,
+    ) -> Result<(), ProviderError> {
+        if requested.is_none() {
+            return Ok(());
+        }
+        let expected = Self::provider_instance_name_for_provider(session.instance_name.as_deref())?;
+        let requested = Self::provider_instance_name_for_provider(requested)?;
+        if expected != requested {
+            return Err(ProviderError::Authentication(
+                "Bilibili SMS login session does not match the requested provider instance"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_sms_phone(session: &BilibiliSmsLoginSession) -> Result<String, ProviderError> {
+        session.phone.clone().ok_or_else(|| {
+            ProviderError::Authentication(
+                "Request a Bilibili SMS code before logging in".to_string(),
+            )
+        })
+    }
+
+    fn require_sms_captcha_key(session: &BilibiliSmsLoginSession) -> Result<String, ProviderError> {
+        session.captcha_key.clone().ok_or_else(|| {
+            ProviderError::Authentication(
+                "Request a Bilibili SMS code before logging in".to_string(),
+            )
+        })
+    }
 
     /// Create a new `BilibiliProvider` with `RemoteProviderManager`
     pub fn new(
@@ -69,6 +491,7 @@ impl BilibiliProvider {
         Ok(Self {
             provider_instance_manager,
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -80,7 +503,26 @@ impl BilibiliProvider {
         Self {
             provider_instance_manager,
             client_manager,
+            credential_repo: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_credential_repo(
+        &self,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            provider_instance_manager: self.provider_instance_manager.clone(),
+            client_manager: self.client_manager.clone(),
+            credential_repo: Some(credential_repo),
+        }
+    }
+
+    fn credential_repo(&self) -> Result<&UserProviderCredentialRepository, ProviderError> {
+        self.credential_repo.as_deref().ok_or_else(|| {
+            ProviderError::Internal("Bilibili credential repository is not configured".to_string())
+        })
     }
 
     #[cfg(test)]
@@ -89,6 +531,7 @@ impl BilibiliProvider {
             provider_instance_manager:
                 crate::service::remote_provider_manager::empty_provider_instance_manager(),
             client_manager: Arc::new(ProviderClientManager::new()?),
+            credential_repo: None,
         })
     }
 
@@ -115,63 +558,72 @@ impl BilibiliProvider {
     /// Match URL to determine type and ID
     pub async fn r#match_with_context(
         &self,
-        url: String,
+        req: BilibiliMatchRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::MatchResp, ProviderError> {
+    ) -> Result<BilibiliMatchResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        let req = synctv_media_providers::grpc::bilibili::MatchReq { url };
-        client.r#match(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .r#match(bilibili_match_request(req))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliMatchResponse {
+            content_type: resp.r#type,
+            id: resp.id,
+        })
     }
 
     /// Parse video page
     pub async fn parse_video_page_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
+        req: BilibiliParseVideoPageRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+    ) -> Result<BilibiliPageInfo, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .parse_video_page(req)
+        let resp = client
+            .parse_video_page(bilibili_parse_video_page_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(Self::page_info_from_provider(resp))
     }
 
     /// Parse PGC page
     pub async fn parse_pgc_page_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
+        req: BilibiliParsePgcPageRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+    ) -> Result<BilibiliPageInfo, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .parse_pgc_page(req)
+        let resp = client
+            .parse_pgc_page(bilibili_parse_pgc_page_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(Self::page_info_from_provider(resp))
     }
 
     /// Parse live page
     pub async fn parse_live_page_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::ParseLivePageReq,
+        req: BilibiliParseLivePageRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
+    ) -> Result<BilibiliPageInfo, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .parse_live_page(req)
+        let resp = client
+            .parse_live_page(bilibili_parse_live_page_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(Self::page_info_from_provider(resp))
     }
 
     /// Generate QR code for login
@@ -179,30 +631,68 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewQrCodeResp, ProviderError> {
+    ) -> Result<BilibiliQrCodeResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .new_qr_code(synctv_media_providers::grpc::bilibili::Empty {})
+        let resp = client
+            .new_qr_code(bilibili_empty_request())
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliQrCodeResponse {
+            url: resp.url,
+            key: resp.key,
+        })
     }
 
     /// Check QR code login status
     pub async fn login_with_qr_code_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
+        req: BilibiliQrLoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
+    ) -> Result<BilibiliQrLoginResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .login_with_qr_code(req)
+        let resp = client
+            .login_with_qr_code(bilibili_qr_login_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliQrLoginResponse {
+            status: Self::qr_login_status_from_provider(resp.status),
+            cookies: resp.cookies,
+        })
+    }
+
+    pub async fn check_qr_and_persist_with_context(
+        &self,
+        user_id: UserId,
+        key: String,
+        provider_instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliPersistedQrLoginResponse, ProviderError> {
+        let resp = self
+            .login_with_qr_code_with_context(
+                BilibiliQrLoginRequest { key },
+                provider_instance_name,
+                request_context,
+            )
+            .await?;
+        let server_id = if resp.status == BilibiliQrLoginStatus::Success {
+            Self::ensure_login_cookies_present(&resp.cookies, "QR")?;
+            Some(
+                self.persist_cookies_credential(user_id, resp.cookies, provider_instance_name)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        Ok(BilibiliPersistedQrLoginResponse {
+            status: resp.status,
+            server_id,
+        })
     }
 
     /// Get new captcha
@@ -210,77 +700,359 @@ impl BilibiliProvider {
         &self,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewCaptchaResp, ProviderError> {
+    ) -> Result<BilibiliCaptchaResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .new_captcha(synctv_media_providers::grpc::bilibili::Empty {})
+        let resp = client
+            .new_captcha(bilibili_empty_request())
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliCaptchaResponse {
+            token: resp.token,
+            gt: resp.gt,
+            challenge: resp.challenge,
+        })
+    }
+
+    pub async fn start_sms_login_session_with_context(
+        &self,
+        codec: &BilibiliSmsLoginTokenCodec,
+        instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliSmsLoginStart, ProviderError> {
+        let resp = self
+            .new_captcha_with_context(instance_name, request_context)
+            .await?;
+
+        let now = Utc::now().timestamp();
+        let expires_at = now + SMS_LOGIN_SESSION_TTL_SECONDS;
+        let session = BilibiliSmsLoginSession {
+            token: resp.token,
+            challenge: resp.challenge.clone(),
+            phone: None,
+            captcha_key: None,
+            instance_name: instance_name.map(ToString::to_string),
+            expires_at,
+        };
+
+        Ok(BilibiliSmsLoginStart {
+            session_token: codec.encode(&session)?,
+            gt: resp.gt,
+            challenge: resp.challenge,
+            expires_at,
+        })
     }
 
     /// Send SMS verification code
     pub async fn new_sms_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::NewSmsReq,
+        req: BilibiliSmsRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::NewSmsResp, ProviderError> {
+    ) -> Result<BilibiliSmsResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client.new_sms(req).await.map_err(std::convert::Into::into)
+        let resp = client
+            .new_sms(bilibili_sms_request(req))
+            .await
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliSmsResponse {
+            captcha_key: resp.captcha_key,
+        })
+    }
+
+    pub async fn send_sms_with_session_context(
+        &self,
+        codec: &BilibiliSmsLoginTokenCodec,
+        session_token: &str,
+        phone: String,
+        validate: &str,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliSmsSessionUpdate, ProviderError> {
+        let mut session = codec.decode(session_token)?;
+        Self::verify_sms_instance_name(requested_instance_name, &session)?;
+        let sms_req = BilibiliSmsRequest {
+            phone: phone.clone(),
+            token: session.token.clone(),
+            challenge: session.challenge.clone(),
+            validate: Self::sanitize_sms_validate(validate)?,
+        };
+
+        let resp = self
+            .new_sms_with_context(sms_req, session.instance_name.as_deref(), request_context)
+            .await?;
+
+        session.phone = Some(phone);
+        session.captcha_key = Some(resp.captcha_key);
+
+        Ok(BilibiliSmsSessionUpdate {
+            session_token: codec.encode(&session)?,
+            expires_at: session.expires_at,
+        })
     }
 
     /// Login with SMS code
     pub async fn login_with_sms_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
+        req: BilibiliSmsLoginRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
+    ) -> Result<BilibiliSmsLoginResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .login_with_sms(req)
+        let resp = client
+            .login_with_sms(bilibili_sms_login_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliSmsLoginResponse {
+            cookies: resp.cookies,
+        })
+    }
+
+    pub async fn login_with_sms_session_context(
+        &self,
+        user_id: UserId,
+        codec: &BilibiliSmsLoginTokenCodec,
+        session_token: &str,
+        code: String,
+        requested_instance_name: Option<&str>,
+        request_context: Option<&super::ExecutionControl>,
+    ) -> Result<BilibiliSmsSessionLoginResponse, ProviderError> {
+        let session = codec.decode(session_token)?;
+        Self::verify_sms_instance_name(requested_instance_name, &session)?;
+        let login_req = BilibiliSmsLoginRequest {
+            phone: Self::require_sms_phone(&session)?,
+            code,
+            captcha_key: Self::require_sms_captcha_key(&session)?,
+        };
+
+        let resp = self
+            .login_with_sms_with_context(
+                login_req,
+                session.instance_name.as_deref(),
+                request_context,
+            )
+            .await?;
+
+        Self::ensure_login_cookies_present(&resp.cookies, "SMS")?;
+        let provider_instance_name = session.instance_name;
+        let server_id = self
+            .persist_cookies_credential(user_id, resp.cookies, provider_instance_name.as_deref())
+            .await?;
+        Ok(BilibiliSmsSessionLoginResponse {
+            server_id,
+            provider_instance_name,
+        })
+    }
+
+    pub async fn persist_cookies_credential(
+        &self,
+        user_id: UserId,
+        cookies: HashMap<String, String>,
+        provider_instance_name: Option<&str>,
+    ) -> Result<String, ProviderError> {
+        let server_id = Self::credential_server_id();
+        let credential_data = ProviderCredential::Bilibili { cookies };
+        let now = Utc::now();
+        let credential = UserProviderCredential {
+            id: 0,
+            user_id,
+            provider: Self::NAME.to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: provider_instance_name.map(ToString::to_string),
+            credential_data,
+            expires_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        self.credential_repo()?
+            .upsert_by_user_provider_server(&credential)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to persist bilibili credential: {error}"))
+            })?;
+
+        Ok(server_id)
+    }
+
+    pub async fn delete_credential(&self, user_id: UserId) -> Result<bool, ProviderError> {
+        let server_id = Self::credential_server_id();
+        let Some(existing) = self
+            .credential_repo()?
+            .get_by_provider_and_server(user_id, Self::NAME, &server_id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query bilibili credential: {error}"))
+            })?
+        else {
+            return Ok(false);
+        };
+
+        self.credential_repo()?
+            .delete(existing.id)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to delete bilibili credential: {error}"))
+            })?;
+        Ok(true)
+    }
+
+    pub async fn list_binds(
+        &self,
+        user_id: UserId,
+        provider_instance_name: Option<&str>,
+    ) -> Result<Vec<BilibiliBind>, ProviderError> {
+        let requested_instance_name =
+            Self::provider_instance_name_for_provider(provider_instance_name)?;
+        let server_id = Self::credential_server_id();
+        let credentials = self
+            .credential_repo()?
+            .get_readable_by_provider(user_id, Self::NAME)
+            .await
+            .map_err(|error| {
+                ProviderError::Internal(format!("Failed to query bilibili credentials: {error}"))
+            })?;
+
+        Ok(credentials
+            .into_iter()
+            .filter(|credential| credential.server_id == server_id)
+            .filter(|credential| {
+                requested_instance_name.is_none_or(|requested| {
+                    normalize_provider_instance_name(credential.provider_instance_name.as_deref())
+                        == Some(requested)
+                })
+            })
+            .map(|credential| BilibiliBind {
+                id: credential.id,
+                server_id: credential.server_id,
+                created_at: credential.created_at.timestamp(),
+                provider_instance_name: credential.provider_instance_name,
+            })
+            .collect())
+    }
+
+    pub fn anonymous_access() -> BilibiliAccess {
+        BilibiliAccess {
+            cookies: HashMap::new(),
+            credential_cache_partition: "anon".to_string(),
+            authenticated: false,
+            provider_instance_name: None,
+        }
+    }
+
+    pub fn access_from_stored_credential(
+        user_id: UserId,
+        server_id: &str,
+        credential: ProviderCredential,
+        credential_revision: &str,
+        provider_instance_name: Option<String>,
+    ) -> Result<BilibiliAccess, ProviderError> {
+        match credential {
+            ProviderCredential::Bilibili { cookies } => Ok(BilibiliAccess {
+                cookies,
+                credential_cache_partition: format!(
+                    "auth:{user_id}:{server_id}:{credential_revision}"
+                ),
+                authenticated: true,
+                provider_instance_name,
+            }),
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
     }
 
     /// Get user info
     pub async fn user_info_with_context(
         &self,
-        req: synctv_media_providers::grpc::bilibili::UserInfoReq,
+        req: BilibiliUserInfoRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
+    ) -> Result<BilibiliUserInfoResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        client
-            .user_info(req)
+        let resp = client
+            .user_info(bilibili_user_info_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliUserInfoResponse {
+            is_login: resp.is_login,
+            username: resp.username,
+            face: resp.face,
+            is_vip: resp.is_vip,
+        })
     }
 
     /// Get live danmaku server info for the WebSocket connection
     pub async fn get_live_danmu_info_with_context(
         &self,
-        room_id: u64,
-        cookies: HashMap<String, String>,
+        req: BilibiliLiveDanmuInfoRequest,
         instance_name: Option<&str>,
         request_context: Option<&super::ExecutionControl>,
-    ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
+    ) -> Result<BilibiliLiveDanmuInfoResponse, ProviderError> {
         let client = self
             .get_client_with_context(instance_name, request_context)
             .await?;
-        let req = synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq { cookies, room_id };
-        client
-            .get_live_danmu_info(req)
+        let resp = client
+            .get_live_danmu_info(bilibili_live_danmu_info_request(req))
             .await
-            .map_err(std::convert::Into::into)
+            .map_err(ProviderError::from)?;
+        Ok(BilibiliLiveDanmuInfoResponse {
+            token: resp.token,
+            host_list: resp
+                .host_list
+                .into_iter()
+                .map(|host| BilibiliLiveDanmuHost {
+                    host: host.host,
+                    port: host.port,
+                    wss_port: host.wss_port,
+                    ws_port: host.ws_port,
+                })
+                .collect(),
+        })
+    }
+
+    fn page_info_from_provider(page_info: bilibili_upstream::VideoPageInfo) -> BilibiliPageInfo {
+        let actors = if page_info.actors.is_empty() {
+            Vec::new()
+        } else {
+            page_info
+                .actors
+                .split(',')
+                .map(|actor| actor.trim().to_string())
+                .collect()
+        };
+
+        BilibiliPageInfo {
+            title: page_info.title,
+            actors,
+            videos: page_info
+                .video_infos
+                .into_iter()
+                .map(|video| BilibiliVideoInfo {
+                    bvid: video.bvid,
+                    cid: video.cid,
+                    epid: video.epid,
+                    name: video.name,
+                    cover_image: video.cover_image,
+                    r#live: video.live,
+                })
+                .collect(),
+        }
+    }
+
+    const fn qr_login_status_from_provider(status: i32) -> BilibiliQrLoginStatus {
+        match status {
+            1 => BilibiliQrLoginStatus::Expired,
+            2 => BilibiliQrLoginStatus::NotScanned,
+            3 => BilibiliQrLoginStatus::Scanned,
+            4 => BilibiliQrLoginStatus::Success,
+            _ => BilibiliQrLoginStatus::Unknown,
+        }
     }
 }
 
@@ -387,7 +1159,7 @@ where
 }
 
 fn dash_playback_urls(
-    dash: &bilibili_proto::DashInfo,
+    dash: &BilibiliDashManifest,
     context: &str,
 ) -> Result<Vec<String>, ProviderError> {
     non_empty_playback_urls(
@@ -406,19 +1178,19 @@ fn dash_playback_urls(
 fn insert_dash_manifest_metadata(
     metadata: &mut PlaybackMetadata,
     mode: BilibiliDashManifestSlot,
-    dash: &bilibili_proto::DashInfo,
+    dash: BilibiliDashManifest,
 ) {
     metadata
         .bilibili
         .get_or_insert_with(BilibiliPlaybackMetadata::default)
         .dash_manifests
-        .set(mode, dash.clone());
+        .set(mode, dash);
 }
 
 fn dash_manifest_from_metadata(
     result: &PlaybackResult,
     mode_name: &str,
-) -> Result<bilibili_proto::DashInfo, ProviderError> {
+) -> Result<BilibiliDashManifest, ProviderError> {
     let mode = BilibiliDashManifestSlot::parse(mode_name).ok_or(ProviderError::NotFound)?;
     result
         .metadata
@@ -431,6 +1203,66 @@ fn dash_manifest_from_metadata(
 
 fn has_dash_manifest_metadata(result: &PlaybackResult, mode_name: &str) -> bool {
     dash_manifest_from_metadata(result, mode_name).is_ok()
+}
+
+fn dash_manifest_from_upstream(dash: &bilibili_upstream::DashInfo) -> BilibiliDashManifest {
+    BilibiliDashManifest {
+        duration: dash.duration,
+        min_buffer_time: dash.min_buffer_time,
+        video_streams: dash
+            .video_streams
+            .iter()
+            .map(dash_video_from_upstream)
+            .collect(),
+        audio_streams: dash
+            .audio_streams
+            .iter()
+            .map(dash_audio_from_upstream)
+            .collect(),
+    }
+}
+
+fn dash_video_from_upstream(stream: &bilibili_upstream::VideoStream) -> BilibiliDashVideoStream {
+    BilibiliDashVideoStream {
+        id: stream.id,
+        base_url: stream.base_url.clone(),
+        mime_type: stream.mime_type.clone(),
+        codecs: stream.codecs.clone(),
+        width: stream.width,
+        height: stream.height,
+        frame_rate: stream.frame_rate.clone(),
+        bandwidth: stream.bandwidth,
+        start_with_sap: stream.start_with_sap,
+        segment_base: stream
+            .segment_base
+            .as_ref()
+            .map(dash_segment_base_from_upstream),
+    }
+}
+
+fn dash_audio_from_upstream(stream: &bilibili_upstream::AudioStream) -> BilibiliDashAudioStream {
+    BilibiliDashAudioStream {
+        id: stream.id,
+        base_url: stream.base_url.clone(),
+        mime_type: stream.mime_type.clone(),
+        codecs: stream.codecs.clone(),
+        bandwidth: stream.bandwidth,
+        start_with_sap: stream.start_with_sap,
+        segment_base: stream
+            .segment_base
+            .as_ref()
+            .map(dash_segment_base_from_upstream),
+        audio_sampling_rate: stream.audio_sampling_rate,
+    }
+}
+
+fn dash_segment_base_from_upstream(
+    segment_base: &bilibili_upstream::SegmentBase,
+) -> BilibiliDashSegmentBase {
+    BilibiliDashSegmentBase {
+        index_range: segment_base.index_range.clone(),
+        initialization_range: segment_base.initialization_range.clone(),
+    }
 }
 
 fn xml_escape(value: &str) -> String {
@@ -465,7 +1297,7 @@ fn frame_rate_attr(value: &str) -> String {
     }
 }
 
-fn segment_base_xml(segment_base: Option<&bilibili_proto::SegmentBase>) -> String {
+fn segment_base_xml(segment_base: Option<&BilibiliDashSegmentBase>) -> String {
     let Some(segment_base) = segment_base else {
         return String::new();
     };
@@ -492,7 +1324,7 @@ fn segment_base_xml(segment_base: Option<&bilibili_proto::SegmentBase>) -> Strin
 }
 
 fn build_bilibili_mpd_manifest<F>(
-    dash: &bilibili_proto::DashInfo,
+    dash: &BilibiliDashManifest,
     mut url_for: F,
 ) -> Result<String, ProviderError>
 where
@@ -729,7 +1561,7 @@ fn mark_bilibili_playback_resources(result: &mut PlaybackResult, version: &str, 
 }
 
 fn bilibili_credential_server_id() -> String {
-    crate::models::UserProviderCredential::bilibili_server_id()
+    BilibiliProvider::credential_server_id()
 }
 
 fn is_bilibili_pgc_dash_unavailable(error: &synctv_media_providers::ProviderClientError) -> bool {
@@ -940,30 +1772,106 @@ impl MediaProvider for BilibiliProvider {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{BilibiliSmsLoginSession, BilibiliSmsLoginTokenCodec};
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    fn provider_ok<T>(result: Result<T, super::ProviderError>) -> TestResult<T> {
+        result.map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+
+    fn test_sms_login_secret() -> &'static [u8] {
+        b"test-bilibili-sms-login-secret"
+    }
+
+    #[test]
+    fn sms_login_session_token_decodes_across_codecs() -> TestResult {
+        let codec_one = provider_ok(BilibiliSmsLoginTokenCodec::derive_from(
+            test_sms_login_secret(),
+        ))?;
+        let codec_two = provider_ok(BilibiliSmsLoginTokenCodec::derive_from(
+            test_sms_login_secret(),
+        ))?;
+        let session = BilibiliSmsLoginSession {
+            token: "captcha-token".to_string(),
+            challenge: "captcha-challenge".to_string(),
+            phone: Some("13800000000".to_string()),
+            captcha_key: Some("captcha-key".to_string()),
+            instance_name: Some("bilibili_remote".to_string()),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+
+        let encoded = provider_ok(codec_one.encode(&session))?;
+        assert!(
+            !encoded.contains("captcha-token")
+                && !encoded.contains("captcha-challenge")
+                && !encoded.contains("captcha-key")
+                && !encoded.contains("13800000000"),
+            "session token must keep Bilibili SMS login secrets and phone number encrypted"
+        );
+        let decoded = provider_ok(codec_two.decode(&encoded))?;
+
+        assert_eq!(decoded.token, session.token);
+        assert_eq!(decoded.challenge, session.challenge);
+        assert_eq!(decoded.phone, session.phone);
+        assert_eq!(decoded.captcha_key, session.captcha_key);
+        assert_eq!(decoded.instance_name, session.instance_name);
+        Ok(())
+    }
+
+    #[test]
+    fn sms_login_session_token_rejects_tampering_and_expiry() -> TestResult {
+        let codec = provider_ok(BilibiliSmsLoginTokenCodec::derive_from(
+            test_sms_login_secret(),
+        ))?;
+        let valid = BilibiliSmsLoginSession {
+            token: "captcha-token".to_string(),
+            challenge: "captcha-challenge".to_string(),
+            phone: None,
+            captcha_key: None,
+            instance_name: None,
+            expires_at: chrono::Utc::now().timestamp() + 60,
+        };
+        let expired = BilibiliSmsLoginSession {
+            expires_at: chrono::Utc::now().timestamp() - 1,
+            ..valid.clone()
+        };
+
+        let encoded = provider_ok(codec.encode(&valid))?;
+        let mut tampered = encoded.clone();
+        tampered.push('x');
+
+        assert!(codec.decode(&tampered).is_err());
+        let expired_token = provider_ok(codec.encode(&expired))?;
+        assert!(codec.decode(&expired_token).is_err());
+        Ok(())
+    }
+}
+
 fn map_bilibili_live_danmaku_event(
-    event: synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEvent,
+    event: bilibili_upstream::BilibiliLiveDanmakuEvent,
 ) -> super::BilibiliLiveDanmakuEvent {
-    let kind = match synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::try_from(
-        event.r#type,
-    )
-    .unwrap_or(synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Unspecified)
-    {
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Unspecified => {
+    let event_type = bilibili_upstream::BilibiliLiveDanmakuEventType::try_from(event.r#type)
+        .unwrap_or(bilibili_upstream::BilibiliLiveDanmakuEventType::Unspecified);
+    let kind = match event_type {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::Unspecified => {
             super::BilibiliLiveDanmakuEventKind::Unspecified
         }
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Chat => {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::Chat => {
             super::BilibiliLiveDanmakuEventKind::Chat
         }
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::UserEnter => {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::UserEnter => {
             super::BilibiliLiveDanmakuEventKind::UserEnter
         }
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Gift => {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::Gift => {
             super::BilibiliLiveDanmakuEventKind::Gift
         }
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Heartbeat => {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::Heartbeat => {
             super::BilibiliLiveDanmakuEventKind::Heartbeat
         }
-        synctv_media_providers::grpc::bilibili::BilibiliLiveDanmakuEventType::Unknown => {
+        bilibili_upstream::BilibiliLiveDanmakuEventType::Unknown => {
             super::BilibiliLiveDanmakuEventKind::Unknown
         }
     };
@@ -1010,12 +1918,10 @@ impl super::BilibiliLiveDanmakuProvider for BilibiliProvider {
             .get_client_with_context(ctx.provider_instance_name(), ctx.request_context())
             .await?;
         let stream = client
-            .watch_bilibili_live_danmaku(
-                synctv_media_providers::grpc::bilibili::WatchBilibiliLiveDanmakuReq {
-                    cookies,
-                    room_id: config.room_id,
-                },
-            )
+            .watch_bilibili_live_danmaku(bilibili_upstream::WatchBilibiliLiveDanmakuReq {
+                cookies,
+                room_id: config.room_id,
+            })
             .await?;
         let stream = stream.map(|event| {
             event
@@ -1344,6 +2250,87 @@ fn bilibili_live_danmaku_track(ctx: &ProviderContext<'_>) -> Option<PlaybackDanm
     })
 }
 
+fn bilibili_dash_video_url_request(
+    cookies: &HashMap<String, String>,
+    aid: u64,
+    bvid: String,
+    cid: u64,
+) -> bilibili_upstream::GetDashVideoUrlReq {
+    bilibili_upstream::GetDashVideoUrlReq {
+        aid,
+        bvid,
+        cid,
+        cookies: cookies.clone(),
+    }
+}
+
+fn bilibili_video_url_request(
+    cookies: &HashMap<String, String>,
+    aid: u64,
+    bvid: String,
+    cid: u64,
+    quality: u64,
+) -> bilibili_upstream::GetVideoUrlReq {
+    bilibili_upstream::GetVideoUrlReq {
+        aid,
+        bvid,
+        cid,
+        quality,
+        cookies: cookies.clone(),
+    }
+}
+
+fn bilibili_subtitles_request(
+    cookies: &HashMap<String, String>,
+    aid: u64,
+    bvid: String,
+    cid: u64,
+) -> bilibili_upstream::GetSubtitlesReq {
+    bilibili_upstream::GetSubtitlesReq {
+        aid,
+        bvid,
+        cid,
+        cookies: cookies.clone(),
+    }
+}
+
+fn bilibili_dash_pgc_url_request(
+    cookies: &HashMap<String, String>,
+    epid: u64,
+    cid: u64,
+) -> bilibili_upstream::GetDashPgcurlReq {
+    bilibili_upstream::GetDashPgcurlReq {
+        epid,
+        cid,
+        cookies: cookies.clone(),
+    }
+}
+
+fn bilibili_pgc_url_request(
+    cookies: &HashMap<String, String>,
+    epid: u64,
+    cid: u64,
+    quality: u64,
+) -> bilibili_upstream::GetPgcurlReq {
+    bilibili_upstream::GetPgcurlReq {
+        epid,
+        cid,
+        quality,
+        cookies: cookies.clone(),
+    }
+}
+
+fn bilibili_live_streams_request(
+    cookies: HashMap<String, String>,
+    room_id: u64,
+) -> bilibili_upstream::GetLiveStreamsReq {
+    bilibili_upstream::GetLiveStreamsReq {
+        cid: room_id,
+        hls: true,
+        cookies,
+    }
+}
+
 impl BilibiliProvider {
     /// Resolve playback result from Bilibili API (no caching).
     /// Cookies are resolved from the credential store, not from source_config.
@@ -1378,12 +2365,12 @@ impl BilibiliProvider {
                 let request_bvid = bvid.clone().unwrap_or_default();
                 let cid = config.cid;
 
-                let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
+                let request = bilibili_dash_video_url_request(
+                    &sanitized_cookies,
                     aid,
-                    bvid: request_bvid.clone(),
+                    request_bvid.clone(),
                     cid,
-                    cookies: sanitized_cookies.clone(),
-                };
+                );
                 let dash_resp = match client.get_dash_video_url(request).await {
                     Ok(dash_resp) if dash_resp.dash.is_some() => Some(dash_resp),
                     Ok(_) => None,
@@ -1403,12 +2390,8 @@ impl BilibiliProvider {
                 };
                 let mut subtitles = Vec::new();
 
-                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
-                    aid,
-                    bvid: request_bvid.clone(),
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
+                let subtitle_request =
+                    bilibili_subtitles_request(&sanitized_cookies, aid, request_bvid.clone(), cid);
                 match client.get_subtitles(subtitle_request).await {
                     Ok(subtitle_resp) => {
                         subtitles = subtitle_resp
@@ -1447,23 +2430,25 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
+                    let dash = dash_manifest_from_upstream(dash);
                     insert_dash_manifest_metadata(
                         &mut metadata,
                         BilibiliDashManifestSlot::Dash,
-                        dash,
+                        dash.clone(),
                     );
-                    let dash_urls = dash_playback_urls(dash, "video DASH")?;
+                    let dash_urls = dash_playback_urls(&dash, "video DASH")?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
                         .filter(|dash| !dash.video_streams.is_empty())
                         .map(|dash| {
+                            let dash = dash_manifest_from_upstream(dash);
                             insert_dash_manifest_metadata(
                                 &mut metadata,
                                 BilibiliDashManifestSlot::Hevc,
-                                dash,
+                                dash.clone(),
                             );
-                            dash_playback_urls(dash, "video HEVC DASH")
+                            dash_playback_urls(&dash, "video HEVC DASH")
                         })
                         .transpose()?;
 
@@ -1499,13 +2484,8 @@ impl BilibiliProvider {
                     }
                     "dash".to_string()
                 } else {
-                    let request = synctv_media_providers::grpc::bilibili::GetVideoUrlReq {
-                        aid,
-                        bvid: request_bvid,
-                        cid,
-                        quality: 80,
-                        cookies: sanitized_cookies.clone(),
-                    };
+                    let request =
+                        bilibili_video_url_request(&sanitized_cookies, aid, request_bvid, cid, 80);
                     let video_resp = client.get_video_url(request).await?;
                     let video_urls = non_empty_playback_urls(
                         video_resp
@@ -1552,11 +2532,7 @@ impl BilibiliProvider {
                 let epid = config.epid;
                 let cid = config.cid;
 
-                let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
-                    epid,
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
+                let request = bilibili_dash_pgc_url_request(&sanitized_cookies, epid, cid);
                 let dash_resp = match client.get_dash_pgcurl(request).await {
                     Ok(dash_resp) if dash_resp.dash.is_some() => Some(dash_resp),
                     Ok(_) => None,
@@ -1575,12 +2551,8 @@ impl BilibiliProvider {
                 };
                 let mut subtitles = Vec::new();
 
-                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
-                    aid: 0,
-                    bvid: String::new(),
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
+                let subtitle_request =
+                    bilibili_subtitles_request(&sanitized_cookies, 0, String::new(), cid);
                 match client.get_subtitles(subtitle_request).await {
                     Ok(subtitle_resp) => {
                         subtitles = subtitle_resp
@@ -1615,23 +2587,25 @@ impl BilibiliProvider {
                                 .to_string(),
                         )
                     })?;
+                    let dash = dash_manifest_from_upstream(dash);
                     insert_dash_manifest_metadata(
                         &mut metadata,
                         BilibiliDashManifestSlot::Dash,
-                        dash,
+                        dash.clone(),
                     );
-                    let pgc_urls = dash_playback_urls(dash, "PGC DASH")?;
+                    let pgc_urls = dash_playback_urls(&dash, "PGC DASH")?;
                     let hevc_urls = dash_resp
                         .hevc_dash
                         .as_ref()
                         .filter(|dash| !dash.video_streams.is_empty())
                         .map(|dash| {
+                            let dash = dash_manifest_from_upstream(dash);
                             insert_dash_manifest_metadata(
                                 &mut metadata,
                                 BilibiliDashManifestSlot::Hevc,
-                                dash,
+                                dash.clone(),
                             );
-                            dash_playback_urls(dash, "PGC HEVC DASH")
+                            dash_playback_urls(&dash, "PGC HEVC DASH")
                         })
                         .transpose()?;
 
@@ -1667,12 +2641,7 @@ impl BilibiliProvider {
                     }
                     "dash".to_string()
                 } else {
-                    let request = synctv_media_providers::grpc::bilibili::GetPgcurlReq {
-                        epid,
-                        cid,
-                        quality: 80,
-                        cookies: sanitized_cookies.clone(),
-                    };
+                    let request = bilibili_pgc_url_request(&sanitized_cookies, epid, cid, 80);
                     let pgc_resp = client.get_pgcurl(request).await?;
                     let pgc_urls = non_empty_playback_urls(
                         pgc_resp.segments.iter().map(|segment| segment.url.clone()),
@@ -1715,11 +2684,7 @@ impl BilibiliProvider {
             BilibiliSourceConfig::Live(config) => {
                 let room_id = config.room_id;
 
-                let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
-                    cid: room_id,
-                    hls: true,
-                    cookies: sanitized_cookies,
-                };
+                let request = bilibili_live_streams_request(sanitized_cookies, room_id);
                 let live_resp = client.get_live_streams(request).await?;
 
                 let mut playback_infos = HashMap::new();

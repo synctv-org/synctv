@@ -15,10 +15,8 @@ use synctv_core::{
         MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
     },
     service::{
-        media::{AddMediaRequest, EditMediaRequest, MediaService},
-        notification::RoomEvent,
-        permission::PermissionService,
-        NotificationService, ProvidersManager,
+        AddMediaRequest, EditMediaRequest, MediaService, NotificationService, PermissionService,
+        ProvidersManager, RoomEvent,
     },
 };
 use synctv_core_testing::{create_test_pool, ok};

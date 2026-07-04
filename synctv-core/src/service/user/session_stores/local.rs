@@ -2,14 +2,14 @@ use std::time::Duration;
 
 use crate::Result;
 
+use super::super::session_types::{
+    MFA_SESSION_CAPACITY, OPAQUE_LOGIN_SESSION_CAPACITY, OPAQUE_REGISTRATION_SESSION_CAPACITY,
+    SENSITIVE_VERIFICATION_SESSION_CAPACITY,
+};
 use super::{
     MfaSession, MfaSessionStore, OpaqueLoginSession, OpaqueLoginSessionStore,
     OpaqueRegistrationSession, OpaqueRegistrationSessionStore, SensitiveVerificationSession,
     SensitiveVerificationSessionStore,
-};
-use crate::service::user::session_types::{
-    MFA_SESSION_CAPACITY, OPAQUE_LOGIN_SESSION_CAPACITY, OPAQUE_REGISTRATION_SESSION_CAPACITY,
-    SENSITIVE_VERIFICATION_SESSION_CAPACITY,
 };
 
 #[derive(Clone)]

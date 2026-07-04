@@ -13,7 +13,6 @@ use super::{
 };
 use crate::models::media::{PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
 use crate::models::{MediaId, RoomId};
-use crate::PublicIdCodec;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde_json::Value;
@@ -24,8 +23,8 @@ use synctv_common::ssrf::SsrfTargetError;
 ///
 /// Generates playback media resources for live streams from external sources.
 /// The external URL is stored in `source_config.url` and validated on creation.
-/// Playback URLs point to synctv's own HLS/FLV endpoints. Internal room/media
-/// identity is injected at playback time through `ProviderContext`.
+/// Playback output references SyncTV live delivery resources. Internal
+/// room/media identity is injected at playback time through `ProviderContext`.
 pub struct LiveProxyProvider {
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 }
@@ -54,7 +53,7 @@ impl LiveProxyProvider {
     ) -> Result<(), ProviderError> {
         // Validate URL format (only RTMP and HTTP-FLV are supported for pulling).
         // Use URL path parsing to avoid false positives from `.flv` appearing
-        // in query parameters or other URL parts.
+        // outside the upstream URL path.
         let parsed_url = url::Url::parse(url).map_err(|error| {
             ProviderError::InvalidConfig(format!("Invalid LiveProxy source URL '{url}': {error}"))
         })?;
@@ -299,18 +298,11 @@ impl LiveProxyProvider {
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
         request_context: Option<&super::ExecutionControl>,
-        claims: &crate::proxy_signature::ProxyUrlClaims,
-        public_id_codec: &PublicIdCodec,
+        access: super::playback_transport::LiveFlvAccess,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_flv_action(
-            Self::NAME,
-            &versioned,
-            claims,
-            public_id_codec,
-            "LiveProxy",
-        )
+        super::live_helpers::build_flv_action(Self::NAME, &versioned, access)
     }
 
     pub async fn get_hls_playlist(
@@ -318,16 +310,10 @@ impl LiveProxyProvider {
         store: Option<&std::sync::Arc<dyn super::store::ProviderStore>>,
         version: &str,
         request_context: Option<&super::ExecutionControl>,
-        public_id_codec: &PublicIdCodec,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_playlist_action(
-            Self::NAME,
-            &versioned,
-            public_id_codec,
-            "LiveProxy",
-        )
+        super::live_helpers::build_hls_playlist_action(Self::NAME, &versioned)
     }
 
     pub async fn get_hls_segment(
@@ -336,17 +322,10 @@ impl LiveProxyProvider {
         version: &str,
         segment_name: &str,
         request_context: Option<&super::ExecutionControl>,
-        public_id_codec: &PublicIdCodec,
     ) -> Result<PlaybackTransportAction, ProviderError> {
         let versioned =
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
-        super::live_helpers::build_hls_segment_action(
-            Self::NAME,
-            &versioned,
-            segment_name,
-            public_id_codec,
-            "LiveProxy",
-        )
+        super::live_helpers::build_hls_segment_action(Self::NAME, &versioned, segment_name)
     }
 }
 

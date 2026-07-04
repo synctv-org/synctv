@@ -547,7 +547,7 @@ mod tests {
     use synctv_core::models::ProviderInstance;
     use synctv_core::repository::ProviderInstanceRepository;
     use synctv_core::service::{
-        auth::JwtService, AuditService, BruteForceProtection, InMemoryTokenBlacklistStore,
+        AuditService, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
         ProvidersManager, RemoteProviderManager, UserService,
     };
     use synctv_core_testing::create_test_pool;

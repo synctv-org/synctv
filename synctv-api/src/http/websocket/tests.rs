@@ -4,9 +4,8 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{RoomId, UserId},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        user::UserServiceRuntimeOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService, UserValidationResult, UserValidator,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
+        UserServiceRuntimeOptions, UserValidationResult, UserValidator,
     },
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
@@ -59,7 +58,7 @@ fn test_user_service(pool: &sqlx::PgPool) -> TestResult<UserService> {
                 enabled: true,
                 need_review: false,
             }),
-            ..synctv_core::service::user::UserServiceRuntimeOptions::test_defaults()
+            ..synctv_core::service::UserServiceRuntimeOptions::test_defaults()
         },
     ))
 }

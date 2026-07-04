@@ -17,8 +17,7 @@ use synctv_core::{
     models::{RoomRole, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
     Error,
 };
@@ -322,8 +321,8 @@ async fn test_admin_cannot_upgrade_user_to_admin() {
         "Admin can manage User for some operations"
     );
 
-    // Note: The actual promotion restriction is enforced at the API layer,
-    // not at the model layer. This test documents model behavior.
+    // Note: the promotion restriction is enforced by the caller workflow.
+    // This test documents model behavior.
 }
 
 #[tokio::test]

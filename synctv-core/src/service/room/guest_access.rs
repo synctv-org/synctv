@@ -24,7 +24,7 @@ impl RoomService {
     pub(super) async fn revoke_all_guest_access(
         &self,
         room_id: &RoomId,
-        reason: crate::service::notification::GuestKickReason,
+        reason: crate::service::GuestKickReason,
     ) -> Result<()> {
         self.remove_guest_role_members(room_id).await?;
         self.bump_room_guest_version(room_id).await?;

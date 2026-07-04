@@ -1,6 +1,6 @@
 use crate::{
     models::{User, UserId},
-    service::auth::TokenCredentialBinding,
+    service::TokenCredentialBinding,
     Error, Result,
 };
 

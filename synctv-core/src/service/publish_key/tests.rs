@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::auth::JwtService;
+use crate::service::JwtService;
 use crate::test_helpers::failing_redis_runtime;
 use async_trait::async_trait;
 use std::time::Duration;

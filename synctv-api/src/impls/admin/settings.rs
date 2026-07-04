@@ -43,14 +43,14 @@ fn core_room_password_policy(
     }
 }
 
-fn permission_set_from_bits(bits: u64) -> synctv_core::service::global_settings::PermissionSet {
+fn permission_set_from_bits(bits: u64) -> synctv_core::service::PermissionSet {
     let permissions = synctv_core::models::RoomPermissionSet(bits);
-    synctv_core::service::global_settings::PermissionSet::from_bits(permissions)
+    synctv_core::service::PermissionSet::from_bits(permissions)
 }
 
 fn guest_permission_set_from_bits(
     bits: u64,
-) -> Result<synctv_core::service::global_settings::PermissionSet, ApiError> {
+) -> Result<synctv_core::service::PermissionSet, ApiError> {
     let setting = permission_set_from_bits(bits);
     setting.validate_guest_default().map_err(ApiError::from)?;
     Ok(setting)
@@ -579,7 +579,7 @@ impl AdminApiImpl {
         if let Some(cors) = patch.cors {
             if let Some(origins) = cors.allowed_origins {
                 current.cors.allowed_origins =
-                    synctv_core::service::global_settings::CorsAllowedOrigins(origins.values);
+                    synctv_core::service::CorsAllowedOrigins(origins.values);
                 update_mask.cors.allowed_origins = true;
             }
         }

@@ -1,6 +1,6 @@
-//! Shared security pipeline for HTTP and gRPC authentication.
+//! Shared security pipeline for authenticated requests.
 //!
-//! Both transports enforce identical security checks in a fixed order:
+//! Request entrypoints enforce identical security checks in a fixed order:
 //!
 //! 1. **JWT verification** -- validate signature, expiration, and access token type
 //! 2. **Password invalidation** -- reject tokens issued before a password change
@@ -36,8 +36,8 @@ pub struct AuthenticatedToken {
 /// Shared security pipeline that performs the post-JWT security checks.
 ///
 /// Step 1 (JWT verification) is intentionally left to the caller because
-/// the HTTP and gRPC layers extract the raw token differently. Once the
-/// caller has valid [`Claims`], it passes them here for steps 2-4.
+/// each entrypoint extracts the raw token from its own request envelope.
+/// Once the caller has valid [`Claims`], it passes them here for steps 2-4.
 ///
 /// When a [`UserCache`] is provided via [`SecurityPipelineRuntime`], the pipeline
 /// consults the cache first to fast-reject obviously invalid requests and

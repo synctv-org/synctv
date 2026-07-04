@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use crate::http::SharedApiRuntime;
+use crate::api_runtime::SharedApiRuntime;
 use crate::impls::BilibiliApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_core::Config;

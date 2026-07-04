@@ -72,33 +72,12 @@ impl std::fmt::Display for UserRole {
     }
 }
 
-impl From<UserRole> for synctv_proto::common::UserRole {
-    fn from(value: UserRole) -> Self {
-        match value {
-            UserRole::Root => Self::Root,
-            UserRole::Admin => Self::Admin,
-            UserRole::User => Self::User,
-        }
-    }
-}
-
 impl From<UserRole> for i32 {
     fn from(value: UserRole) -> Self {
-        synctv_proto::common::UserRole::from(value) as Self
-    }
-}
-
-impl TryFrom<synctv_proto::common::UserRole> for UserRole {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::UserRole) -> Result<Self, Self::Error> {
         match value {
-            synctv_proto::common::UserRole::Root => Ok(Self::Root),
-            synctv_proto::common::UserRole::Admin => Ok(Self::Admin),
-            synctv_proto::common::UserRole::User => Ok(Self::User),
-            synctv_proto::common::UserRole::Unspecified => {
-                Err(format!("Unknown user role: {}", value as i32))
-            }
+            UserRole::Root => 1,
+            UserRole::Admin => 2,
+            UserRole::User => 3,
         }
     }
 }
@@ -107,9 +86,12 @@ impl TryFrom<i32> for UserRole {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::UserRole::try_from(value)
-            .map_err(|_| format!("Unknown user role: {value}"))?;
-        Self::try_from(proto).map_err(|_| format!("Unknown user role: {value}"))
+        match value {
+            1 => Ok(Self::Root),
+            2 => Ok(Self::Admin),
+            3 => Ok(Self::User),
+            _ => Err(format!("Unknown user role: {value}")),
+        }
     }
 }
 
@@ -180,31 +162,11 @@ impl std::fmt::Display for UserStatus {
     }
 }
 
-impl From<UserStatus> for synctv_proto::common::UserStatus {
-    fn from(value: UserStatus) -> Self {
-        match value {
-            UserStatus::Active => Self::Active,
-            UserStatus::Banned => Self::Banned,
-        }
-    }
-}
-
 impl From<UserStatus> for i32 {
     fn from(value: UserStatus) -> Self {
-        synctv_proto::common::UserStatus::from(value) as Self
-    }
-}
-
-impl TryFrom<synctv_proto::common::UserStatus> for UserStatus {
-    type Error = String;
-
-    fn try_from(value: synctv_proto::common::UserStatus) -> Result<Self, Self::Error> {
         match value {
-            synctv_proto::common::UserStatus::Active => Ok(Self::Active),
-            synctv_proto::common::UserStatus::Banned => Ok(Self::Banned),
-            synctv_proto::common::UserStatus::Unspecified => {
-                Err(format!("Unknown user status: {}", value as i32))
-            }
+            UserStatus::Active => 1,
+            UserStatus::Banned => 2,
         }
     }
 }
@@ -213,9 +175,11 @@ impl TryFrom<i32> for UserStatus {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
-        let proto = synctv_proto::common::UserStatus::try_from(value)
-            .map_err(|_| format!("Unknown user status: {value}"))?;
-        Self::try_from(proto).map_err(|_| format!("Unknown user status: {value}"))
+        match value {
+            1 => Ok(Self::Active),
+            2 => Ok(Self::Banned),
+            _ => Err(format!("Unknown user status: {value}")),
+        }
     }
 }
 
@@ -251,7 +215,7 @@ pub enum SignupMethod {
 }
 
 impl SignupMethod {
-    /// String representation for API serialization.
+    /// Stable string representation for serialized output.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {

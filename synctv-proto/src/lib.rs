@@ -417,6 +417,7 @@ mod tests {
             is_banned: false,
             avatar_url: "https://cdn.example.com/avatar.webp".into(),
             avatar: None,
+            avatar_access: None,
         };
         let bytes = user.encode_to_vec();
         let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
@@ -432,6 +433,7 @@ mod tests {
             created_at: 1_700_000_000,
             avatar_url: "https://cdn.example.com/bob.webp".into(),
             avatar: None,
+            avatar_access: None,
         };
         let bytes = view.encode_to_vec();
         let decoded = crate::client::UserPublicView::decode(bytes.as_slice()).unwrap();
@@ -749,6 +751,7 @@ mod tests {
             is_banned: false,
             avatar_url: "https://cdn.example.com/avatar.webp".into(),
             avatar: None,
+            avatar_access: None,
         };
         let json = serde_json::to_string(&user).unwrap();
         let decoded: crate::client::User = serde_json::from_str(&json).unwrap();

@@ -23,7 +23,7 @@ pub(crate) use chat::{
     __path_pin_chat_message, __path_search_chat_messages, __path_send_chat_message,
     __path_set_chat_reaction, __path_unpin_chat_message,
 };
-pub use chat::{
+pub(crate) use chat::{
     clear_chat_reaction, delete_chat_message, edit_chat_message, get_chat_history,
     get_chat_message, get_chat_message_context, get_chat_message_read_receipts,
     get_chat_playback_messages, get_chat_read_state, list_chat_reaction_users,
@@ -37,7 +37,7 @@ pub(crate) use lifecycle::{
     __path_check_room, __path_create_room, __path_get_hot_rooms, __path_get_room, __path_join_room,
     __path_leave_room, __path_list_or_get_rooms,
 };
-pub use lifecycle::{
+pub(crate) use lifecycle::{
     check_room, create_room, delete_room, get_hot_rooms, get_room, join_room, leave_room,
     list_or_get_rooms, list_room_categories, list_room_labels,
 };
@@ -47,16 +47,16 @@ pub(crate) use media::{
     __path_edit_media, __path_get_media, __path_get_playlist, __path_list_playlist_items,
     __path_move_media, __path_push_media_batch,
 };
-pub use media::{
+pub(crate) use media::{
     add_media, clear_playlist, delete_entries, delete_media, edit_media, get_media, get_playlist,
     list_playlist_items, move_media, push_media_batch,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use members::__path_get_room_members;
-pub use members::get_room_members;
+pub(crate) use members::get_room_members;
 #[cfg(feature = "openapi")]
 pub(crate) use objects::__path_create_chat_attachment_upload_session;
-pub use objects::{
+pub(crate) use objects::{
     clear_media_cover, clear_playlist_cover, clear_room_cover,
     complete_chat_attachment_upload_session, complete_media_cover_upload_session,
     complete_playlist_cover_upload_session, complete_room_cover_upload_session,
@@ -71,7 +71,7 @@ pub use objects::{
 pub(crate) use playback::{
     __path_get_playback, __path_start_playback, __path_stop_playback, __path_update_playback_state,
 };
-pub use playback::{
+pub(crate) use playback::{
     get_playback, start_playback, stop_playback, update_playback_state,
     watch_bilibili_live_danmaku, watch_playback, watch_playback_state,
 };
@@ -80,14 +80,15 @@ pub(crate) use playlists::{
     __path_create_playlist, __path_delete_playlist, __path_list_playlists, __path_move_playlist,
     __path_update_playlist,
 };
-pub use playlists::{
+pub(crate) use playlists::{
     create_playlist, delete_playlist, list_playlists, move_playlist, update_playlist,
 };
 #[cfg(test)]
 pub(crate) use query::build_get_playback_request;
 #[cfg(test)]
 pub(crate) use query::watch_after_event_sequence;
-pub use query::{
+#[cfg(test)]
+pub(crate) use query::{
     GetPlaybackQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, WatchPlaylistItemsQuery,
     WatchQuery,
 };
@@ -96,7 +97,7 @@ pub(crate) use report::{
     __path_get_room_content_report, __path_list_room_content_reports, __path_report_content,
     __path_update_room_content_report_status,
 };
-pub use report::{
+pub(crate) use report::{
     get_room_content_report, list_room_content_reports, report_content,
     update_room_content_report_status,
 };
@@ -107,7 +108,7 @@ pub(crate) use settings::{
     __path_start_room_password_login, __path_start_room_password_registration,
     __path_transfer_room_ownership, __path_update_room_settings,
 };
-pub use settings::{
+pub(crate) use settings::{
     clear_room_password, finish_room_password_login, finish_room_password_registration,
     get_room_settings, reset_room_settings, start_room_password_login,
     start_room_password_registration, transfer_room_ownership, update_room_settings,
@@ -116,8 +117,9 @@ pub use settings::{
 pub(crate) use streams::{
     __path_get_room_stream_info, __path_kick_room_stream, __path_list_room_streams,
 };
-pub use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
-pub use types::{
+pub(crate) use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
+#[cfg(test)]
+pub(crate) use types::{
     ChatAttachmentObjectQuery, MediaCoverObjectQuery, PlaylistCoverObjectQuery,
     RoomCoverObjectQuery,
 };
@@ -125,7 +127,7 @@ pub use types::{
 pub(crate) use watch::{__path_watch_chat_events, __path_watch_chat_pin_events};
 #[cfg(test)]
 use watch::{sse_event_from_server_message, sse_event_id_from_resource_event, CancelOnDropStream};
-pub use watch::{
+pub(crate) use watch::{
     watch_chat_events, watch_chat_pin_events, watch_playlist_items, watch_room_members,
     watch_room_settings,
 };

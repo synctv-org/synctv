@@ -4,11 +4,12 @@ use std::time::{Duration, Instant};
 use crate::{
     cache::{ConsistencyCoordinator, MemberPermissionCache, RoomSettingsCache},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::permission::{
-        PermissionInvalidationRuntime, PermissionService, PermissionServiceRuntime,
-        SharedInvalidationService,
-    },
     Result,
+};
+
+use super::{
+    PermissionInvalidationRuntime, PermissionService, PermissionServiceRuntime,
+    SharedInvalidationService,
 };
 
 impl PermissionService {

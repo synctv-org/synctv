@@ -4,7 +4,8 @@ use std::sync::Arc;
 use synctv_core::models::UserId;
 use synctv_core::service::{
     AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
-    ReviewService, RoomService, RuntimeSettingsStore, SettingsService, UserService,
+    ReviewService, RoomService, RuntimeSettingsStore, SettingsService, SystemStatsService,
+    UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
 
@@ -60,12 +61,10 @@ mod settings;
 mod stats;
 mod users;
 
-pub use auth::{validate_admin_auth, ValidatedAdmin};
+pub use auth::{AdminAuthValidator, ValidatedAdmin};
 use common::*;
-use lifecycle::*;
 use mapping::*;
 use query::*;
-use response::*;
 
 /// HTTP request context for audit logging (IP address and User-Agent).
 #[derive(Debug, Clone, Default)]
@@ -80,7 +79,7 @@ pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
 pub struct AdminApiConfig {
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
-    pub read_pool: Option<sqlx::PgPool>,
+    pub read_services: AdminReadServices,
     pub settings_service: Arc<SettingsService>,
     pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub email_service: Arc<EmailService>,
@@ -90,15 +89,23 @@ pub struct AdminApiConfig {
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub config: Arc<synctv_core::Config>,
     pub audit_service: Arc<AuditService>,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+}
+
+#[derive(Clone)]
+pub struct AdminReadServices {
+    pub system_stats_service: Arc<SystemStatsService>,
+    pub review_service: Arc<ReviewService>,
+    pub ban_record_service: Arc<BanRecordService>,
+    pub content_report_service: Arc<ContentReportService>,
 }
 
 pub struct AdminApiRuntime {
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub request_executor: Arc<RequestExecutor>,
 }
@@ -107,8 +114,8 @@ impl AdminApiRuntime {
     #[must_use]
     pub fn local_disabled(
         request_executor: Arc<RequestExecutor>,
-        signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
-        provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+        signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+        provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
@@ -154,10 +161,10 @@ pub struct AdminApiImpl {
     pub room_lifecycle_fanout: Arc<dyn RoomLifecycleFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub audit_service: Arc<AuditService>,
-    pub provider_stores: Arc<dyn synctv_core::provider::store::ProviderStoreResolver>,
+    pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    pub signing_key: Arc<synctv_core::proxy_signature::ProxySigningKey>,
-    pub public_id_codec: Arc<synctv_core::PublicIdCodec>,
+    pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
+    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub request_executor: Arc<RequestExecutor>,
 }
 
@@ -167,7 +174,7 @@ impl AdminApiImpl {
         let AdminApiConfig {
             room_service,
             user_service,
-            read_pool,
+            read_services,
             settings_service,
             runtime_settings_store,
             email_service,
@@ -180,23 +187,12 @@ impl AdminApiImpl {
             public_id_codec,
         } = config;
 
-        let read_pool =
-            read_pool.unwrap_or_else(|| user_service.eventually_consistent_pool().clone());
-        let system_stats_service = Arc::new(synctv_core::service::SystemStatsService::new(
-            read_pool.clone(),
-        ));
-        let review_service = Arc::new(ReviewService::new_with_read_pool(
-            user_service.pool().clone(),
-            read_pool.clone(),
-        ));
-        let ban_record_service = Arc::new(BanRecordService::new_with_read_pool(
-            user_service.pool().clone(),
-            read_pool.clone(),
-        ));
-        let content_report_service = Arc::new(ContentReportService::new_with_read_pool(
-            user_service.pool().clone(),
-            read_pool,
-        ));
+        let AdminReadServices {
+            system_stats_service,
+            review_service,
+            ban_record_service,
+            content_report_service,
+        } = read_services;
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());

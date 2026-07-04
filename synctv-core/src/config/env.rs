@@ -224,7 +224,7 @@ impl Config {
         if get_env("SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET").is_some()
             || get_env("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH").is_some()
         {
-            let sqids = self.public_ids.sqids.get_or_insert_with(Default::default);
+            let sqids = self.external_ids.sqids.get_or_insert_with(Default::default);
             env_override_opt_str("SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET", &mut sqids.alphabet);
             env_override_parse("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH", &mut sqids.min_length)?;
         }

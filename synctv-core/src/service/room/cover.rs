@@ -168,7 +168,7 @@ impl RoomService {
                 FileStorageContext {
                     user_id,
                     storage_scope: &storage_scope,
-                    database_object_route_prefix: &upload_policy.database_object_route_prefix,
+                    object_kind: upload_policy.object_kind,
                     client_request_id: None,
                 },
                 vec![file],

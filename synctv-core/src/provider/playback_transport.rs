@@ -7,17 +7,15 @@ use super::store::{ProviderStore, ProviderStoreExt, VersionedPlayback};
 use super::ExecutionControl;
 use crate::credential_encryption::CredentialEncryption;
 use crate::models::{MediaId, RoomId, UserId};
-use crate::proxy_signature::ProxySigningKey;
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::{PermissionService, RoomService};
-use crate::PublicIdCodec;
 
 /// Low-level transport instruction produced by a provider-specific playback path.
 ///
-/// Providers produce these actions from signed URLs that were created during
-/// their own `generate_playback` path. Transport layers execute the instruction;
-/// provider-specific URL, header, manifest, and live lifecycle rules stay in the
-/// provider.
+/// Providers produce these actions from versioned playback targets created
+/// during their own `generate_playback` path. Transport adapters execute the
+/// instruction; provider-specific upstream URL, header, manifest, and live
+/// lifecycle rules stay in the provider.
 #[derive(Debug, Clone)]
 pub enum PlaybackTransportAction {
     /// Fetch the URL and forward the response body (video stream, subtitle, etc.)
@@ -30,22 +28,22 @@ pub enum PlaybackTransportAction {
         /// behavior without becoming part of the resource cache key.
         range_header: Option<String>,
     },
-    /// Fetch an M3U8 manifest, rewrite internal URLs to signed segment routes, then forward.
+    /// Fetch an M3U8 manifest, rewrite internal upstream targets, then forward.
     M3u8Rewrite {
         url: String,
         headers: HashMap<String, String>,
     },
     /// Return a direct response body with a content type.
     ///
-    /// Used for provider-specific responses that don't involve upstream proxying
-    /// (e.g., SSE danmaku info, JSON metadata). The HTTP layer wraps this into
-    /// an appropriate response.
+    /// Used for provider-specific responses that do not involve upstream
+    /// proxying (e.g., SSE danmaku info, JSON metadata). Transport adapters
+    /// wrap this into protocol-specific responses.
     DirectBody {
         body: Vec<u8>,
         content_type: String,
         status: u16,
     },
-    /// Execute a live FLV stream directly from the API layer.
+    /// Execute a live FLV stream through a transport adapter.
     LiveFlv {
         provider_name: String,
         room_id: RoomId,
@@ -60,7 +58,7 @@ pub enum PlaybackTransportAction {
         media_id: MediaId,
         version: String,
     },
-    /// Serve a live HLS segment from the API layer.
+    /// Serve a live HLS segment through a transport adapter.
     LiveHlsSegment {
         provider_name: String,
         room_id: RoomId,
@@ -80,39 +78,22 @@ impl PlaybackTransportAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveFlvAccess {
+    pub user_id: UserId,
+    pub expires_at: i64,
+}
+
 /// Services available to provider-specific playback transport resolution.
 ///
 /// Gives providers DB access (e.g., fetching media from playlists) without
-/// depending on axum or the HTTP layer.
+/// depending on axum or concrete transport adapters.
 pub struct PlaybackTransportServices {
     pub room_service: Arc<RoomService>,
     pub permission_service: PermissionService,
     pub credential_encryption: Option<CredentialEncryption>,
     pub credential_repo: Arc<UserProviderCredentialRepository>,
     pub provider_access_service: Arc<dyn ProviderAccessService>,
-    pub signing_key: Arc<ProxySigningKey>,
-    pub public_id_codec: Arc<PublicIdCodec>,
-}
-
-pub(crate) fn parse_playback_user_id(
-    codec: &PublicIdCodec,
-    value: &str,
-    context: &str,
-) -> Result<UserId, ProviderError> {
-    parse_playback_id(codec, value, context)
-}
-
-fn parse_playback_id<T>(
-    codec: &PublicIdCodec,
-    value: &str,
-    context: &str,
-) -> Result<T, ProviderError>
-where
-    T: crate::PublicIdType,
-{
-    codec
-        .decode::<T>(value)
-        .map_err(|error| ProviderError::InvalidConfig(format!("Invalid {error} in {context}")))
 }
 
 #[must_use]
@@ -173,8 +154,9 @@ pub async fn lookup_versioned(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{store::InMemoryProviderStore, ExecutionControl};
-    use crate::provider::{store::VersionedPlayback, PlaybackResult};
+    use crate::provider::{
+        ExecutionControl, InMemoryProviderStore, PlaybackResult, VersionedPlayback,
+    };
     use crate::test_helpers::TestResultExt;
     use std::time::Duration;
     use tokio_util::sync::CancellationToken;
@@ -259,18 +241,6 @@ mod tests {
         let result = lookup_versioned(Some(&store), "v1", None).await;
         assert!(result.is_ok());
         assert_eq!(result.checked("operation should succeed").version, "v1");
-    }
-
-    #[test]
-    fn test_proxy_ids_require_public_id_prefixes() {
-        let codec = PublicIdCodec::plain();
-
-        assert_eq!(
-            parse_playback_user_id(&codec, "usr_7", "proxy metadata")
-                .checked("operation should succeed"),
-            UserId::expect_positive(7)
-        );
-        assert!(parse_playback_user_id(&codec, "7", "proxy metadata").is_err());
     }
 
     #[tokio::test]

@@ -138,12 +138,12 @@ async fn test_user_provider_credential_repo_requires_encryption_for_storage() {
     let err = err(
         UserProviderCredentialRepository::encrypt_credential_with(
             None,
-            &ProviderCredential::alist(
-                "https://alist.example.com".to_string(),
-                "user".to_string(),
-                "plaintext".to_string(),
-                None,
-            ),
+            &ProviderCredential::Alist {
+                host: "https://alist.example.com".to_string(),
+                username: "user".to_string(),
+                password: "plaintext".to_string(),
+                otp_secret: None,
+            },
         ),
         "credential storage should require encryption",
     );

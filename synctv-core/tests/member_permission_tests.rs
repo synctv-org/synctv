@@ -15,10 +15,8 @@ use synctv_core::{
     },
     repository::{RoomMemberRepository, UserRepository},
     service::{
-        auth::{BruteForceProtection, JwtService},
-        member::AdminMemberUpdate,
-        room::RoomServiceOptions,
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        AdminMemberUpdate, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
+        RoomService, RoomServiceOptions, UserService,
     },
     Error,
 };

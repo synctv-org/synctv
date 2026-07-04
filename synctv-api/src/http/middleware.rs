@@ -15,13 +15,6 @@ tokio::task_local! {
     pub static CURRENT_REQUEST_ID: String;
 }
 
-/// Request ID extracted from request extensions
-///
-/// This is set by the `request_id_middleware` and can be used in handlers
-/// to correlate errors with the request ID.
-#[derive(Debug, Clone)]
-pub struct RequestId(pub String);
-
 /// Transport metadata extracted from the HTTP request without performing
 /// authentication, blacklist, rate-limit, or timeout decisions.
 #[derive(Debug, Clone)]
@@ -97,7 +90,7 @@ static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
 ///    logs with their own request tracking.
 /// 3. Exposed via a task-local so `AppError` responses can include it without
 ///    buffering and rewriting response bodies.
-pub async fn request_id_middleware(mut request: Request, next: Next) -> Response {
+pub async fn request_id_middleware(request: Request, next: Next) -> Response {
     // Honour an incoming X-Request-ID header when safe to do so.
     let request_id = request
         .headers()
@@ -116,11 +109,6 @@ pub async fn request_id_middleware(mut request: Request, next: Next) -> Response
     // Record in current tracing span for log correlation.
     tracing::Span::current().record("requestId", request_id.as_str());
     tracing::debug!(request_id = %request_id, "Request received");
-
-    // Store in request extensions so error responses can include it
-    request
-        .extensions_mut()
-        .insert(RequestId(request_id.clone()));
 
     let mut response = CURRENT_REQUEST_ID
         .scope(request_id.clone(), async move { next.run(request).await })
@@ -270,7 +258,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use synctv_core::service::auth::AuthErrorCategory;
+    use synctv_core::service::AuthErrorCategory;
     use synctv_core::service::SecurityPipeline;
     use tower::ServiceExt;
 

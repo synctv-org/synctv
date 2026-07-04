@@ -54,6 +54,7 @@ pub struct BilibiliAccess {
     pub cookies: HashMap<String, String>,
     pub credential_cache_partition: String,
     pub authenticated: bool,
+    pub provider_instance_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -500,8 +501,6 @@ impl CachedProviderAccessService {
 
         Ok(ResolvedProviderCredential {
             credential,
-            id: record.id.to_string(),
-            updated_at: record.updated_at,
             revision: credential_revision(record.id, record.updated_at),
         })
     }
@@ -578,16 +577,14 @@ impl ProviderAccessService for CachedProviderAccessService {
         let provider_instance_name = provider_instance_name
             .map(std::string::ToString::to_string)
             .or(record.provider_instance_name);
-        match credential {
-            ProviderCredential::Alist { host, .. } => Ok(AlistBinding {
-                host,
-                server_id: server_id.to_string(),
-                credential_owner_id: user_id.to_string(),
-                credential_revision: revision,
-                provider_instance_name,
-            }),
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
+        AlistProvider::binding_from_stored_credential(
+            user_id,
+            server_id,
+            credential,
+            revision,
+            provider_instance_name,
+            None,
+        )
     }
 
     async fn alist_access(
@@ -603,15 +600,6 @@ impl ProviderAccessService for CachedProviderAccessService {
         let provider_instance_name = provider_instance_name
             .map(std::string::ToString::to_string)
             .or(record.provider_instance_name);
-        let ProviderCredential::Alist {
-            host,
-            username,
-            password,
-            otp_secret,
-        } = credential
-        else {
-            return Err(ProviderError::InvalidCredentialType);
-        };
 
         let session_key = Self::alist_session_key(
             user_id,
@@ -620,14 +608,14 @@ impl ProviderAccessService for CachedProviderAccessService {
             provider_instance_name.as_deref(),
         );
         if let Some(session) = self.cached_alist_session(&session_key).await {
-            return Ok(AlistAccess {
-                host: session.host,
-                token: session.token,
-                server_id: server_id.to_string(),
-                credential_owner_id: user_id.to_string(),
-                credential_revision: revision,
+            return Ok(AlistProvider::access_from_session(
+                user_id,
+                server_id,
+                revision,
                 provider_instance_name,
-            });
+                session.host,
+                session.token,
+            ));
         }
 
         let _lock = if let Some(store) = &self.store {
@@ -660,56 +648,35 @@ impl ProviderAccessService for CachedProviderAccessService {
         };
 
         if let Some(session) = self.cached_alist_session(&session_key).await {
-            return Ok(AlistAccess {
-                host: session.host,
-                token: session.token,
-                server_id: server_id.to_string(),
-                credential_owner_id: user_id.to_string(),
-                credential_revision: revision,
+            return Ok(AlistProvider::access_from_session(
+                user_id,
+                server_id,
+                revision,
                 provider_instance_name,
-            });
+                session.host,
+                session.token,
+            ));
         }
 
-        let otp_code = otp_secret.as_deref().map_or_else(
-            || Ok(String::new()),
-            |secret| {
-                ProviderCredential::current_alist_otp_code(secret)
-                    .map_err(ProviderError::InvalidConfig)
-            },
-        )?;
-        let login_req = synctv_media_providers::grpc::alist::LoginReq {
-            host: host.clone(),
-            username,
-            credential: Some(
-                synctv_media_providers::grpc::alist::login_req::Credential::HashedPassword(
-                    password,
-                ),
-            ),
-            otp_code,
-        };
-        let token = self
+        let access = self
             .alist_provider
-            .login_with_context(
-                login_req,
-                provider_instance_name.as_deref(),
+            .login_access_from_stored_credential(
+                user_id,
+                server_id,
+                credential,
+                revision,
+                provider_instance_name,
                 request_context,
             )
             .await?;
 
         let session = CachedAlistSession {
-            host: host.clone(),
-            token: token.clone(),
+            host: access.host.clone(),
+            token: access.token.clone(),
         };
         self.cache_alist_session(&session_key, &session).await?;
 
-        Ok(AlistAccess {
-            host,
-            token,
-            server_id: server_id.to_string(),
-            credential_owner_id: user_id.to_string(),
-            credential_revision: revision,
-            provider_instance_name,
-        })
+        Ok(access)
     }
 
     async fn bilibili_access(
@@ -717,37 +684,25 @@ impl ProviderAccessService for CachedProviderAccessService {
         user_id: UserId,
         request_context: Option<&ExecutionControl>,
     ) -> Result<BilibiliAccess, ProviderError> {
-        let server_id = UserProviderCredential::bilibili_server_id();
+        let server_id = BilibiliProvider::credential_server_id();
         let Some(record) = self
             .load_record_optional(BilibiliProvider::NAME, user_id, &server_id, request_context)
             .await?
         else {
-            return Ok(BilibiliAccess {
-                cookies: HashMap::new(),
-                credential_cache_partition: "anon".to_string(),
-                authenticated: false,
-            });
+            return Ok(BilibiliProvider::anonymous_access());
         };
         if record.is_expired() {
-            return Ok(BilibiliAccess {
-                cookies: HashMap::new(),
-                credential_cache_partition: "anon".to_string(),
-                authenticated: false,
-            });
+            return Ok(BilibiliProvider::anonymous_access());
         }
 
         let resolved = Self::resolved_credential(&record)?;
-        match resolved.credential {
-            ProviderCredential::Bilibili { cookies } => Ok(BilibiliAccess {
-                cookies,
-                credential_cache_partition: format!(
-                    "auth:{user_id}:{server_id}:{}",
-                    resolved.revision
-                ),
-                authenticated: true,
-            }),
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
+        BilibiliProvider::access_from_stored_credential(
+            user_id,
+            &server_id,
+            resolved.credential,
+            &resolved.revision,
+            record.provider_instance_name,
+        )
     }
 
     async fn emby_access(
@@ -764,22 +719,14 @@ impl ProviderAccessService for CachedProviderAccessService {
             .map(std::string::ToString::to_string)
             .or_else(|| record.provider_instance_name.clone());
         let resolved = Self::resolved_credential(&record)?;
-        match resolved.credential {
-            ProviderCredential::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            } => Ok(EmbyAccess {
-                host,
-                api_key,
-                emby_user_id,
-                server_id: server_id.to_string(),
-                credential_owner_id: user_id.to_string(),
-                credential_revision: resolved.revision,
-                provider_instance_name,
-            }),
-            _ => Err(ProviderError::InvalidCredentialType),
-        }
+        EmbyProvider::access_from_stored_credential(
+            user_id,
+            server_id,
+            resolved.credential,
+            resolved.revision,
+            provider_instance_name,
+            None,
+        )
     }
 
     async fn invalidate(
@@ -837,7 +784,7 @@ struct CachedAlistSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::store::InMemoryProviderStore;
+    use crate::provider::InMemoryProviderStore;
     use crate::test_helpers::TestResultExt;
     use chrono::Utc;
     use std::sync::Mutex;
@@ -969,16 +916,15 @@ mod tests {
     async fn bilibili_access_loads_record_from_reader_and_caches_binding() {
         let store = Arc::new(InMemoryProviderStore::new(16));
         let user_id = UserId::expect_positive(7);
-        let server_id = UserProviderCredential::bilibili_server_id();
+        let server_id = BilibiliProvider::credential_server_id();
         let record = credential_record(
             BilibiliProvider::NAME,
             user_id,
             &server_id,
             None,
-            ProviderCredential::bilibili(HashMap::from([(
-                "SESSDATA".to_string(),
-                "cookie".to_string(),
-            )])),
+            ProviderCredential::Bilibili {
+                cookies: HashMap::from([("SESSDATA".to_string(), "cookie".to_string())]),
+            },
         );
         let service = test_service_with_reader(
             store.clone(),
@@ -1017,12 +963,12 @@ mod tests {
             user_id,
             server_id,
             Some("credential-instance"),
-            ProviderCredential::alist(
-                "https://alist.example.test".to_string(),
-                "alice".to_string(),
-                "hashed-password".to_string(),
-                None,
-            ),
+            ProviderCredential::Alist {
+                host: "https://alist.example.test".to_string(),
+                username: "alice".to_string(),
+                password: "hashed-password".to_string(),
+                otp_secret: None,
+            },
         );
         cache_record(&service, store.as_ref(), &record).await;
 
@@ -1090,11 +1036,11 @@ mod tests {
             user_id,
             server_id,
             Some("credential-instance"),
-            ProviderCredential::emby(
-                "https://emby.example.test".to_string(),
-                "api-key".to_string(),
-                "emby-user".to_string(),
-            ),
+            ProviderCredential::Emby {
+                host: "https://emby.example.test".to_string(),
+                api_key: "api-key".to_string(),
+                emby_user_id: "emby-user".to_string(),
+            },
         );
         cache_record(&service, store.as_ref(), &record).await;
 
@@ -1119,29 +1065,28 @@ mod tests {
             (
                 AlistProvider::NAME,
                 "alist-main",
-                ProviderCredential::alist(
-                    "https://alist.example.test".to_string(),
-                    "alice".to_string(),
-                    "hashed-password".to_string(),
-                    None,
-                ),
+                ProviderCredential::Alist {
+                    host: "https://alist.example.test".to_string(),
+                    username: "alice".to_string(),
+                    password: "hashed-password".to_string(),
+                    otp_secret: None,
+                },
             ),
             (
                 BilibiliProvider::NAME,
-                &UserProviderCredential::bilibili_server_id(),
-                ProviderCredential::bilibili(HashMap::from([(
-                    "SESSDATA".to_string(),
-                    "cookie".to_string(),
-                )])),
+                &BilibiliProvider::credential_server_id(),
+                ProviderCredential::Bilibili {
+                    cookies: HashMap::from([("SESSDATA".to_string(), "cookie".to_string())]),
+                },
             ),
             (
                 EmbyProvider::NAME,
                 "emby-main",
-                ProviderCredential::emby(
-                    "https://emby.example.test".to_string(),
-                    "api-key".to_string(),
-                    "emby-user".to_string(),
-                ),
+                ProviderCredential::Emby {
+                    host: "https://emby.example.test".to_string(),
+                    api_key: "api-key".to_string(),
+                    emby_user_id: "emby-user".to_string(),
+                },
             ),
         ] {
             let record = credential_record(provider, user_id, server_id, None, credential);

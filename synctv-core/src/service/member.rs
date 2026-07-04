@@ -13,7 +13,7 @@ use crate::{
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::audit::{AuditEventParams, AuditService},
     service::notification::{NotificationService, PermissionChangedNotification},
-    service::permission::PermissionService,
+    service::PermissionService,
     Error, Result,
 };
 
@@ -180,9 +180,9 @@ impl MemberService {
     /// Log an audit event if the audit service is configured.
     /// Failures are logged as warnings but never propagated.
     ///
-    /// The `actor_username` is passed from the caller (API layer) to avoid
-    /// a separate DB lookup. Pass an empty string if the username is not
-    /// available (e.g., in background tasks).
+    /// The `actor_username` is passed from the caller to avoid a separate DB
+    /// lookup. Pass an empty string if the username is not available (e.g., in
+    /// background tasks).
     async fn audit_log(
         &self,
         actor_id: &UserId,
@@ -570,22 +570,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_role_to_proto_i32_matches_common_wire_values() {
-        assert_eq!(
-            i32::from(RoomRole::Creator),
-            synctv_proto::common::RoomMemberRole::Creator as i32
-        );
-        assert_eq!(
-            i32::from(RoomRole::Admin),
-            synctv_proto::common::RoomMemberRole::Admin as i32
-        );
-        assert_eq!(
-            i32::from(RoomRole::Member),
-            synctv_proto::common::RoomMemberRole::Member as i32
-        );
-        assert_eq!(
-            i32::from(RoomRole::Guest),
-            synctv_proto::common::RoomMemberRole::Guest as i32
-        );
+    fn room_role_to_i32_matches_wire_values() {
+        assert_eq!(i32::from(RoomRole::Creator), 1);
+        assert_eq!(i32::from(RoomRole::Admin), 2);
+        assert_eq!(i32::from(RoomRole::Member), 3);
+        assert_eq!(i32::from(RoomRole::Guest), 4);
     }
 }

@@ -10,29 +10,38 @@
 use std::sync::Arc;
 use synctv_livestream::StreamError;
 
-pub mod admin;
-pub mod client;
+pub(crate) mod admin;
+pub(crate) mod client;
 pub(crate) mod email;
-pub mod messaging;
+pub(crate) mod messaging;
 pub(crate) mod notification;
-pub mod oauth2;
+pub(crate) mod oauth2;
 pub(crate) mod pagination;
-mod playback;
-pub mod playback_provider;
-mod playlist_items_snapshot;
-pub mod providers;
-pub mod request_context;
-mod room_members_snapshot;
-pub mod room_settings_snapshot;
+pub(crate) mod playback;
+pub(crate) mod playback_provider;
+pub(crate) mod playlist_items_snapshot;
+pub(crate) mod providers;
+pub(crate) mod request_context;
+pub(crate) mod room_members_snapshot;
+pub(crate) mod room_settings_snapshot;
 pub(crate) mod source_provider;
+pub(crate) mod stored_files;
 pub(crate) mod validation;
 
 // Re-export for convenience
-pub use admin::{AdminApiConfig, AdminApiImpl, AdminApiRuntime};
-pub use client::{ClientApiConfig, ClientApiImpl, ClientApiRuntime};
+pub use admin::{
+    AdminApiConfig, AdminApiImpl, AdminApiRuntime, AdminAuthValidator, AdminReadServices,
+    RequestContext as AdminRequestContext, ValidatedAdmin, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+};
+pub use client::{
+    ClientApiConfig, ClientApiImpl, ClientApiRuntime, ClientApiRuntimeServices, GuestRoomAccess,
+    RoomActor,
+};
 pub use email::EmailApiImpl;
 pub use messaging::{
-    HeartbeatSchedule, MessageConcurrencyConfig, MessageSender, ProtoCodec, StreamMessageHandler,
+    spawn_observed_playback_lifecycle_event_source, HeartbeatSchedule, MessageConcurrencyConfig,
+    MessageSender, PlaybackAutoAdvanceSubscriber, ProtoCodec, ProviderPlaybackProgressSubscriber,
+    StreamMessageHandler,
 };
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
@@ -174,10 +183,10 @@ fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiErro
 pub fn parse_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
-    T: synctv_core::PublicIdType,
+    T: crate::public_id::PublicIdType,
 {
     public_id_codec
         .decode::<T>(value.trim())
@@ -187,7 +196,7 @@ where
 pub fn parse_user_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -195,7 +204,7 @@ pub fn parse_user_id_param(
 pub fn parse_room_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -203,7 +212,7 @@ pub fn parse_room_id_param(
 pub fn parse_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -211,55 +220,55 @@ pub fn parse_media_id_param(
 pub fn parse_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
 
 pub fn proto_validated_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
-    T: synctv_core::PublicIdType,
+    T: crate::public_id::PublicIdType,
 {
     parse_id_param(value.as_ref(), T::TYPE_NAME, public_id_codec)
 }
 
 pub fn proto_validated_user_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
-    T: synctv_core::PublicIdType,
+    T: crate::public_id::PublicIdType,
 {
     let value = value.as_ref();
     if value.is_empty() {
@@ -271,28 +280,28 @@ where
 
 pub fn proto_validated_optional_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::RoomId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_ids(
     values: Vec<String>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::MediaId>, ApiError> {
     values
         .into_iter()
@@ -302,7 +311,7 @@ pub fn proto_validated_media_ids(
 
 pub fn proto_validated_playlist_ids(
     values: Vec<String>,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::PlaylistId>, ApiError> {
     values
         .into_iter()
@@ -313,7 +322,7 @@ pub fn proto_validated_playlist_ids(
 pub fn parse_optional_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -321,7 +330,7 @@ pub fn parse_optional_media_id_param(
 pub fn parse_optional_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -329,10 +338,10 @@ pub fn parse_optional_playlist_id_param(
 pub fn parse_optional_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &synctv_core::PublicIdCodec,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
-    T: synctv_core::PublicIdType,
+    T: crate::public_id::PublicIdType,
 {
     if value.trim().is_empty() {
         Ok(None)
@@ -348,7 +357,8 @@ where
 ///
 /// Convention: 1xxx for auth, 2xxx for resources, 3xxx for validation,
 /// 4xxx for permissions, 9xxx for internal errors.
-pub mod error_codes {
+#[allow(dead_code)]
+pub(crate) mod error_codes {
     /// Unspecified error (fallback)
     pub const UNSPECIFIED: i32 = 0;
 

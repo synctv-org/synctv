@@ -1,10 +1,13 @@
 use axum::{
     extract::{Path, Query, State},
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
+use futures::StreamExt as _;
 use std::convert::Infallible;
-use tokio_stream::StreamExt;
 
 use super::execute::{execute_room_actor_endpoint_with_control, execute_user_endpoint};
 use super::query::{
@@ -202,7 +205,7 @@ pub async fn watch_bilibili_live_danmaku(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+) -> AppResult<Response> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let stream = super::execute::execute_room_actor_endpoint(
         &state,
@@ -221,8 +224,11 @@ pub async fn watch_bilibili_live_danmaku(
     )
     .await?;
     let stream = stream
-        .map(crate::http::providers::playback_provider::transport::bilibili_danmaku_sse_event);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+        .map(crate::http::providers::playback_provider::transport::bilibili_danmaku_sse_event)
+        .boxed();
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 #[cfg_attr(

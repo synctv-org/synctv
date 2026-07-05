@@ -66,7 +66,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-db dev-redis dev-open dev-smoke sqlx-prepare nextest clippy
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-db dev-redis dev-open dev-smoke fmt check sqlx-prepare nextest clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -240,6 +240,12 @@ dev-migrate: dev-up ## Run database migrations against the local PostgreSQL cont
 
 sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
 	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx prepare --workspace -- --all-targets
+
+fmt: ## Format all Rust code.
+	cargo fmt --all
+
+check: ## Check all workspace targets.
+	cargo check -j "$(DEV_JOBS)" --workspace --all-targets
 
 nextest: dev-up ## Run the full workspace nextest suite, including ignored tests.
 	DATABASE_URL="$(DEV_DATABASE_URL)" cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail

@@ -394,7 +394,8 @@ impl S3CompatibleFileStorageService {
         upload_id: &str,
         part_number: i32,
         checksum_sha256: &str,
-        #[cfg_attr(not(test), allow(unused_variables))] offset_bytes: i64,
+        #[cfg(test)] offset_bytes: i64,
+        #[cfg(not(test))] _offset_bytes: i64,
         data: Vec<u8>,
     ) -> Result<String> {
         if part_number <= 0 {

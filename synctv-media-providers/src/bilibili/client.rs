@@ -2,6 +2,10 @@
 #![allow(clippy::must_use_candidate)]
 
 use std::collections::HashMap;
+#[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
+use std::future::ready;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -1888,24 +1892,21 @@ impl BilibiliClient {
     /// Connect to live danmaku WebSocket and return a message stream
     ///
     /// Returns a tuple of (sender, receiver) for bidirectional communication
-    #[cfg_attr(
-        not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")),
-        allow(clippy::unused_async, clippy::unused_async_trait_impl)
-    )]
-    pub async fn connect_live_danmaku(
+    pub fn connect_live_danmaku(
         &self,
         room_id: u64,
-    ) -> Result<LiveDanmakuConnection, BilibiliError> {
+    ) -> Pin<Box<dyn Future<Output = Result<LiveDanmakuConnection, BilibiliError>> + Send + '_>>
+    {
         #[cfg(not(any(feature = "tls-webpki-roots", feature = "tls-native-roots")))]
         {
-            let _ = room_id;
-            Err(BilibiliError::InvalidConfig(
+            let _ = (self, room_id);
+            Box::pin(ready(Err(BilibiliError::InvalidConfig(
                 "Bilibili live danmaku requires a TLS root feature".to_string(),
-            ))
+            ))))
         }
 
         #[cfg(any(feature = "tls-webpki-roots", feature = "tls-native-roots"))]
-        {
+        Box::pin(async move {
             // Get danmaku server info
             let danmu_info = self.get_live_danmu_info(room_id).await?;
 
@@ -1950,7 +1951,7 @@ impl BilibiliClient {
                 heartbeat_handle: AsyncMutex::new(None),
                 heartbeat_stop: Arc::new(AtomicBool::new(false)),
             })
-        }
+        })
     }
 
     /// Connect to live danmaku WebSocket with automatic reconnection support

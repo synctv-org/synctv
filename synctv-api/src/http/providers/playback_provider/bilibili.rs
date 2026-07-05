@@ -1,10 +1,12 @@
 use axum::{
     extract::{Path, RawQuery, State},
     http::{HeaderMap, Method},
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        sse::{KeepAlive, Sse},
+        IntoResponse, Response,
+    },
 };
 use futures::{FutureExt, StreamExt};
-use std::convert::Infallible;
 use synctv_proto::playback_provider::bilibili::{
     BilibiliDanmakuFileResponse, BilibiliDashManifestMode, BilibiliDashManifestResponse,
     BilibiliDashSegmentResponse, BilibiliHlsManifestResponse, BilibiliHlsSegmentResponse,
@@ -594,7 +596,7 @@ pub async fn watch_bilibili_live_danmaku(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<BilibiliLiveDanmakuPath>,
-) -> AppResult<Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>>> {
+) -> AppResult<Response> {
     let req = WatchBilibiliLiveDanmakuRequest {
         media_id: path.media_id,
     };
@@ -628,8 +630,12 @@ pub async fn watch_bilibili_live_danmaku(
         )
         .await
         .map_err(crate::http::error::map_api_error)?;
-    let stream = stream.map(super::transport::bilibili_danmaku_sse_event);
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    let stream = stream
+        .map(super::transport::bilibili_danmaku_sse_event)
+        .boxed();
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 fn dash_manifest_mode(path_mode: Option<&str>, query: &str) -> Result<i32, crate::impls::ApiError> {

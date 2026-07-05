@@ -27,7 +27,7 @@ pub(super) async fn get_ice_servers(
 pub(super) async fn add_media(
     service: &ClientServiceImpl,
     request: Request<AddMediaRequest>,
-) -> Result<Response<AddMediaResponse>, Status> {
+) -> Result<Response<Media>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -277,7 +277,7 @@ pub(super) async fn get_media_cover_object(
 pub(super) async fn update_media_cover(
     service: &ClientServiceImpl,
     request: Request<UpdateMediaCoverRequest>,
-) -> Result<Response<EditMediaResponse>, Status> {
+) -> Result<Response<Media>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -300,7 +300,7 @@ pub(super) async fn update_media_cover(
 pub(super) async fn clear_media_cover(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::ClearMediaCoverRequest>,
-) -> Result<Response<EditMediaResponse>, Status> {
+) -> Result<Response<Media>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -402,7 +402,7 @@ pub(super) async fn get_playlist_cover_object(
 pub(super) async fn update_playlist_cover(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::UpdatePlaylistCoverRequest>,
-) -> Result<Response<UpdatePlaylistResponse>, Status> {
+) -> Result<Response<Playlist>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -425,7 +425,7 @@ pub(super) async fn update_playlist_cover(
 pub(super) async fn clear_playlist_cover(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::ClearPlaylistCoverRequest>,
-) -> Result<Response<UpdatePlaylistResponse>, Status> {
+) -> Result<Response<Playlist>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -494,7 +494,7 @@ pub(super) async fn delete_entries(
 pub(super) async fn edit_media(
     service: &ClientServiceImpl,
     request: Request<EditMediaRequest>,
-) -> Result<Response<EditMediaResponse>, Status> {
+) -> Result<Response<Media>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

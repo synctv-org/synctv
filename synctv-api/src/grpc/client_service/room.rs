@@ -77,7 +77,7 @@ impl RoomService for ClientServiceImpl {
     async fn reject_room_join_review(
         &self,
         request: Request<RejectRoomJoinReviewRequest>,
-    ) -> Result<Response<RejectRoomJoinReviewResponse>, Status> {
+    ) -> Result<Response<RoomJoinReview>, Status> {
         members::reject_room_join_review(self, request).await
     }
 
@@ -119,14 +119,14 @@ impl RoomService for ClientServiceImpl {
     async fn reset_room_settings(
         &self,
         request: Request<ResetRoomSettingsRequest>,
-    ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
+    ) -> Result<Response<RoomSettings>, Status> {
         settings::reset_room_settings(self, request).await
     }
 
     async fn transfer_room_ownership(
         &self,
         request: Request<TransferRoomOwnershipRequest>,
-    ) -> Result<Response<TransferRoomOwnershipResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         settings::transfer_room_ownership(self, request).await
     }
 
@@ -165,76 +165,20 @@ impl RoomService for ClientServiceImpl {
         lifecycle::delete_room(self, request).await
     }
 
-    type MessageStreamStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<ServerMessage, Status>> + Send + 'static>,
-    >;
-    type WatchPlaybackStateStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchPlaybackStateEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type WatchPlaybackStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<WatchPlaybackEvent, Status>> + Send + 'static>,
-    >;
-    type WatchRoomSettingsStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchRoomSettingsEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type WatchPlaylistItemsStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchPlaylistItemsEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type WatchRoomMemberEventsStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchRoomMemberEventsEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type WatchChatEventsStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<WatchChatEventsEvent, Status>> + Send + 'static>,
-    >;
-    type WatchChatPinEventsStream = std::pin::Pin<
-        Box<
-            dyn tokio_stream::Stream<Item = Result<WatchChatPinEventsEvent, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type GetChatAttachmentObjectStream = std::pin::Pin<
-        Box<
-            dyn futures::Stream<Item = Result<ChatAttachmentObjectResponse, Status>>
-                + Send
-                + 'static,
-        >,
-    >;
-    type GetRoomCoverObjectStream = std::pin::Pin<
-        Box<
-            dyn futures::Stream<
-                    Item = Result<synctv_proto::client::RoomCoverObjectResponse, Status>,
-                > + Send
-                + 'static,
-        >,
-    >;
-    type GetMediaCoverObjectStream = std::pin::Pin<
-        Box<dyn futures::Stream<Item = Result<MediaCoverObjectResponse, Status>> + Send + 'static>,
-    >;
-    type GetPlaylistCoverObjectStream = std::pin::Pin<
-        Box<
-            dyn futures::Stream<
-                    Item = Result<synctv_proto::client::PlaylistCoverObjectResponse, Status>,
-                > + Send
-                + 'static,
-        >,
-    >;
+    type MessageStreamStream = super::GrpcStatusStream<ServerMessage>;
+    type WatchPlaybackStateStream = super::GrpcStatusStream<WatchPlaybackStateEvent>;
+    type WatchPlaybackStream = super::GrpcStatusStream<WatchPlaybackEvent>;
+    type WatchRoomSettingsStream = super::GrpcStatusStream<WatchRoomSettingsEvent>;
+    type WatchPlaylistItemsStream = super::GrpcStatusStream<WatchPlaylistItemsEvent>;
+    type WatchRoomMemberEventsStream = super::GrpcStatusStream<WatchRoomMemberEventsEvent>;
+    type WatchChatEventsStream = super::GrpcStatusStream<WatchChatEventsEvent>;
+    type WatchChatPinEventsStream = super::GrpcStatusStream<WatchChatPinEventsEvent>;
+    type GetChatAttachmentObjectStream = super::GrpcStatusStream<ChatAttachmentObjectResponse>;
+    type GetRoomCoverObjectStream =
+        super::GrpcStatusStream<synctv_proto::client::RoomCoverObjectResponse>;
+    type GetMediaCoverObjectStream = super::GrpcStatusStream<MediaCoverObjectResponse>;
+    type GetPlaylistCoverObjectStream =
+        super::GrpcStatusStream<synctv_proto::client::PlaylistCoverObjectResponse>;
 
     async fn create_web_socket_ticket(
         &self,
@@ -344,7 +288,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_chat_message(
         &self,
         request: Request<GetChatMessageRequest>,
-    ) -> Result<Response<GetChatMessageResponse>, Status> {
+    ) -> Result<Response<ChatMessageReceive>, Status> {
         chat::get_chat_message(self, request).await
     }
 
@@ -400,7 +344,7 @@ impl RoomService for ClientServiceImpl {
     async fn get_room_content_report(
         &self,
         request: Request<GetRoomContentReportRequest>,
-    ) -> Result<Response<GetRoomContentReportResponse>, Status> {
+    ) -> Result<Response<ContentReport>, Status> {
         chat::get_room_content_report(self, request).await
     }
 
@@ -456,7 +400,7 @@ impl RoomService for ClientServiceImpl {
     async fn set_chat_reaction(
         &self,
         request: Request<SetChatReactionRequest>,
-    ) -> Result<Response<SetChatReactionResponse>, Status> {
+    ) -> Result<Response<ChatMessageEvent>, Status> {
         chat::set_chat_reaction(self, request).await
     }
 
@@ -477,7 +421,7 @@ impl RoomService for ClientServiceImpl {
     async fn add_media(
         &self,
         request: Request<AddMediaRequest>,
-    ) -> Result<Response<AddMediaResponse>, Status> {
+    ) -> Result<Response<Media>, Status> {
         media::add_media(self, request).await
     }
 
@@ -562,14 +506,14 @@ impl RoomService for ClientServiceImpl {
     async fn update_media_cover(
         &self,
         request: Request<UpdateMediaCoverRequest>,
-    ) -> Result<Response<EditMediaResponse>, Status> {
+    ) -> Result<Response<Media>, Status> {
         media::update_media_cover(self, request).await
     }
 
     async fn clear_media_cover(
         &self,
         request: Request<synctv_proto::client::ClearMediaCoverRequest>,
-    ) -> Result<Response<EditMediaResponse>, Status> {
+    ) -> Result<Response<Media>, Status> {
         media::clear_media_cover(self, request).await
     }
 
@@ -606,14 +550,14 @@ impl RoomService for ClientServiceImpl {
     async fn update_playlist_cover(
         &self,
         request: Request<synctv_proto::client::UpdatePlaylistCoverRequest>,
-    ) -> Result<Response<UpdatePlaylistResponse>, Status> {
+    ) -> Result<Response<Playlist>, Status> {
         media::update_playlist_cover(self, request).await
     }
 
     async fn clear_playlist_cover(
         &self,
         request: Request<synctv_proto::client::ClearPlaylistCoverRequest>,
-    ) -> Result<Response<UpdatePlaylistResponse>, Status> {
+    ) -> Result<Response<Playlist>, Status> {
         media::clear_playlist_cover(self, request).await
     }
 
@@ -634,7 +578,7 @@ impl RoomService for ClientServiceImpl {
     async fn edit_media(
         &self,
         request: Request<EditMediaRequest>,
-    ) -> Result<Response<EditMediaResponse>, Status> {
+    ) -> Result<Response<Media>, Status> {
         media::edit_media(self, request).await
     }
 
@@ -690,7 +634,7 @@ impl RoomService for ClientServiceImpl {
     async fn update_playback_state(
         &self,
         request: Request<UpdatePlaybackStateRequest>,
-    ) -> Result<Response<UpdatePlaybackStateResponse>, Status> {
+    ) -> Result<Response<PlaybackState>, Status> {
         playback::update_playback_state(self, request).await
     }
 
@@ -698,7 +642,7 @@ impl RoomService for ClientServiceImpl {
     async fn create_playlist(
         &self,
         request: Request<CreatePlaylistRequest>,
-    ) -> Result<Response<CreatePlaylistResponse>, Status> {
+    ) -> Result<Response<Playlist>, Status> {
         playlists::create_playlist(self, request).await
     }
 
@@ -712,14 +656,14 @@ impl RoomService for ClientServiceImpl {
     async fn update_playlist(
         &self,
         request: Request<UpdatePlaylistRequest>,
-    ) -> Result<Response<UpdatePlaylistResponse>, Status> {
+    ) -> Result<Response<Playlist>, Status> {
         playlists::update_playlist(self, request).await
     }
 
     async fn move_playlist(
         &self,
         request: Request<MovePlaylistRequest>,
-    ) -> Result<Response<MovePlaylistResponse>, Status> {
+    ) -> Result<Response<Playlist>, Status> {
         playlists::move_playlist(self, request).await
     }
 

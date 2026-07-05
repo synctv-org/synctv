@@ -17,9 +17,9 @@ use crate::http::websocket::RealtimeTransportFormat;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    GetPlaybackResponse, StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest,
-    StopPlaybackResponse, UpdatePlaybackStateRequest, UpdatePlaybackStateResponse,
-    WatchPlaybackRequest, WatchPlaybackStateRequest,
+    GetPlaybackResponse, PlaybackState, StartPlaybackRequest, StartPlaybackResponse,
+    StopPlaybackRequest, StopPlaybackResponse, UpdatePlaybackStateRequest, WatchPlaybackRequest,
+    WatchPlaybackStateRequest,
 };
 use synctv_proto::playback_provider::bilibili::WatchBilibiliLiveDanmakuRequest;
 
@@ -236,7 +236,7 @@ pub async fn watch_bilibili_live_danmaku(
         ),
         request_body = UpdatePlaybackStateRequest,
         responses(
-            (status = 200, description = "Playback state updated", body = UpdatePlaybackStateResponse),
+            (status = 200, description = "Playback state updated", body = PlaybackState),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -250,7 +250,7 @@ pub async fn update_playback_state(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<UpdatePlaybackStateRequest>,
-) -> AppResult<Json<UpdatePlaybackStateResponse>> {
+) -> AppResult<Json<PlaybackState>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,

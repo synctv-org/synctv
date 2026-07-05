@@ -17,9 +17,9 @@ use crate::impls::ApiError;
 use synctv_proto::client::SortDirection as ProtoSortDirection;
 use synctv_proto::client::{
     DeleteAllReadResponse, DeleteNotificationRequest, DeleteNotificationResponse,
-    GetNotificationRequest, GetNotificationResponse, ListNotificationsRequest,
-    ListNotificationsResponse, MarkAllAsReadRequest as ProtoMarkAllAsReadRequest,
-    MarkAllAsReadResponse, MarkAsReadRequest as ProtoMarkAsReadRequest, MarkAsReadResponse,
+    GetNotificationRequest, ListNotificationsRequest, ListNotificationsResponse,
+    MarkAllAsReadRequest as ProtoMarkAllAsReadRequest, MarkAllAsReadResponse,
+    MarkAsReadRequest as ProtoMarkAsReadRequest, MarkAsReadResponse,
     NotificationListSortBy as ProtoNotificationListSortBy, NotificationProto,
     NotificationType as ProtoNotificationType,
 };
@@ -334,12 +334,10 @@ impl NotificationApiImpl {
         &self,
         user_id: &UserId,
         req: GetNotificationRequest,
-    ) -> Result<GetNotificationResponse, ApiError> {
+    ) -> Result<NotificationProto, ApiError> {
         let notification_id = build_get_notification_request(&req)?;
         let notification = self.get_notification(user_id, notification_id).await?;
-        Ok(GetNotificationResponse {
-            notification: Some(notification_to_proto(notification, &self.public_id_codec)?),
-        })
+        notification_to_proto(notification, &self.public_id_codec)
     }
 
     /// Mark specific notifications as read.

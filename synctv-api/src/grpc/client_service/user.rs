@@ -1,5 +1,3 @@
-use std::pin::Pin;
-
 use futures::StreamExt;
 use tonic::{Request, Response, Status};
 
@@ -8,29 +6,25 @@ use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::{
     user_service_server::UserService, CloseAccountRequest, CloseAccountResponse,
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
-    ConfirmEmailBindRequest, ConfirmEmailBindResponse, CreateRoomRequest, CreateRoomResponse,
-    CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
-    DeletePasskeyRequest, DeletePasskeyResponse, FinishOpaquePasswordUpdateRequest,
-    FinishOpaquePasswordUpdateResponse, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
+    CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
+    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
     FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
-    GetProfileRequest, GetProfileResponse, GetRoomRequest, GetRoomResponse,
-    GetUserAvatarObjectRequest, GetUserPreferencesRequest, GetUserPreferencesResponse,
-    JoinRoomRequest, JoinRoomResponse, ListMyRoomsRequest, ListMyRoomsResponse,
-    ListPasskeysRequest, ListPasskeysResponse, LogoutRequest, LogoutResponse,
-    PasskeyCredentialResponse, RequestSensitiveOperationEmailCodeRequest,
-    RequestSensitiveOperationEmailCodeResponse, SetUsernameRequest, SetUsernameResponse,
-    StartEmailBindRequest, StartEmailBindResponse, StartOpaquePasswordUpdateRequest,
-    StartOpaquePasswordUpdateResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
-    StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
-    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
-    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
-    UnbindEmailRequest, UnbindEmailResponse, UpdateUserAvatarRequest, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest, UploadUserAvatarObjectResponse,
-    UserAvatarObjectResponse,
+    GetProfileRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
+    GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
+    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
+    LogoutRequest, LogoutResponse, PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
+    RequestSensitiveOperationEmailCodeResponse, Room, SetUsernameRequest, StartEmailBindRequest,
+    StartEmailBindResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    StartPasskeyBindRequest, StartPasskeyBindResponse, StartRoomPasswordLoginRequest,
+    StartRoomPasswordLoginResponse, StartSensitiveOperationPasskeyRequest,
+    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
+    StartSensitiveOperationVerificationResponse, UnbindEmailRequest, UpdateUserAvatarRequest,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest,
+    UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
 };
 
-type UserAvatarObjectStream =
-    Pin<Box<dyn futures::Stream<Item = Result<UserAvatarObjectResponse, Status>> + Send + 'static>>;
+type UserAvatarObjectStream = super::GrpcStatusStream<UserAvatarObjectResponse>;
 
 #[tonic::async_trait]
 // Tonic generated service traits require `Result<Response<_>, tonic::Status>`.
@@ -79,7 +73,7 @@ impl UserService for ClientServiceImpl {
     async fn get_profile(
         &self,
         request: Request<GetProfileRequest>,
-    ) -> Result<Response<GetProfileResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -100,7 +94,7 @@ impl UserService for ClientServiceImpl {
     async fn set_username(
         &self,
         request: Request<SetUsernameRequest>,
-    ) -> Result<Response<SetUsernameResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -197,7 +191,7 @@ impl UserService for ClientServiceImpl {
     async fn update_user_avatar(
         &self,
         request: Request<UpdateUserAvatarRequest>,
-    ) -> Result<Response<GetProfileResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -220,7 +214,7 @@ impl UserService for ClientServiceImpl {
     async fn clear_user_avatar(
         &self,
         request: Request<synctv_proto::client::ClearUserAvatarRequest>,
-    ) -> Result<Response<GetProfileResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let executor = self.client_api.clone();
         let client_api = self.client_api.clone();
@@ -263,7 +257,7 @@ impl UserService for ClientServiceImpl {
     async fn confirm_email_bind(
         &self,
         request: Request<ConfirmEmailBindRequest>,
-    ) -> Result<Response<ConfirmEmailBindResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -286,7 +280,7 @@ impl UserService for ClientServiceImpl {
     async fn unbind_email(
         &self,
         request: Request<UnbindEmailRequest>,
-    ) -> Result<Response<UnbindEmailResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -434,7 +428,7 @@ impl UserService for ClientServiceImpl {
     async fn finish_opaque_password_update(
         &self,
         request: Request<FinishOpaquePasswordUpdateRequest>,
-    ) -> Result<Response<FinishOpaquePasswordUpdateResponse>, Status> {
+    ) -> Result<Response<User>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -480,7 +474,7 @@ impl UserService for ClientServiceImpl {
     async fn finish_passkey_bind(
         &self,
         request: Request<FinishPasskeyBindRequest>,
-    ) -> Result<Response<PasskeyCredentialResponse>, Status> {
+    ) -> Result<Response<PasskeyCredential>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();
@@ -609,7 +603,7 @@ impl UserService for ClientServiceImpl {
     async fn create_room(
         &self,
         request: Request<CreateRoomRequest>,
-    ) -> Result<Response<CreateRoomResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         let metadata = self.request_metadata(&request)?;
         let req = request.into_inner();
         let executor = self.client_api.clone();

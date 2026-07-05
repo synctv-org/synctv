@@ -60,16 +60,10 @@ pub struct ChatSenderFilterArgs {
 }
 
 impl ChatSenderFilterArgs {
-    pub(in crate::cli) fn to_management_proto(&self) -> Option<management_proto::UserRef> {
-        let value = self
-            .sender_user_id
-            .as_deref()
-            .map(|user_id| management_proto::user_ref::Value::UserId(user_id.to_string()))
-            .or_else(|| {
-                self.sender_username.as_deref().map(|username| {
-                    management_proto::user_ref::Value::Username(username.to_string())
-                })
-            })?;
-        Some(management_proto::UserRef { value: Some(value) })
+    pub(in crate::cli) fn to_management_selector(&self) -> (String, String) {
+        (
+            self.sender_user_id.clone().unwrap_or_default(),
+            self.sender_username.clone().unwrap_or_default(),
+        )
     }
 }

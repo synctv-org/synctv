@@ -10,40 +10,38 @@ use synctv_core::Config;
 // Use synctv_proto for all gRPC types to avoid duplication
 use synctv_proto::admin::admin_service_server::AdminService;
 use synctv_proto::admin::{
-    AddAdminRequest, AddAdminResponse, AddMemberRequest, ApproveRoomCreationReviewRequest,
+    AddAdminRequest, AddMemberRequest, AdminUser, ApproveRoomCreationReviewRequest,
     ApproveRoomCreationReviewResponse, ApproveRoomJoinReviewRequest, ApproveRoomJoinReviewResponse,
     ApproveUserRegistrationReviewRequest, ApproveUserRegistrationReviewResponse, BanRoomRequest,
-    BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest, BatchBanRoomsResponse,
-    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
-    BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest, CreateUserResponse,
+    BanUserRequest, BatchBanRoomsRequest, BatchBanRoomsResponse, BatchBanUsersRequest,
+    BatchBanUsersResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
+    BatchDeleteUsersRequest, BatchDeleteUsersResponse, ContentReport, CreateUserRequest,
     DeleteRoomCategoryRequest, DeleteRoomCategoryResponse, DeleteRoomLabelRequest,
     DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
-    DeleteUserResponse, GetContentReportRequest, GetContentReportResponse, GetRoomMembersRequest,
-    GetRoomMembersResponse, GetRoomRequest, GetRoomResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, GetSettingsRequest, GetSystemStatsRequest, GetSystemStatsResponse,
-    GetUserPreferencesRequest, GetUserPreferencesResponse, GetUserRequest, GetUserResponse,
-    GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest, KickMemberResponse,
-    KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
-    ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest, ListBanRecordsResponse,
-    ListContentReportsRequest, ListContentReportsResponse, ListRoomCategoriesRequest,
-    ListRoomCategoriesResponse, ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse,
-    ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse, ListRoomLabelsRequest,
-    ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
-    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
-    ListUsersResponse, RejectRoomCreationReviewRequest, RejectRoomCreationReviewResponse,
-    RejectRoomJoinReviewRequest, RejectRoomJoinReviewResponse, RejectUserRegistrationReviewRequest,
-    RejectUserRegistrationReviewResponse, RemoveAdminRequest, RemoveAdminResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, SendTestEmailRequest,
-    SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
-    UnbanRoomResponse, UnbanUserRequest, UnbanUserResponse, UpdateContentReportStatusRequest,
+    DeleteUserResponse, GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse,
+    GetRoomRequest, GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsRequest,
+    GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
+    GetUserPreferencesResponse, GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse,
+    KickMemberRequest, KickMemberResponse, KickStreamRequest, KickStreamResponse,
+    ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse,
+    ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
+    ListContentReportsResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
+    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
+    ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
+    ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
+    ListUsersRequest, ListUsersResponse, RejectRoomCreationReviewRequest,
+    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
+    RemoveAdminResponse, ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview,
+    SendTestEmailRequest, SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse,
+    UnbanRoomRequest, UnbanUserRequest, UpdateContentReportStatusRequest,
     UpdateContentReportStatusResponse, UpdateMemberDisplayTagRequest,
     UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdateRoomPasswordRequest,
     UpdateRoomPasswordResponse, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
-    UpdateRoomTaxonomyResponse, UpdateSettingsRequest, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserRoleResponse,
-    UpdateUserUsernameRequest, UpdateUserUsernameResponse, UpsertRoomCategoryRequest,
-    UpsertRoomCategoryResponse, UpsertRoomLabelRequest, UpsertRoomLabelResponse,
+    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UpsertRoomCategoryRequest,
+    UpsertRoomLabelRequest, UserRegistrationReview,
 };
+use synctv_proto::client::{RoomCategory, RoomLabel};
 use synctv_proto::common::RoomMember;
 
 use crate::impls::AdminApiImpl;
@@ -231,7 +229,7 @@ impl AdminService for AdminServiceImpl {
     async fn create_user(
         &self,
         request: Request<CreateUserRequest>,
-    ) -> Result<Response<CreateUserResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         let require_root = request.get_ref().role == synctv_proto::common::UserRole::Root as i32;
         self.execute_scoped_admin_rpc(
             request,
@@ -267,7 +265,7 @@ impl AdminService for AdminServiceImpl {
     async fn get_user(
         &self,
         request: Request<GetUserRequest>,
-    ) -> Result<Response<GetUserResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.get_user(req).await
         })
@@ -309,7 +307,7 @@ impl AdminService for AdminServiceImpl {
     async fn update_user_username(
         &self,
         request: Request<UpdateUserUsernameRequest>,
-    ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.update_user_username(req, &validated.user_id, &ctx)
                 .await
@@ -320,7 +318,7 @@ impl AdminService for AdminServiceImpl {
     async fn update_user_role(
         &self,
         request: Request<UpdateUserRoleRequest>,
-    ) -> Result<Response<UpdateUserRoleResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         let require_root = request.get_ref().role == synctv_proto::common::UserRole::Root as i32;
         self.execute_scoped_admin_rpc(
             request,
@@ -336,7 +334,7 @@ impl AdminService for AdminServiceImpl {
     async fn ban_user(
         &self,
         request: Request<BanUserRequest>,
-    ) -> Result<Response<BanUserResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.ban_user(req, &validated.user_id, validated.role, &ctx)
                 .await
@@ -347,7 +345,7 @@ impl AdminService for AdminServiceImpl {
     async fn unban_user(
         &self,
         request: Request<UnbanUserRequest>,
-    ) -> Result<Response<UnbanUserResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.unban_user(req, &validated.user_id, &ctx).await
         })
@@ -420,10 +418,7 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    async fn get_room(
-        &self,
-        request: Request<GetRoomRequest>,
-    ) -> Result<Response<GetRoomResponse>, Status> {
+    async fn get_room(&self, request: Request<GetRoomRequest>) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.get_room(req).await
         })
@@ -443,7 +438,7 @@ impl AdminService for AdminServiceImpl {
     async fn upsert_room_category(
         &self,
         request: Request<UpsertRoomCategoryRequest>,
-    ) -> Result<Response<UpsertRoomCategoryResponse>, Status> {
+    ) -> Result<Response<RoomCategory>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.upsert_room_category(req).await
         })
@@ -473,7 +468,7 @@ impl AdminService for AdminServiceImpl {
     async fn upsert_room_label(
         &self,
         request: Request<UpsertRoomLabelRequest>,
-    ) -> Result<Response<UpsertRoomLabelResponse>, Status> {
+    ) -> Result<Response<RoomLabel>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
             api.upsert_room_label(req).await
         })
@@ -493,7 +488,7 @@ impl AdminService for AdminServiceImpl {
     async fn update_room_taxonomy(
         &self,
         request: Request<UpdateRoomTaxonomyRequest>,
-    ) -> Result<Response<UpdateRoomTaxonomyResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.update_room_taxonomy(req, &validated.user_id).await
         })
@@ -521,10 +516,7 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    async fn ban_room(
-        &self,
-        request: Request<BanRoomRequest>,
-    ) -> Result<Response<BanRoomResponse>, Status> {
+    async fn ban_room(&self, request: Request<BanRoomRequest>) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.ban_room(req, &validated.user_id, &ctx).await
         })
@@ -534,7 +526,7 @@ impl AdminService for AdminServiceImpl {
     async fn unban_room(
         &self,
         request: Request<UnbanRoomRequest>,
-    ) -> Result<Response<UnbanRoomResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.unban_room(req, &validated.user_id, &ctx).await
         })
@@ -609,7 +601,7 @@ impl AdminService for AdminServiceImpl {
     async fn add_admin(
         &self,
         request: Request<AddAdminRequest>,
-    ) -> Result<Response<AddAdminResponse>, Status> {
+    ) -> Result<Response<AdminUser>, Status> {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
             api.add_admin(req, &validated.user_id, &ctx).await
         })
@@ -673,7 +665,7 @@ impl AdminService for AdminServiceImpl {
     async fn reset_room_settings(
         &self,
         request: Request<ResetRoomSettingsRequest>,
-    ) -> Result<Response<ResetRoomSettingsResponse>, Status> {
+    ) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.reset_room_settings(req, &validated.user_id).await
         })
@@ -729,7 +721,7 @@ impl AdminService for AdminServiceImpl {
     async fn reject_user_registration_review(
         &self,
         request: Request<RejectUserRegistrationReviewRequest>,
-    ) -> Result<Response<RejectUserRegistrationReviewResponse>, Status> {
+    ) -> Result<Response<UserRegistrationReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.reject_user_registration_review(req, &validated.user_id)
                 .await
@@ -762,7 +754,7 @@ impl AdminService for AdminServiceImpl {
     async fn reject_room_creation_review(
         &self,
         request: Request<RejectRoomCreationReviewRequest>,
-    ) -> Result<Response<RejectRoomCreationReviewResponse>, Status> {
+    ) -> Result<Response<RoomCreationReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.reject_room_creation_review(req, &validated.user_id)
                 .await
@@ -794,7 +786,7 @@ impl AdminService for AdminServiceImpl {
     async fn reject_room_join_review(
         &self,
         request: Request<RejectRoomJoinReviewRequest>,
-    ) -> Result<Response<RejectRoomJoinReviewResponse>, Status> {
+    ) -> Result<Response<RoomJoinReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
             api.reject_room_join_review(req, &validated.user_id, &ctx)
                 .await
@@ -825,7 +817,7 @@ impl AdminService for AdminServiceImpl {
     async fn get_content_report(
         &self,
         request: Request<GetContentReportRequest>,
-    ) -> Result<Response<GetContentReportResponse>, Status> {
+    ) -> Result<Response<ContentReport>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
             api.get_content_report(req, &validated.user_id).await
         })

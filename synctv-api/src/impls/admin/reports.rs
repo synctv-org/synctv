@@ -89,7 +89,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::GetContentReportRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::GetContentReportResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::ContentReport, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let report_id = self
@@ -97,9 +97,7 @@ impl AdminApiImpl {
             .decode_content_report_id(&req.report_id)
             .map_err(ApiError::InvalidInput)?;
         let report = self.content_report_service.get_report(report_id).await?;
-        Ok(synctv_proto::admin::GetContentReportResponse {
-            report: Some(content_report_row_to_proto(&report, &self.public_id_codec)?),
-        })
+        content_report_row_to_proto(&report, &self.public_id_codec)
     }
 
     pub async fn update_content_report_status(

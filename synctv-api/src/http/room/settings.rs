@@ -8,10 +8,10 @@ use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ClearRoomPasswordRequest, FinishRoomPasswordLoginRequest,
-    FinishRoomPasswordRegistrationRequest, JoinRoomResponse, ResetRoomSettingsResponse, Room,
+    FinishRoomPasswordRegistrationRequest, JoinRoomResponse, Room, RoomSettings,
     SetRoomPasswordResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
     StartRoomPasswordRegistrationRequest, StartRoomPasswordRegistrationResponse,
-    TransferRoomOwnershipRequest, TransferRoomOwnershipResponse, UpdateRoomSettingsRequest,
+    TransferRoomOwnershipRequest, UpdateRoomSettingsRequest,
 };
 
 #[cfg_attr(
@@ -342,7 +342,7 @@ pub async fn update_room_settings(
         ),
         request_body = TransferRoomOwnershipRequest,
         responses(
-            (status = 200, description = "Room ownership transferred", body = TransferRoomOwnershipResponse),
+            (status = 200, description = "Room ownership transferred", body = Room),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema)
@@ -357,7 +357,7 @@ pub async fn transfer_room_ownership(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<TransferRoomOwnershipRequest>,
-) -> AppResult<Json<TransferRoomOwnershipResponse>> {
+) -> AppResult<Json<Room>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -385,7 +385,7 @@ pub async fn transfer_room_ownership(
             ("roomId" = String, Path, description = "Room ID")
         ),
         responses(
-            (status = 200, description = "Room settings reset", body = ResetRoomSettingsResponse),
+            (status = 200, description = "Room settings reset", body = RoomSettings),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
@@ -397,7 +397,7 @@ pub async fn reset_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-) -> AppResult<Json<ResetRoomSettingsResponse>> {
+) -> AppResult<Json<RoomSettings>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,

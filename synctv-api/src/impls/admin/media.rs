@@ -262,7 +262,7 @@ impl AdminApiImpl {
         room_id: &str,
         req: synctv_proto::client::UpdatePlaylistRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::client::UpdatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let service_req = crate::impls::client::playlist::build_update_playlist_request(
@@ -299,12 +299,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
             .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
-        Ok(synctv_proto::client::UpdatePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
-                    .await?,
-            ),
-        })
+        self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
+            .await
     }
 
     pub async fn move_playlist(
@@ -312,7 +308,7 @@ impl AdminApiImpl {
         room_id: &str,
         req: synctv_proto::client::MovePlaylistRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::client::MovePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let service_req = crate::impls::client::playlist::build_move_playlist_request(
@@ -349,12 +345,8 @@ impl AdminApiImpl {
             .map_err(ApiError::from)
             .and_then(|count| i64_to_i32_api(count, "playlist media count"))?;
 
-        Ok(synctv_proto::client::MovePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
-                    .await?,
-            ),
-        })
+        self.playlist_to_proto_for_admin_with_loaded_cover(&playlist, item_count, true)
+            .await
     }
 
     pub async fn delete_playlist(
@@ -865,7 +857,7 @@ impl AdminApiImpl {
         room_id: &str,
         req: synctv_proto::client::EditMediaRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         let rid = self
             .public_id_codec
             .decode_room_id(room_id)
@@ -894,12 +886,8 @@ impl AdminApiImpl {
 
         self.publish_room_cache_invalidation(&rid);
 
-        Ok(synctv_proto::client::EditMediaResponse {
-            media: Some(
-                self.media_to_proto_for_admin_with_loaded_cover(&media, true)
-                    .await?,
-            ),
-        })
+        self.media_to_proto_for_admin_with_loaded_cover(&media, true)
+            .await
     }
 
     pub async fn delete_media(

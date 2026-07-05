@@ -46,25 +46,25 @@ service AuthService {
 service UserService {
   // Profile Management
   rpc Logout(LogoutRequest) returns (LogoutResponse);
-  rpc GetProfile(GetProfileRequest) returns (GetProfileResponse);
-  rpc SetUsername(SetUsernameRequest) returns (SetUsernameResponse);
+  rpc GetProfile(GetProfileRequest) returns (User);
+  rpc SetUsername(SetUsernameRequest) returns (User);
   rpc CreateUserAvatarUploadSession(CreateUserAvatarUploadSessionRequest) returns (CreateUserAvatarUploadSessionResponse);
   rpc UploadUserAvatarObject(UploadUserAvatarObjectRequest) returns (UploadUserAvatarObjectResponse);
   rpc CompleteUserAvatarUploadSession(CompleteUserAvatarUploadSessionRequest) returns (CompleteUserAvatarUploadSessionResponse);
   rpc GetUserAvatarObject(GetUserAvatarObjectRequest) returns (stream UserAvatarObjectResponse);
-  rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (GetProfileResponse);
-  rpc ClearUserAvatar(ClearUserAvatarRequest) returns (GetProfileResponse);
+  rpc UpdateUserAvatar(UpdateUserAvatarRequest) returns (User);
+  rpc ClearUserAvatar(ClearUserAvatarRequest) returns (User);
   rpc StartSensitiveOperationVerification(StartSensitiveOperationVerificationRequest) returns (StartSensitiveOperationVerificationResponse);
   rpc StartSensitiveOperationPasskey(StartSensitiveOperationPasskeyRequest) returns (StartSensitiveOperationPasskeyResponse);
   rpc RequestSensitiveOperationEmailCode(RequestSensitiveOperationEmailCodeRequest) returns (RequestSensitiveOperationEmailCodeResponse);
   rpc FinishSensitiveOperationVerification(FinishSensitiveOperationVerificationRequest) returns (FinishSensitiveOperationVerificationResponse);
   rpc StartEmailBind(StartEmailBindRequest) returns (StartEmailBindResponse);
-  rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (ConfirmEmailBindResponse);
-  rpc UnbindEmail(UnbindEmailRequest) returns (UnbindEmailResponse);
+  rpc ConfirmEmailBind(ConfirmEmailBindRequest) returns (User);
+  rpc UnbindEmail(UnbindEmailRequest) returns (User);
   rpc StartOpaquePasswordUpdate(StartOpaquePasswordUpdateRequest) returns (StartOpaquePasswordUpdateResponse);
-  rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (FinishOpaquePasswordUpdateResponse);
+  rpc FinishOpaquePasswordUpdate(FinishOpaquePasswordUpdateRequest) returns (User);
   rpc StartPasskeyBind(StartPasskeyBindRequest) returns (StartPasskeyBindResponse);
-  rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredentialResponse);
+  rpc FinishPasskeyBind(FinishPasskeyBindRequest) returns (PasskeyCredential);
   rpc ListPasskeys(ListPasskeysRequest) returns (ListPasskeysResponse);
   rpc DeletePasskey(DeletePasskeyRequest) returns (DeletePasskeyResponse);
   rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
@@ -72,7 +72,7 @@ service UserService {
   rpc CloseAccount(CloseAccountRequest) returns (CloseAccountResponse);
 
   // User-initiated room lifecycle operations outside room-scoped context
-  rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+  rpc CreateRoom(CreateRoomRequest) returns (Room);
   rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
   rpc JoinRoom(JoinRoomRequest) returns (JoinRoomResponse);
   rpc StartRoomPasswordLogin(StartRoomPasswordLoginRequest) returns (StartRoomPasswordLoginResponse);
@@ -87,8 +87,8 @@ service RoomService {
   // Room Settings Management
   rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
   rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
-  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (ResetRoomSettingsResponse);
-  rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (TransferRoomOwnershipResponse);
+  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (RoomSettings);
+  rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (Room);
   rpc LeaveRoom(LeaveRoomRequest) returns (LeaveRoomResponse);
   rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
 
@@ -105,7 +105,7 @@ service RoomService {
   rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
   rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
   rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
-  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
+  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RoomJoinReview);
   rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
   rpc UpdateMemberDisplayTag(UpdateMemberDisplayTagRequest) returns (synctv.common.RoomMember);
   rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
@@ -136,20 +136,20 @@ service RoomService {
   rpc DeleteChatMessage(DeleteChatMessageRequest) returns (ChatMessageEventResponse);
   rpc GetChatHistory(GetChatHistoryRequest) returns (GetChatHistoryResponse);
   rpc SearchChatMessages(SearchChatMessagesRequest) returns (SearchChatMessagesResponse);
-  rpc GetChatMessage(GetChatMessageRequest) returns (GetChatMessageResponse);
+  rpc GetChatMessage(GetChatMessageRequest) returns (ChatMessageReceive);
   rpc GetChatMessageContext(GetChatMessageContextRequest) returns (GetChatMessageContextResponse);
   rpc GetChatPlaybackMessages(GetChatPlaybackMessagesRequest) returns (GetChatPlaybackMessagesResponse);
   rpc ListPinnedChatMessages(ListPinnedChatMessagesRequest) returns (ListPinnedChatMessagesResponse);
   rpc PinChatMessage(PinChatMessageRequest) returns (ChatPinEventResponse);
   rpc UnpinChatMessage(UnpinChatMessageRequest) returns (ChatPinEventResponse);
-  rpc SetChatReaction(SetChatReactionRequest) returns (SetChatReactionResponse);
+  rpc SetChatReaction(SetChatReactionRequest) returns (ChatMessageEvent);
   rpc ListChatReactionUsers(ListChatReactionUsersRequest) returns (ListChatReactionUsersResponse);
   rpc MarkChatRead(MarkChatReadRequest) returns (ChatReadStateResponse);
   rpc GetChatReadState(GetChatReadStateRequest) returns (ChatReadStateResponse);
   rpc GetChatMessageReadReceipts(GetChatMessageReadReceiptsRequest) returns (GetChatMessageReadReceiptsResponse);
   rpc ReportContent(ReportContentRequest) returns (ReportContentResponse);
   rpc ListRoomContentReports(ListRoomContentReportsRequest) returns (ListRoomContentReportsResponse);
-  rpc GetRoomContentReport(GetRoomContentReportRequest) returns (GetRoomContentReportResponse);
+  rpc GetRoomContentReport(GetRoomContentReportRequest) returns (ContentReport);
   rpc UpdateRoomContentReportStatus(UpdateRoomContentReportStatusRequest) returns (UpdateRoomContentReportStatusResponse);
 
   // Room discovery taxonomy
@@ -160,31 +160,31 @@ service RoomService {
   rpc GetIceServers(GetIceServersRequest) returns (GetIceServersResponse);
 
   // Playlist Management (room-scoped operations)
-  rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
+  rpc CreatePlaylist(CreatePlaylistRequest) returns (Playlist);
   rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
-  rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
+  rpc UpdatePlaylist(UpdatePlaylistRequest) returns (Playlist);
   rpc CreatePlaylistCoverUploadSession(CreatePlaylistCoverUploadSessionRequest) returns (CreatePlaylistCoverUploadSessionResponse);
   rpc UploadPlaylistCoverObject(UploadPlaylistCoverObjectRequest) returns (UploadPlaylistCoverObjectResponse);
   rpc CompletePlaylistCoverUploadSession(CompletePlaylistCoverUploadSessionRequest) returns (CompletePlaylistCoverUploadSessionResponse);
   rpc GetPlaylistCoverObject(GetPlaylistCoverObjectRequest) returns (stream PlaylistCoverObjectResponse);
-  rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (UpdatePlaylistResponse);
-  rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (UpdatePlaylistResponse);
-  rpc MovePlaylist(MovePlaylistRequest) returns (MovePlaylistResponse);
+  rpc UpdatePlaylistCover(UpdatePlaylistCoverRequest) returns (Playlist);
+  rpc ClearPlaylistCover(ClearPlaylistCoverRequest) returns (Playlist);
+  rpc MovePlaylist(MovePlaylistRequest) returns (Playlist);
   rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
   rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
 
   // Media Management (room-scoped operations)
-  rpc AddMedia(AddMediaRequest) returns (AddMediaResponse);
+  rpc AddMedia(AddMediaRequest) returns (Media);
   rpc GetMedia(GetMediaRequest) returns (Media);
   rpc CreateMediaCoverUploadSession(CreateMediaCoverUploadSessionRequest) returns (CreateMediaCoverUploadSessionResponse);
   rpc UploadMediaCoverObject(UploadMediaCoverObjectRequest) returns (UploadMediaCoverObjectResponse);
   rpc CompleteMediaCoverUploadSession(CompleteMediaCoverUploadSessionRequest) returns (CompleteMediaCoverUploadSessionResponse);
   rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (stream MediaCoverObjectResponse);
-  rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (EditMediaResponse);
-  rpc ClearMediaCover(ClearMediaCoverRequest) returns (EditMediaResponse);
+  rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (Media);
+  rpc ClearMediaCover(ClearMediaCoverRequest) returns (Media);
   rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
   rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
-  rpc EditMedia(EditMediaRequest) returns (EditMediaResponse);
+  rpc EditMedia(EditMediaRequest) returns (Media);
   rpc ListPlaylistItems(ListPlaylistItemsRequest) returns (ListPlaylistItemsResponse); // List dynamic playlist items
   rpc MoveMedia(MoveMediaRequest) returns (MoveMediaResponse);
   rpc ClearPlaylist(ClearPlaylistRequest) returns (ClearPlaylistResponse);
@@ -199,7 +199,7 @@ service RoomService {
   rpc StartPlayback(StartPlaybackRequest) returns (StartPlaybackResponse); // Start playing a media or a dynamic-playlist item
   rpc StopPlayback(StopPlaybackRequest) returns (StopPlaybackResponse); // Stop current playback
   rpc GetPlayback(GetPlaybackRequest) returns (GetPlaybackResponse); // Get current playback state and info
-  rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (UpdatePlaybackStateResponse); // Patch current playback state
+  rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (PlaybackState); // Patch current playback state
 }
 
 // ==================== Public Service ====================
@@ -229,7 +229,7 @@ service EmailService {
 // Routes: /api/notifications/*
 service NotificationService {
   rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
-  rpc GetNotification(GetNotificationRequest) returns (GetNotificationResponse);
+  rpc GetNotification(GetNotificationRequest) returns (NotificationProto);
   rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
   rpc MarkAllAsRead(MarkAllAsReadRequest) returns (MarkAllAsReadResponse);
   rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
@@ -832,10 +832,6 @@ message PasskeyCredential {
   int64 last_used_at = 6;
 }
 
-message PasskeyCredentialResponse {
-  PasskeyCredential credential = 1;
-}
-
 message ListPasskeysRequest {}
 
 message ListPasskeysResponse {
@@ -969,10 +965,6 @@ message RefreshTokenResponse {
 
 message GetProfileRequest {}
 
-message GetProfileResponse {
-  User user = 1;
-}
-
 message CloseAccountRequest {}
 
 message CloseAccountResponse {
@@ -1022,10 +1014,6 @@ message FinishOpaquePasswordUpdateRequest {
   }];
   string passkey_session_id = 5 [(buf.validate.field).string = {max_len: 128}];
   PasskeyAuthenticationCredential passkey_credential = 6;
-}
-
-message FinishOpaquePasswordUpdateResponse {
-  User user = 1;
 }
 
 message CreateWebSocketTicketRequest {
@@ -1104,10 +1092,6 @@ message CreateRoomRequest {
       pattern: "^roomlbl_[A-Za-z0-9]+$"
     }
   ];
-}
-
-message CreateRoomResponse {
-  Room room = 1;
 }
 
 // Note: UserService room-scoped resource request; room_id is carried in payload.
@@ -1298,20 +1282,12 @@ enum MyRoomRelation {
 // Reset room settings to default
 message ResetRoomSettingsRequest {}
 
-message ResetRoomSettingsResponse {
-  RoomSettings settings = 1;
-}
-
 message TransferRoomOwnershipRequest {
   string new_owner_user_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^usr_[A-Za-z0-9]+$"
   }]; // Target active member user ID
-}
-
-message TransferRoomOwnershipResponse {
-  Room room = 1;
 }
 
 // Room Password Messages
@@ -1546,11 +1522,6 @@ message RejectRoomJoinReviewRequest {
   string reason = 2 [(buf.validate.field).string.max_len = 500];
 }
 
-message RejectRoomJoinReviewResponse {
-  RoomJoinReview review = 1;
-  bool success = 2;
-}
-
 message UpdateMemberRemarkNameRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1636,10 +1607,6 @@ message CreatePlaylistRequest {
   string description = 6 [(buf.validate.field).string = {max_len: 5000}];
 }
 
-message CreatePlaylistResponse {
-  Playlist playlist = 1;
-}
-
 message UpdatePlaylistRequest {
   string playlist_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1651,10 +1618,6 @@ message UpdatePlaylistRequest {
     (buf.validate.field).string = {max_len: 255}
   ]; // Optional new name
   string description = 3 [(buf.validate.field).string = {max_len: 5000}];
-}
-
-message UpdatePlaylistResponse {
-  Playlist playlist = 1;
 }
 
 message MovePlaylistRequest {
@@ -1676,10 +1639,6 @@ message MovePlaylistRequest {
       pattern: "^pl_[A-Za-z0-9]+$"
     }];
   }
-}
-
-message MovePlaylistResponse {
-  Playlist playlist = 1;
 }
 
 message DeletePlaylistRequest {
@@ -1852,10 +1811,6 @@ message AddMediaRequest {
   synctv.source_config.MediaSourceConfig source_config = 4;
   string name = 5 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
   string description = 6 [(buf.validate.field).string.max_len = 5000];
-}
-
-message AddMediaResponse {
-  Media media = 1;
 }
 
 message GetMediaRequest {
@@ -2057,10 +2012,6 @@ message EditMediaRequest {
   string description = 3 [(buf.validate.field).string.max_len = 5000];
 }
 
-message EditMediaResponse {
-  Media media = 1;
-}
-
 // Clear Playlist
 message ClearPlaylistRequest {
   string playlist_id = 1 [
@@ -2083,7 +2034,7 @@ message AddMediaBatchRequest {
   repeated AddMediaRequest items = 1 [(buf.validate.field).repeated.max_items = 100]; // Validation: max 100 items
 }
 message AddMediaBatchResponse {
-  repeated AddMediaResponse results = 1;
+  repeated Media results = 1;
 }
 
 // Playback Control Messages
@@ -2118,10 +2069,6 @@ message UpdatePlaybackStateRequest {
   optional string expected_playlist_id = 7;
   // SHA-256 hex of PlaybackState.target.
   optional string expected_target_hash = 8;
-}
-
-message UpdatePlaybackStateResponse {
-  PlaybackState playback_state = 1;
 }
 
 enum PlaybackStreamPreference {
@@ -3551,10 +3498,6 @@ message SetChatReactionRequest {
   bool enabled = 3;
 }
 
-message SetChatReactionResponse {
-  ChatMessageEvent event = 1;
-}
-
 message ReportRoomTarget {
   string room_id = 1;
 }
@@ -3627,10 +3570,6 @@ message GetRoomContentReportRequest {
     max_len: 64
     pattern: "^report_[A-Za-z0-9]+$"
   }];
-}
-
-message GetRoomContentReportResponse {
-  ContentReport report = 1;
 }
 
 message UpdateRoomContentReportStatusRequest {
@@ -3780,10 +3719,6 @@ message GetChatMessageRequest {
   bool include_deleted = 2;
 }
 
-message GetChatMessageResponse {
-  ChatMessageReceive message = 1;
-}
-
 message GetChatMessageContextRequest {
   string message_id = 1;
   int32 before_limit = 2;
@@ -3871,10 +3806,6 @@ message SetUsernameRequest {
   }];
 }
 
-message SetUsernameResponse {
-  User user = 1;
-}
-
 message StartEmailBindRequest {
   string email = 1 [(buf.validate.field).string = {
     min_len: 3
@@ -3903,19 +3834,11 @@ message ConfirmEmailBindRequest {
   }];
 }
 
-message ConfirmEmailBindResponse {
-  User user = 1;
-}
-
 message UnbindEmailRequest {
   string verification_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 128
   }];
-}
-
-message UnbindEmailResponse {
-  User user = 1;
 }
 
 message ListMyRoomsRequest {
@@ -4321,10 +4244,6 @@ message ListNotificationsResponse {
 
 message GetNotificationRequest {
   int64 notification_id = 1 [(buf.validate.field).int64.gte = 1];
-}
-
-message GetNotificationResponse {
-  NotificationProto notification = 1;
 }
 
 message MarkAsReadRequest {

@@ -219,6 +219,7 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
         RoomSubcommand::Chat(chat_command) => match chat_command.command {
             RoomChatSubcommand::Search(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.sender.to_management_selector();
                 let response = management_unary_call!(
                     session,
                     "search chat messages",
@@ -230,7 +231,8 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                         cursor: args.cursor.unwrap_or_default(),
                         limit: args.limit,
                         include_deleted: args.include_deleted,
-                        user: args.sender.to_management_proto(),
+                        user_id,
+                        username,
                     }
                 )?;
                 args.room.remote.print_output(&response)
@@ -263,13 +265,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomMemberSubcommand::Add(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "add room member",
                     add_member,
                     management_proto::AddMemberRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         role: args.role.to_proto(),
                         notify: args.notify,
                         remark_name: args.remark_name.unwrap_or_default(),
@@ -280,13 +284,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomMemberSubcommand::SetRemarkName(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "update room member remark name",
                     update_member_remark_name,
                     management_proto::UpdateMemberRemarkNameRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         remark_name: args.remark_name,
                     }
                 )?;
@@ -294,13 +300,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomMemberSubcommand::SetDisplayTag(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "update room member display tag",
                     update_member_display_tag,
                     management_proto::UpdateMemberDisplayTagRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         display_tag: args.display_tag,
                     }
                 )?;
@@ -308,13 +316,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomMemberSubcommand::SetPermissions(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "update room member permissions",
                     update_member_permissions,
                     management_proto::UpdateMemberPermissionsRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         role: args.role.map_or(
                             synctv_proto::common::RoomMemberRole::Unspecified as i32,
                             CliRoomMemberRole::to_proto,
@@ -331,13 +341,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             }
             RoomMemberSubcommand::Kick(args) => {
                 let session = connect_remote_access(&args.room.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "kick room member",
                     kick_member,
                     management_proto::KickMemberRequest {
                         room_id: args.room.room_id,
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         kick_cooldown_seconds: args.kick_cooldown_seconds,
                     }
                 )?;

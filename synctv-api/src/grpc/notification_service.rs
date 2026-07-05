@@ -13,8 +13,8 @@ use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_proto::client::{
     notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
     DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
-    GetNotificationResponse, ListNotificationsRequest, ListNotificationsResponse,
-    MarkAllAsReadRequest, MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse,
+    ListNotificationsRequest, ListNotificationsResponse, MarkAllAsReadRequest,
+    MarkAllAsReadResponse, MarkAsReadRequest, MarkAsReadResponse, NotificationProto,
 };
 
 /// gRPC `NotificationService` implementation
@@ -78,7 +78,7 @@ impl NotificationService for NotificationServiceImpl {
     async fn get_notification(
         &self,
         request: Request<GetNotificationRequest>,
-    ) -> Result<Response<GetNotificationResponse>, Status> {
+    ) -> Result<Response<NotificationProto>, Status> {
         let metadata = super::request_metadata(
             &request,
             &self.config,

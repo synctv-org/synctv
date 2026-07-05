@@ -338,7 +338,11 @@ async fn test_client_member_approval_api_contracts() {
         )
         .await
         .unwrap();
-    assert!(rejected.success);
+    assert_eq!(rejected.id, review_request_public_id(reject_request_id));
+    assert_eq!(
+        rejected.status,
+        synctv_proto::common::ReviewStatus::Rejected as i32
+    );
 
     let rejected_member_exists = room_member_exists(&pool, room.id, reject_target.id).await;
     assert!(
@@ -456,7 +460,11 @@ async fn test_admin_member_approval_api_contracts() {
         )
         .await
         .unwrap();
-    assert!(rejected.success);
+    assert_eq!(rejected.id, review_request_public_id(reject_request_id));
+    assert_eq!(
+        rejected.status,
+        synctv_proto::common::ReviewStatus::Rejected as i32
+    );
 
     let rejected_member_exists = room_member_exists(&pool, room.id, reject_target.id).await;
     assert!(

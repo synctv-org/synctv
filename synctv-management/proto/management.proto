@@ -17,33 +17,33 @@ service ManagementService {
     // Management commands
     // =========================
     rpc ListUsers(ListUsersRequest) returns (synctv.admin.ListUsersResponse);
-    rpc GetUser(GetUserRequest) returns (synctv.admin.GetUserResponse);
+    rpc GetUser(GetUserRequest) returns (synctv.admin.AdminUser);
     rpc GetUserPreferences(GetUserPreferencesRequest) returns (synctv.admin.GetUserPreferencesResponse);
     rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (synctv.admin.UpdateUserPreferencesResponse);
-    rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AddAdminResponse);
+    rpc AddAdmin(AddAdminRequest) returns (synctv.admin.AdminUser);
     rpc RemoveAdmin(RemoveAdminRequest) returns (synctv.admin.RemoveAdminResponse);
     rpc ListAdmins(ListAdminsRequest) returns (synctv.admin.ListAdminsResponse);
-    rpc CreateUser(CreateUserRequest) returns (synctv.admin.CreateUserResponse);
+    rpc CreateUser(CreateUserRequest) returns (synctv.admin.AdminUser);
     rpc DeleteUser(DeleteUserRequest) returns (synctv.admin.DeleteUserResponse);
-    rpc BanUser(BanUserRequest) returns (synctv.admin.BanUserResponse);
-    rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.UnbanUserResponse);
-    rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.UpdateUserRoleResponse);
+    rpc BanUser(BanUserRequest) returns (synctv.admin.AdminUser);
+    rpc UnbanUser(UnbanUserRequest) returns (synctv.admin.AdminUser);
+    rpc UpdateUserRole(UpdateUserRoleRequest) returns (synctv.admin.AdminUser);
     rpc SetUserPassword(SetUserPasswordRequest) returns (synctv.admin.SetUserPasswordResponse);
-    rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.UpdateUserUsernameResponse);
+    rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (synctv.admin.AdminUser);
     rpc GetUserRooms(GetUserRoomsRequest) returns (synctv.admin.GetUserRoomsResponse);
     rpc BatchBanUsers(BatchBanUsersRequest) returns (synctv.admin.BatchBanUsersResponse);
     rpc BatchDeleteUsers(BatchDeleteUsersRequest) returns (synctv.admin.BatchDeleteUsersResponse);
 
-    rpc CreateRoom(CreateRoomRequest) returns (synctv.client.CreateRoomResponse);
+    rpc CreateRoom(CreateRoomRequest) returns (synctv.client.Room);
     rpc ListRooms(ListRoomsRequest) returns (synctv.admin.ListRoomsResponse);
-    rpc GetRoom(GetRoomRequest) returns (synctv.admin.GetRoomResponse);
+    rpc GetRoom(GetRoomRequest) returns (synctv.admin.Room);
     rpc ListRoomCategories(synctv.admin.ListRoomCategoriesRequest) returns (synctv.admin.ListRoomCategoriesResponse);
-    rpc UpsertRoomCategory(synctv.admin.UpsertRoomCategoryRequest) returns (synctv.admin.UpsertRoomCategoryResponse);
+    rpc UpsertRoomCategory(synctv.admin.UpsertRoomCategoryRequest) returns (synctv.client.RoomCategory);
     rpc DeleteRoomCategory(synctv.admin.DeleteRoomCategoryRequest) returns (synctv.admin.DeleteRoomCategoryResponse);
     rpc ListRoomLabels(synctv.admin.ListRoomLabelsRequest) returns (synctv.admin.ListRoomLabelsResponse);
-    rpc UpsertRoomLabel(synctv.admin.UpsertRoomLabelRequest) returns (synctv.admin.UpsertRoomLabelResponse);
+    rpc UpsertRoomLabel(synctv.admin.UpsertRoomLabelRequest) returns (synctv.client.RoomLabel);
     rpc DeleteRoomLabel(synctv.admin.DeleteRoomLabelRequest) returns (synctv.admin.DeleteRoomLabelResponse);
-    rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.UpdateRoomTaxonomyResponse);
+    rpc UpdateRoomTaxonomy(synctv.admin.UpdateRoomTaxonomyRequest) returns (synctv.admin.Room);
     rpc GetRoomMembers(GetRoomMembersRequest) returns (synctv.admin.GetRoomMembersResponse);
     rpc SearchChatMessages(SearchChatMessagesRequest) returns (synctv.client.SearchChatMessagesResponse);
     rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
@@ -53,18 +53,18 @@ service ManagementService {
     rpc KickMember(KickMemberRequest) returns (synctv.client.KickMemberResponse);
     rpc GetRoomSettings(GetRoomSettingsRequest) returns (synctv.admin.GetRoomSettingsResponse);
     rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
-    rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.ResetRoomSettingsResponse);
-    rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.TransferRoomOwnershipResponse);
+    rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.Room);
+    rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.Room);
     rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
-    rpc BanRoom(BanRoomRequest) returns (synctv.admin.BanRoomResponse);
-    rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.UnbanRoomResponse);
+    rpc BanRoom(BanRoomRequest) returns (synctv.admin.Room);
+    rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.Room);
     rpc DeleteRoom(DeleteRoomRequest) returns (synctv.admin.DeleteRoomResponse);
     rpc BatchBanRooms(BatchBanRoomsRequest) returns (synctv.admin.BatchBanRoomsResponse);
     rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (synctv.admin.BatchDeleteRoomsResponse);
     rpc StartPlayback(StartPlaybackRequest) returns (synctv.client.StartPlaybackResponse);
     rpc StopPlayback(StopPlaybackRequest) returns (synctv.client.StopPlaybackResponse);
     rpc GetPlayback(GetPlaybackRequest) returns (synctv.client.GetPlaybackResponse);
-    rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.UpdatePlaybackStateResponse);
+    rpc UpdatePlaybackState(UpdatePlaybackStateRequest) returns (synctv.client.PlaybackState);
     rpc CreatePublishKey(CreatePublishKeyRequest) returns (synctv.provider.rtmp.CreatePublishKeyResponse);
     rpc GetStreamInfo(GetStreamInfoRequest) returns (synctv.provider.rtmp.GetStreamInfoResponse);
     rpc ListRoomStreams(ListRoomStreamsRequest) returns (synctv.client.ListRoomStreamsResponse);
@@ -92,22 +92,22 @@ service ManagementService {
 
     rpc ListPlaylists(ListPlaylistsRequest) returns (synctv.client.ListPlaylistsResponse);
     rpc GetPlaylist(GetPlaylistRequest) returns (synctv.client.GetPlaylistResponse);
-    rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
-    rpc CreateAlistPlaylist(CreateAlistPlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
-    rpc CreateEmbyPlaylist(CreateEmbyPlaylistRequest) returns (synctv.client.CreatePlaylistResponse);
-    rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.UpdatePlaylistResponse);
-    rpc MovePlaylist(MovePlaylistRequest) returns (synctv.client.MovePlaylistResponse);
+    rpc CreatePlaylist(CreatePlaylistRequest) returns (synctv.client.Playlist);
+    rpc CreateAlistPlaylist(CreateAlistPlaylistRequest) returns (synctv.client.Playlist);
+    rpc CreateEmbyPlaylist(CreateEmbyPlaylistRequest) returns (synctv.client.Playlist);
+    rpc UpdatePlaylist(UpdatePlaylistRequest) returns (synctv.client.Playlist);
+    rpc MovePlaylist(MovePlaylistRequest) returns (synctv.client.Playlist);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (synctv.client.DeletePlaylistResponse);
 
     rpc ListMedia(ListMediaRequest) returns (synctv.client.ListPlaylistItemsResponse);
-    rpc AddMedia(AddMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddAlistMedia(AddAlistMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddEmbyMedia(AddEmbyMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddBilibiliVideoMedia(AddBilibiliVideoMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddBilibiliPgcMedia(AddBilibiliPgcMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc AddBilibiliLiveMedia(AddBilibiliLiveMediaRequest) returns (synctv.client.AddMediaResponse);
-    rpc EditMedia(EditMediaRequest) returns (synctv.client.EditMediaResponse);
+    rpc AddMedia(AddMediaRequest) returns (synctv.client.Media);
+    rpc AddDirectUrlMedia(AddDirectUrlMediaRequest) returns (synctv.client.Media);
+    rpc AddAlistMedia(AddAlistMediaRequest) returns (synctv.client.Media);
+    rpc AddEmbyMedia(AddEmbyMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliVideoMedia(AddBilibiliVideoMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliPgcMedia(AddBilibiliPgcMediaRequest) returns (synctv.client.Media);
+    rpc AddBilibiliLiveMedia(AddBilibiliLiveMediaRequest) returns (synctv.client.Media);
+    rpc EditMedia(EditMediaRequest) returns (synctv.client.Media);
     rpc MoveMedia(MoveMediaRequest) returns (synctv.client.MoveMediaResponse);
     rpc DeleteMedia(DeleteMediaRequest) returns (synctv.client.DeleteMediaResponse);
 
@@ -132,13 +132,13 @@ service ManagementService {
     rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (EvictExpiredSliceCacheResponse);
     rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (synctv.admin.ListUserRegistrationReviewsResponse);
     rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (synctv.admin.ApproveUserRegistrationReviewResponse);
-    rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (synctv.admin.RejectUserRegistrationReviewResponse);
+    rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (synctv.admin.UserRegistrationReview);
     rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (synctv.admin.ListRoomCreationReviewsResponse);
     rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (synctv.admin.ApproveRoomCreationReviewResponse);
-    rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (synctv.admin.RejectRoomCreationReviewResponse);
+    rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (synctv.admin.RoomCreationReview);
     rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (synctv.admin.ListRoomJoinReviewsResponse);
     rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (synctv.admin.ApproveRoomJoinReviewResponse);
-    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (synctv.admin.RejectRoomJoinReviewResponse);
+    rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (synctv.admin.RoomJoinReview);
     rpc ListBanRecords(ListBanRecordsRequest) returns (synctv.admin.ListBanRecordsResponse);
 
     // =========================
@@ -256,25 +256,30 @@ message UserRef {
 }
 
 message GetUserRequest {
-    UserRef user = 1;
+    string user_id = 1;
+    string username = 2;
 }
 
 message GetUserPreferencesRequest {
-    UserRef user = 1;
+    string user_id = 1;
+    string username = 2;
 }
 
 message UpdateUserPreferencesRequest {
-    UserRef user = 1;
-    optional bool two_factor_enabled = 2;
+    string user_id = 1;
+    string username = 2;
+    optional bool two_factor_enabled = 3;
     synctv.client.UserNotificationPreferences notifications = 4;
 }
 
 message AddAdminRequest {
-    UserRef user = 1;
+    string user_id = 1;
+    string username = 2;
 }
 
 message RemoveAdminRequest {
-    UserRef user = 1;
+    string user_id = 1;
+    string username = 2;
 }
 
 message ListAdminsRequest {
@@ -294,43 +299,50 @@ message CreateUserRequest {
 }
 
 message DeleteUserRequest {
-    UserRef user = 1;
+    string user_id = 1;
+    string username = 2;
 }
 
 message BanUserRequest {
-    UserRef user = 1;
-    string reason = 2;
-}
-
-message UnbanUserRequest {
-    UserRef user = 1;
-}
-
-message UpdateUserRoleRequest {
-    UserRef user = 1;
-    synctv.common.UserRole role = 2;
-}
-
-message SetUserPasswordRequest {
-    UserRef user = 1;
-    string password = 2;
+    string user_id = 1;
+    string username = 2;
     string reason = 3;
 }
 
+message UnbanUserRequest {
+    string user_id = 1;
+    string username = 2;
+}
+
+message UpdateUserRoleRequest {
+    string user_id = 1;
+    string username = 2;
+    synctv.common.UserRole role = 3;
+}
+
+message SetUserPasswordRequest {
+    string user_id = 1;
+    string username = 2;
+    string password = 3;
+    string reason = 4;
+}
+
 message UpdateUserUsernameRequest {
-    UserRef user = 1;
-    string new_username = 2;
+    string user_id = 1;
+    string username = 2;
+    string new_username = 3;
 }
 
 message GetUserRoomsRequest {
-    UserRef user = 1;
-    int32 page = 2;
-    int32 page_size = 3;
-    synctv.common.RoomStatus status = 4;
-    string search = 5;
-    optional bool is_banned = 6;
-    RoomListSortBy sort_by = 7;
-    SortDirection sort_direction = 8;
+    string user_id = 1;
+    string username = 2;
+    int32 page = 3;
+    int32 page_size = 4;
+    synctv.common.RoomStatus status = 5;
+    string search = 6;
+    optional bool is_banned = 7;
+    RoomListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
 }
 
 message BatchBanUsersRequest {
@@ -445,7 +457,8 @@ message SearchChatMessagesRequest {
     string cursor = 4;
     int32 limit = 5;
     bool include_deleted = 6;
-    UserRef user = 7;
+    string user_id = 7;
+    string username = 8;
 }
 
 message TransferRoomOwnershipRequest {
@@ -456,39 +469,44 @@ message TransferRoomOwnershipRequest {
 
 message AddMemberRequest {
     string room_id = 1;
-    UserRef user = 2;
-    synctv.common.RoomMemberRole role = 3;
-    bool notify = 4;
-    string remark_name = 5;
-    string display_tag = 6;
+    string user_id = 2;
+    string username = 3;
+    synctv.common.RoomMemberRole role = 4;
+    bool notify = 5;
+    string remark_name = 6;
+    string display_tag = 7;
 }
 
 message UpdateMemberRemarkNameRequest {
     string room_id = 1;
-    UserRef user = 2;
-    string remark_name = 3;
+    string user_id = 2;
+    string username = 3;
+    string remark_name = 4;
 }
 
 message UpdateMemberDisplayTagRequest {
     string room_id = 1;
-    UserRef user = 2;
-    string display_tag = 3;
+    string user_id = 2;
+    string username = 3;
+    string display_tag = 4;
 }
 
 message UpdateMemberPermissionsRequest {
     string room_id = 1;
-    UserRef user = 2;
-    synctv.common.RoomMemberRole role = 3;
-    uint64 added_permissions = 4;
-    uint64 removed_permissions = 5;
-    uint64 admin_added_permissions = 6;
-    uint64 admin_removed_permissions = 7;
+    string user_id = 2;
+    string username = 3;
+    synctv.common.RoomMemberRole role = 4;
+    uint64 added_permissions = 5;
+    uint64 removed_permissions = 6;
+    uint64 admin_added_permissions = 7;
+    uint64 admin_removed_permissions = 8;
 }
 
 message KickMemberRequest {
     string room_id = 1;
-    UserRef user = 2;
-    int64 kick_cooldown_seconds = 3;
+    string user_id = 2;
+    string username = 3;
+    int64 kick_cooldown_seconds = 4;
 }
 
 message GetRoomSettingsRequest {
@@ -545,7 +563,14 @@ message GetPlaybackRequest {
 
 message UpdatePlaybackStateRequest {
     string room_id = 1;
-    synctv.client.UpdatePlaybackStateRequest update = 2;
+    synctv.client.PlaybackUpdateType type = 2;
+    optional bool playing = 3;
+    optional double position = 4;
+    optional double speed = 5;
+    optional int64 version = 6;
+    optional string expected_media_id = 7;
+    optional string expected_playlist_id = 8;
+    optional string expected_target_hash = 9;
 }
 
 message CreatePublishKeyRequest {
@@ -949,11 +974,12 @@ message ListActiveStreamsRequest {
     int32 page = 1;
     int32 page_size = 2;
     string room_id = 3;
-    UserRef user = 4;
-    string node_id = 5;
-    string search = 6;
-    ActiveStreamListSortBy sort_by = 7;
-    SortDirection sort_direction = 8;
+    string user_id = 4;
+    string username = 5;
+    string node_id = 6;
+    string search = 7;
+    ActiveStreamListSortBy sort_by = 8;
+    SortDirection sort_direction = 9;
 }
 
 message KickStreamRequest {

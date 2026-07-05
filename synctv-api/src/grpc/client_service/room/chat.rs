@@ -131,7 +131,7 @@ pub(super) async fn search_chat_messages(
 pub(super) async fn get_chat_message(
     service: &ClientServiceImpl,
     request: Request<GetChatMessageRequest>,
-) -> Result<Response<GetChatMessageResponse>, Status> {
+) -> Result<Response<ChatMessageReceive>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let response = service
@@ -291,7 +291,7 @@ pub(super) async fn list_room_content_reports(
 pub(super) async fn get_room_content_report(
     service: &ClientServiceImpl,
     request: Request<GetRoomContentReportRequest>,
-) -> Result<Response<GetRoomContentReportResponse>, Status> {
+) -> Result<Response<ContentReport>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let response = service
@@ -449,7 +449,7 @@ pub(super) async fn unpin_chat_message(
 pub(super) async fn set_chat_reaction(
     service: &ClientServiceImpl,
     request: Request<SetChatReactionRequest>,
-) -> Result<Response<SetChatReactionResponse>, Status> {
+) -> Result<Response<ChatMessageEvent>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let response = service

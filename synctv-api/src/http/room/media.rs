@@ -8,10 +8,10 @@ use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, ClearPlaylistRequest,
-    ClearPlaylistResponse, DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery,
-    DeleteMediaRequest, DeleteMediaResponse, EditMediaRequest, EditMediaResponse,
-    ListPlaylistItemsRequest, MoveMediaRequest, MoveMediaResponse,
+    AddMediaBatchRequest, AddMediaRequest, ClearPlaylistRequest, ClearPlaylistResponse,
+    DeleteEntriesRequest, DeleteEntriesResponse, DeleteMediaQuery, DeleteMediaRequest,
+    DeleteMediaResponse, EditMediaRequest, ListPlaylistItemsRequest, Media, MoveMediaRequest,
+    MoveMediaResponse,
 };
 
 #[cfg_attr(
@@ -25,7 +25,7 @@ use synctv_proto::client::{
         ),
         request_body = AddMediaRequest,
         responses(
-            (status = 200, description = "Media added", body = AddMediaResponse),
+            (status = 200, description = "Media added", body = Media),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -39,7 +39,7 @@ pub async fn add_media(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<AddMediaRequest>,
-) -> AppResult<Json<AddMediaResponse>> {
+) -> AppResult<Json<Media>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -288,7 +288,7 @@ pub async fn push_media_batch(
         ),
         request_body = EditMediaRequest,
         responses(
-            (status = 200, description = "Media updated", body = EditMediaResponse),
+            (status = 200, description = "Media updated", body = Media),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -302,7 +302,7 @@ pub async fn edit_media(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
     Json(mut req): Json<EditMediaRequest>,
-) -> AppResult<Json<EditMediaResponse>> {
+) -> AppResult<Json<Media>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.media_id = media_id;
     let response = execute_user_endpoint(

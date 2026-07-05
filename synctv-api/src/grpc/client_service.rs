@@ -27,6 +27,9 @@ mod streaming;
 mod user;
 use streaming::{GrpcMessageSender, WATCH_STREAM_BUFFER_SIZE};
 
+pub(super) type GrpcStatusStream<T> =
+    std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
+
 fn map_message_stream_join_error(error: RealtimeJoinError) -> Status {
     error.log_if_internal("grpc_message_stream_pre_join");
     map_api_error(ApiError::from(error))
@@ -331,12 +334,7 @@ impl ClientServiceImpl {
         room_id: RoomId,
         observe: synctv_proto::client::ObserveResource,
         map_event: F,
-    ) -> Result<
-        Response<
-            std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<E, Status>> + Send + 'static>>,
-        >,
-        Status,
-    >
+    ) -> Result<Response<GrpcStatusStream<E>>, Status>
     where
         E: Send + 'static,
         F: Fn(ServerMessage) -> Option<E> + Send + Sync + 'static,

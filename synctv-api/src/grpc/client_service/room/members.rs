@@ -165,7 +165,7 @@ pub(super) async fn approve_room_join_review(
 pub(super) async fn reject_room_join_review(
     service: &ClientServiceImpl,
     request: Request<RejectRoomJoinReviewRequest>,
-) -> Result<Response<RejectRoomJoinReviewResponse>, Status> {
+) -> Result<Response<RoomJoinReview>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

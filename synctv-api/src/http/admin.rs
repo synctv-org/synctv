@@ -16,7 +16,7 @@ use super::{
     validation::ProtoQuery,
     AppError, AppResult, AppState,
 };
-use synctv_proto::admin;
+use synctv_proto::{admin, client};
 
 fn require_admin_api(state: &AppState) -> Result<Arc<crate::impls::AdminApiImpl>, AppError> {
     state.shared_api_runtime.admin_api.clone().ok_or_else(|| {
@@ -292,7 +292,7 @@ pub(crate) async fn approve_user_registration_review(
         tag = "Admin",
         request_body = admin::RejectUserRegistrationReviewRequest,
         responses(
-            (status = 200, description = "User registration review rejected", body = admin::RejectUserRegistrationReviewResponse),
+            (status = 200, description = "User registration review rejected", body = admin::UserRegistrationReview),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -302,7 +302,7 @@ pub(crate) async fn reject_user_registration_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::RejectUserRegistrationReviewRequest>,
-) -> AppResult<Json<admin::RejectUserRegistrationReviewResponse>> {
+) -> AppResult<Json<admin::UserRegistrationReview>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -381,7 +381,7 @@ pub(crate) async fn approve_room_creation_review(
         path = "/api/admin/reviews/room-creations/reject",
         tag = "Admin",
         request_body = admin::RejectRoomCreationReviewRequest,
-        responses((status = 200, description = "Room creation review rejected", body = admin::RejectRoomCreationReviewResponse)),
+        responses((status = 200, description = "Room creation review rejected", body = admin::RoomCreationReview)),
         security(("bearer_auth" = []))
     )
 )]
@@ -389,7 +389,7 @@ pub(crate) async fn reject_room_creation_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::RejectRoomCreationReviewRequest>,
-) -> AppResult<Json<admin::RejectRoomCreationReviewResponse>> {
+) -> AppResult<Json<admin::RoomCreationReview>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -467,7 +467,7 @@ pub(crate) async fn approve_room_join_review(
         path = "/api/admin/reviews/room-joins/reject",
         tag = "Admin",
         request_body = admin::RejectRoomJoinReviewRequest,
-        responses((status = 200, description = "Room join review rejected", body = admin::RejectRoomJoinReviewResponse)),
+        responses((status = 200, description = "Room join review rejected", body = admin::RoomJoinReview)),
         security(("bearer_auth" = []))
     )
 )]
@@ -475,7 +475,7 @@ pub(crate) async fn reject_room_join_review(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::RejectRoomJoinReviewRequest>,
-) -> AppResult<Json<admin::RejectRoomJoinReviewResponse>> {
+) -> AppResult<Json<admin::RoomJoinReview>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -572,7 +572,7 @@ pub(crate) async fn list_content_reports(
         tag = "Admin",
         params(("reportId" = String, Path, description = "Content report public id")),
         responses(
-            (status = 200, description = "Content report", body = admin::GetContentReportResponse),
+            (status = 200, description = "Content report", body = admin::ContentReport),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -582,7 +582,7 @@ pub(crate) async fn get_content_report(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(report_id): Path<String>,
-) -> AppResult<Json<admin::GetContentReportResponse>> {
+) -> AppResult<Json<admin::ContentReport>> {
     let req = admin::GetContentReportRequest { report_id };
     let resp =
         execute_admin_endpoint(
@@ -799,7 +799,7 @@ pub(crate) async fn list_users(
         tag = "Admin",
         params(("userId" = String, Path, description = "User ID")),
         responses(
-            (status = 200, description = "User detail", body = admin::GetUserResponse),
+            (status = 200, description = "User detail", body = admin::AdminUser),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "User not found", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -810,7 +810,7 @@ pub(crate) async fn get_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::GetUserRequest>,
-) -> AppResult<Json<admin::GetUserResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -896,7 +896,7 @@ pub(crate) async fn update_user_preferences(
         tag = "Admin",
         request_body = admin::CreateUserRequest,
         responses(
-            (status = 200, description = "User created", body = admin::CreateUserResponse),
+            (status = 200, description = "User created", body = admin::AdminUser),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -907,7 +907,7 @@ pub(crate) async fn create_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::CreateUserRequest>,
-) -> AppResult<Json<admin::CreateUserResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -962,7 +962,7 @@ pub(crate) async fn delete_user(
         params(("userId" = String, Path, description = "User ID")),
         request_body = admin::UpdateUserRoleRequest,
         responses(
-            (status = 200, description = "User role updated", body = admin::UpdateUserRoleResponse),
+            (status = 200, description = "User role updated", body = admin::AdminUser),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -974,7 +974,7 @@ pub(crate) async fn set_user_role(
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserRoleRequest>,
-) -> AppResult<Json<admin::UpdateUserRoleResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
@@ -1037,7 +1037,7 @@ pub(crate) async fn set_user_password(
         params(("userId" = String, Path, description = "User ID")),
         request_body = admin::UpdateUserUsernameRequest,
         responses(
-            (status = 200, description = "Username updated", body = admin::UpdateUserUsernameResponse),
+            (status = 200, description = "Username updated", body = admin::AdminUser),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -1049,7 +1049,7 @@ pub(crate) async fn set_user_username(
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::UpdateUserUsernameRequest>,
-) -> AppResult<Json<admin::UpdateUserUsernameResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
@@ -1073,7 +1073,7 @@ pub(crate) async fn set_user_username(
         params(("userId" = String, Path, description = "User ID")),
         request_body = admin::BanUserRequest,
         responses(
-            (status = 200, description = "User banned", body = admin::BanUserResponse),
+            (status = 200, description = "User banned", body = admin::AdminUser),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -1085,7 +1085,7 @@ pub(crate) async fn ban_user(
     State(state): State<AppState>,
     Path(path): Path<admin::UserPathRequest>,
     Json(mut req): Json<admin::BanUserRequest>,
-) -> AppResult<Json<admin::BanUserResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
     let resp = execute_admin_endpoint(
         &state,
@@ -1108,7 +1108,7 @@ pub(crate) async fn ban_user(
         tag = "Admin",
         params(("userId" = String, Path, description = "User ID")),
         responses(
-            (status = 200, description = "User unbanned", body = admin::UnbanUserResponse),
+            (status = 200, description = "User unbanned", body = admin::AdminUser),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1118,7 +1118,7 @@ pub(crate) async fn unban_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::UnbanUserRequest>,
-) -> AppResult<Json<admin::UnbanUserResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1302,7 +1302,7 @@ pub(crate) async fn list_room_categories(
         tag = "Admin",
         request_body = admin::UpsertRoomCategoryRequest,
         responses(
-            (status = 200, description = "Room category upserted", body = admin::UpsertRoomCategoryResponse),
+            (status = 200, description = "Room category upserted", body = client::RoomCategory),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1312,7 +1312,7 @@ pub(crate) async fn upsert_room_category(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::UpsertRoomCategoryRequest>,
-) -> AppResult<Json<admin::UpsertRoomCategoryResponse>> {
+) -> AppResult<Json<client::RoomCategory>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1389,7 +1389,7 @@ pub(crate) async fn list_room_labels(
         tag = "Admin",
         request_body = admin::UpsertRoomLabelRequest,
         responses(
-            (status = 200, description = "Room label upserted", body = admin::UpsertRoomLabelResponse),
+            (status = 200, description = "Room label upserted", body = client::RoomLabel),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1399,7 +1399,7 @@ pub(crate) async fn upsert_room_label(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<admin::UpsertRoomLabelRequest>,
-) -> AppResult<Json<admin::UpsertRoomLabelResponse>> {
+) -> AppResult<Json<client::RoomLabel>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1448,7 +1448,7 @@ pub(crate) async fn delete_room_label(
         params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::UpdateRoomTaxonomyRequest,
         responses(
-            (status = 200, description = "Room taxonomy updated", body = admin::UpdateRoomTaxonomyResponse),
+            (status = 200, description = "Room taxonomy updated", body = admin::Room),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1459,7 +1459,7 @@ pub(crate) async fn update_room_taxonomy(
     State(state): State<AppState>,
     Path(path): Path<admin::GetRoomRequest>,
     Json(mut req): Json<admin::UpdateRoomTaxonomyRequest>,
-) -> AppResult<Json<admin::UpdateRoomTaxonomyResponse>> {
+) -> AppResult<Json<admin::Room>> {
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1482,7 +1482,7 @@ pub(crate) async fn update_room_taxonomy(
         tag = "Admin",
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
-            (status = 200, description = "Admin room detail", body = admin::GetRoomResponse),
+            (status = 200, description = "Admin room detail", body = admin::Room),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1492,7 +1492,7 @@ pub(crate) async fn get_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::GetRoomRequest>,
-) -> AppResult<Json<admin::GetRoomResponse>> {
+) -> AppResult<Json<admin::Room>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1810,7 +1810,7 @@ pub(crate) async fn kick_member(
         params(("roomId" = String, Path, description = "Room ID")),
         request_body = admin::BanRoomRequest,
         responses(
-            (status = 200, description = "Room banned", body = admin::BanRoomResponse),
+            (status = 200, description = "Room banned", body = admin::Room),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -1822,7 +1822,7 @@ pub(crate) async fn ban_room(
     State(state): State<AppState>,
     Path(path): Path<admin::RoomPathRequest>,
     Json(mut req): Json<admin::BanRoomRequest>,
-) -> AppResult<Json<admin::BanRoomResponse>> {
+) -> AppResult<Json<admin::Room>> {
     req.room_id = path.room_id;
     let resp =
         execute_admin_endpoint(
@@ -1845,7 +1845,7 @@ pub(crate) async fn ban_room(
         tag = "Admin",
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
-            (status = 200, description = "Room unbanned", body = admin::UnbanRoomResponse),
+            (status = 200, description = "Room unbanned", body = admin::Room),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1855,7 +1855,7 @@ pub(crate) async fn unban_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::UnbanRoomRequest>,
-) -> AppResult<Json<admin::UnbanRoomResponse>> {
+) -> AppResult<Json<admin::Room>> {
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1942,7 +1942,7 @@ pub(crate) async fn set_room_settings(
         tag = "Admin",
         params(("roomId" = String, Path, description = "Room ID")),
         responses(
-            (status = 200, description = "Room settings reset", body = admin::ResetRoomSettingsResponse),
+            (status = 200, description = "Room settings reset", body = admin::Room),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -1952,7 +1952,7 @@ pub(crate) async fn reset_room_settings(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::ResetRoomSettingsRequest>,
-) -> AppResult<Json<admin::ResetRoomSettingsResponse>> {
+) -> AppResult<Json<admin::Room>> {
     let resp =
         execute_admin_endpoint(
             &state,
@@ -2128,7 +2128,7 @@ pub(crate) async fn list_admins(
         tag = "Admin",
         params(("userId" = String, Path, description = "User ID")),
         responses(
-            (status = 200, description = "Admin added", body = admin::AddAdminResponse),
+            (status = 200, description = "Admin added", body = admin::AdminUser),
             (status = 401, description = "Root authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
@@ -2138,7 +2138,7 @@ pub(crate) async fn add_admin(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(req): Path<admin::AddAdminRequest>,
-) -> AppResult<Json<admin::AddAdminResponse>> {
+) -> AppResult<Json<admin::AdminUser>> {
     let resp =
         execute_root_endpoint(
             &state,

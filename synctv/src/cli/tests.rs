@@ -5113,33 +5113,31 @@ fn database_status_summary_reports_broken_migration_history() {
 fn render_human_output_converts_user_timestamps_role_and_status() {
     let _lock = acquire_time_test_lock();
     let _timezone = TimeZoneGuard::set("UTC");
-    let rendered = render_human_output(&synctv_proto::admin::GetUserResponse {
-        user: Some(synctv_proto::admin::AdminUser {
-            id: "I9jXL5s61FPV".into(),
-            username: "root".into(),
-            email: String::new(),
-            role: synctv_proto::common::UserRole::Root as i32,
-            status: synctv_proto::common::UserStatus::Banned as i32,
-            created_at: 1_775_144_583_i64,
-            updated_at: 1_775_291_071_i64,
-            is_banned: true,
-            banned_at: 1_775_291_071_i64,
-            banned_by: "admin-1".into(),
-            banned_reason: "test".into(),
-            avatar_url: String::new(),
-            presence: None,
-        }),
+    let rendered = render_human_output(&synctv_proto::admin::AdminUser {
+        id: "I9jXL5s61FPV".into(),
+        username: "root".into(),
+        email: String::new(),
+        role: synctv_proto::common::UserRole::Root as i32,
+        status: synctv_proto::common::UserStatus::Banned as i32,
+        created_at: 1_775_144_583_i64,
+        updated_at: 1_775_291_071_i64,
+        is_banned: true,
+        banned_at: 1_775_291_071_i64,
+        banned_by: "admin-1".into(),
+        banned_reason: "test".into(),
+        avatar_url: String::new(),
+        presence: None,
     })
     .expect("human output should render");
 
-    assert_eq!(rendered["user"]["role"], "root");
-    assert_eq!(rendered["user"]["status"], "banned");
+    assert_eq!(rendered["role"], "root");
+    assert_eq!(rendered["status"], "banned");
     assert_eq!(
-        rendered["user"]["createdAt"],
+        rendered["createdAt"],
         "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
     );
     assert_eq!(
-        rendered["user"]["updatedAt"],
+        rendered["updatedAt"],
         "2026-04-04 08:24:31 +00:00 (UTC) (1775291071)"
     );
 }

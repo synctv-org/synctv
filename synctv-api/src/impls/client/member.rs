@@ -518,7 +518,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::RejectRoomJoinReviewRequest,
-    ) -> Result<synctv_proto::client::RejectRoomJoinReviewResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
@@ -558,10 +558,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
-        Ok(synctv_proto::client::RejectRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(&rid, request_id).await?),
-            success: true,
-        })
+        self.load_room_join_review(&rid, request_id).await
     }
 
     pub async fn update_member_permissions(

@@ -7,7 +7,7 @@ use super::execute::execute_room_actor_endpoint;
 use crate::http::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    report_content_request, GetRoomContentReportRequest, GetRoomContentReportResponse,
+    report_content_request, ContentReport, GetRoomContentReportRequest,
     ListRoomContentReportsRequest, ListRoomContentReportsResponse, ReportContentRequest,
     ReportContentResponse, ReportRoomTarget, UpdateRoomContentReportStatusRequest,
     UpdateRoomContentReportStatusResponse,
@@ -123,7 +123,7 @@ pub async fn list_room_content_reports(
             ("reportId" = String, Path, description = "Content report ID")
         ),
         responses(
-            (status = 200, description = "Room-scoped content report", body = GetRoomContentReportResponse),
+            (status = 200, description = "Room-scoped content report", body = ContentReport),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Insufficient room access", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Report not found", body = crate::openapi::GoogleRpcStatusSchema)
@@ -135,7 +135,7 @@ pub async fn get_room_content_report(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path((room_id, report_id)): Path<(String, String)>,
-) -> AppResult<Json<GetRoomContentReportResponse>> {
+) -> AppResult<Json<ContentReport>> {
     let req = GetRoomContentReportRequest { report_id };
     let response = execute_room_actor_endpoint(
         &state,

@@ -22,9 +22,9 @@ use synctv_proto::client::{
     CreateChatAttachmentUploadSessionRequest, CreateChatAttachmentUploadSessionResponse,
     CreateMediaCoverUploadSessionRequest, CreateMediaCoverUploadSessionResponse,
     CreatePlaylistCoverUploadSessionRequest, CreatePlaylistCoverUploadSessionResponse,
-    CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse, EditMediaResponse,
-    GetRoomResponse, UpdateMediaCoverRequest, UpdatePlaylistCoverRequest, UpdatePlaylistResponse,
-    UpdateRoomCoverRequest, UploadChatAttachmentObjectRequest,
+    CreateRoomCoverUploadSessionRequest, CreateRoomCoverUploadSessionResponse, GetRoomResponse,
+    Media, Playlist, UpdateMediaCoverRequest, UpdatePlaylistCoverRequest, UpdateRoomCoverRequest,
+    UploadChatAttachmentObjectRequest,
 };
 
 fn file_upload_range_to_proto(
@@ -94,7 +94,7 @@ pub async fn update_media_cover(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
     Json(mut req): Json<UpdateMediaCoverRequest>,
-) -> AppResult<Json<EditMediaResponse>> {
+) -> AppResult<Json<Media>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     req.room_id = room_id.clone();
     req.media_id = media_id;
@@ -118,7 +118,7 @@ pub async fn clear_media_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomMediaTargetPathRequest>,
-) -> AppResult<Json<EditMediaResponse>> {
+) -> AppResult<Json<Media>> {
     let synctv_proto::client::RoomMediaTargetPathRequest { room_id, media_id } = path;
     let req = synctv_proto::client::ClearMediaCoverRequest {
         room_id: room_id.clone(),
@@ -243,7 +243,7 @@ pub async fn update_playlist_cover(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
     Json(mut req): Json<UpdatePlaylistCoverRequest>,
-) -> AppResult<Json<UpdatePlaylistResponse>> {
+) -> AppResult<Json<Playlist>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -270,7 +270,7 @@ pub async fn clear_playlist_cover(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
-) -> AppResult<Json<UpdatePlaylistResponse>> {
+) -> AppResult<Json<Playlist>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,

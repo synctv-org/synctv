@@ -33,26 +33,24 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         }
         UserSubcommand::Get(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "get user",
                 get_user,
-                management_proto::GetUserRequest {
-                    user: Some(args.user.to_management_proto()?),
-                }
+                management_proto::GetUserRequest { user_id, username }
             )?;
             args.remote.print_output(&response)
         }
         UserSubcommand::Preferences(preferences_command) => match preferences_command.command {
             UserPreferencesSubcommand::Get(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "get user preferences",
                     get_user_preferences,
-                    management_proto::GetUserPreferencesRequest {
-                        user: Some(args.user.to_management_proto()?),
-                    }
+                    management_proto::GetUserPreferencesRequest { user_id, username }
                 )?;
                 print_humanized_structured_output(args.remote.output, &response)
             }
@@ -67,12 +65,14 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
                 }
 
                 let session = connect_remote_access(&args.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "update user preferences",
                     update_user_preferences,
                     management_proto::UpdateUserPreferencesRequest {
-                        user: Some(args.user.to_management_proto()?),
+                        user_id,
+                        username,
                         two_factor_enabled: args.two_factor_enabled,
                         notifications,
                     }
@@ -98,24 +98,25 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         }
         UserSubcommand::Delete(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "delete user",
                 delete_user,
-                management_proto::DeleteUserRequest {
-                    user: Some(args.user.to_management_proto()?),
-                }
+                management_proto::DeleteUserRequest { user_id, username }
             )?;
             args.remote.print_output(&response)
         }
         UserSubcommand::Ban(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "ban user",
                 ban_user,
                 management_proto::BanUserRequest {
-                    user: Some(args.user.to_management_proto()?),
+                    user_id,
+                    username,
                     reason: args.reason.unwrap_or_default(),
                 }
             )?;
@@ -123,41 +124,44 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         }
         UserSubcommand::Unban(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "unban user",
                 unban_user,
-                management_proto::UnbanUserRequest {
-                    user: Some(args.user.to_management_proto()?),
-                }
+                management_proto::UnbanUserRequest { user_id, username }
             )?;
             args.remote.print_output(&response)
         }
         UserSubcommand::SetRole(args) => {
             let session = connect_remote_access(&args.remote).await?;
             let role = args.resolved_role();
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "update user role",
                 update_user_role,
                 management_proto::UpdateUserRoleRequest {
-                    user: Some(args.user.to_management_proto()?),
+                    user_id,
+                    username,
                     role: role.to_proto(),
                 }
             )?;
             args.remote.print_output(&UserMutationCliOutput {
                 success: true,
-                user: response.user,
+                user: Some(response),
             })
         }
         UserSubcommand::SetPassword(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "set user password",
                 set_user_password,
                 management_proto::SetUserPasswordRequest {
-                    user: Some(args.user.to_management_proto()?),
+                    user_id,
+                    username,
                     password: args.password,
                     reason: args.reason.unwrap_or_default(),
                 }
@@ -169,28 +173,32 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         }
         UserSubcommand::SetUsername(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "update user username",
                 update_user_username,
                 management_proto::UpdateUserUsernameRequest {
-                    user: Some(args.user.to_management_proto()?),
+                    user_id,
+                    username,
                     new_username: args.new_username,
                 }
             )?;
             args.remote.print_output(&UserMutationCliOutput {
                 success: true,
-                user: response.user,
+                user: Some(response),
             })
         }
         UserSubcommand::Rooms(args) => {
             let session = connect_remote_access(&args.remote).await?;
+            let (user_id, username) = args.user.to_management_selector()?;
             let response = management_unary_call!(
                 session,
                 "get user rooms",
                 get_user_rooms,
                 management_proto::GetUserRoomsRequest {
-                    user: Some(args.user.to_management_proto()?),
+                    user_id,
+                    username,
                     page: args.page,
                     page_size: args.page_size,
                     status: args.status.map_or(
@@ -211,25 +219,23 @@ pub(super) async fn execute_user(user_command: UserCommand) -> Result<()> {
         UserSubcommand::Admin(admin_command) => match admin_command.command {
             UserAdminSubcommand::Grant(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "add admin",
                     add_admin,
-                    management_proto::AddAdminRequest {
-                        user: Some(args.user.to_management_proto()?),
-                    }
+                    management_proto::AddAdminRequest { user_id, username }
                 )?;
                 args.remote.print_output(&response)
             }
             UserAdminSubcommand::Revoke(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let (user_id, username) = args.user.to_management_selector()?;
                 let response = management_unary_call!(
                     session,
                     "remove admin",
                     remove_admin,
-                    management_proto::RemoveAdminRequest {
-                        user: Some(args.user.to_management_proto()?),
-                    }
+                    management_proto::RemoveAdminRequest { user_id, username }
                 )?;
                 args.remote.print_output(&response)
             }

@@ -160,7 +160,7 @@ pub async fn approve_room_join_review(
         ),
         request_body = synctv_proto::client::RejectRoomJoinReviewRequest,
         responses(
-            (status = 200, description = "Room join review rejected", body = synctv_proto::client::RejectRoomJoinReviewResponse),
+            (status = 200, description = "Room join review rejected", body = synctv_proto::client::RoomJoinReview),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Permission denied", body = crate::openapi::GoogleRpcStatusSchema),
@@ -174,7 +174,7 @@ pub async fn reject_room_join_review(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomJoinReviewPathRequest>,
     Json(mut req): Json<synctv_proto::client::RejectRoomJoinReviewRequest>,
-) -> AppResult<Json<synctv_proto::client::RejectRoomJoinReviewResponse>> {
+) -> AppResult<Json<synctv_proto::client::RoomJoinReview>> {
     let synctv_proto::client::RoomJoinReviewPathRequest {
         room_id,
         request_id,

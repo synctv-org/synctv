@@ -8,11 +8,10 @@ use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    CheckRoomRequest, CheckRoomResponse, CreateRoomRequest, CreateRoomResponse, DeleteRoomResponse,
-    GetHotRoomsRequest, GetHotRoomsResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse,
-    LeaveRoomResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
-    ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
-    RoomPathRequest,
+    CheckRoomRequest, CheckRoomResponse, CreateRoomRequest, DeleteRoomResponse, GetHotRoomsRequest,
+    GetHotRoomsResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
+    ListRoomCategoriesRequest, ListRoomCategoriesResponse, ListRoomLabelsRequest,
+    ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse, Room, RoomPathRequest,
 };
 
 /// Create a new room
@@ -24,7 +23,7 @@ use synctv_proto::client::{
         tag = "Room",
         request_body = CreateRoomRequest,
         responses(
-            (status = 200, description = "Room created", body = CreateRoomResponse),
+            (status = 200, description = "Room created", body = Room),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -37,7 +36,7 @@ pub async fn create_room(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<CreateRoomRequest>,
-) -> AppResult<Json<CreateRoomResponse>> {
+) -> AppResult<Json<Room>> {
     tracing::info!(room_name = %req.name, "Creating new room");
 
     let response = execute_user_endpoint(
@@ -51,13 +50,7 @@ pub async fn create_room(
     )
     .await?;
 
-    tracing::info!(
-        room_id = response
-            .room
-            .as_ref()
-            .map_or("unknown", |room| room.id.as_str()),
-        "Room created successfully"
-    );
+    tracing::info!(room_id = response.id.as_str(), "Room created successfully");
     Ok(Json(response))
 }
 

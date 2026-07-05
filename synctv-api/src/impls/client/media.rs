@@ -1273,7 +1273,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::AddMediaRequest,
-    ) -> Result<synctv_proto::client::AddMediaResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let service_req = build_add_media_request(req, &self.public_id_codec)?;
@@ -1321,12 +1321,8 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        Ok(synctv_proto::client::AddMediaResponse {
-            media: Some(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
-                    .await?,
-            ),
-        })
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+            .await
     }
 
     pub async fn delete_media(
@@ -1406,7 +1402,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::EditMediaRequest,
-    ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let service_req = build_edit_media_request(req, &self.public_id_codec)?;
@@ -1431,12 +1427,8 @@ impl ClientApiImpl {
         // Invalidate room cache on other replicas so they see updated metadata
         self.room_cache_fanout.publish_invalidation(&rid);
 
-        Ok(synctv_proto::client::EditMediaResponse {
-            media: Some(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
-                    .await?,
-            ),
-        })
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+            .await
     }
 
     pub async fn create_media_cover_upload_session(
@@ -1550,7 +1542,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdateMediaCoverRequest,
-    ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let media_id =
@@ -1563,12 +1555,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
-        Ok(synctv_proto::client::EditMediaResponse {
-            media: Some(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
-                    .await?,
-            ),
-        })
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+            .await
     }
 
     pub async fn clear_media_cover(
@@ -1576,7 +1564,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::ClearMediaCoverRequest,
-    ) -> Result<synctv_proto::client::EditMediaResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Media, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let media_id =
@@ -1588,12 +1576,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         self.room_cache_fanout.publish_invalidation(&rid);
-        Ok(synctv_proto::client::EditMediaResponse {
-            media: Some(
-                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
-                    .await?,
-            ),
-        })
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+            .await
     }
 
     /// Clear all media directly under the room root
@@ -1737,12 +1721,10 @@ impl ClientApiImpl {
 
         let mut results = Vec::with_capacity(media_list.len());
         for media in media_list {
-            results.push(synctv_proto::client::AddMediaResponse {
-                media: Some(
-                    self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
-                        .await?,
-                ),
-            });
+            results.push(
+                self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(uid))
+                    .await?,
+            );
         }
 
         Ok(synctv_proto::client::AddMediaBatchResponse { results })

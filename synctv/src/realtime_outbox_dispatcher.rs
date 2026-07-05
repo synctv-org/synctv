@@ -13,7 +13,7 @@ const CLAIM_BATCH_SIZE: i64 = 100;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const BUSY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const PROCESSING_STALE_AFTER_SECS: i64 = 120;
-const STALE_REQUEUE_INTERVAL: Duration = Duration::from_secs(60);
+const STALE_REQUEUE_INTERVAL: Duration = Duration::from_mins(1);
 const PUBLISH_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn start_realtime_outbox_dispatcher(

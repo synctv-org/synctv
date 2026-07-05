@@ -9,16 +9,15 @@ use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    ChatMessageEventResponse, ChatPinEventResponse, ChatReadStateResponse,
-    DeleteChatMessageRequest, EditChatMessageRequest, GetChatHistoryRequest,
+    ChatMessageEvent, ChatMessageEventResponse, ChatMessageReceive, ChatPinEventResponse,
+    ChatReadStateResponse, DeleteChatMessageRequest, EditChatMessageRequest, GetChatHistoryRequest,
     GetChatHistoryResponse, GetChatMessageContextRequest, GetChatMessageContextResponse,
     GetChatMessageReadReceiptsRequest, GetChatMessageReadReceiptsResponse, GetChatMessageRequest,
-    GetChatMessageResponse, GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse,
-    GetChatReadStateRequest, ListChatReactionUsersRequest, ListChatReactionUsersResponse,
-    ListPinnedChatMessagesRequest, ListPinnedChatMessagesResponse, MarkChatReadRequest,
-    PinChatMessageRequest, SearchChatMessagesRequest, SearchChatMessagesResponse,
-    SendChatMessageRequest, SetChatReactionRequest, SetChatReactionResponse,
-    UnpinChatMessageRequest,
+    GetChatPlaybackMessagesRequest, GetChatPlaybackMessagesResponse, GetChatReadStateRequest,
+    ListChatReactionUsersRequest, ListChatReactionUsersResponse, ListPinnedChatMessagesRequest,
+    ListPinnedChatMessagesResponse, MarkChatReadRequest, PinChatMessageRequest,
+    SearchChatMessagesRequest, SearchChatMessagesResponse, SendChatMessageRequest,
+    SetChatReactionRequest, UnpinChatMessageRequest,
 };
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -277,7 +276,7 @@ pub async fn search_chat_messages(
             GetChatMessageQuery
         ),
         responses(
-            (status = 200, description = "Chat message", body = GetChatMessageResponse),
+            (status = 200, description = "Chat message", body = ChatMessageReceive),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "Insufficient room permission", body = crate::openapi::GoogleRpcStatusSchema),
@@ -293,7 +292,7 @@ pub async fn get_chat_message(
     State(state): State<AppState>,
     Path(path): Path<ChatMessagePath>,
     ProtoQuery(query): ProtoQuery<GetChatMessageQuery>,
-) -> AppResult<Json<GetChatMessageResponse>> {
+) -> AppResult<Json<ChatMessageReceive>> {
     let room_id = path.room_id;
     let req = query.into_request(path.message_id);
     let response =
@@ -700,7 +699,7 @@ pub async fn unpin_chat_message(
             ("reactionKey" = String, Path, description = "Reaction key, for example like or an emoji")
         ),
         responses(
-            (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
+            (status = 200, description = "Chat reaction changed event", body = ChatMessageEvent),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
@@ -715,7 +714,7 @@ pub async fn set_chat_reaction(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatReactionPath>,
-) -> AppResult<Json<SetChatReactionResponse>> {
+) -> AppResult<Json<ChatMessageEvent>> {
     let req = SetChatReactionRequest {
         message_id: path.message_id,
         reaction_key: path.reaction_key,
@@ -748,7 +747,7 @@ pub async fn set_chat_reaction(
             ("reactionKey" = String, Path, description = "Reaction key, for example like or an emoji")
         ),
         responses(
-            (status = 200, description = "Chat reaction changed event", body = SetChatReactionResponse),
+            (status = 200, description = "Chat reaction changed event", body = ChatMessageEvent),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 403, description = "VIEW_CHAT_HISTORY permission required", body = crate::openapi::GoogleRpcStatusSchema),
@@ -763,7 +762,7 @@ pub async fn clear_chat_reaction(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<ChatReactionPath>,
-) -> AppResult<Json<SetChatReactionResponse>> {
+) -> AppResult<Json<ChatMessageEvent>> {
     let req = SetChatReactionRequest {
         message_id: path.message_id,
         reaction_key: path.reaction_key,

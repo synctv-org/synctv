@@ -938,7 +938,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdatePlaybackStateRequest,
-    ) -> Result<synctv_proto::client::UpdatePlaybackStateResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let command = build_playback_state_update(req, &self.public_id_codec)?;
@@ -974,9 +974,7 @@ impl ClientApiImpl {
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
 
-        Ok(synctv_proto::client::UpdatePlaybackStateResponse {
-            playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-        })
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 
     async fn prepare_playback_state_changed(

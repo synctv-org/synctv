@@ -18,7 +18,7 @@ impl AdminApiImpl {
         caller_role: synctv_core::models::UserRole,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::CreateUserResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let email = match req.email.trim() {
@@ -86,9 +86,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::CreateUserResponse {
-            user: Some(self.admin_user_to_proto_with_email(&user).await?),
-        })
+        self.admin_user_to_proto_with_email(&user).await
     }
 
     pub async fn delete_user(
@@ -143,7 +141,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::UpdateUserUsernameRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::UpdateUserUsernameResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
 
         let uid =
@@ -177,9 +175,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::UpdateUserUsernameResponse {
-            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
-        })
+        self.admin_user_to_proto_with_email(&updated).await
     }
 
     pub async fn ban_user(
@@ -188,7 +184,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         caller_role: synctv_core::models::UserRole,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::BanUserResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
@@ -215,9 +211,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::BanUserResponse {
-            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
-        })
+        self.admin_user_to_proto_with_email(&updated).await
     }
 
     pub async fn unban_user(
@@ -225,7 +219,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::UnbanUserRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::UnbanUserResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
@@ -259,9 +253,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::UnbanUserResponse {
-            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
-        })
+        self.admin_user_to_proto_with_email(&updated).await
     }
 
     pub async fn list_users(
@@ -311,7 +303,7 @@ impl AdminApiImpl {
     pub async fn get_user(
         &self,
         req: synctv_proto::admin::GetUserRequest,
-    ) -> Result<synctv_proto::admin::GetUserResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
@@ -320,9 +312,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::admin::GetUserResponse {
-            user: Some(self.admin_user_to_proto_with_email(&user).await?),
-        })
+        self.admin_user_to_proto_with_email(&user).await
     }
 
     pub async fn get_user_preferences(
@@ -415,7 +405,7 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         caller_role: UserRole,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::UpdateUserRoleResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
@@ -474,9 +464,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::UpdateUserRoleResponse {
-            user: Some(self.admin_user_to_proto_with_email(&updated_user).await?),
-        })
+        self.admin_user_to_proto_with_email(&updated_user).await
     }
 
     pub async fn set_user_password(
@@ -548,7 +536,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::AddAdminRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::AddAdminResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
@@ -584,9 +572,7 @@ impl AdminApiImpl {
         )
         .await;
 
-        Ok(synctv_proto::admin::AddAdminResponse {
-            user: Some(self.admin_user_to_proto_with_email(&updated).await?),
-        })
+        self.admin_user_to_proto_with_email(&updated).await
     }
 
     pub async fn remove_admin(

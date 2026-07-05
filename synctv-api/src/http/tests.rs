@@ -2587,7 +2587,7 @@ async fn test_openapi_json_route_is_available() -> TestResult {
     assert_eq!(
         json["paths"]["/api/user"]["patch"]["responses"]["200"]["content"]["application/json"]
             ["schema"]["$ref"],
-        "#/components/schemas/synctv_client_SetUsernameResponse"
+        "#/components/schemas/synctv_client_User"
     );
     assert_eq!(
         json["paths"]["/api/tickets"]["post"]["responses"]["200"]["content"]["application/json"]

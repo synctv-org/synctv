@@ -74,7 +74,7 @@ pub(super) async fn get_playback(
 pub(super) async fn update_playback_state(
     service: &ClientServiceImpl,
     request: Request<UpdatePlaybackStateRequest>,
-) -> Result<Response<UpdatePlaybackStateResponse>, Status> {
+) -> Result<Response<PlaybackState>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

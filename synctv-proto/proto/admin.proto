@@ -23,17 +23,17 @@ service AdminService {
   // =========================
   // User Management
   // =========================
-  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+  rpc CreateUser(CreateUserRequest) returns (AdminUser);
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
   rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
-  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc GetUser(GetUserRequest) returns (AdminUser);
   rpc GetUserPreferences(GetUserPreferencesRequest) returns (GetUserPreferencesResponse);
   rpc UpdateUserPreferences(UpdateUserPreferencesRequest) returns (UpdateUserPreferencesResponse);
   rpc SetUserPassword(SetUserPasswordRequest) returns (SetUserPasswordResponse);
-  rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (UpdateUserUsernameResponse);
-  rpc UpdateUserRole(UpdateUserRoleRequest) returns (UpdateUserRoleResponse);
-  rpc BanUser(BanUserRequest) returns (BanUserResponse);
-  rpc UnbanUser(UnbanUserRequest) returns (UnbanUserResponse);
+  rpc UpdateUserUsername(UpdateUserUsernameRequest) returns (AdminUser);
+  rpc UpdateUserRole(UpdateUserRoleRequest) returns (AdminUser);
+  rpc BanUser(BanUserRequest) returns (AdminUser);
+  rpc UnbanUser(UnbanUserRequest) returns (AdminUser);
   rpc GetUserRooms(GetUserRoomsRequest) returns (GetUserRoomsResponse);
 
   // =========================
@@ -48,14 +48,14 @@ service AdminService {
   // Room Management
   // =========================
   rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
-  rpc GetRoom(GetRoomRequest) returns (GetRoomResponse);
+  rpc GetRoom(GetRoomRequest) returns (Room);
   rpc GetRoomSettings(GetRoomSettingsRequest) returns (GetRoomSettingsResponse);
   rpc UpdateRoomSettings(UpdateRoomSettingsRequest) returns (Room);
-  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (ResetRoomSettingsResponse);
+  rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (Room);
   rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (UpdateRoomPasswordResponse);
   rpc DeleteRoom(DeleteRoomRequest) returns (DeleteRoomResponse);
-  rpc BanRoom(BanRoomRequest) returns (BanRoomResponse);
-  rpc UnbanRoom(UnbanRoomRequest) returns (UnbanRoomResponse);
+  rpc BanRoom(BanRoomRequest) returns (Room);
+  rpc UnbanRoom(UnbanRoomRequest) returns (Room);
   rpc GetRoomMembers(GetRoomMembersRequest) returns (GetRoomMembersResponse);
   rpc AddMember(AddMemberRequest) returns (synctv.common.RoomMember);
   rpc UpdateMemberRemarkName(UpdateMemberRemarkNameRequest) returns (synctv.common.RoomMember);
@@ -63,17 +63,17 @@ service AdminService {
   rpc UpdateMemberPermissions(UpdateMemberPermissionsRequest) returns (synctv.common.RoomMember);
   rpc KickMember(KickMemberRequest) returns (KickMemberResponse);
   rpc ListRoomCategories(ListRoomCategoriesRequest) returns (ListRoomCategoriesResponse);
-  rpc UpsertRoomCategory(UpsertRoomCategoryRequest) returns (UpsertRoomCategoryResponse);
+  rpc UpsertRoomCategory(UpsertRoomCategoryRequest) returns (synctv.client.RoomCategory);
   rpc DeleteRoomCategory(DeleteRoomCategoryRequest) returns (DeleteRoomCategoryResponse);
   rpc ListRoomLabels(ListRoomLabelsRequest) returns (ListRoomLabelsResponse);
-  rpc UpsertRoomLabel(UpsertRoomLabelRequest) returns (UpsertRoomLabelResponse);
+  rpc UpsertRoomLabel(UpsertRoomLabelRequest) returns (synctv.client.RoomLabel);
   rpc DeleteRoomLabel(DeleteRoomLabelRequest) returns (DeleteRoomLabelResponse);
-  rpc UpdateRoomTaxonomy(UpdateRoomTaxonomyRequest) returns (UpdateRoomTaxonomyResponse);
+  rpc UpdateRoomTaxonomy(UpdateRoomTaxonomyRequest) returns (Room);
 
   // =========================
   // Admin Management (Root Only)
   // =========================
-  rpc AddAdmin(AddAdminRequest) returns (AddAdminResponse);
+  rpc AddAdmin(AddAdminRequest) returns (AdminUser);
   rpc RemoveAdmin(RemoveAdminRequest) returns (RemoveAdminResponse);
   rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse);
 
@@ -93,13 +93,13 @@ service AdminService {
   // =========================
   rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (ListUserRegistrationReviewsResponse);
   rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (ApproveUserRegistrationReviewResponse);
-  rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (RejectUserRegistrationReviewResponse);
+  rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (UserRegistrationReview);
   rpc ListRoomCreationReviews(ListRoomCreationReviewsRequest) returns (ListRoomCreationReviewsResponse);
   rpc ApproveRoomCreationReview(ApproveRoomCreationReviewRequest) returns (ApproveRoomCreationReviewResponse);
-  rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (RejectRoomCreationReviewResponse);
+  rpc RejectRoomCreationReview(RejectRoomCreationReviewRequest) returns (RoomCreationReview);
   rpc ListRoomJoinReviews(ListRoomJoinReviewsRequest) returns (ListRoomJoinReviewsResponse);
   rpc ApproveRoomJoinReview(ApproveRoomJoinReviewRequest) returns (ApproveRoomJoinReviewResponse);
-  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RejectRoomJoinReviewResponse);
+  rpc RejectRoomJoinReview(RejectRoomJoinReviewRequest) returns (RoomJoinReview);
 
   // =========================
   // Moderation Bans
@@ -110,7 +110,7 @@ service AdminService {
   // Moderation Reports
   // =========================
   rpc ListContentReports(ListContentReportsRequest) returns (ListContentReportsResponse);
-  rpc GetContentReport(GetContentReportRequest) returns (GetContentReportResponse);
+  rpc GetContentReport(GetContentReportRequest) returns (ContentReport);
   rpc UpdateContentReportStatus(UpdateContentReportStatusRequest) returns (UpdateContentReportStatusResponse);
 }
 
@@ -572,10 +572,6 @@ message CreateUserRequest {
   ];
 }
 
-message CreateUserResponse {
-  AdminUser user = 1;
-}
-
 message DeleteUserRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -628,10 +624,6 @@ message UserPathRequest {
     max_len: 64
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
-}
-
-message GetUserResponse {
-  AdminUser user = 1;
 }
 
 message GetUserPreferencesRequest {
@@ -692,10 +684,6 @@ message UpdateUserUsernameRequest {
   }];
 }
 
-message UpdateUserUsernameResponse {
-  AdminUser user = 1;
-}
-
 message UpdateUserRoleRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -703,10 +691,6 @@ message UpdateUserRoleRequest {
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
   synctv.common.UserRole role = 2 [(buf.validate.field).enum.defined_only = true]; // New role
-}
-
-message UpdateUserRoleResponse {
-  AdminUser user = 1;
 }
 
 message BanUserRequest {
@@ -718,20 +702,12 @@ message BanUserRequest {
   string reason = 2; // Optional
 }
 
-message BanUserResponse {
-  AdminUser user = 1;
-}
-
 message UnbanUserRequest {
   string user_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
-}
-
-message UnbanUserResponse {
-  AdminUser user = 1;
 }
 
 message GetUserRoomsRequest {
@@ -848,11 +824,6 @@ message RejectUserRegistrationReviewRequest {
   string reason = 2 [(buf.validate.field).string.max_len = 500];
 }
 
-message RejectUserRegistrationReviewResponse {
-  UserRegistrationReview review = 1;
-  bool success = 2;
-}
-
 message ListRoomCreationReviewsRequest {
   option (buf.validate.message).cel = {
     id: "admin.list_room_creation_reviews.page"
@@ -899,11 +870,6 @@ message RejectRoomCreationReviewRequest {
     pattern: "^room_[A-Za-z0-9]+$"
   }];
   string reason = 2 [(buf.validate.field).string.max_len = 500];
-}
-
-message RejectRoomCreationReviewResponse {
-  RoomCreationReview review = 1;
-  bool success = 2;
 }
 
 message ListRoomJoinReviewsRequest {
@@ -955,11 +921,6 @@ message RejectRoomJoinReviewRequest {
     pattern: "^rev_[A-Za-z0-9]+$"
   }];
   string reason = 2 [(buf.validate.field).string.max_len = 500];
-}
-
-message RejectRoomJoinReviewResponse {
-  RoomJoinReview review = 1;
-  bool success = 2;
 }
 
 // =========================
@@ -1031,10 +992,6 @@ message UpsertRoomCategoryRequest {
   optional bool is_enabled = 5;
 }
 
-message UpsertRoomCategoryResponse {
-  synctv.client.RoomCategory category = 1;
-}
-
 message DeleteRoomCategoryRequest {
   string category_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1078,10 +1035,6 @@ message UpsertRoomLabelRequest {
   optional bool is_enabled = 7;
 }
 
-message UpsertRoomLabelResponse {
-  synctv.client.RoomLabel label = 1;
-}
-
 message DeleteRoomLabelRequest {
   string label_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1115,10 +1068,6 @@ message UpdateRoomTaxonomyRequest {
   bool clear_category = 4;
 }
 
-message UpdateRoomTaxonomyResponse {
-  Room room = 1;
-}
-
 message GetRoomRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1133,10 +1082,6 @@ message RoomPathRequest {
     max_len: 64
     pattern: "^room_[A-Za-z0-9]+$"
   }];
-}
-
-message GetRoomResponse {
-  Room room = 1;
 }
 
 message GetRoomSettingsRequest {
@@ -1180,10 +1125,6 @@ message ResetRoomSettingsRequest {
   }];
 }
 
-message ResetRoomSettingsResponse {
-  Room room = 1;
-}
-
 message UpdateRoomPasswordRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1
@@ -1218,20 +1159,12 @@ message BanRoomRequest {
   string reason = 2; // Optional
 }
 
-message BanRoomResponse {
-  Room room = 1;
-}
-
 message UnbanRoomRequest {
   string room_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^room_[A-Za-z0-9]+$"
   }];
-}
-
-message UnbanRoomResponse {
-  Room room = 1;
 }
 
 message GetRoomMembersRequest {
@@ -1358,10 +1291,6 @@ message AddAdminRequest {
     max_len: 64
     pattern: "^usr_[A-Za-z0-9]+$"
   }];
-}
-
-message AddAdminResponse {
-  AdminUser user = 1;
 }
 
 message RemoveAdminRequest {
@@ -1643,10 +1572,6 @@ message GetContentReportRequest {
     max_len: 64
     pattern: "^report_[A-Za-z0-9]+$"
   }];
-}
-
-message GetContentReportResponse {
-  ContentReport report = 1;
 }
 
 message UpdateContentReportStatusRequest {

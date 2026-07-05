@@ -500,12 +500,6 @@ pub(in crate::cli) struct HumanEvictExpiredSliceCacheResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanUserResponse<T> {
-    user: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserAuthFactors {
     password: bool,
     webauthn: bool,
@@ -563,12 +557,6 @@ pub(in crate::cli) struct HumanAdminsResponse<T> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanRoomResponse<T> {
-    room: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomsResponse<T> {
     rooms: Vec<T>,
     total: i32,
@@ -609,21 +597,9 @@ pub(in crate::cli) struct HumanProviderInstanceResponse<T> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanPlaylistResponse<T> {
-    playlist: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanPlaylistsResponse<T> {
     playlists: Vec<T>,
     total: i32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanMediaResponse<T> {
-    media: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -666,12 +642,6 @@ pub(in crate::cli) struct HumanGetPlaybackResponse<T> {
     flv_pull_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     flv_absolute_pull_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanUpdatePlaybackStateResponse<T> {
-    playback_state: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -727,13 +697,6 @@ pub(in crate::cli) struct HumanApproveUserRegistrationReviewResponse<R, U> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanRejectReviewRequestResponse<R> {
-    review: Option<R>,
-    success: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanBanRecordsResponse<T> {
     bans: Vec<T>,
     total: i32,
@@ -747,20 +710,8 @@ pub(in crate::cli) struct HumanRoomCategoriesResponse<T> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanRoomCategoryResponse<T> {
-    category: Option<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomLabelsResponse<T> {
     labels: Vec<T>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct HumanRoomLabelResponse<T> {
-    label: Option<T>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1023,17 +974,6 @@ impl ToHuman for synctv_proto::admin::ApproveUserRegistrationReviewResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::RejectUserRegistrationReviewResponse {
-    type Human = HumanRejectReviewRequestResponse<HumanReviewRequest>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRejectReviewRequestResponse {
-            review: self.review.as_ref().map(ToHuman::to_human),
-            success: self.success,
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::ListRoomCreationReviewsResponse {
     type Human = HumanReviewRequestsResponse<HumanRoomCreationReview>;
 
@@ -1052,17 +992,6 @@ impl ToHuman for synctv_proto::admin::ApproveRoomCreationReviewResponse {
         HumanApproveReviewRequestResponse {
             review: self.review.as_ref().map(ToHuman::to_human),
             result: self.room.as_ref().map(ToHuman::to_human),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::RejectRoomCreationReviewResponse {
-    type Human = HumanRejectReviewRequestResponse<HumanRoomCreationReview>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRejectReviewRequestResponse {
-            review: self.review.as_ref().map(ToHuman::to_human),
-            success: self.success,
         }
     }
 }
@@ -1089,17 +1018,6 @@ impl ToHuman for synctv_proto::admin::ApproveRoomJoinReviewResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::RejectRoomJoinReviewResponse {
-    type Human = HumanRejectReviewRequestResponse<HumanRoomJoinReview>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRejectReviewRequestResponse {
-            review: self.review.as_ref().map(ToHuman::to_human),
-            success: self.success,
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::client::ListRoomJoinReviewsResponse {
     type Human = HumanReviewRequestsResponse<HumanRoomJoinReview>;
 
@@ -1118,17 +1036,6 @@ impl ToHuman for synctv_proto::client::ApproveRoomJoinReviewResponse {
         HumanApproveRoomJoinReviewResponse {
             review: self.review.as_ref().map(ToHuman::to_human),
             member: self.member.as_ref().map(ToHuman::to_human),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::RejectRoomJoinReviewResponse {
-    type Human = HumanRejectReviewRequestResponse<HumanRoomJoinReview>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRejectReviewRequestResponse {
-            review: self.review.as_ref().map(ToHuman::to_human),
-            success: self.success,
         }
     }
 }
@@ -1365,26 +1272,6 @@ macro_rules! impl_identity_to_human {
     };
 }
 
-impl ToHuman for synctv_proto::admin::CreateUserResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::GetUserResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::client::UserAuthFactors {
     type Human = HumanUserAuthFactors;
 
@@ -1465,46 +1352,6 @@ impl ToHuman for synctv_proto::admin::ListUsersResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::UpdateUserUsernameResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UpdateUserRoleResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::BanUserResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UnbanUserResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::GetUserRoomsResponse {
     type Human = HumanRoomsResponse<HumanManagedRoom>;
 
@@ -1527,62 +1374,12 @@ impl ToHuman for synctv_proto::admin::ListRoomsResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::GetRoomResponse {
-    type Human = HumanRoomResponse<HumanManagedRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::ResetRoomSettingsResponse {
-    type Human = HumanRoomResponse<HumanManagedRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::BanRoomResponse {
-    type Human = HumanRoomResponse<HumanManagedRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UnbanRoomResponse {
-    type Human = HumanRoomResponse<HumanManagedRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::ListRoomCategoriesResponse {
     type Human = HumanRoomCategoriesResponse<HumanRoomCategory>;
 
     fn to_human(&self) -> Self::Human {
         HumanRoomCategoriesResponse {
             categories: self.categories.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UpsertRoomCategoryResponse {
-    type Human = HumanRoomCategoryResponse<HumanRoomCategory>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomCategoryResponse {
-            category: self.category.to_human(),
         }
     }
 }
@@ -1607,32 +1404,12 @@ impl ToHuman for synctv_proto::admin::ListRoomLabelsResponse {
     }
 }
 
-impl ToHuman for synctv_proto::admin::UpsertRoomLabelResponse {
-    type Human = HumanRoomLabelResponse<HumanRoomLabel>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomLabelResponse {
-            label: self.label.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::DeleteRoomLabelResponse {
     type Human = HumanDeleteResponse;
 
     fn to_human(&self) -> Self::Human {
         HumanDeleteResponse {
             success: self.success,
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::admin::UpdateRoomTaxonomyResponse {
-    type Human = HumanRoomResponse<HumanManagedRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
         }
     }
 }
@@ -1729,32 +1506,12 @@ impl ToHuman for synctv_proto::providers::common::DisableProviderInstanceRespons
     }
 }
 
-impl ToHuman for synctv_proto::admin::AddAdminResponse {
-    type Human = HumanUserResponse<HumanAdminUser>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUserResponse {
-            user: self.user.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::admin::ListAdminsResponse {
     type Human = HumanAdminsResponse<HumanAdminUser>;
 
     fn to_human(&self) -> Self::Human {
         HumanAdminsResponse {
             admins: self.admins.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::CreateRoomResponse {
-    type Human = HumanRoomResponse<HumanRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
         }
     }
 }
@@ -1793,16 +1550,6 @@ impl ToHuman for synctv_proto::client::ListRoomsResponse {
     }
 }
 
-impl ToHuman for synctv_proto::client::TransferRoomOwnershipResponse {
-    type Human = HumanRoomResponse<HumanRoom>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanRoomResponse {
-            room: self.room.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::client::GetRoomMembersResponse {
     type Human = HumanRoomMembersResponse<HumanRoomMember>;
 
@@ -1827,36 +1574,6 @@ impl ToHuman for synctv_proto::client::SearchChatMessagesResponse {
     }
 }
 
-impl ToHuman for synctv_proto::client::CreatePlaylistResponse {
-    type Human = HumanPlaylistResponse<HumanPlaylist>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanPlaylistResponse {
-            playlist: self.playlist.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::UpdatePlaylistResponse {
-    type Human = HumanPlaylistResponse<HumanPlaylist>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanPlaylistResponse {
-            playlist: self.playlist.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::MovePlaylistResponse {
-    type Human = HumanPlaylistResponse<HumanPlaylist>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanPlaylistResponse {
-            playlist: self.playlist.to_human(),
-        }
-    }
-}
-
 impl ToHuman for synctv_proto::client::GetPlaylistResponse {
     type Human = HumanGetPlaylistResponse<HumanPlaylist>;
 
@@ -1876,26 +1593,6 @@ impl ToHuman for synctv_proto::client::ListPlaylistsResponse {
         HumanPlaylistsResponse {
             playlists: self.playlists.to_human(),
             total: self.total,
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::AddMediaResponse {
-    type Human = HumanMediaResponse<HumanMedia>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanMediaResponse {
-            media: self.media.to_human(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::EditMediaResponse {
-    type Human = HumanMediaResponse<HumanMedia>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanMediaResponse {
-            media: self.media.to_human(),
         }
     }
 }
@@ -1943,16 +1640,6 @@ impl ToHuman for GetPlaybackCliOutput {
             hls_absolute_pull_url: self.hls_absolute_pull_url.clone(),
             flv_pull_url: self.flv_pull_url.clone(),
             flv_absolute_pull_url: self.flv_absolute_pull_url.clone(),
-        }
-    }
-}
-
-impl ToHuman for synctv_proto::client::UpdatePlaybackStateResponse {
-    type Human = HumanUpdatePlaybackStateResponse<HumanPlaybackState>;
-
-    fn to_human(&self) -> Self::Human {
-        HumanUpdatePlaybackStateResponse {
-            playback_state: self.playback_state.to_human(),
         }
     }
 }
@@ -2126,7 +1813,7 @@ impl_identity_to_human!(
     synctv_proto::client::LeaveRoomResponse,
     synctv_proto::client::DeleteRoomResponse,
     synctv_proto::client::GetRoomSettingsResponse,
-    synctv_proto::client::ResetRoomSettingsResponse,
+    synctv_proto::client::RoomSettings,
     synctv_proto::client::SetRoomPasswordResponse,
     synctv_proto::client::KickMemberResponse,
     synctv_proto::client::DeletePlaylistResponse,

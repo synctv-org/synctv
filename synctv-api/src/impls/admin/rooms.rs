@@ -178,7 +178,7 @@ impl AdminApiImpl {
     pub async fn get_room(
         &self,
         req: synctv_proto::admin::GetRoomRequest,
-    ) -> Result<synctv_proto::admin::GetRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let (room, settings) = self
@@ -186,9 +186,7 @@ impl AdminApiImpl {
             .get_room_with_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::admin::GetRoomResponse {
-            room: Some(self.load_admin_room_proto(&room, Some(&settings)).await?),
-        })
+        self.load_admin_room_proto(&room, Some(&settings)).await
     }
 
     pub async fn list_room_categories(
@@ -212,7 +210,7 @@ impl AdminApiImpl {
     pub async fn upsert_room_category(
         &self,
         req: synctv_proto::admin::UpsertRoomCategoryRequest,
-    ) -> Result<synctv_proto::admin::UpsertRoomCategoryResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RoomCategory, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let category = self
             .room_service
@@ -225,9 +223,7 @@ impl AdminApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::admin::UpsertRoomCategoryResponse {
-            category: Some(room_category_to_proto(&category, &self.public_id_codec)?),
-        })
+        room_category_to_proto(&category, &self.public_id_codec)
     }
 
     pub async fn delete_room_category(
@@ -266,7 +262,7 @@ impl AdminApiImpl {
     pub async fn upsert_room_label(
         &self,
         req: synctv_proto::admin::UpsertRoomLabelRequest,
-    ) -> Result<synctv_proto::admin::UpsertRoomLabelResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RoomLabel, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let category_id = parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?;
         let label = self
@@ -282,9 +278,7 @@ impl AdminApiImpl {
             })
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::admin::UpsertRoomLabelResponse {
-            label: Some(room_label_to_proto(&label, &self.public_id_codec)?),
-        })
+        room_label_to_proto(&label, &self.public_id_codec)
     }
 
     pub async fn delete_room_label(
@@ -308,7 +302,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::UpdateRoomTaxonomyRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::UpdateRoomTaxonomyResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let room_id = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         if req.clear_category && req.category_id.is_some() {
@@ -333,17 +327,13 @@ impl AdminApiImpl {
             .update_room_taxonomy(room_id, category_update, &requested_label_ids, assigned_by)
             .await
             .map_err(ApiError::from)?;
-        let response = self
-            .get_room(synctv_proto::admin::GetRoomRequest {
-                room_id: self
-                    .public_id_codec
-                    .encode_room_id(room_id)
-                    .map_err(ApiError::Internal)?,
-            })
-            .await?;
-        Ok(synctv_proto::admin::UpdateRoomTaxonomyResponse {
-            room: response.room,
+        self.get_room(synctv_proto::admin::GetRoomRequest {
+            room_id: self
+                .public_id_codec
+                .encode_room_id(room_id)
+                .map_err(ApiError::Internal)?,
         })
+        .await
     }
 
     pub async fn delete_room(
@@ -1126,7 +1116,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::BanRoomRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::BanRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid =
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
@@ -1181,12 +1171,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::admin::BanRoomResponse {
-            room: Some(
-                self.load_admin_room_proto(&updated, Some(&settings))
-                    .await?,
-            ),
-        })
+        self.load_admin_room_proto(&updated, Some(&settings)).await
     }
 
     pub async fn unban_room(
@@ -1194,7 +1179,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::UnbanRoomRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::UnbanRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let room = self
@@ -1234,12 +1219,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::admin::UnbanRoomResponse {
-            room: Some(
-                self.load_admin_room_proto(&updated, Some(&settings))
-                    .await?,
-            ),
-        })
+        self.load_admin_room_proto(&updated, Some(&settings)).await
     }
 
     pub(super) async fn approve_room_creation_request(

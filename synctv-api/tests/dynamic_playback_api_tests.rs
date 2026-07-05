@@ -590,9 +590,7 @@ async fn test_get_playback_returns_dynamic_playlist_item_playback_info() {
         )
         .await
         .unwrap();
-    let update_state = update_response
-        .playback_state
-        .expect("update response should include playback state");
+    let update_state = update_response;
     assert_eq!(update_state.playing_playlist_id, playlist_public_id);
     assert!(
         update_state.position >= 12.5,

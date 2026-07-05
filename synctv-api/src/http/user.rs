@@ -10,12 +10,12 @@ use axum::{
 
 use super::{middleware::RequestMetadata, validation::ProtoQuery, AppResult, AppState};
 use crate::impls::EndpointRateLimitCategory;
-use synctv_proto::client::GetProfileResponse;
+use synctv_proto::client::User;
 use synctv_proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
     FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
     FinishSensitiveOperationVerificationResponse, ListMyRoomsResponse, ListPasskeysResponse,
-    PasskeyCredentialResponse, RequestSensitiveOperationEmailCodeRequest,
+    PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
     RequestSensitiveOperationEmailCodeResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
     StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
     StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
@@ -23,20 +23,17 @@ use synctv_proto::client::{
 use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
     CreateUserAvatarUploadSessionRequest, CreateUserAvatarUploadSessionResponse,
-    GetProfileResponse as UserAvatarUpdateResponse, UpdateUserAvatarRequest,
+    UpdateUserAvatarRequest, User as UserAvatarUpdateResponse,
 };
 use synctv_proto::client::{
-    ConfirmEmailBindRequest, ConfirmEmailBindResponse, GetUserPreferencesResponse,
-    UnbindEmailRequest, UnbindEmailResponse, UpdateUserPreferencesRequest,
-    UpdateUserPreferencesResponse,
+    ConfirmEmailBindRequest, GetUserPreferencesResponse, UnbindEmailRequest,
+    UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
 };
 use synctv_proto::client::{
-    FinishOpaquePasswordUpdateRequest, FinishOpaquePasswordUpdateResponse,
-    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
+    FinishOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateRequest,
+    StartOpaquePasswordUpdateResponse,
 };
-use synctv_proto::client::{
-    SetUsernameRequest, SetUsernameResponse, StartEmailBindRequest, StartEmailBindResponse,
-};
+use synctv_proto::client::{SetUsernameRequest, StartEmailBindRequest, StartEmailBindResponse};
 
 fn file_upload_range_to_proto(
     range: synctv_core::models::FileUploadRange,
@@ -100,7 +97,7 @@ pub struct PasskeyCredentialPath {
         path = "/api/user",
         tag = "User",
         responses(
-            (status = 200, description = "Current user profile", body = GetProfileResponse),
+            (status = 200, description = "Current user profile", body = User),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(
@@ -111,7 +108,7 @@ pub struct PasskeyCredentialPath {
 pub async fn get_me(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-) -> AppResult<Json<GetProfileResponse>> {
+) -> AppResult<Json<User>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -213,7 +210,7 @@ pub async fn update_user_preferences(
         tag = "User",
         request_body = SetUsernameRequest,
         responses(
-            (status = 200, description = "Username updated", body = SetUsernameResponse),
+            (status = 200, description = "Username updated", body = User),
             (status = 400, description = "Invalid update request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -226,7 +223,7 @@ pub async fn update_user(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<SetUsernameRequest>,
-) -> AppResult<Json<SetUsernameResponse>> {
+) -> AppResult<Json<User>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -457,7 +454,7 @@ pub async fn start_email_bind(
         tag = "User",
         request_body = ConfirmEmailBindRequest,
         responses(
-            (status = 200, description = "Email bind confirmed", body = ConfirmEmailBindResponse),
+            (status = 200, description = "Email bind confirmed", body = User),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -470,7 +467,7 @@ pub async fn confirm_email_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<ConfirmEmailBindRequest>,
-) -> AppResult<Json<ConfirmEmailBindResponse>> {
+) -> AppResult<Json<User>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -496,7 +493,7 @@ pub async fn confirm_email_bind(
         tag = "User",
         request_body = UnbindEmailRequest,
         responses(
-            (status = 200, description = "Email unbound", body = UnbindEmailResponse),
+            (status = 200, description = "Email unbound", body = User),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -509,7 +506,7 @@ pub async fn unbind_email(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<UnbindEmailRequest>,
-) -> AppResult<Json<UnbindEmailResponse>> {
+) -> AppResult<Json<User>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -760,7 +757,7 @@ pub async fn start_opaque_password_update(
         tag = "User",
         request_body = FinishOpaquePasswordUpdateRequest,
         responses(
-            (status = 200, description = "OPAQUE password update completed", body = FinishOpaquePasswordUpdateResponse),
+            (status = 200, description = "OPAQUE password update completed", body = User),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -773,7 +770,7 @@ pub async fn finish_opaque_password_update(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<FinishOpaquePasswordUpdateRequest>,
-) -> AppResult<Json<FinishOpaquePasswordUpdateResponse>> {
+) -> AppResult<Json<User>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
@@ -842,7 +839,7 @@ pub async fn start_passkey_bind(
         tag = "User",
         request_body = FinishPasskeyBindRequest,
         responses(
-            (status = 200, description = "Passkey bound to current user", body = PasskeyCredentialResponse),
+            (status = 200, description = "Passkey bound to current user", body = PasskeyCredential),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -855,7 +852,7 @@ pub async fn finish_passkey_bind(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Json(req): Json<FinishPasskeyBindRequest>,
-) -> AppResult<Json<PasskeyCredentialResponse>> {
+) -> AppResult<Json<PasskeyCredential>> {
     let request_meta = request_meta
         .0
         .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));

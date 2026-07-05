@@ -8,10 +8,9 @@ use synctv_core::{
 use synctv_proto::client::{
     report_content_request, ContentReport, ContentReportStatus as ClientContentReportStatus,
     ContentReportTargetType as ClientContentReportTargetType, GetRoomContentReportRequest,
-    GetRoomContentReportResponse, ListRoomContentReportsRequest, ListRoomContentReportsResponse,
-    ReportChatMessageTarget, ReportContentRequest, ReportContentResponse, ReportRoomMemberTarget,
-    ReportRoomTarget, ReportUserTarget, UpdateRoomContentReportStatusRequest,
-    UpdateRoomContentReportStatusResponse,
+    ListRoomContentReportsRequest, ListRoomContentReportsResponse, ReportChatMessageTarget,
+    ReportContentRequest, ReportContentResponse, ReportRoomMemberTarget, ReportRoomTarget,
+    ReportUserTarget, UpdateRoomContentReportStatusRequest, UpdateRoomContentReportStatusResponse,
 };
 
 use super::{ClientApiImpl, RoomActor};
@@ -121,7 +120,7 @@ impl ClientApiImpl {
         &self,
         actor: &RoomActor,
         req: GetRoomContentReportRequest,
-    ) -> Result<GetRoomContentReportResponse, ApiError> {
+    ) -> Result<ContentReport, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user_id = actor.require_user_id()?;
         let room_id = actor.room_id();
@@ -129,12 +128,7 @@ impl ClientApiImpl {
         let row = self
             .load_room_scoped_report(room_id, &req.report_id)
             .await?;
-        Ok(GetRoomContentReportResponse {
-            report: Some(content_report_row_to_client_proto(
-                &row,
-                &self.public_id_codec,
-            )?),
-        })
+        content_report_row_to_client_proto(&row, &self.public_id_codec)
     }
 
     pub async fn update_room_content_report_status_for_actor(

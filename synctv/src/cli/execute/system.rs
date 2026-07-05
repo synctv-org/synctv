@@ -16,6 +16,7 @@ pub(super) async fn execute_system(system_command: SystemCommand) -> Result<()> 
         SystemSubcommand::Stream(stream_command) => match stream_command.command {
             SystemStreamSubcommand::List(args) => {
                 let session = connect_remote_access(&args.remote).await?;
+                let (user_id, username) = args.user.to_management_selector();
                 let response = management_unary_call!(
                     session,
                     "list active streams",
@@ -24,7 +25,8 @@ pub(super) async fn execute_system(system_command: SystemCommand) -> Result<()> 
                         page: args.page,
                         page_size: args.page_size,
                         room_id: args.room_id.unwrap_or_default(),
-                        user: args.user.to_management_proto()?,
+                        user_id,
+                        username,
                         node_id: args.node_id.unwrap_or_default(),
                         search: args.search.unwrap_or_default(),
                         sort_by: args.sort_by.map_or(

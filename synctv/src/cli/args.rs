@@ -728,6 +728,16 @@ impl UserRefArgs {
         };
         Ok(management_proto::UserRef { value: Some(value) })
     }
+
+    pub(super) fn to_management_selector(&self) -> Result<(String, String)> {
+        if let Some(user_id) = self.user_id.as_deref() {
+            Ok((user_id.to_string(), String::new()))
+        } else if let Some(username) = self.username.as_deref() {
+            Ok((String::new(), username.to_string()))
+        } else {
+            bail!("user reference requires USER or --user-id")
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -809,16 +819,10 @@ pub struct StreamUserFilterArgs {
 }
 
 impl StreamUserFilterArgs {
-    pub(super) fn to_management_proto(&self) -> Result<Option<management_proto::UserRef>> {
-        if self.username.is_none() && self.user_id.is_none() {
-            return Ok(None);
-        }
-
-        UserRefArgs {
-            username: self.username.clone(),
-            user_id: self.user_id.clone(),
-        }
-        .to_management_proto()
-        .map(Some)
+    pub(super) fn to_management_selector(&self) -> (String, String) {
+        (
+            self.user_id.clone().unwrap_or_default(),
+            self.username.clone().unwrap_or_default(),
+        )
     }
 }

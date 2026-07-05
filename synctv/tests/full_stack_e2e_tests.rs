@@ -2272,7 +2272,7 @@ async fn start_room_realtime_fixture(label: &str) -> RoomRealtimeFixture {
         "create realtime member",
     )
     .await;
-    let member_user_id = created_member["user"]["id"]
+    let member_user_id = created_member["id"]
         .as_str()
         .expect("member create should return user id")
         .to_string();
@@ -2292,7 +2292,7 @@ async fn start_room_realtime_fixture(label: &str) -> RoomRealtimeFixture {
         "create realtime room",
     )
     .await;
-    let room_id = created_room["room"]["id"]
+    let room_id = created_room["id"]
         .as_str()
         .expect("room create should return room id")
         .to_string();
@@ -2343,12 +2343,6 @@ fn management_request<T>(message: T) -> tonic::Request<T> {
         .metadata_mut()
         .insert("authorization", bearer_metadata(MANAGEMENT_E2E_AUTH_TOKEN));
     request
-}
-
-fn management_user_id_ref(user_id: impl Into<String>) -> management_proto::UserRef {
-    management_proto::UserRef {
-        value: Some(management_proto::user_ref::Value::UserId(user_id.into())),
-    }
 }
 
 async fn recv_grpc_server_message(
@@ -2527,11 +2521,11 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     );
     let room_create_body: Value =
         serde_json::from_slice(&room_create.stdout).expect("CLI room create output should be JSON");
-    let room_id = room_create_body["room"]["id"]
+    let room_id = room_create_body["id"]
         .as_str()
-        .expect("CLI room create output should contain room.id")
+        .expect("CLI room create output should contain id")
         .to_string();
-    assert_eq!(room_create_body["room"]["name"], "CLI managed room");
+    assert_eq!(room_create_body["name"], "CLI managed room");
 
     let playlist_list =
         run_synctv_remote_cli(&server, &["playlist", "list", "--room-id", &room_id]).await;
@@ -2568,9 +2562,9 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     );
     let media_add_body: Value =
         serde_json::from_slice(&media_add.stdout).expect("CLI media add output should be JSON");
-    let media_one_id = media_add_body["media"]["id"]
+    let media_one_id = media_add_body["id"]
         .as_str()
-        .expect("CLI media add output should contain media.id")
+        .expect("CLI media add output should contain id")
         .to_string();
 
     let media_add_second = run_synctv_remote_cli(
@@ -2596,9 +2590,9 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     );
     let media_add_second_body: Value = serde_json::from_slice(&media_add_second.stdout)
         .expect("CLI second media add output should be JSON");
-    let media_two_id = media_add_second_body["media"]["id"]
+    let media_two_id = media_add_second_body["id"]
         .as_str()
-        .expect("CLI second media add output should contain media.id")
+        .expect("CLI second media add output should contain id")
         .to_string();
 
     let media_reorder = run_synctv_remote_cli(
@@ -2742,12 +2736,12 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
     );
     let create_user_body: Value =
         serde_json::from_slice(&create_user.stdout).expect("CLI user create output should be JSON");
-    let created_user_id = create_user_body["user"]["id"]
+    let created_user_id = create_user_body["id"]
         .as_str()
-        .expect("CLI user create output should contain user.id")
+        .expect("CLI user create output should contain id")
         .to_string();
-    assert_eq!(create_user_body["user"]["username"], username);
-    assert_eq!(create_user_body["user"]["email"], email);
+    assert_eq!(create_user_body["username"], username);
+    assert_eq!(create_user_body["email"], email);
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -2757,13 +2751,12 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .expect("connect management gRPC client");
     let fetched_user = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user: Some(management_user_id_ref(created_user_id.clone())),
+            user_id: created_user_id.clone(),
+            username: String::new(),
         }))
         .await
         .expect("management get_user should succeed for CLI-created user")
-        .into_inner()
-        .user
-        .expect("fetched admin user");
+        .into_inner();
     assert_eq!(fetched_user.id, created_user_id);
     assert_eq!(fetched_user.username, username);
     assert_eq!(fetched_user.email, email);
@@ -2787,8 +2780,6 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
         .await
         .expect("admin should create room for room get CLI test")
         .into_inner()
-        .room
-        .expect("created room")
         .id;
 
     let room_get = run_synctv_remote_cli(&server, &["room", "get", &room_id]).await;
@@ -2800,9 +2791,9 @@ async fn full_stack_cli_user_and_room_commands_use_remote_management_endpoint() 
     );
     let room_get_body: Value =
         serde_json::from_slice(&room_get.stdout).expect("CLI room get output should be JSON");
-    assert_eq!(room_get_body["room"]["id"], room_id);
-    assert_eq!(room_get_body["room"]["name"], room_name);
-    assert_eq!(room_get_body["room"]["description"], "cli room get e2e");
+    assert_eq!(room_get_body["id"], room_id);
+    assert_eq!(room_get_body["name"], room_name);
+    assert_eq!(room_get_body["description"], "cli room get e2e");
 }
 
 #[tokio::test]
@@ -2841,8 +2832,6 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         .await
         .expect("admin should create room for room ban CLI test")
         .into_inner()
-        .room
-        .expect("created room")
         .id;
 
     let room_ban = run_synctv_remote_cli(
@@ -2858,12 +2847,9 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     );
     let room_ban_body: Value =
         serde_json::from_slice(&room_ban.stdout).expect("CLI room ban output should be JSON");
-    assert_eq!(room_ban_body["room"]["id"], room_id);
-    assert_eq!(room_ban_body["room"]["isBanned"], true);
-    assert_eq!(
-        room_ban_body["room"]["creatorUsername"],
-        BOOTSTRAP_ROOT_USERNAME
-    );
+    assert_eq!(room_ban_body["id"], room_id);
+    assert_eq!(room_ban_body["isBanned"], true);
+    assert_eq!(room_ban_body["creatorUsername"], BOOTSTRAP_ROOT_USERNAME);
 
     let room_unban = run_synctv_remote_cli(&server, &["room", "unban", &room_id]).await;
     assert!(
@@ -2874,14 +2860,9 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
     );
     let room_unban_body: Value =
         serde_json::from_slice(&room_unban.stdout).expect("CLI room unban output should be JSON");
-    assert_eq!(room_unban_body["room"]["id"], room_id);
-    assert!(!room_unban_body["room"]["isBanned"]
-        .as_bool()
-        .unwrap_or(false));
-    assert_eq!(
-        room_unban_body["room"]["creatorUsername"],
-        BOOTSTRAP_ROOT_USERNAME
-    );
+    assert_eq!(room_unban_body["id"], room_id);
+    assert!(!room_unban_body["isBanned"].as_bool().unwrap_or(false));
+    assert_eq!(room_unban_body["creatorUsername"], BOOTSTRAP_ROOT_USERNAME);
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(
@@ -2895,9 +2876,7 @@ async fn full_stack_cli_room_ban_and_unban_commands_manage_room_lifecycle() {
         }))
         .await
         .expect("management get_room should succeed after CLI unban")
-        .into_inner()
-        .room
-        .expect("fetched room");
+        .into_inner();
     assert_eq!(fetched_room.id, room_id);
     assert!(!fetched_room.is_banned);
 }
@@ -2937,8 +2916,6 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         .await
         .expect("admin should create room for room settings CLI test")
         .into_inner()
-        .room
-        .expect("created room")
         .id;
 
     let settings_get = run_synctv_remote_cli(&server, &["room", "settings", "get", &room_id]).await;
@@ -3062,9 +3039,9 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
     );
     let create_user_body: Value =
         serde_json::from_slice(&create_user.stdout).expect("CLI user create output should be JSON");
-    let created_user_id = create_user_body["user"]["id"]
+    let created_user_id = create_user_body["id"]
         .as_str()
-        .expect("CLI user create output should contain user.id")
+        .expect("CLI user create output should contain id")
         .to_string();
 
     let add_admin = run_synctv_remote_cli(
@@ -3080,9 +3057,9 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
     );
     let add_admin_body: Value = serde_json::from_slice(&add_admin.stdout)
         .expect("CLI user admin add output should be JSON");
-    assert_eq!(add_admin_body["user"]["id"], created_user_id);
+    assert_eq!(add_admin_body["id"], created_user_id);
     assert_eq!(
-        add_admin_body["user"]["role"].as_i64(),
+        add_admin_body["role"].as_i64(),
         Some(synctv_proto::common::UserRole::Admin as i64)
     );
 
@@ -3127,13 +3104,12 @@ async fn full_stack_cli_user_admin_commands_manage_global_admin_lifecycle() {
         .expect("connect management gRPC client");
     let fetched_user = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user: Some(management_user_id_ref(created_user_id.clone())),
+            user_id: created_user_id.clone(),
+            username: String::new(),
         }))
         .await
         .expect("management get_user should succeed after remove-admin")
-        .into_inner()
-        .user
-        .expect("fetched admin user");
+        .into_inner();
     assert_eq!(fetched_user.id, created_user_id);
     assert_eq!(
         fetched_user.role,
@@ -3160,7 +3136,7 @@ async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstr
     let ban_root_body: Value =
         serde_json::from_slice(&ban_root.stdout).expect("CLI user ban output should be JSON");
     assert_eq!(
-        ban_root_body["user"]["status"].as_i64(),
+        ban_root_body["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
@@ -3175,7 +3151,7 @@ async fn full_stack_cli_user_unban_succeeds_even_when_target_is_the_only_bootstr
     let unban_root_body: Value =
         serde_json::from_slice(&unban_root.stdout).expect("CLI user unban output should be JSON");
     assert_eq!(
-        unban_root_body["user"]["status"].as_i64(),
+        unban_root_body["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Active as i64)
     );
 }
@@ -3214,17 +3190,17 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
 
-    let batch_user_a_id = batch_user_a["user"]["id"]
+    let batch_user_a_id = batch_user_a["id"]
         .as_str()
-        .expect("batch user a should include user.id")
+        .expect("batch user a should include id")
         .to_string();
-    let batch_user_b_id = batch_user_b["user"]["id"]
+    let batch_user_b_id = batch_user_b["id"]
         .as_str()
-        .expect("batch user b should include user.id")
+        .expect("batch user b should include id")
         .to_string();
-    let batch_user_c_id = batch_user_c["user"]["id"]
+    let batch_user_c_id = batch_user_c["id"]
         .as_str()
-        .expect("batch user c should include user.id")
+        .expect("batch user c should include id")
         .to_string();
 
     let batch_ban = run_synctv_remote_cli_json(
@@ -3354,9 +3330,9 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         "create room for room settings reset",
     )
     .await;
-    let room_id = room["room"]["id"]
+    let room_id = room["id"]
         .as_str()
-        .expect("room create should include room.id")
+        .expect("room create should include id")
         .to_string();
 
     let full_room_settings_json = room_settings_patch_json(false, true);
@@ -3400,7 +3376,7 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
     )
     .await;
     assert!(
-        reset_room_settings["room"].is_object(),
+        reset_room_settings["id"].is_string(),
         "room settings reset should return room payload: {reset_room_settings}"
     );
 
@@ -3438,16 +3414,13 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         "user create active",
     )
     .await;
-    let lifecycle_user_id = created_lifecycle_user["user"]["id"]
+    let lifecycle_user_id = created_lifecycle_user["id"]
         .as_str()
-        .expect("user create should include user.id")
+        .expect("user create should include id")
         .to_string();
+    assert_eq!(created_lifecycle_user["username"], lifecycle_username);
     assert_eq!(
-        created_lifecycle_user["user"]["username"],
-        lifecycle_username
-    );
-    assert_eq!(
-        created_lifecycle_user["user"]["status"].as_i64(),
+        created_lifecycle_user["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Active as i64)
     );
 
@@ -3479,8 +3452,8 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         "user get by username",
     )
     .await;
-    assert_eq!(fetched_user["user"]["id"], lifecycle_user_id);
-    assert_eq!(fetched_user["user"]["email"], lifecycle_email);
+    assert_eq!(fetched_user["id"], lifecycle_user_id);
+    assert_eq!(fetched_user["email"], lifecycle_email);
 
     let active_login_token =
         login_http_ok_token(&server, &lifecycle_username, lifecycle_password).await;
@@ -3567,9 +3540,9 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         "room create for user rooms",
     )
     .await;
-    let room_id = created_room["room"]["id"]
+    let room_id = created_room["id"]
         .as_str()
-        .expect("room create should return room.id")
+        .expect("room create should return id")
         .to_string();
 
     let related_rooms = run_synctv_remote_cli_json(
@@ -3594,7 +3567,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     )
     .await;
     assert_eq!(
-        banned_user["user"]["status"].as_i64(),
+        banned_user["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
@@ -3609,7 +3582,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
         run_synctv_remote_cli_json(&server, &["user", "unban", &renamed_username], "user unban")
             .await;
     assert_eq!(
-        unbanned_user["user"]["status"].as_i64(),
+        unbanned_user["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Active as i64)
     );
     let restored_login_token =
@@ -3660,11 +3633,11 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     )
     .await;
 
-    let delete_one_id = delete_one_body["user"]["id"]
+    let delete_one_id = delete_one_body["id"]
         .as_str()
         .expect("delete target one should have id")
         .to_string();
-    let delete_two_id = delete_two_body["user"]["id"]
+    let delete_two_id = delete_two_body["id"]
         .as_str()
         .expect("delete target two should have id")
         .to_string();
@@ -3732,7 +3705,7 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
             "--user-id",
             &delete_two_id,
             "--user-id",
-            batch_ban_two_body["user"]["id"]
+            batch_ban_two_body["id"]
                 .as_str()
                 .expect("batch ban two should have id"),
         ],
@@ -3754,7 +3727,8 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
     for deleted_user_id in [&delete_one_id, &delete_two_id] {
         let deleted_lookup = management_client
             .get_user(management_request(management_proto::GetUserRequest {
-                user: Some(management_user_id_ref(deleted_user_id.clone())),
+                user_id: (*deleted_user_id).clone(),
+                username: String::new(),
             }))
             .await
             .expect_err("deleted user should not be retrievable via management");
@@ -3763,17 +3737,15 @@ async fn full_stack_cli_user_lifecycle_commands_cover_identity_state_role_and_ba
 
     let still_banned = management_client
         .get_user(management_request(management_proto::GetUserRequest {
-            user: Some(management_user_id_ref(
-                batch_ban_one_body["user"]["id"]
-                    .as_str()
-                    .expect("batch ban one should have id"),
-            )),
+            user_id: batch_ban_one_body["id"]
+                .as_str()
+                .expect("batch ban one should have id")
+                .to_string(),
+            username: String::new(),
         }))
         .await
         .expect("management get_user should still work for batch-banned survivor")
-        .into_inner()
-        .user
-        .expect("banned survivor should be returned");
+        .into_inner();
     assert_eq!(
         still_banned.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -3824,11 +3796,11 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     )
     .await;
 
-    let member_user_id = member_user["user"]["id"]
+    let member_user_id = member_user["id"]
         .as_str()
         .expect("member user should have id")
         .to_string();
-    let _subject_user_id = subject_user["user"]["id"]
+    let _subject_user_id = subject_user["id"]
         .as_str()
         .expect("subject user should have id")
         .to_string();
@@ -3864,12 +3836,12 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "create room requiring review",
     )
     .await;
-    let room_id = review_room["room"]["id"]
+    let room_id = review_room["id"]
         .as_str()
-        .expect("review room response should include room.id")
+        .expect("review room response should include id")
         .to_string();
     assert_eq!(
-        review_room["room"]["status"].as_i64(),
+        review_room["status"].as_i64(),
         Some(synctv_proto::common::RoomStatus::Active as i64)
     );
 
@@ -3937,7 +3909,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
     let room_after_joins =
         run_synctv_remote_cli_json(&server, &["room", "get", &room_id], "get room after joins")
             .await;
-    assert_eq!(room_after_joins["room"]["memberCount"].as_i64(), Some(3));
+    assert_eq!(room_after_joins["memberCount"].as_i64(), Some(3));
     let joined_subject_user_id = initial_members["members"]
         .as_array()
         .expect("room member list should return members array")
@@ -4057,7 +4029,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "transfer room ownership",
     )
     .await;
-    assert_eq!(transferred_room["room"]["createdBy"], member_user_id);
+    assert_eq!(transferred_room["createdBy"], member_user_id);
 
     let room_password_cleared = run_synctv_remote_cli_json(
         &server,
@@ -4080,10 +4052,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "get room after transfer",
     )
     .await;
-    assert_eq!(
-        room_after_transfer["room"]["creatorUsername"],
-        member_username
-    );
+    assert_eq!(room_after_transfer["creatorUsername"], member_username);
 
     let playlist_alpha = run_synctv_remote_cli_json(
         &server,
@@ -4099,9 +4068,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "create first playlist",
     )
     .await;
-    let playlist_alpha_id = playlist_alpha["playlist"]["id"]
+    let playlist_alpha_id = playlist_alpha["id"]
         .as_str()
-        .expect("playlist create should return playlist.id")
+        .expect("playlist create should return id")
         .to_string();
 
     let playlist_beta = run_synctv_remote_cli_json(
@@ -4118,9 +4087,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "create second playlist",
     )
     .await;
-    let playlist_beta_id = playlist_beta["playlist"]["id"]
+    let playlist_beta_id = playlist_beta["id"]
         .as_str()
-        .expect("playlist create should return playlist.id")
+        .expect("playlist create should return id")
         .to_string();
 
     let renamed_playlist = run_synctv_remote_cli_json(
@@ -4137,10 +4106,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "rename playlist",
     )
     .await;
-    assert_eq!(
-        renamed_playlist["playlist"]["name"],
-        "Alpha Playlist Renamed"
-    );
+    assert_eq!(renamed_playlist["name"], "Alpha Playlist Renamed");
 
     let moved_playlist = run_synctv_remote_cli_json(
         &server,
@@ -4156,7 +4122,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "move playlist",
     )
     .await;
-    assert_eq!(moved_playlist["playlist"]["id"], playlist_beta_id);
+    assert_eq!(moved_playlist["id"], playlist_beta_id);
 
     let listed_playlists = run_synctv_remote_cli_json(
         &server,
@@ -4200,9 +4166,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "add first media",
     )
     .await;
-    let media_one_id = first_media["media"]["id"]
+    let media_one_id = first_media["id"]
         .as_str()
-        .expect("media add should return media.id")
+        .expect("media add should return id")
         .to_string();
 
     let second_media = run_synctv_remote_cli_json(
@@ -4221,9 +4187,9 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "add second media",
     )
     .await;
-    let media_two_id = second_media["media"]["id"]
+    let media_two_id = second_media["id"]
         .as_str()
-        .expect("second media add should return media.id")
+        .expect("second media add should return id")
         .to_string();
 
     let root_media = run_synctv_remote_cli_json(
@@ -4255,7 +4221,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "rename media",
     )
     .await;
-    assert_eq!(renamed_media["media"]["name"], "CLI Room Media Two Renamed");
+    assert_eq!(renamed_media["name"], "CLI Room Media Two Renamed");
 
     let moved_media = run_synctv_remote_cli_json(
         &server,
@@ -4383,7 +4349,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "create batch room one",
     )
     .await;
-    let batch_room_one_id = batch_room_one["room"]["id"]
+    let batch_room_one_id = batch_room_one["id"]
         .as_str()
         .expect("batch room one should have id")
         .to_string();
@@ -4400,7 +4366,7 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         "create batch room two",
     )
     .await;
-    let batch_room_two_id = batch_room_two["room"]["id"]
+    let batch_room_two_id = batch_room_two["id"]
         .as_str()
         .expect("batch room two should have id")
         .to_string();
@@ -4496,9 +4462,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "create stream owner",
     )
     .await;
-    let owner_user_id = owner_user["user"]["id"]
+    let owner_user_id = owner_user["id"]
         .as_str()
-        .expect("stream owner should have user.id")
+        .expect("stream owner should have id")
         .to_string();
 
     let room = run_synctv_remote_cli_json(
@@ -4513,9 +4479,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "create stream room",
     )
     .await;
-    let room_id = room["room"]["id"]
+    let room_id = room["id"]
         .as_str()
-        .expect("stream room should include room.id")
+        .expect("stream room should include id")
         .to_string();
 
     let media = run_synctv_remote_cli_json(
@@ -4534,9 +4500,9 @@ async fn full_stack_cli_stream_commands_cover_publish_list_get_and_kick_with_rea
         "create stream media",
     )
     .await;
-    let media_id = media["media"]["id"]
+    let media_id = media["id"]
         .as_str()
-        .expect("stream media should include media.id")
+        .expect("stream media should include id")
         .to_string();
 
     let publish_key = run_synctv_remote_cli_json(
@@ -4777,18 +4743,18 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         "create room for actor constraint coverage",
     )
     .await;
-    let room_id = room["room"]["id"]
+    let room_id = room["id"]
         .as_str()
-        .expect("actor constraint room should include room.id")
+        .expect("actor constraint room should include id")
         .to_string();
 
-    let outsider_user_id = outsider_user["user"]["id"]
+    let outsider_user_id = outsider_user["id"]
         .as_str()
-        .expect("outsider actor should include user.id")
+        .expect("outsider actor should include id")
         .to_string();
-    let banned_user_id = banned_user["user"]["id"]
+    let banned_user_id = banned_user["id"]
         .as_str()
-        .expect("banned actor should include user.id")
+        .expect("banned actor should include id")
         .to_string();
 
     let transfer_error = run_synctv_remote_cli_failure(
@@ -4826,9 +4792,9 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         "create media for actor publish-key coverage",
     )
     .await;
-    let media_id = media["media"]["id"]
+    let media_id = media["id"]
         .as_str()
-        .expect("actor constraint media should include media.id")
+        .expect("actor constraint media should include id")
         .to_string();
 
     let banned_lookup = run_synctv_remote_cli_json(
@@ -4838,7 +4804,7 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
     )
     .await;
     assert_eq!(
-        banned_lookup["user"]["status"].as_i64(),
+        banned_lookup["status"].as_i64(),
         Some(synctv_proto::common::UserStatus::Banned as i64)
     );
 
@@ -4874,7 +4840,7 @@ async fn full_stack_cli_management_actor_state_constraints_reject_invalid_room_o
         "ban room before creator publish key",
     )
     .await;
-    assert_eq!(banned_room["room"]["isBanned"], true);
+    assert_eq!(banned_room["isBanned"], true);
 
     let creator_banned_room_publish_key_error = run_synctv_remote_cli_failure(
         &server,
@@ -4939,9 +4905,9 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         "create room for membership constraint coverage",
     )
     .await;
-    let room_id = room["room"]["id"]
+    let room_id = room["id"]
         .as_str()
-        .expect("membership constraint room should include room.id")
+        .expect("membership constraint room should include id")
         .to_string();
 
     let outsider_playlist_error = run_synctv_remote_cli_failure(
@@ -5006,11 +4972,11 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         "joined outsider playlist create",
     )
     .await;
-    let playlist_id = outsider_playlist["playlist"]["id"]
+    let playlist_id = outsider_playlist["id"]
         .as_str()
-        .expect("joined outsider playlist create should include playlist.id")
+        .expect("joined outsider playlist create should include id")
         .to_string();
-    assert_eq!(outsider_playlist["playlist"]["name"], "Joined Playlist");
+    assert_eq!(outsider_playlist["name"], "Joined Playlist");
 
     let outsider_media = run_synctv_remote_cli_json(
         &server,
@@ -5030,7 +4996,7 @@ async fn full_stack_cli_management_actor_membership_constraints_gate_playlist_an
         "joined outsider media add",
     )
     .await;
-    assert_eq!(outsider_media["media"]["name"], "Joined Outsider Media");
+    assert_eq!(outsider_media["name"], "Joined Outsider Media");
 }
 
 #[tokio::test]
@@ -6323,9 +6289,9 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     )
     .await;
     let created_user_body = cli_json_output(&created_user, "user create against server binary");
-    let created_user_id = created_user_body["user"]["id"]
+    let created_user_id = created_user_body["id"]
         .as_str()
-        .expect("user create should return user.id");
+        .expect("user create should return id");
 
     let listed_users =
         run_synctv_cli_with_env_async(&["user", "list", "--output", "json"], &envs).await;
@@ -6355,18 +6321,15 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
     )
     .await;
     let created_room_body = cli_json_output(&created_room, "room create against server binary");
-    let room_id = created_room_body["room"]["id"]
+    let room_id = created_room_body["id"]
         .as_str()
-        .expect("room create should return room.id");
+        .expect("room create should return id");
 
     let fetched_room =
         run_synctv_cli_with_env_async(&["room", "get", room_id, "--output", "json"], &envs).await;
     let fetched_room_body = cli_json_output(&fetched_room, "room get against server binary");
-    assert_eq!(fetched_room_body["room"]["id"], room_id);
-    assert_eq!(
-        fetched_room_body["room"]["creatorUsername"],
-        "binary_cli_owner"
-    );
+    assert_eq!(fetched_room_body["id"], room_id);
+    assert_eq!(fetched_room_body["creatorUsername"], "binary_cli_owner");
 
     let stop_output = run_synctv_cli_with_env_async(&["stop"], &envs).await;
     assert!(
@@ -6608,7 +6571,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     .await;
     assert_eq!(owner_profile.status(), StatusCode::OK);
     let owner_profile_body = response_json(owner_profile).await;
-    assert_eq!(owner_profile_body["user"]["username"], "owner_user");
+    assert_eq!(owner_profile_body["username"], "owner_user");
 
     let create_room = post_json(
         &client,
@@ -6619,7 +6582,7 @@ async fn full_stack_http_auth_room_and_ticket_flow_enforces_membership() {
     .await;
     assert_eq!(create_room.status(), StatusCode::OK);
     let create_room_body = response_json(create_room).await;
-    let room_id = create_room_body["room"]["id"]
+    let room_id = create_room_body["id"]
         .as_str()
         .expect("created room id")
         .to_string();
@@ -6722,7 +6685,7 @@ async fn full_stack_http_ticket_upgrades_websocket_once_and_then_expires() {
     .await;
     assert_eq!(create_room.status(), StatusCode::OK);
     let create_room_body = response_json(create_room).await;
-    let room_id = create_room_body["room"]["id"]
+    let room_id = create_room_body["id"]
         .as_str()
         .expect("room id")
         .to_string();
@@ -6851,7 +6814,7 @@ async fn full_stack_grpc_auth_register_login_and_get_profile() {
         .await
         .expect("authenticated get_profile should succeed")
         .into_inner();
-    let user = profile.user.expect("profile user");
+    let user = profile;
     assert_eq!(user.username, "grpc_user");
     assert_eq!(user.email, "grpc-user@example.com");
 
@@ -6911,7 +6874,7 @@ async fn full_stack_grpc_create_room_requires_auth_and_returns_created_room() {
         .await
         .expect("authenticated create_room should succeed")
         .into_inner();
-    let room = response.room.expect("created room");
+    let room = response;
     assert_eq!(room.name, "gRPC room");
     assert_eq!(room.description, "created through full-stack gRPC e2e");
     assert_eq!(room.created_by, login.user.expect("login user").id);
@@ -6977,7 +6940,7 @@ async fn full_stack_grpc_room_context_flow_requires_membership_and_room_metadata
         .await
         .expect("owner should create room")
         .into_inner();
-    let room = created.room.expect("created room");
+    let room = created;
     let room_id = room.id;
 
     let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
@@ -7119,8 +7082,6 @@ async fn full_stack_grpc_message_stream_establishes_and_acks_heartbeat() {
         .await
         .expect("owner create_room should succeed")
         .into_inner()
-        .room
-        .expect("created room")
         .id;
 
     let mut member_room_client = RoomServiceClient::connect(server.api_base_url.clone())
@@ -7225,9 +7186,9 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         "add first room media for grpc playback watch",
     )
     .await;
-    let media_one_id = first_media["media"]["id"]
+    let media_one_id = first_media["id"]
         .as_str()
-        .expect("first media add should return media.id")
+        .expect("first media add should return id")
         .to_string();
 
     let second_media = run_synctv_remote_cli_json(
@@ -7246,9 +7207,9 @@ async fn full_stack_grpc_message_stream_watch_playback_receives_initial_and_futu
         "add second room media for grpc playback watch",
     )
     .await;
-    let media_two_id = second_media["media"]["id"]
+    let media_two_id = second_media["id"]
         .as_str()
-        .expect("second media add should return media.id")
+        .expect("second media add should return id")
         .to_string();
 
     let _ = run_synctv_remote_cli_json(
@@ -7543,9 +7504,9 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         "add first room media for grpc playlist items watch",
     )
     .await;
-    let media_id = added_media["media"]["id"]
+    let media_id = added_media["id"]
         .as_str()
-        .expect("media add should return media.id")
+        .expect("media add should return id")
         .to_string();
 
     let updated_snapshot = recv_matching_grpc_server_message(
@@ -7673,7 +7634,7 @@ async fn full_stack_grpc_message_stream_watch_room_members_receives_initial_and_
         "create grpc room-members joiner",
     )
     .await;
-    let joiner_id = created_joiner["user"]["id"]
+    let joiner_id = created_joiner["id"]
         .as_str()
         .expect("joiner create should return user id")
         .to_string();
@@ -7875,7 +7836,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "create realtime observer",
     )
     .await;
-    let observer_user_id = created_observer["user"]["id"]
+    let observer_user_id = created_observer["id"]
         .as_str()
         .expect("observer create should return user id")
         .to_string();
@@ -7996,9 +7957,9 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "add first room media for websocket test",
     )
     .await;
-    let media_one_id = first_media["media"]["id"]
+    let media_one_id = first_media["id"]
         .as_str()
-        .expect("first media add should return media.id")
+        .expect("first media add should return id")
         .to_string();
     let _ = recv_matching_server_message(
         &mut member_ws,
@@ -8031,9 +7992,9 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
         "add second room media for websocket test",
     )
     .await;
-    let media_two_id = second_media["media"]["id"]
+    let media_two_id = second_media["id"]
         .as_str()
-        .expect("second media add should return media.id")
+        .expect("second media add should return id")
         .to_string();
     let _ = recv_matching_server_message(
         &mut member_ws,
@@ -8412,7 +8373,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
         "create realtime playlist",
     )
     .await;
-    let playlist_id = created_playlist["playlist"]["id"]
+    let playlist_id = created_playlist["id"]
         .as_str()
         .expect("playlist create should return playlist id")
         .to_string();
@@ -8511,9 +8472,9 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         "add first room media for websocket playback watch",
     )
     .await;
-    let media_one_id = first_media["media"]["id"]
+    let media_one_id = first_media["id"]
         .as_str()
-        .expect("first media add should return media.id")
+        .expect("first media add should return id")
         .to_string();
 
     let second_media = run_synctv_remote_cli_json(
@@ -8532,9 +8493,9 @@ async fn full_stack_websocket_watch_playback_receives_initial_and_future_updates
         "add second room media for websocket playback watch",
     )
     .await;
-    let media_two_id = second_media["media"]["id"]
+    let media_two_id = second_media["id"]
         .as_str()
-        .expect("second media add should return media.id")
+        .expect("second media add should return id")
         .to_string();
 
     let _ = run_synctv_remote_cli_json(
@@ -8782,9 +8743,9 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         "add first room media for websocket playlist items watch",
     )
     .await;
-    let media_id = added_media["media"]["id"]
+    let media_id = added_media["id"]
         .as_str()
-        .expect("media add should return media.id")
+        .expect("media add should return id")
         .to_string();
 
     let updated_snapshot = recv_matching_server_message(
@@ -8890,7 +8851,7 @@ async fn full_stack_websocket_watch_room_members_receives_initial_and_future_upd
         "create websocket room-members joiner",
     )
     .await;
-    let joiner_id = created_joiner["user"]["id"]
+    let joiner_id = created_joiner["id"]
         .as_str()
         .expect("joiner create should return user id")
         .to_string();
@@ -8989,8 +8950,6 @@ async fn full_stack_grpc_message_stream_requires_membership() {
         .await
         .expect("owner create_room should succeed")
         .into_inner()
-        .room
-        .expect("created room")
         .id;
 
     let mut outsider_room_client = RoomServiceClient::connect(server.api_base_url.clone())

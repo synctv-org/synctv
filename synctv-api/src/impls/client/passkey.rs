@@ -9,14 +9,13 @@ use synctv_proto::client::{
     PasskeyAuthenticationExtensionsInput, PasskeyAuthenticatorAttachment,
     PasskeyAuthenticatorSelectionCriteria, PasskeyAuthenticatorTransport, PasskeyCreationChallenge,
     PasskeyCredProtectInput, PasskeyCredential, PasskeyCredentialDescriptor,
-    PasskeyCredentialProtectionPolicy, PasskeyCredentialResponse, PasskeyHmacGetSecretInput,
-    PasskeyMediationRequirement, PasskeyPubKeyCredentialParam,
-    PasskeyPublicKeyCredentialCreationOptions, PasskeyPublicKeyCredentialHint,
-    PasskeyPublicKeyCredentialRequestOptions, PasskeyPublicKeyCredentialType,
-    PasskeyRegistrationCredential, PasskeyRegistrationExtensionsClientOutputs,
-    PasskeyRegistrationExtensionsInput, PasskeyRelyingParty, PasskeyRequestChallenge,
-    PasskeyResidentKeyRequirement, PasskeyUserEntity, PasskeyUserVerificationRequirement,
-    StartPasskeyBindRequest, StartPasskeyBindResponse,
+    PasskeyCredentialProtectionPolicy, PasskeyHmacGetSecretInput, PasskeyMediationRequirement,
+    PasskeyPubKeyCredentialParam, PasskeyPublicKeyCredentialCreationOptions,
+    PasskeyPublicKeyCredentialHint, PasskeyPublicKeyCredentialRequestOptions,
+    PasskeyPublicKeyCredentialType, PasskeyRegistrationCredential,
+    PasskeyRegistrationExtensionsClientOutputs, PasskeyRegistrationExtensionsInput,
+    PasskeyRelyingParty, PasskeyRequestChallenge, PasskeyResidentKeyRequirement, PasskeyUserEntity,
+    PasskeyUserVerificationRequirement, StartPasskeyBindRequest, StartPasskeyBindResponse,
 };
 use webauthn_rs::prelude::{
     CreationChallengeResponse, PublicKeyCredential, RegisterPublicKeyCredential,
@@ -558,7 +557,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         req: synctv_proto::client::FinishPasskeyBindRequest,
-    ) -> Result<PasskeyCredentialResponse, ApiError> {
+    ) -> Result<PasskeyCredential, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let credential = req
             .credential
@@ -580,9 +579,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(PasskeyCredentialResponse {
-            credential: Some(passkey_credential_to_proto(&credential)),
-        })
+        Ok(passkey_credential_to_proto(&credential))
     }
 
     pub async fn list_passkeys(&self, user_id: &UserId) -> Result<ListPasskeysResponse, ApiError> {

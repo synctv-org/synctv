@@ -111,7 +111,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::RejectUserRegistrationReviewRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::RejectUserRegistrationReviewResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::UserRegistrationReview, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let user_request_id =
@@ -123,10 +123,7 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::admin::RejectUserRegistrationReviewResponse {
-            review: Some(self.load_user_registration_review(user_request_id).await?),
-            success: true,
-        })
+        self.load_user_registration_review(user_request_id).await
     }
 
     pub async fn list_room_creation_reviews(
@@ -187,7 +184,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::RejectRoomCreationReviewRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::RejectRoomCreationReviewResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::RoomCreationReview, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let room_request_id =
@@ -202,10 +199,7 @@ impl AdminApiImpl {
             )
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::admin::RejectRoomCreationReviewResponse {
-            review: Some(self.load_room_creation_review(room_request_id).await?),
-            success: true,
-        })
+        self.load_room_creation_review(room_request_id).await
     }
 
     pub async fn list_room_join_reviews(
@@ -275,7 +269,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::RejectRoomJoinReviewRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::admin::RejectRoomJoinReviewResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::RoomJoinReview, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
         let request_id = self
@@ -295,10 +289,7 @@ impl AdminApiImpl {
             ctx,
         )
         .await?;
-        Ok(synctv_proto::admin::RejectRoomJoinReviewResponse {
-            review: Some(self.load_room_join_review(request_id).await?),
-            success: true,
-        })
+        self.load_room_join_review(request_id).await
     }
 
     pub async fn list_ban_records(

@@ -584,7 +584,7 @@ impl AdminApiImpl {
         req: synctv_proto::client::UpdatePlaybackStateRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
-    ) -> Result<synctv_proto::client::UpdatePlaybackStateResponse, ApiError> {
+    ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
         let command =
             crate::impls::client::build_playback_state_update(req, &self.public_id_codec)?;
@@ -635,8 +635,6 @@ impl AdminApiImpl {
             "Admin updated playback state"
         );
 
-        Ok(synctv_proto::client::UpdatePlaybackStateResponse {
-            playback_state: Some(try_playback_state_to_proto(&state, &self.public_id_codec)?),
-        })
+        try_playback_state_to_proto(&state, &self.public_id_codec)
     }
 }

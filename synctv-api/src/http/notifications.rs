@@ -17,8 +17,8 @@ use axum::{
     Json,
 };
 use synctv_proto::client::{
-    DeleteNotificationRequest, GetNotificationRequest, GetNotificationResponse,
-    ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
+    DeleteNotificationRequest, GetNotificationRequest, ListNotificationsResponse,
+    MarkAllAsReadRequest, MarkAsReadRequest, NotificationProto,
 };
 
 fn get_notification_api(
@@ -91,7 +91,7 @@ pub async fn list_notifications(
             ("notificationId" = i64, Path, description = "Notification numeric ID")
         ),
         responses(
-            (status = 200, description = "Notification details", body = GetNotificationResponse),
+            (status = 200, description = "Notification details", body = NotificationProto),
             (status = 400, description = "Invalid notification ID", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 404, description = "Notification not found", body = crate::openapi::GoogleRpcStatusSchema)
@@ -105,7 +105,7 @@ pub async fn get_notification(
     request_meta: RequestMetadata,
     Path(req): Path<GetNotificationRequest>,
     State(state): State<AppState>,
-) -> AppResult<Json<GetNotificationResponse>> {
+) -> AppResult<Json<NotificationProto>> {
     let api = get_notification_api(&state)?;
     let request_meta = request_meta
         .0

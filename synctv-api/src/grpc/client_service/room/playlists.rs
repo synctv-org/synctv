@@ -7,7 +7,7 @@ use synctv_proto::client::*;
 pub(super) async fn create_playlist(
     service: &ClientServiceImpl,
     request: Request<CreatePlaylistRequest>,
-) -> Result<Response<CreatePlaylistResponse>, Status> {
+) -> Result<Response<Playlist>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -52,7 +52,7 @@ pub(super) async fn get_playlist(
 pub(super) async fn update_playlist(
     service: &ClientServiceImpl,
     request: Request<UpdatePlaylistRequest>,
-) -> Result<Response<UpdatePlaylistResponse>, Status> {
+) -> Result<Response<Playlist>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();
@@ -75,7 +75,7 @@ pub(super) async fn update_playlist(
 pub(super) async fn move_playlist(
     service: &ClientServiceImpl,
     request: Request<MovePlaylistRequest>,
-) -> Result<Response<MovePlaylistResponse>, Status> {
+) -> Result<Response<Playlist>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

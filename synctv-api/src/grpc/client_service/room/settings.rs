@@ -49,7 +49,7 @@ pub(super) async fn get_room_settings(
 pub(super) async fn reset_room_settings(
     service: &ClientServiceImpl,
     request: Request<ResetRoomSettingsRequest>,
-) -> Result<Response<ResetRoomSettingsResponse>, Status> {
+) -> Result<Response<RoomSettings>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let executor = service.client_api.clone();
     let client_api = service.client_api.clone();
@@ -71,7 +71,7 @@ pub(super) async fn reset_room_settings(
 pub(super) async fn transfer_room_ownership(
     service: &ClientServiceImpl,
     request: Request<TransferRoomOwnershipRequest>,
-) -> Result<Response<TransferRoomOwnershipResponse>, Status> {
+) -> Result<Response<Room>, Status> {
     let (metadata, room_id) = service.room_request_context(&request)?;
     let req = request.into_inner();
     let executor = service.client_api.clone();

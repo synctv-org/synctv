@@ -512,7 +512,7 @@ mod tests {
         async fn get_user(
             &self,
             _: Request<GetUserRequest>,
-        ) -> std::result::Result<Response<admin_proto::GetUserResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn get_user_preferences(
@@ -532,7 +532,7 @@ mod tests {
         async fn add_admin(
             &self,
             _: Request<AddAdminRequest>,
-        ) -> std::result::Result<Response<admin_proto::AddAdminResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn remove_admin(
@@ -550,7 +550,7 @@ mod tests {
         async fn create_user(
             &self,
             _: Request<CreateUserRequest>,
-        ) -> std::result::Result<Response<admin_proto::CreateUserResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn delete_user(
@@ -562,13 +562,13 @@ mod tests {
         async fn ban_user(
             &self,
             _: Request<BanUserRequest>,
-        ) -> std::result::Result<Response<admin_proto::BanUserResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn unban_user(
             &self,
             _: Request<UnbanUserRequest>,
-        ) -> std::result::Result<Response<admin_proto::UnbanUserResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn list_user_registration_reviews(
@@ -588,8 +588,7 @@ mod tests {
         async fn reject_user_registration_review(
             &self,
             _: Request<RejectUserRegistrationReviewRequest>,
-        ) -> std::result::Result<Response<admin_proto::RejectUserRegistrationReviewResponse>, Status>
-        {
+        ) -> std::result::Result<Response<admin_proto::UserRegistrationReview>, Status> {
             unavailable_test_management_response()
         }
         async fn list_room_creation_reviews(
@@ -609,8 +608,7 @@ mod tests {
         async fn reject_room_creation_review(
             &self,
             _: Request<RejectRoomCreationReviewRequest>,
-        ) -> std::result::Result<Response<admin_proto::RejectRoomCreationReviewResponse>, Status>
-        {
+        ) -> std::result::Result<Response<admin_proto::RoomCreationReview>, Status> {
             unavailable_test_management_response()
         }
         async fn list_room_join_reviews(
@@ -630,8 +628,7 @@ mod tests {
         async fn reject_room_join_review(
             &self,
             _: Request<RejectRoomJoinReviewRequest>,
-        ) -> std::result::Result<Response<admin_proto::RejectRoomJoinReviewResponse>, Status>
-        {
+        ) -> std::result::Result<Response<admin_proto::RoomJoinReview>, Status> {
             unavailable_test_management_response()
         }
         async fn list_ban_records(
@@ -643,7 +640,7 @@ mod tests {
         async fn update_user_role(
             &self,
             _: Request<UpdateUserRoleRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateUserRoleResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn set_user_password(
@@ -655,8 +652,7 @@ mod tests {
         async fn update_user_username(
             &self,
             _: Request<UpdateUserUsernameRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateUserUsernameResponse>, Status>
-        {
+        ) -> std::result::Result<Response<admin_proto::AdminUser>, Status> {
             unavailable_test_management_response()
         }
         async fn get_user_rooms(
@@ -680,7 +676,7 @@ mod tests {
         async fn create_room(
             &self,
             _: Request<CreateRoomRequest>,
-        ) -> std::result::Result<Response<client_proto::CreateRoomResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn list_rooms(
@@ -692,7 +688,7 @@ mod tests {
         async fn get_room(
             &self,
             _: Request<GetRoomRequest>,
-        ) -> std::result::Result<Response<admin_proto::GetRoomResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn list_room_categories(
@@ -705,8 +701,7 @@ mod tests {
         async fn upsert_room_category(
             &self,
             _: Request<admin_proto::UpsertRoomCategoryRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpsertRoomCategoryResponse>, Status>
-        {
+        ) -> std::result::Result<Response<client_proto::RoomCategory>, Status> {
             unavailable_test_management_response()
         }
         async fn delete_room_category(
@@ -725,7 +720,7 @@ mod tests {
         async fn upsert_room_label(
             &self,
             _: Request<admin_proto::UpsertRoomLabelRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpsertRoomLabelResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::RoomLabel>, Status> {
             unavailable_test_management_response()
         }
         async fn delete_room_label(
@@ -737,8 +732,7 @@ mod tests {
         async fn update_room_taxonomy(
             &self,
             _: Request<admin_proto::UpdateRoomTaxonomyRequest>,
-        ) -> std::result::Result<Response<admin_proto::UpdateRoomTaxonomyResponse>, Status>
-        {
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn get_room_members(
@@ -799,14 +793,13 @@ mod tests {
         async fn reset_room_settings(
             &self,
             _: Request<ResetRoomSettingsRequest>,
-        ) -> std::result::Result<Response<admin_proto::ResetRoomSettingsResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn transfer_room_ownership(
             &self,
             _: Request<TransferRoomOwnershipRequest>,
-        ) -> std::result::Result<Response<client_proto::TransferRoomOwnershipResponse>, Status>
-        {
+        ) -> std::result::Result<Response<client_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn update_room_password(
@@ -819,13 +812,13 @@ mod tests {
         async fn ban_room(
             &self,
             _: Request<BanRoomRequest>,
-        ) -> std::result::Result<Response<admin_proto::BanRoomResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn unban_room(
             &self,
             _: Request<UnbanRoomRequest>,
-        ) -> std::result::Result<Response<admin_proto::UnbanRoomResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::Room>, Status> {
             unavailable_test_management_response()
         }
         async fn delete_room(
@@ -867,8 +860,7 @@ mod tests {
         async fn update_playback_state(
             &self,
             _: Request<UpdatePlaybackStateRequest>,
-        ) -> std::result::Result<Response<client_proto::UpdatePlaybackStateResponse>, Status>
-        {
+        ) -> std::result::Result<Response<client_proto::PlaybackState>, Status> {
             unavailable_test_management_response()
         }
         async fn create_publish_key(
@@ -910,31 +902,31 @@ mod tests {
         async fn create_playlist(
             &self,
             _: Request<CreatePlaylistRequest>,
-        ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Playlist>, Status> {
             unavailable_test_management_response()
         }
         async fn create_alist_playlist(
             &self,
             _: Request<CreateAlistPlaylistRequest>,
-        ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Playlist>, Status> {
             unavailable_test_management_response()
         }
         async fn create_emby_playlist(
             &self,
             _: Request<CreateEmbyPlaylistRequest>,
-        ) -> std::result::Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Playlist>, Status> {
             unavailable_test_management_response()
         }
         async fn update_playlist(
             &self,
             _: Request<UpdatePlaylistRequest>,
-        ) -> std::result::Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Playlist>, Status> {
             unavailable_test_management_response()
         }
         async fn move_playlist(
             &self,
             _: Request<MovePlaylistRequest>,
-        ) -> std::result::Result<Response<client_proto::MovePlaylistResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Playlist>, Status> {
             unavailable_test_management_response()
         }
         async fn delete_playlist(
@@ -953,49 +945,49 @@ mod tests {
         async fn add_media(
             &self,
             _: Request<AddMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_direct_url_media(
             &self,
             _: Request<AddDirectUrlMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_alist_media(
             &self,
             _: Request<AddAlistMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_emby_media(
             &self,
             _: Request<AddEmbyMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_bilibili_video_media(
             &self,
             _: Request<AddBilibiliVideoMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_bilibili_pgc_media(
             &self,
             _: Request<AddBilibiliPgcMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn add_bilibili_live_media(
             &self,
             _: Request<AddBilibiliLiveMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::AddMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn edit_media(
             &self,
             _: Request<EditMediaRequest>,
-        ) -> std::result::Result<Response<client_proto::EditMediaResponse>, Status> {
+        ) -> std::result::Result<Response<client_proto::Media>, Status> {
             unavailable_test_management_response()
         }
         async fn move_media(

@@ -800,7 +800,7 @@ impl AdminApiImpl {
         &self,
         req: synctv_proto::admin::ResetRoomSettingsRequest,
         admin_user_id: &UserId,
-    ) -> Result<synctv_proto::admin::ResetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::admin::Room, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let default_settings = synctv_core::models::RoomSettings::default();
@@ -833,11 +833,7 @@ impl AdminApiImpl {
             );
         self.publish_room_cache_invalidation(&rid);
 
-        Ok(synctv_proto::admin::ResetRoomSettingsResponse {
-            room: Some(
-                self.load_admin_room_proto(&room, Some(&snapshot.settings))
-                    .await?,
-            ),
-        })
+        self.load_admin_room_proto(&room, Some(&snapshot.settings))
+            .await
     }
 }

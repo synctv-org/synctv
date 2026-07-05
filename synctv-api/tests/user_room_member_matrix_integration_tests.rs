@@ -684,7 +684,7 @@ async fn test_transfer_room_ownership_requires_creator_and_active_member_target(
         .await
         .unwrap();
 
-    let updated_room = response.room.expect("updated room");
+    let updated_room = response;
     assert_eq!(updated_room.created_by, room_admin_public_id);
 
     let new_owner_member = room_service
@@ -1135,9 +1135,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
             &RequestContext::default(),
         )
         .await
-        .unwrap()
-        .user
-        .expect("banned user");
+        .unwrap();
     assert_eq!(
         banned_regular.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -1153,9 +1151,7 @@ async fn test_admin_user_lifecycle_and_role_hierarchy_matrix() {
             &RequestContext::default(),
         )
         .await
-        .unwrap()
-        .user
-        .expect("unbanned user");
+        .unwrap();
     assert_eq!(
         unbanned_regular.status,
         synctv_proto::common::UserStatus::Active as i32

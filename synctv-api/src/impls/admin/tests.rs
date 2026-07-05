@@ -1786,7 +1786,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
             .await,
     )?;
 
-    let response_room = some_value(response.room, "response should include room")?;
+    let response_room = response;
     assert_eq!(response_room.labels.len(), 1);
     assert_eq!(
         response_room.labels[0].id,
@@ -2967,7 +2967,7 @@ async fn test_create_user_allows_missing_email_and_explicit_status() -> TestResu
             .await,
     )?;
 
-    let created = some_value(response.user, "created user")?;
+    let created = response;
     assert_eq!(created.username, "attr_user");
     assert_eq!(created.email, "");
     assert_eq!(created.role, synctv_proto::common::UserRole::Admin as i32);
@@ -3001,7 +3001,7 @@ async fn test_update_user_username_preserves_missing_email() -> TestResult {
             .await,
     )?;
 
-    let updated = some_value(response.user, "updated user")?;
+    let updated = response;
     assert_eq!(updated.username, "target_update_renamed");
     assert_eq!(updated.email, "");
     Ok(())
@@ -3183,7 +3183,7 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() -> Tes
             .await,
     )?;
 
-    let banned_user = some_value(response.user, "ban_user response user")?;
+    let banned_user = response;
     assert_eq!(
         banned_user.status,
         synctv_proto::common::UserStatus::Banned as i32
@@ -4951,7 +4951,7 @@ async fn test_update_playlist_bypasses_room_membership_requirement_for_global_ad
             .await,
     )?;
 
-    let updated = some_value(response.playlist, "playlist should be returned")?;
+    let updated = response;
     assert_eq!(updated.id, public_playlist_id(&admin_api, playlist.id));
     assert_eq!(updated.name, "playlist-after");
     Ok(())
@@ -5289,7 +5289,7 @@ async fn test_reset_room_settings_bypasses_room_membership_for_local_management_
             .await,
     )?;
 
-    let response_room = some_value(response.room, "response should include room")?;
+    let response_room = response;
     let room_id = admin_api
         .public_id_codec
         .decode_room_id(&response_room.id)
@@ -5468,7 +5468,7 @@ async fn test_edit_media_bypasses_room_membership_requirement_for_global_admin()
             .await,
     )?;
 
-    let updated = some_value(response.media, "media should be returned")?;
+    let updated = response;
     assert_eq!(updated.id, public_media_id(&admin_api, media.id));
     assert_eq!(updated.name, "media-edited");
 

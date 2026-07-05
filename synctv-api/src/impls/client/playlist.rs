@@ -237,7 +237,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::CreatePlaylistRequest,
-    ) -> Result<synctv_proto::client::CreatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let uid = *user_id;
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
@@ -278,17 +278,8 @@ impl ClientApiImpl {
 
         let item_count = self.playlist_media_count_i32(&rid, &playlist.id).await?;
 
-        Ok(synctv_proto::client::CreatePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    &playlist,
-                    item_count,
-                    true,
-                    Some(uid),
-                )
-                .await?,
-            ),
-        })
+        self.playlist_to_proto_for_viewer_with_loaded_cover(&playlist, item_count, true, Some(uid))
+            .await
     }
 
     pub async fn update_playlist(
@@ -296,7 +287,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdatePlaylistRequest,
-    ) -> Result<synctv_proto::client::UpdatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let uid = *user_id;
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
@@ -327,17 +318,8 @@ impl ClientApiImpl {
 
         let item_count = self.playlist_media_count_i32(&rid, &playlist.id).await?;
 
-        Ok(synctv_proto::client::UpdatePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    &playlist,
-                    item_count,
-                    true,
-                    Some(uid),
-                )
-                .await?,
-            ),
-        })
+        self.playlist_to_proto_for_viewer_with_loaded_cover(&playlist, item_count, true, Some(uid))
+            .await
     }
 
     async fn playlist_update_response(
@@ -345,21 +327,17 @@ impl ClientApiImpl {
         playlist: &synctv_core::models::Playlist,
         user_id: UserId,
         is_available: bool,
-    ) -> Result<synctv_proto::client::UpdatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let item_count = self
             .playlist_media_count_i32(&playlist.room_id, &playlist.id)
             .await?;
-        Ok(synctv_proto::client::UpdatePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    playlist,
-                    item_count,
-                    is_available,
-                    Some(user_id),
-                )
-                .await?,
-            ),
-        })
+        self.playlist_to_proto_for_viewer_with_loaded_cover(
+            playlist,
+            item_count,
+            is_available,
+            Some(user_id),
+        )
+        .await
     }
 
     pub async fn create_playlist_cover_upload_session(
@@ -478,7 +456,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::UpdatePlaylistCoverRequest,
-    ) -> Result<synctv_proto::client::UpdatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let playlist_id = crate::impls::parse_playlist_id_param(
@@ -503,7 +481,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::ClearPlaylistCoverRequest,
-    ) -> Result<synctv_proto::client::UpdatePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let rid = self.parse_room_id(room_id)?;
         let playlist_id = crate::impls::parse_playlist_id_param(
@@ -527,7 +505,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::MovePlaylistRequest,
-    ) -> Result<synctv_proto::client::MovePlaylistResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Playlist, ApiError> {
         let uid = *user_id;
         let actor_id = uid;
         let rid = self.parse_room_id(room_id)?;
@@ -565,17 +543,8 @@ impl ClientApiImpl {
 
         let item_count = self.playlist_media_count_i32(&rid, &playlist.id).await?;
 
-        Ok(synctv_proto::client::MovePlaylistResponse {
-            playlist: Some(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    &playlist,
-                    item_count,
-                    true,
-                    Some(uid),
-                )
-                .await?,
-            ),
-        })
+        self.playlist_to_proto_for_viewer_with_loaded_cover(&playlist, item_count, true, Some(uid))
+            .await
     }
 
     pub async fn delete_playlist(

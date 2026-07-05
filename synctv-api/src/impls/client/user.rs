@@ -394,7 +394,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         username: Option<String>,
-    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         let normalized_username = username.as_ref().map(|value| value.trim().to_string());
         if normalized_username.is_none() {
             return Err(ApiError::InvalidInput(
@@ -419,15 +419,13 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::client::GetProfileResponse {
-            user: Some(self.user_to_proto_with_avatar(&updated_user).await?),
-        })
+        self.user_to_proto_with_avatar(&updated_user).await
     }
 
     pub async fn get_profile(
         &self,
         user_id: &UserId,
-    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         let uid = *user_id;
         let user = self
             .user_service
@@ -435,9 +433,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::client::GetProfileResponse {
-            user: Some(self.user_to_proto_with_avatar(&user).await?),
-        })
+        self.user_to_proto_with_avatar(&user).await
     }
 
     pub async fn get_user_preferences(
@@ -484,14 +480,9 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         req: synctv_proto::client::SetUsernameRequest,
-    ) -> Result<synctv_proto::client::SetUsernameResponse, ApiError> {
-        let response = self
-            .update_profile(user_id, Some(req.new_username.trim().to_string()))
-            .await?;
-
-        Ok(synctv_proto::client::SetUsernameResponse {
-            user: response.user,
-        })
+    ) -> Result<synctv_proto::client::User, ApiError> {
+        self.update_profile(user_id, Some(req.new_username.trim().to_string()))
+            .await
     }
 
     pub async fn create_user_avatar_upload_session(
@@ -595,30 +586,26 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         req: synctv_proto::client::UpdateUserAvatarRequest,
-    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         let avatar = required_file_upload_reference(req.avatar_reference, "avatar_reference")?;
         let updated = self
             .user_service
             .update_avatar(user_id, avatar)
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::GetProfileResponse {
-            user: Some(self.user_to_proto_with_avatar(&updated).await?),
-        })
+        self.user_to_proto_with_avatar(&updated).await
     }
 
     pub async fn clear_user_avatar(
         &self,
         user_id: &UserId,
-    ) -> Result<synctv_proto::client::GetProfileResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         let updated = self
             .user_service
             .clear_avatar(user_id)
             .await
             .map_err(ApiError::from)?;
-        Ok(synctv_proto::client::GetProfileResponse {
-            user: Some(self.user_to_proto_with_avatar(&updated).await?),
-        })
+        self.user_to_proto_with_avatar(&updated).await
     }
 
     pub async fn start_email_bind(
@@ -669,7 +656,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         req: synctv_proto::client::ConfirmEmailBindRequest,
-    ) -> Result<synctv_proto::client::ConfirmEmailBindResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let email = crate::impls::validation::validate_email(&req.email)
             .map_err(|error| ApiError::InvalidInput(error.to_string()))?;
@@ -684,33 +671,21 @@ impl ClientApiImpl {
                 other => ApiError::from(other),
             })?;
 
-        Ok(synctv_proto::client::ConfirmEmailBindResponse {
-            user: Some(try_user_to_proto(
-                &updated_user,
-                Some(&email),
-                &self.public_id_codec,
-            )?),
-        })
+        try_user_to_proto(&updated_user, Some(&email), &self.public_id_codec)
     }
 
     pub async fn unbind_email(
         &self,
         user_id: &UserId,
         req: synctv_proto::client::UnbindEmailRequest,
-    ) -> Result<synctv_proto::client::UnbindEmailResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let updated_user = self
             .user_service
             .unbind_email(user_id, &req.verification_id)
             .await?;
 
-        Ok(synctv_proto::client::UnbindEmailResponse {
-            user: Some(try_user_to_proto(
-                &updated_user,
-                None,
-                &self.public_id_codec,
-            )?),
-        })
+        try_user_to_proto(&updated_user, None, &self.public_id_codec)
     }
 
     pub async fn start_sensitive_operation_verification(
@@ -975,7 +950,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         req: synctv_proto::client::FinishOpaquePasswordUpdateRequest,
-    ) -> Result<synctv_proto::client::FinishOpaquePasswordUpdateResponse, ApiError> {
+    ) -> Result<synctv_proto::client::User, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         let user = if !req.passkey_session_id.is_empty() || req.passkey_credential.is_some() {
             let passkey_credential = req.passkey_credential.as_ref().ok_or_else(|| {
@@ -1016,9 +991,7 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?
         };
 
-        Ok(synctv_proto::client::FinishOpaquePasswordUpdateResponse {
-            user: Some(self.user_to_proto_with_avatar(&user).await?),
-        })
+        self.user_to_proto_with_avatar(&user).await
     }
 }
 

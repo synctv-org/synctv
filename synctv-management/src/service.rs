@@ -210,6 +210,73 @@ impl ManagementServiceImpl {
         self.resolve_user_ref_value(user, field_name, false).await
     }
 
+    async fn resolve_required_user_selector(
+        &self,
+        user_id: &str,
+        username: &str,
+        field_name: &str,
+    ) -> Result<String, Status> {
+        self.resolve_user_selector_value(user_id, username, field_name, true)
+            .await
+    }
+
+    async fn resolve_optional_user_selector(
+        &self,
+        user_id: &str,
+        username: &str,
+        field_name: &str,
+    ) -> Result<String, Status> {
+        self.resolve_user_selector_value(user_id, username, field_name, false)
+            .await
+    }
+
+    async fn resolve_user_selector_value(
+        &self,
+        user_id: &str,
+        username: &str,
+        field_name: &str,
+        required: bool,
+    ) -> Result<String, Status> {
+        let user_id = user_id.trim();
+        let username = username.trim();
+        match (!user_id.is_empty(), !username.is_empty()) {
+            (true, true) => Err(Status::invalid_argument(format!(
+                "{field_name} must contain either user_id or username"
+            ))),
+            (true, false) => {
+                self.public_id_codec
+                    .decode_user_id(user_id)
+                    .map_err(|error| {
+                        Status::invalid_argument(format!(
+                            "{field_name}.user_id is invalid: {error}"
+                        ))
+                    })?;
+                Ok(user_id.to_string())
+            }
+            (false, true) => {
+                let user = self
+                    .user_service
+                    .get_user_by_username(username)
+                    .await
+                    .map_err(map_management_user_lookup_error)?;
+                self.public_id_codec
+                    .encode_user_id(user.id)
+                    .map_err(|error| {
+                        Status::internal(format!("failed to encode resolved user id: {error}"))
+                    })
+            }
+            (false, false) => {
+                if required {
+                    Err(Status::invalid_argument(format!(
+                        "{field_name} must contain either user_id or username"
+                    )))
+                } else {
+                    Ok(String::new())
+                }
+            }
+        }
+    }
+
     async fn resolve_user_ref_value(
         &self,
         user: UserRef,
@@ -905,10 +972,12 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_user(
         &self,
         request: Request<GetUserRequest>,
-    ) -> Result<Response<admin_proto::GetUserResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .get_user(admin_proto::GetUserRequest { user_id })
@@ -923,7 +992,9 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::GetUserPreferencesResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .get_user_preferences(admin_proto::GetUserPreferencesRequest { user_id })
@@ -939,7 +1010,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_user_preferences(
@@ -959,11 +1032,13 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_admin(
         &self,
         request: Request<AddAdminRequest>,
-    ) -> Result<Response<admin_proto::AddAdminResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .add_admin(
@@ -983,7 +1058,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .remove_admin(
@@ -1019,7 +1096,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_user(
         &self,
         request: Request<CreateUserRequest>,
-    ) -> Result<Response<admin_proto::CreateUserResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1049,7 +1126,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .delete_user(
@@ -1065,11 +1144,13 @@ impl ManagementService for ManagementServiceImpl {
     async fn ban_user(
         &self,
         request: Request<BanUserRequest>,
-    ) -> Result<Response<admin_proto::BanUserResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .ban_user(
@@ -1089,11 +1170,13 @@ impl ManagementService for ManagementServiceImpl {
     async fn unban_user(
         &self,
         request: Request<UnbanUserRequest>,
-    ) -> Result<Response<admin_proto::UnbanUserResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .unban_user(
@@ -1152,7 +1235,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn reject_user_registration_review(
         &self,
         request: Request<RejectUserRegistrationReviewRequest>,
-    ) -> Result<Response<admin_proto::RejectUserRegistrationReviewResponse>, Status> {
+    ) -> Result<Response<admin_proto::UserRegistrationReview>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -1216,7 +1299,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn reject_room_creation_review(
         &self,
         request: Request<RejectRoomCreationReviewRequest>,
-    ) -> Result<Response<admin_proto::RejectRoomCreationReviewResponse>, Status> {
+    ) -> Result<Response<admin_proto::RoomCreationReview>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -1280,7 +1363,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn reject_room_join_review(
         &self,
         request: Request<RejectRoomJoinReviewRequest>,
-    ) -> Result<Response<admin_proto::RejectRoomJoinReviewResponse>, Status> {
+    ) -> Result<Response<admin_proto::RoomJoinReview>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1326,11 +1409,13 @@ impl ManagementService for ManagementServiceImpl {
     async fn update_user_role(
         &self,
         request: Request<UpdateUserRoleRequest>,
-    ) -> Result<Response<admin_proto::UpdateUserRoleResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_user_role(
@@ -1354,7 +1439,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .set_user_password(
@@ -1375,11 +1462,13 @@ impl ManagementService for ManagementServiceImpl {
     async fn update_user_username(
         &self,
         request: Request<UpdateUserUsernameRequest>,
-    ) -> Result<Response<admin_proto::UpdateUserUsernameResponse>, Status> {
+    ) -> Result<Response<admin_proto::AdminUser>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_user_username(
@@ -1401,7 +1490,9 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::GetUserRoomsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .get_user_rooms(admin_proto::GetUserRoomsRequest {
@@ -1494,7 +1585,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_room(
         &self,
         request: Request<CreateRoomRequest>,
-    ) -> Result<Response<client_proto::CreateRoomResponse>, Status> {
+    ) -> Result<Response<client_proto::Room>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -1560,7 +1651,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn upsert_room_category(
         &self,
         request: Request<admin_proto::UpsertRoomCategoryRequest>,
-    ) -> Result<Response<admin_proto::UpsertRoomCategoryResponse>, Status> {
+    ) -> Result<Response<client_proto::RoomCategory>, Status> {
         self.check_admin_get_validated(&request)?;
         self.admin_api
             .upsert_room_category(request.into_inner())
@@ -1596,7 +1687,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn upsert_room_label(
         &self,
         request: Request<admin_proto::UpsertRoomLabelRequest>,
-    ) -> Result<Response<admin_proto::UpsertRoomLabelResponse>, Status> {
+    ) -> Result<Response<client_proto::RoomLabel>, Status> {
         self.check_admin_get_validated(&request)?;
         self.admin_api
             .upsert_room_label(request.into_inner())
@@ -1620,7 +1711,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn update_room_taxonomy(
         &self,
         request: Request<admin_proto::UpdateRoomTaxonomyRequest>,
-    ) -> Result<Response<admin_proto::UpdateRoomTaxonomyResponse>, Status> {
+    ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         self.admin_api
             .update_room_taxonomy(request.into_inner(), &validated.user_id)
@@ -1632,7 +1723,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_room(
         &self,
         request: Request<GetRoomRequest>,
-    ) -> Result<Response<admin_proto::GetRoomResponse>, Status> {
+    ) -> Result<Response<admin_proto::Room>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -1682,7 +1773,9 @@ impl ManagementService for ManagementServiceImpl {
             .room_actor_for_user(&actor_user_id, &req.room_id)
             .await
             .map_err(map_api_error)?;
-        let user_id = self.resolve_optional_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_optional_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .client_api
             .search_chat_messages_for_actor(
@@ -1707,7 +1800,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .add_member(
@@ -1734,7 +1829,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_member_remark_name(
@@ -1758,7 +1855,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_member_display_tag(
@@ -1782,7 +1881,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .update_member_permissions(
@@ -1810,7 +1911,9 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
-        let user_id = self.resolve_required_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_required_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .kick_member(
@@ -1862,7 +1965,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn reset_room_settings(
         &self,
         request: Request<ResetRoomSettingsRequest>,
-    ) -> Result<Response<admin_proto::ResetRoomSettingsResponse>, Status> {
+    ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -1881,7 +1984,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn transfer_room_ownership(
         &self,
         request: Request<TransferRoomOwnershipRequest>,
-    ) -> Result<Response<client_proto::TransferRoomOwnershipResponse>, Status> {
+    ) -> Result<Response<client_proto::Room>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -1939,7 +2042,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn ban_room(
         &self,
         request: Request<BanRoomRequest>,
-    ) -> Result<Response<admin_proto::BanRoomResponse>, Status> {
+    ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -1961,7 +2064,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn unban_room(
         &self,
         request: Request<UnbanRoomRequest>,
-    ) -> Result<Response<admin_proto::UnbanRoomResponse>, Status> {
+    ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -2103,7 +2206,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn update_playback_state(
         &self,
         request: Request<UpdatePlaybackStateRequest>,
-    ) -> Result<Response<client_proto::UpdatePlaybackStateResponse>, Status> {
+    ) -> Result<Response<client_proto::PlaybackState>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
@@ -2111,9 +2214,16 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .update_playback_state(
                 &req.room_id,
-                req.update.ok_or_else(|| {
-                    Status::invalid_argument("playback state update payload is required")
-                })?,
+                client_proto::UpdatePlaybackStateRequest {
+                    r#type: req.r#type,
+                    playing: req.playing,
+                    position: req.position,
+                    speed: req.speed,
+                    version: req.version,
+                    expected_media_id: req.expected_media_id,
+                    expected_playlist_id: req.expected_playlist_id,
+                    expected_target_hash: req.expected_target_hash,
+                },
                 &validated.user_id,
                 &ctx,
             )
@@ -2252,7 +2362,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_playlist(
         &self,
         request: Request<CreatePlaylistRequest>,
-    ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+    ) -> Result<Response<client_proto::Playlist>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2278,7 +2388,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_alist_playlist(
         &self,
         request: Request<CreateAlistPlaylistRequest>,
-    ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+    ) -> Result<Response<client_proto::Playlist>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2308,7 +2418,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn create_emby_playlist(
         &self,
         request: Request<CreateEmbyPlaylistRequest>,
-    ) -> Result<Response<client_proto::CreatePlaylistResponse>, Status> {
+    ) -> Result<Response<client_proto::Playlist>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2334,7 +2444,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn update_playlist(
         &self,
         request: Request<UpdatePlaylistRequest>,
-    ) -> Result<Response<client_proto::UpdatePlaylistResponse>, Status> {
+    ) -> Result<Response<client_proto::Playlist>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let name = req
@@ -2359,7 +2469,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn move_playlist(
         &self,
         request: Request<MovePlaylistRequest>,
-    ) -> Result<Response<client_proto::MovePlaylistResponse>, Status> {
+    ) -> Result<Response<client_proto::Playlist>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -2438,7 +2548,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_media(
         &self,
         request: Request<AddMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2464,7 +2574,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_direct_url_media(
         &self,
         request: Request<AddDirectUrlMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2493,7 +2603,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_alist_media(
         &self,
         request: Request<AddAlistMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2523,7 +2633,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_emby_media(
         &self,
         request: Request<AddEmbyMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2549,7 +2659,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_bilibili_video_media(
         &self,
         request: Request<AddBilibiliVideoMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2577,7 +2687,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_bilibili_pgc_media(
         &self,
         request: Request<AddBilibiliPgcMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2603,7 +2713,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn add_bilibili_live_media(
         &self,
         request: Request<AddBilibiliLiveMediaRequest>,
-    ) -> Result<Response<client_proto::AddMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
@@ -2629,7 +2739,7 @@ impl ManagementService for ManagementServiceImpl {
     async fn edit_media(
         &self,
         request: Request<EditMediaRequest>,
-    ) -> Result<Response<client_proto::EditMediaResponse>, Status> {
+    ) -> Result<Response<client_proto::Media>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let response = self
@@ -3336,7 +3446,9 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<admin_proto::ListActiveStreamsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let user_id = self.resolve_optional_user_ref(req.user, "user").await?;
+        let user_id = self
+            .resolve_optional_user_selector(&req.user_id, &req.username, "user")
+            .await?;
         let response = self
             .admin_api
             .list_active_streams(admin_proto::ListActiveStreamsRequest {

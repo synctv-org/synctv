@@ -8,9 +8,9 @@ use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
-    CreatePlaylistRequest, CreatePlaylistResponse, DeletePlaylistQuery, DeletePlaylistRequest,
-    DeletePlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse, MovePlaylistRequest,
-    MovePlaylistResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    CreatePlaylistRequest, DeletePlaylistQuery, DeletePlaylistRequest, DeletePlaylistResponse,
+    ListPlaylistsRequest, ListPlaylistsResponse, MovePlaylistRequest, Playlist,
+    UpdatePlaylistRequest,
 };
 
 #[cfg_attr(
@@ -24,7 +24,7 @@ use synctv_proto::client::{
         ),
         request_body = CreatePlaylistRequest,
         responses(
-            (status = 200, description = "Playlist created", body = CreatePlaylistResponse),
+            (status = 200, description = "Playlist created", body = Playlist),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -38,7 +38,7 @@ pub async fn create_playlist(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
     Json(req): Json<CreatePlaylistRequest>,
-) -> AppResult<Json<CreatePlaylistResponse>> {
+) -> AppResult<Json<Playlist>> {
     let room_id = path.room_id;
     let response = execute_user_endpoint(
         &state,
@@ -68,7 +68,7 @@ pub async fn create_playlist(
         ),
         request_body = UpdatePlaylistRequest,
         responses(
-            (status = 200, description = "Playlist updated", body = UpdatePlaylistResponse),
+            (status = 200, description = "Playlist updated", body = Playlist),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -82,7 +82,7 @@ pub async fn update_playlist(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
     Json(mut req): Json<UpdatePlaylistRequest>,
-) -> AppResult<Json<UpdatePlaylistResponse>> {
+) -> AppResult<Json<Playlist>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,
@@ -116,7 +116,7 @@ pub async fn update_playlist(
         ),
         request_body = MovePlaylistRequest,
         responses(
-            (status = 200, description = "Playlist moved", body = MovePlaylistResponse),
+            (status = 200, description = "Playlist moved", body = Playlist),
             (status = 400, description = "Invalid request", body = crate::openapi::GoogleRpcStatusSchema),
             (status = 401, description = "Authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
@@ -130,7 +130,7 @@ pub async fn move_playlist(
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPlaylistTargetPathRequest>,
     Json(mut req): Json<MovePlaylistRequest>,
-) -> AppResult<Json<MovePlaylistResponse>> {
+) -> AppResult<Json<Playlist>> {
     let synctv_proto::client::RoomPlaylistTargetPathRequest {
         room_id,
         playlist_id,

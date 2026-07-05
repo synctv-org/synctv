@@ -292,7 +292,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         mut req: synctv_proto::client::CreateRoomRequest,
-    ) -> Result<synctv_proto::client::CreateRoomResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Room, ApiError> {
         // Validate and sanitize room name
         req.name = crate::impls::validation::validate_room_name(&req.name)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
@@ -344,16 +344,12 @@ impl ClientApiImpl {
 
         prepared_outbox_fanout.publish_after_outbox_commit();
 
-        Ok(synctv_proto::client::CreateRoomResponse {
-            room: Some(
-                self.room_to_proto_basic_with_loaded_cover(
-                    &room,
-                    Some(&response_settings),
-                    self.load_room_member_count(&room.id).await?,
-                )
-                .await?,
-            ),
-        })
+        self.room_to_proto_basic_with_loaded_cover(
+            &room,
+            Some(&response_settings),
+            self.load_room_member_count(&room.id).await?,
+        )
+        .await
     }
 
     pub async fn list_room_categories(
@@ -1229,7 +1225,7 @@ impl ClientApiImpl {
         &self,
         user_id: &UserId,
         room_id: &str,
-    ) -> Result<synctv_proto::client::ResetRoomSettingsResponse, ApiError> {
+    ) -> Result<synctv_proto::client::RoomSettings, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let username = self.user_username_for_event(&uid).await?;
@@ -1252,9 +1248,7 @@ impl ClientApiImpl {
             );
         self.room_cache_fanout.publish_invalidation(&rid);
 
-        Ok(synctv_proto::client::ResetRoomSettingsResponse {
-            settings: Some(room_settings_to_proto(&snapshot.settings)),
-        })
+        Ok(room_settings_to_proto(&snapshot.settings))
     }
 
     pub async fn transfer_room_ownership(
@@ -1262,7 +1256,7 @@ impl ClientApiImpl {
         user_id: &UserId,
         room_id: &str,
         req: synctv_proto::client::TransferRoomOwnershipRequest,
-    ) -> Result<synctv_proto::client::TransferRoomOwnershipResponse, ApiError> {
+    ) -> Result<synctv_proto::client::Room, ApiError> {
         let current_owner_id = *user_id;
         let rid = self.parse_room_id(room_id)?;
         let new_owner_id = build_transfer_room_ownership_request(req, &self.public_id_codec)?;
@@ -1296,16 +1290,12 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        Ok(synctv_proto::client::TransferRoomOwnershipResponse {
-            room: Some(
-                self.room_to_proto_basic_with_loaded_cover(
-                    &room,
-                    Some(&settings),
-                    self.load_room_member_count(&rid).await?,
-                )
-                .await?,
-            ),
-        })
+        self.room_to_proto_basic_with_loaded_cover(
+            &room,
+            Some(&settings),
+            self.load_room_member_count(&rid).await?,
+        )
+        .await
     }
 
     /// Get public settings
@@ -2000,7 +1990,7 @@ impl ClientApiImpl {
         &self,
         actor: &RoomActor,
         req: synctv_proto::client::SetChatReactionRequest,
-    ) -> Result<synctv_proto::client::SetChatReactionResponse, ApiError> {
+    ) -> Result<synctv_proto::client::ChatMessageEvent, ApiError> {
         let user_id = actor.require_user_id()?;
         let chat_service = self
             .chat_service
@@ -2022,9 +2012,7 @@ impl ClientApiImpl {
                 self.broadcast_chat_pin_event(pin_event);
             }
         }
-        Ok(synctv_proto::client::SetChatReactionResponse {
-            event: Some(chat_event_to_proto(self, outcome.event).await?),
-        })
+        chat_event_to_proto(self, outcome.event).await
     }
 
     pub async fn list_chat_reaction_users_for_actor(
@@ -2232,7 +2220,7 @@ impl ClientApiImpl {
         &self,
         actor: &RoomActor,
         req: synctv_proto::client::GetChatMessageRequest,
-    ) -> Result<synctv_proto::client::GetChatMessageResponse, ApiError> {
+    ) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
         self.require_room_permission(
             actor,
             synctv_core::models::RoomPermission::VIEW_CHAT_HISTORY,
@@ -2252,9 +2240,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
         let username = username_for_chat_message(self, &message.message).await?;
-        Ok(synctv_proto::client::GetChatMessageResponse {
-            message: Some(chat_message_to_proto(self, &message, username)?),
-        })
+        chat_message_to_proto(self, &message, username)
     }
 
     pub async fn get_chat_message_context_for_actor(

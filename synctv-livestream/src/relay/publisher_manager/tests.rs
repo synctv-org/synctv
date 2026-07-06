@@ -2,7 +2,6 @@ use super::super::TestStreamRegistry;
 use super::*;
 use crate::relay::{ActivePublisherEntry, PublisherInfo};
 use anyhow::Result;
-use chrono::Utc;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -218,7 +217,7 @@ impl RecreateOnReregisterRegistry {
                 api_address: "addr1".to_string(),
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
-                started_at: Utc::now(),
+                started_at: synctv_core::SystemClock.now(),
                 epoch: 1,
             })),
             next_epoch: AtomicU64::new(2),
@@ -256,7 +255,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
                 api_address: api_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
-                started_at: Utc::now(),
+                started_at: synctv_core::SystemClock.now(),
                 epoch,
             });
             return Ok(false);
@@ -272,7 +271,7 @@ impl StreamRegistryTrait for RecreateOnReregisterRegistry {
             api_address: api_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
-            started_at: Utc::now(),
+            started_at: synctv_core::SystemClock.now(),
             epoch,
         });
         Ok(true)
@@ -961,7 +960,7 @@ async fn test_start_stops_heartbeat_and_sync_when_broadcast_channel_closes() -> 
                 api_address: "127.0.0.1:50051".to_string(),
                 app_name: "live".to_string(),
                 user_id: "user1".to_string(),
-                started_at: Utc::now(),
+                started_at: synctv_core::SystemClock.now(),
                 epoch: 1,
             },
         )]),

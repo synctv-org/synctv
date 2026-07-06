@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use sqlx::{Postgres, Transaction};
 
 use crate::{
@@ -420,7 +420,7 @@ impl RoomService {
                     .to_string(),
             ));
         };
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         if let Err(error) = self
             .member_repo
             .add_kick_cooldown_with_executor(
@@ -1243,7 +1243,7 @@ impl RoomService {
                 "User is not an active member of this room".to_string(),
             ));
         };
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         if let Err(error) = self
             .member_repo
             .add_kick_cooldown_with_executor(

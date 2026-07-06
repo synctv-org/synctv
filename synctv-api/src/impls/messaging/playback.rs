@@ -148,7 +148,8 @@ impl StreamMessageHandler {
                 .await
                 .map_err(|e| e.to_string())?;
             if current_state.is_playing && playing.unwrap_or(true) {
-                let elapsed_ms = chrono::Utc::now()
+                let elapsed_ms = synctv_core::SystemClock
+                    .now()
                     .signed_duration_since(current_state.updated_at)
                     .num_milliseconds();
                 let elapsed_secs = if elapsed_ms <= 0 {

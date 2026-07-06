@@ -287,7 +287,11 @@ async fn rustfs_s3_rejects_part_outside_declared_manifest() {
     let upload_session_key = some(
         ok(
             repository
-                .get_pending_upload_session_by_object_key(STORAGE_BACKEND, &session.file.object_key)
+                .get_pending_upload_session_by_object_key(
+                    STORAGE_BACKEND,
+                    &session.file.object_key,
+                    synctv_core::SystemClock.now(),
+                )
                 .await,
             "upload session should load by object key",
         ),

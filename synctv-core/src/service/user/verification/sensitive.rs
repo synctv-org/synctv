@@ -111,7 +111,7 @@ impl UserService {
 
         let session_id = synctv_common::snanoid!(48);
         let expires_at =
-            chrono::Utc::now().timestamp() + SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64;
+            crate::SystemClock.now().timestamp() + SENSITIVE_VERIFICATION_SESSION_TTL_SECS_I64;
         if can_bootstrap_from_oauth2 {
             let session = SensitiveVerificationSession {
                 user_id: *user_id,

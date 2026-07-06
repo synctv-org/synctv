@@ -227,7 +227,7 @@ fn test_oauth2_username_candidates_fallback_to_provider_id() {
 fn test_count_active_oauth2_identities_filters_missing_provider_instances() {
     use crate::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
 
-    let now = chrono::Utc::now();
+    let now = crate::SystemClock.now();
     let mappings = vec![
         UserOAuthProviderMapping {
             id: 1,

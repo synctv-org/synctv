@@ -211,13 +211,14 @@ service RoomService {
 // ==================== Public Service ====================
 // Authentication: None (public access)
 // HTTP routes: public room discovery uses /api/rooms/*, public settings uses /api/public/settings,
-// server identity uses /api/public/server-info.
+// server identity uses /api/public/server-info, server time uses /api/public/time.
 service PublicService {
   rpc CheckRoom(CheckRoomRequest) returns (CheckRoomResponse);
   rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
   rpc GetHotRooms(GetHotRoomsRequest) returns (GetHotRoomsResponse);
   rpc GetPublicSettings(GetPublicSettingsRequest) returns (GetPublicSettingsResponse);
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+  rpc GetServerTime(GetServerTimeRequest) returns (GetServerTimeResponse);
 }
 
 // ==================== Email Service ====================
@@ -4175,6 +4176,23 @@ message GetServerInfoResponse {
   // in runtime settings storage; clients only read it.
   string server_id = 1;
   string server_name = 2;
+}
+
+// ==================== Public Server Time ====================
+
+message GetServerTimeRequest {
+  // Unix nanoseconds recorded by the client immediately before sending the
+  // request. Optional for simple clock reads; set it for offset calculation.
+  int64 client_sent_at_nanos = 1;
+}
+
+message GetServerTimeResponse {
+  // Echo of GetServerTimeRequest.client_sent_at_nanos.
+  int64 client_sent_at_nanos = 1;
+  // Unix nanoseconds recorded by the server when handling the request.
+  int64 server_received_at_nanos = 2;
+  // Unix nanoseconds recorded by the server immediately before sending the response.
+  int64 server_sent_at_nanos = 3;
 }
 
 // ==================== Password Reset ====================

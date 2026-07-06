@@ -107,7 +107,7 @@ impl UserService {
 
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::SystemClock.now().timestamp();
                 let remaining_ttl = nonnegative_i64_to_u64((claims.exp - now).max(60));
 
                 let already_existed = self

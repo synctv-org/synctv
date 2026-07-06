@@ -19,6 +19,11 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES` | `server.grpc_max_message_size_bytes` |
 | `SYNCTV_SERVER_GRPC_COMPRESSION_ENABLED` | `server.grpc_compression_enabled` |
 | `SYNCTV_TIME_TIMEZONE` | `time.timezone` |
+| `SYNCTV_TIME_CLOCK_SYNC_ENABLED` | `time.clock_sync.enabled` |
+| `SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE` | `time.clock_sync.provider.type` |
+| `SYNCTV_TIME_CLOCK_SYNC_PROVIDER_SERVERS` | `time.clock_sync.provider.servers` |
+| `SYNCTV_TIME_CLOCK_SYNC_PROVIDER_INTERVAL_SECONDS` | `time.clock_sync.provider.interval_seconds` |
+| `SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TIMEOUT_MILLIS` | `time.clock_sync.provider.timeout_millis` |
 
 ## 公开 ID
 
@@ -222,17 +227,17 @@ description: 常用 SYNCTV_ 环境变量速查。
 | `SYNCTV_LIVESTREAM_PULL_MAX_BACKOFF_MS` | `livestream.pull_max_backoff_ms` |
 | `SYNCTV_LIVESTREAM_MAX_FLV_TAG_SIZE_BYTES` | `livestream.max_flv_tag_size_bytes` |
 | `SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB` | `livestream.gop_cache_max_memory_mb` |
-| `SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB` | `livestream.hls_memory_max_mb` |
-| `SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND` | `livestream.hls_storage_backend` |
-| `SYNCTV_LIVESTREAM_HLS_STORAGE_PATH` | `livestream.hls_storage_path` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_ENDPOINT` | `livestream.hls_oss.endpoint` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` | `livestream.hls_oss.access_key_id` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID_FILE` | `livestream.hls_oss.access_key_id` 文件 |
-| `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` | `livestream.hls_oss.secret_access_key` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY_FILE` | `livestream.hls_oss.secret_access_key` 文件 |
-| `SYNCTV_LIVESTREAM_HLS_OSS_BUCKET` | `livestream.hls_oss.bucket` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_REGION` | `livestream.hls_oss.region` |
-| `SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH` | `livestream.hls_oss.base_path` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE` | `livestream.hls_storage.type` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_MEMORY_MAX_MB` | `livestream.hls_storage.memory_max_mb` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_PATH` | `livestream.hls_storage.path` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_ENDPOINT` | `livestream.hls_storage.endpoint` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` | `livestream.hls_storage.access_key_id` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID_FILE` | `livestream.hls_storage.access_key_id` 文件 |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` | `livestream.hls_storage.secret_access_key` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY_FILE` | `livestream.hls_storage.secret_access_key` 文件 |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_BUCKET` | `livestream.hls_storage.bucket` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_REGION` | `livestream.hls_storage.region` |
+| `SYNCTV_LIVESTREAM_HLS_STORAGE_BASE_PATH` | `livestream.hls_storage.base_path` |
 | `SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS` | `livestream.flv_max_connection_duration_seconds` |
 | `SYNCTV_LIVESTREAM_FLV_WRITE_TIMEOUT_SECONDS` | `livestream.flv_write_timeout_seconds` |
 
@@ -270,7 +275,7 @@ SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=database
 SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=database
 SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
 SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
-SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database","database":{"compression":"zstd","compression_min_size_bytes":4096,"compression_min_savings_percent":10}}}'
+SYNCTV_FILE_STORAGE_BACKENDS='{"database":{"type":"database","compression":"zstd","compression_min_size_bytes":4096,"compression_min_savings_percent":10}}'
 ```
 
 示例：使用 S3-compatible 对象存储
@@ -284,7 +289,7 @@ SYNCTV_FILE_STORAGE_ROOM_COVERS_BACKEND=s3_public
 SYNCTV_FILE_STORAGE_PLAYLIST_COVERS_BACKEND=s3_public
 SYNCTV_FILE_STORAGE_UNREFERENCED_OBJECT_RETENTION_SECONDS=86400
 SYNCTV_FILE_UPLOAD_TOKEN_SECRET_FILE=/run/secrets/file_upload_token_secret
-SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","access_key_id":"access-key","secret_access_key":"secret-key","bucket":"synctv-files","region":"auto","base_path":"files/","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":900}}}'
+SYNCTV_FILE_STORAGE_BACKENDS='{"s3_public":{"type":"s3","endpoint":"https://s3.example.com","access_key_id":"access-key","secret_access_key":"secret-key","bucket":"synctv-files","region":"auto","base_path":"files/","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":900}}'
 ```
 
 ## 集群

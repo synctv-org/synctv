@@ -119,6 +119,7 @@ pub struct Services {
 /// `SyncTV` server - manages all server components
 pub struct SyncTvServer {
     config: Config,
+    clock: Arc<synctv_core::SyncedClock>,
     services: Services,
     livestream_state: Option<LivestreamState>,
     database_pools: DatabasePools,
@@ -246,6 +247,7 @@ fn build_core_api_impls(
     request_executor: Arc<synctv_api::RequestExecutor>,
     ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
     playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
+    clock: Arc<synctv_core::SyncedClock>,
     settings_service: Option<Arc<synctv_core::service::SettingsService>>,
     audit_service: Arc<synctv_core::service::AuditService>,
     provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
@@ -284,6 +286,7 @@ fn build_core_api_impls(
             passkey_service,
         },
         synctv_api::ClientApiRuntime::new_with_services(synctv_api::ClientApiRuntimeServices {
+            clock: clock.clone(),
             realtime_fanout: realtime_fanout_service.clone(),
             realtime_event_service: event_service.clone(),
             redis_runtime,
@@ -319,6 +322,7 @@ fn build_core_api_impls(
                 public_id_codec: public_id_codec.clone(),
             },
             synctv_api::AdminApiRuntime {
+                clock,
                 realtime_fanout: realtime_fanout_service,
                 realtime_event_service: event_service,
                 provider_stores,
@@ -863,7 +867,7 @@ fn livestream_shutdown_timeout_secs(timeout: Duration) -> u64 {
     if timeout.is_zero() {
         0
     } else {
-        timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0)
+        u64::try_from(timeout.as_millis().div_ceil(1_000)).unwrap_or(u64::MAX)
     }
 }
 
@@ -1349,8 +1353,9 @@ impl SyncTvServer {
     }
 
     /// Create a new server instance
-    pub const fn new(
+    pub fn new(
         config: Config,
+        clock: Arc<synctv_core::SyncedClock>,
         services: Services,
         livestream_state: Option<LivestreamState>,
         database_pools: DatabasePools,
@@ -1358,6 +1363,7 @@ impl SyncTvServer {
     ) -> Self {
         Self {
             config,
+            clock,
             services,
             livestream_state,
             database_pools,
@@ -2102,6 +2108,7 @@ impl SyncTvServer {
             api_execution_runtime.request_executor.clone(),
             self.services.ws_ticket_service.clone(),
             Some(self.services.playback_duration_probe.clone()),
+            self.clock.clone(),
             Some(self.services.settings_service.clone()),
             self.services.audit_service.clone(),
             self.services.provider_instance_manager.clone(),
@@ -2647,6 +2654,7 @@ mod tests {
             api_execution_runtime.request_executor.clone(),
             Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             None,
+            Arc::new(synctv_core::SyncedClock::system()),
             Some(settings_service.clone()),
             audit_service.clone(),
             provider_instance_manager.clone(),
@@ -3442,7 +3450,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_event_listener_kick_publisher_removes_registry_entry() {
-        use chrono::Utc;
         use synctv_core::models::{MediaId, RoomId};
         use synctv_livestream::StreamTracker;
         use synctv_realtime::sync::{
@@ -3507,7 +3514,7 @@ mod tests {
                         room_id,
                         media_id,
                         reason: "room_deleted".to_string(),
-                        timestamp: Utc::now(),
+                        timestamp: synctv_core::SystemClock.now(),
                     })
                     .is_ok()
                 {
@@ -3559,7 +3566,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_admin_event_listener_kick_user_from_room_only_removes_room_local_publishers() {
-        use chrono::Utc;
         use synctv_core::models::{MediaId, RoomId, UserId};
         use synctv_livestream::StreamTracker;
         use synctv_realtime::sync::{
@@ -3652,7 +3658,7 @@ mod tests {
                         room_id,
                         user_id,
                         reason: "removed".to_string(),
-                        timestamp: Utc::now(),
+                        timestamp: synctv_core::SystemClock.now(),
                     })
                     .is_ok()
                 {

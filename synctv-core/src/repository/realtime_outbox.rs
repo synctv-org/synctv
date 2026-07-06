@@ -1,14 +1,16 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
-use std::marker::PhantomData;
 
 use crate::{
     models::{RealtimeEvent, RoomPermissionSet},
-    repository::room_resource_event::{
-        NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
-        RoomResourceEventScope, RoomResourceEventSummary, RoomResourceEventSummaryDetails,
-        RoomResourceKind,
+    repository::{
+        room_resource_event::{
+            NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
+            RoomResourceEventScope, RoomResourceEventSummary, RoomResourceEventSummaryDetails,
+            RoomResourceKind,
+        },
+        JsonbArray, OptionalJsonbArray,
     },
     Error, Result,
 };
@@ -16,53 +18,6 @@ use crate::{
 pub const REALTIME_OUTBOX_CHANNEL: &str = "realtime_outbox_new";
 const DEFAULT_MAX_ATTEMPTS: i32 = 12;
 const INSERT_MANY_CHUNK_SIZE: usize = 1000;
-
-struct JsonbArray<T> {
-    values: Vec<serde_json::Value>,
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T: Serialize> JsonbArray<T> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-            _marker: PhantomData,
-        }
-    }
-
-    fn push(&mut self, value: &T) -> Result<()> {
-        self.values.push(serde_json::to_value(value)?);
-        Ok(())
-    }
-
-    fn as_slice(&self) -> &[serde_json::Value] {
-        &self.values
-    }
-}
-
-struct OptionalJsonbArray<T> {
-    values: Vec<Option<serde_json::Value>>,
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T: Serialize> OptionalJsonbArray<T> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-            _marker: PhantomData,
-        }
-    }
-
-    fn push(&mut self, value: Option<&T>) -> Result<()> {
-        self.values
-            .push(value.map(serde_json::to_value).transpose()?);
-        Ok(())
-    }
-
-    fn as_slice(&self) -> &[Option<serde_json::Value>] {
-        &self.values
-    }
-}
 
 struct RoomResourceEventBatch {
     event_ids: Vec<String>,

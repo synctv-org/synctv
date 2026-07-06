@@ -39,7 +39,7 @@ fn direct_url_first_media_url(source_config: &MediaSourceConfig) -> &str {
 }
 
 async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
-    let now = chrono::Utc::now();
+    let now = crate::SystemClock.now();
     let instance = ProviderInstance {
         name: name.to_string(),
         endpoint: "http://localhost:50051".to_string(),

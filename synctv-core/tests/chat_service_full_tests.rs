@@ -147,6 +147,7 @@ fn make_chat_service_with_options(
     let service = ChatService::new(
         chat_repo,
         ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -523,6 +524,7 @@ async fn test_send_message_rate_limit_triggers() {
     let chat_service = ChatService::new(
         chat_repo,
         ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -934,6 +936,7 @@ async fn test_send_message_broadcasts_to_room_members() {
     let chat_service = ChatService::new(
         chat_repo,
         ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter,
             rate_limit_config,
             content_filter,

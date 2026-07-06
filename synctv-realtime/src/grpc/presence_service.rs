@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use synctv_core::models::{RoomId, UserId};
 use tonic::{Request, Response, Status};
@@ -17,13 +16,7 @@ fn u64_to_i64(value: u64) -> i64 {
 }
 
 fn unix_timestamp_secs() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(%error, "system clock is before Unix epoch");
-            0
-        }
-    }
+    u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0)
 }
 
 #[derive(Clone)]

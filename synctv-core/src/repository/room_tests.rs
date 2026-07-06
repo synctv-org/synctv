@@ -201,7 +201,7 @@ fn test_room_is_active_combinations() {
 
     // Deleted
     room.reopen();
-    room.deleted_at = Some(chrono::Utc::now());
+    room.deleted_at = Some(crate::SystemClock.now());
     assert!(!room.is_active());
 }
 

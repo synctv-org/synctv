@@ -93,7 +93,7 @@ impl ProxySigningKey {
         claims: &ProxyUrlClaims,
         signature: &str,
     ) -> Result<(), ProxySignatureError> {
-        let now = chrono::Utc::now().timestamp();
+        let now = synctv_core::SystemClock.now().timestamp();
         if now > claims.expires_at {
             return Err(ProxySignatureError::Expired);
         }
@@ -321,7 +321,7 @@ mod tests {
             resource: "media-streams/main/0".to_string(),
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
-            expires_at: chrono::Utc::now().timestamp() + 3600,
+            expires_at: synctv_core::SystemClock.now().timestamp() + 3600,
             target_url: None,
         }
     }
@@ -386,7 +386,7 @@ mod tests {
     fn verify_rejects_expired() {
         let key = test_key();
         let mut claims = test_claims();
-        claims.expires_at = chrono::Utc::now().timestamp() - 1;
+        claims.expires_at = synctv_core::SystemClock.now().timestamp() - 1;
         let sig = key.sign(&claims);
         assert!(matches!(
             key.verify(&claims, &sig),
@@ -419,7 +419,7 @@ mod tests {
             resource: "dash-manifests/dash/proxy".to_string(),
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
-            expires_at: chrono::Utc::now().timestamp() + 3600,
+            expires_at: synctv_core::SystemClock.now().timestamp() + 3600,
             target_url: None,
         };
         let mut segment_claims = manifest_claims.clone();
@@ -532,7 +532,7 @@ mod tests {
             resource: "media-streams/main/0".to_string(),
             room_id: "room&id=tricky".to_string(),
             user_id: "user with spaces&more=yes".to_string(),
-            expires_at: chrono::Utc::now().timestamp() + 3600,
+            expires_at: synctv_core::SystemClock.now().timestamp() + 3600,
             target_url: Some("https://cdn.example.com/a segment.ts?x=1&y=2".to_string()),
         };
         let query = build_signed_query(&key, &claims);

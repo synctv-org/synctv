@@ -402,7 +402,6 @@ mod tests {
         PreparedRealtimeFanoutPlan,
     };
     use crate::test_support::RecordingRealtimeEventService;
-    use chrono::Utc;
     use std::sync::atomic::Ordering;
     use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
     use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
@@ -436,7 +435,7 @@ mod tests {
             PublishRequest::new(RealtimeEvent::CacheInvalidate {
                 event_id: "disabled-best-effort".to_string(),
                 targets: vec![CacheTarget::All],
-                timestamp: Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }),
         );
     }
@@ -453,7 +452,7 @@ mod tests {
             username: "tester".to_string(),
             settings: synctv_core::models::RoomSettings::default(),
             version: 1,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         });
 
         assert_eq!(event_service.room_calls.load(Ordering::SeqCst), 1);
@@ -472,7 +471,7 @@ mod tests {
                 username: "tester".to_string(),
                 settings: synctv_core::models::RoomSettings::default(),
                 version: 1,
-                timestamp: Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }
         });
         let factory = prepared.outbox_factory();
@@ -492,7 +491,7 @@ mod tests {
             targets: vec![CacheTarget::Room {
                 room_id: RoomId::expect_positive(10_000_151),
             }],
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert!(is_admin_channel_event(&event));
@@ -505,7 +504,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_152),
             room_name: "created room".to_string(),
             creator_id: synctv_core::models::UserId::expect_positive(10_000_153),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert!(is_admin_channel_event(&event));
@@ -519,7 +518,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_156),
             room_name: "created room".to_string(),
             creator_id: UserId::expect_positive(10_000_157),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         broadcast_event_locally(&event_service, &event);
@@ -534,7 +533,7 @@ mod tests {
             event_id: "prepared-plan-room-deleted".to_string(),
             room_id: RoomId::expect_positive(10_000_154),
             deleted_by: synctv_core::models::UserId::expect_positive(10_000_155),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let plan = PreparedRealtimeFanoutPlan::new(disabled_realtime_fanout_service(), event)
             .map_err(test_error)?;
@@ -558,7 +557,7 @@ mod tests {
             position: 12.5,
             speed: 1.0,
             version: 7,
-            updated_at: Utc::now(),
+            updated_at: synctv_core::SystemClock.now(),
         };
         let plan = PreparedRealtimeFanoutPlan::new(
             disabled_realtime_fanout_service(),
@@ -569,7 +568,7 @@ mod tests {
                 username: "tester".to_string(),
                 state,
                 source_changed: false,
-                timestamp: Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             },
         )
         .map_err(test_error)?;

@@ -386,7 +386,7 @@ impl UserRepository {
             "#,
             user_id.as_i64(),
             i16::from(role),
-            Utc::now(),
+            crate::SystemClock.now(),
             old_version
         )
         .fetch_optional(self.pool())
@@ -461,7 +461,7 @@ impl UserRepository {
             user.id.as_i64(),
             &user.username,
             i16::from(user.role),
-            Utc::now(),
+            crate::SystemClock.now(),
             old_version
         )
         .fetch_optional(executor)
@@ -495,7 +495,7 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let u = sqlx::query_as!(
             User,
             r#"
@@ -618,7 +618,7 @@ impl UserRepository {
             "#,
             user_id.as_i64(),
             avatar_file_reference_id,
-            Utc::now(),
+            crate::SystemClock.now(),
             old_version
         )
         .fetch_optional(executor)
@@ -653,7 +653,7 @@ impl UserRepository {
             WHERE id = $1 AND deleted_at IS NULL
             ",
             user_id as &UserId,
-            Utc::now(),
+            crate::SystemClock.now(),
         )
         .execute(executor)
         .await?;
@@ -686,7 +686,7 @@ impl UserRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let lock_key = format!("user-ban:{user_id}");
         let inserted = sqlx::query!(
             r"
@@ -736,7 +736,7 @@ impl UserRepository {
               AND (ub.ends_at IS NULL OR ub.ends_at > CURRENT_TIMESTAMP)
             ",
             user_id as &UserId,
-            Utc::now(),
+            crate::SystemClock.now(),
         )
         .execute(self.pool())
         .await?;

@@ -96,6 +96,7 @@ impl EmailRegistrationTokenRepository {
 
     pub async fn lock_valid_for_update_with_executor(
         token: &str,
+        now: DateTime<Utc>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<Option<EmailRegistrationToken>> {
         let record = sqlx::query_as!(
@@ -112,10 +113,11 @@ impl EmailRegistrationTokenRepository {
             FROM auth_email_registration_tokens
             WHERE token_hash = $1
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $2
             FOR UPDATE
             "#,
             Self::hash_token(token),
+            now,
         )
         .fetch_optional(&mut **tx)
         .await?;
@@ -125,17 +127,19 @@ impl EmailRegistrationTokenRepository {
 
     pub async fn mark_used_with_executor(
         token: &str,
+        now: DateTime<Utc>,
         tx: &mut Transaction<'_, Postgres>,
     ) -> Result<u64> {
         let result = sqlx::query!(
             r#"
             UPDATE auth_email_registration_tokens
-            SET used_at = CURRENT_TIMESTAMP
+            SET used_at = $2
             WHERE token_hash = $1
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $2
             "#,
             Self::hash_token(token),
+            now,
         )
         .execute(&mut **tx)
         .await?;

@@ -13,8 +13,8 @@ impl UserService {
     pub async fn start_email_bind(&self, user_id: &UserId, email: &str) -> Result<String> {
         let email = self.validate_email_bind_target(user_id, email).await?;
         let token = synctv_common::snanoid!(64);
-        let expires_at =
-            chrono::Utc::now() + crate::models::EmailTokenType::EmailBind.expiration_duration();
+        let expires_at = crate::SystemClock.now()
+            + crate::models::EmailTokenType::EmailBind.expiration_duration();
 
         self.email_bind_repository
             .create_or_replace_unused(user_id, &email, &token, expires_at)
@@ -44,18 +44,20 @@ impl UserService {
     ) -> Result<User> {
         let email = self.validate_email_bind_target(user_id, email).await?;
         let mut tx = self.repository.pool().begin().await?;
+        let now = crate::SystemClock.now();
 
         let email = self
             .email_bind_repository
-            .lock_valid_for_update_with_executor(user_id, &email, token, &mut *tx)
+            .lock_valid_for_update_with_executor(user_id, &email, token, now, &mut *tx)
             .await?;
 
         self.consume_sensitive_operation_verification(user_id, verification_id)
             .await?;
 
+        let now = crate::SystemClock.now();
         let (email, now) = self
             .email_bind_repository
-            .consume_with_executor(user_id, &email, token, &mut *tx)
+            .consume_with_executor(user_id, &email, token, now, &mut *tx)
             .await?;
         let updated_user = self
             .user_email_repository
@@ -191,7 +193,7 @@ impl UserService {
             .await?;
         let updated_user = self
             .user_email_repository
-            .delete_with_executor(user_id, chrono::Utc::now(), &mut *tx)
+            .delete_with_executor(user_id, crate::SystemClock.now(), &mut *tx)
             .await?;
 
         tx.commit().await?;

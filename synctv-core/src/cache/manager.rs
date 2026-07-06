@@ -258,7 +258,7 @@ mod tests {
             "alice".to_string(),
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         );
         user_cache
             .set(&user_id, cached_user)
@@ -307,7 +307,7 @@ mod tests {
             "Test Room".to_string(),
             "u1".to_string(),
             true,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         );
         room_cache
             .set(&room_id, cached_room)
@@ -356,7 +356,7 @@ mod tests {
             "alice".to_string(),
             crate::models::UserRole::User,
             crate::models::UserStatus::Active,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         );
         user_cache
             .set(&user_id, cached_user)
@@ -369,7 +369,7 @@ mod tests {
             "Test Room".to_string(),
             "u1".to_string(),
             true,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         );
         room_cache
             .set(&room_id, cached_room)

@@ -163,7 +163,6 @@ impl BanRecordRepository {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use synctv_core_testing::create_test_pool;
 
     use super::*;
@@ -174,7 +173,7 @@ mod tests {
     };
 
     fn make_user(username: &str, role: UserRole) -> User {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         User {
             id: UserId::new(),
             username: username.to_string(),
@@ -210,7 +209,7 @@ mod tests {
                 .await,
             "target user should be created",
         );
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         ok(
             sqlx::query!(
                 r#"

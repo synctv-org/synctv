@@ -357,7 +357,7 @@ mod tests {
             user_id: user_id(),
             username: "runtime-user".to_string(),
             message: "hello".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };

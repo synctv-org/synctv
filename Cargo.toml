@@ -246,6 +246,7 @@ prometheus = { version = "0.14.0", features = ["process"] }
 
 # Time
 chrono = { version = "0.4.45", features = ["serde"] }
+rsntp = "4.1.2"
 
 
 # Kubernetes (in-cluster client for leader election & service discovery)

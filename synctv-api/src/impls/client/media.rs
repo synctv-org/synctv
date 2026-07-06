@@ -710,6 +710,7 @@ pub enum MoveMediaFanoutStep {
 }
 
 pub(crate) struct PreparedDeleteEntriesOutboxFanout {
+    clock: Arc<dyn synctv_core::Clock>,
     media_fanout: Arc<dyn MediaFanoutService>,
     playlist_fanout: Arc<dyn PlaylistFanoutService>,
     playback_fanout: Arc<dyn PlaybackFanoutService>,
@@ -734,6 +735,7 @@ impl PreparedDeleteEntriesOutboxFanout {
         let playlist_fanout = self.playlist_fanout.clone();
         let playback_fanout = self.playback_fanout.clone();
         let realtime_fanout = self.realtime_fanout.clone();
+        let clock = self.clock.clone();
         let room_id = self.room_id;
         let user_id = self.user_id;
         let username = self.username.clone();
@@ -761,7 +763,7 @@ impl PreparedDeleteEntriesOutboxFanout {
                     room_id,
                     media_id: *media_id,
                     reason: "media_deleted".to_string(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: clock.now(),
                 };
                 outbox_events.push(
                     realtime_fanout
@@ -831,23 +833,29 @@ impl PreparedDeleteEntriesOutboxFanout {
     }
 }
 
+pub(crate) struct PrepareDeleteEntriesOutboxFanout {
+    pub(crate) clock: Arc<dyn synctv_core::Clock>,
+    pub(crate) media_fanout: Arc<dyn MediaFanoutService>,
+    pub(crate) playlist_fanout: Arc<dyn PlaylistFanoutService>,
+    pub(crate) playback_fanout: Arc<dyn PlaybackFanoutService>,
+    pub(crate) realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub(crate) room_id: RoomId,
+    pub(crate) user_id: UserId,
+    pub(crate) username: String,
+}
+
 pub(crate) fn prepare_delete_entries_outbox_fanout(
-    media_fanout: Arc<dyn MediaFanoutService>,
-    playlist_fanout: Arc<dyn PlaylistFanoutService>,
-    playback_fanout: Arc<dyn PlaybackFanoutService>,
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    room_id: RoomId,
-    user_id: UserId,
-    username: String,
+    params: PrepareDeleteEntriesOutboxFanout,
 ) -> PreparedDeleteEntriesOutboxFanout {
     PreparedDeleteEntriesOutboxFanout {
-        media_fanout,
-        playlist_fanout,
-        playback_fanout,
-        realtime_fanout,
-        room_id,
-        user_id,
-        username,
+        clock: params.clock,
+        media_fanout: params.media_fanout,
+        playlist_fanout: params.playlist_fanout,
+        playback_fanout: params.playback_fanout,
+        realtime_fanout: params.realtime_fanout,
+        room_id: params.room_id,
+        user_id: params.user_id,
+        username: params.username,
         events: Arc::new(Mutex::new(Vec::new())),
     }
 }
@@ -1475,15 +1483,17 @@ impl ClientApiImpl {
         let (service_req, _explicit_media_ids, _explicit_playlist_ids) =
             build_delete_entries_request(req, &self.public_id_codec)?;
         let username = self.media_actor_username_for_event(&uid).await?;
-        let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            uid,
-            username.clone(),
-        );
+        let prepared_outbox_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: uid,
+                username: username.clone(),
+            });
         let result = self
             .room_service
             .delete_entries_with_outbox(
@@ -1880,15 +1890,17 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         let username = self.media_actor_username_for_event(&uid).await?;
-        let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            uid,
-            username,
-        );
+        let prepared_outbox_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: uid,
+                username,
+            });
         let result = self
             .room_service
             .clear_playlist_with_outbox(
@@ -2583,7 +2595,6 @@ mod tests {
         map_sort_direction, require_dynamic_playlist_creator, stored_file_to_file_cover_proto,
         upload_session_fields, validate_dynamic_playlist_query_support, DEFAULT_MEDIA_TITLE,
     };
-    use chrono::Utc;
     use synctv_core::models::{
         FileOwnershipProofRange, FileUploadSession, MediaId, NewStoredFile, Playlist, PlaylistId,
         RoomId, UserId,
@@ -2689,8 +2700,8 @@ mod tests {
                 ),
             }),
             provider_instance_name: provider_instance_name.map(str::to_string),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
+            updated_at: synctv_core::SystemClock.now(),
             version: 0,
         }
     }
@@ -3008,7 +3019,7 @@ mod tests {
             upload_url: Some("https://upload.example.test/file-1".to_string()),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
-            expires_at: Some(Utc::now()),
+            expires_at: Some(synctv_core::SystemClock.now()),
             max_size_bytes: 1024,
             resumable: true,
             part_size_bytes: 4 * 1024 * 1024,
@@ -3128,7 +3139,7 @@ mod tests {
                 upload_url: "https://upload.example.test/file-1?partNumber=1".to_string(),
                 upload_method: "PUT".to_string(),
                 upload_headers: Default::default(),
-                expires_at: Some(Utc::now()),
+                expires_at: Some(synctv_core::SystemClock.now()),
             });
 
         let fields = api_ok(upload_session_fields(&session))?;

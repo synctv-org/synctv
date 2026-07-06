@@ -2,7 +2,6 @@
 //!
 //! Note: Real-time playback control (play/pause/seek/speed) is handled via WebSocket messages
 
-use chrono::Utc;
 use synctv_core::models::{PlaybackDurationStatus, PlaybackSourceIdentity, SourceProvider};
 use synctv_core::models::{PlaylistId, RoomPlaybackState, UserId};
 use synctv_core::provider::{ExecutionControl, ProviderContext};
@@ -321,16 +320,17 @@ impl ClientApiImpl {
         if metadata.duration_seconds.is_some() {
             return Ok(false);
         }
+        let now = self.clock.now();
         match metadata.duration_status {
             PlaybackDurationStatus::Available => Ok(false),
-            PlaybackDurationStatus::Pending => Ok(metadata
-                .next_retry_at
-                .is_some_and(|retry| retry <= Utc::now())),
+            PlaybackDurationStatus::Pending => {
+                Ok(metadata.next_retry_at.is_some_and(|retry| retry <= now))
+            }
             PlaybackDurationStatus::Unknown
             | PlaybackDurationStatus::Failed
             | PlaybackDurationStatus::Unavailable => Ok(metadata
                 .next_retry_at
-                .is_none_or(|retry_at| retry_at <= Utc::now())),
+                .is_none_or(|retry_at| retry_at <= now)),
         }
     }
 

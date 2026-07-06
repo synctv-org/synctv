@@ -271,8 +271,8 @@ mod tests {
                 content: "content".to_string(),
                 data: NotificationData::default(),
                 is_read: false,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
+                created_at: crate::SystemClock.now(),
+                updated_at: crate::SystemClock.now(),
             },
         };
 

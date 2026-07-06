@@ -1,49 +1,49 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id AS \"id: EmailRegistrationTokenId\",\n                token_hash,\n                username,\n                email,\n                expires_at,\n                used_at,\n                created_at\n            FROM auth_email_registration_tokens\n            WHERE token_hash = $1\n              AND used_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            FOR UPDATE\n            ",
+  "query": "\n            UPDATE auth_email_tokens\n            SET used_at = $4\n            WHERE token = $1\n              AND token_type = $2\n              AND user_id = $3\n              AND used_at IS NULL\n              AND expires_at > $4\n            RETURNING id, token, user_id as \"user_id: UserId\", token_type, expires_at, used_at, created_at\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "id: EmailRegistrationTokenId",
+        "name": "id",
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
+            "table": "auth_email_tokens",
             "name": "id"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "token_hash",
+        "name": "token",
         "type_info": "Varchar",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
-            "name": "token_hash"
+            "table": "auth_email_tokens",
+            "name": "token"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "username",
-        "type_info": "Varchar",
+        "name": "user_id: UserId",
+        "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
-            "name": "username"
+            "table": "auth_email_tokens",
+            "name": "user_id"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "email",
-        "type_info": "Varchar",
+        "name": "token_type",
+        "type_info": "Int2",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
-            "name": "email"
+            "table": "auth_email_tokens",
+            "name": "token_type"
           }
         }
       },
@@ -53,7 +53,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
+            "table": "auth_email_tokens",
             "name": "expires_at"
           }
         }
@@ -64,7 +64,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
+            "table": "auth_email_tokens",
             "name": "used_at"
           }
         }
@@ -75,7 +75,7 @@
         "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "table": "auth_email_registration_tokens",
+            "table": "auth_email_tokens",
             "name": "created_at"
           }
         }
@@ -83,7 +83,10 @@
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Int2",
+        "Int8",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -96,5 +99,5 @@
       false
     ]
   },
-  "hash": "80e99e6af2f5884ffae7c4cdb97e5038f161d7ff8caa2b00182e98e4566586ff"
+  "hash": "fa960e9e443534e131ce0364d92dcf4b50894bcf8ba974da256e6dc4df18b3ab"
 }

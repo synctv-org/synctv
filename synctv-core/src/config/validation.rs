@@ -713,39 +713,63 @@ impl Config {
             }
         }
 
-        match self.livestream.hls_storage_backend {
-            HlsStorageBackend::Memory => {}
-            HlsStorageBackend::File | HlsStorageBackend::SharedFile => {
-                if self.livestream.hls_storage_path.trim().is_empty() {
+        if self.time.clock_sync.enabled {
+            match &self.time.clock_sync.provider {
+                ClockSyncProvider::Sntp(config) => {
+                    if config.servers.iter().all(|server| server.trim().is_empty()) {
+                        errors.push(
+                            "time.clock_sync.provider.servers must contain at least one server when clock sync is enabled"
+                                .to_string(),
+                        );
+                    }
+                    if config.interval_seconds == 0 {
+                        errors.push(
+                            "time.clock_sync.provider.interval_seconds must be greater than 0"
+                                .to_string(),
+                        );
+                    }
+                    if config.timeout_millis == 0 {
+                        errors.push(
+                            "time.clock_sync.provider.timeout_millis must be greater than 0"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        match &self.livestream.hls_storage {
+            HlsStorageConfig::Memory(_) => {}
+            HlsStorageConfig::File(config) | HlsStorageConfig::SharedFile(config) => {
+                if config.path.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_storage_path must be set when livestream.hls_storage_backend is 'file' or 'shared_file'"
+                        "livestream.hls_storage.path must be set when livestream.hls_storage.type is 'file' or 'shared_file'"
                             .to_string(),
                     );
                 }
             }
-            HlsStorageBackend::Oss => {
-                let oss = &self.livestream.hls_oss;
-                if oss.endpoint.trim().is_empty() {
+            HlsStorageConfig::Oss(config) => {
+                if config.endpoint.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_oss.endpoint must be set when livestream.hls_storage_backend='oss'"
+                        "livestream.hls_storage.endpoint must be set when livestream.hls_storage.type='oss'"
                             .to_string(),
                     );
                 }
-                if oss.bucket.trim().is_empty() {
+                if config.bucket.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_oss.bucket must be set when livestream.hls_storage_backend='oss'"
+                        "livestream.hls_storage.bucket must be set when livestream.hls_storage.type='oss'"
                             .to_string(),
                     );
                 }
-                if oss.access_key_id.trim().is_empty() {
+                if config.access_key_id.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_oss.access_key_id must be set when livestream.hls_storage_backend='oss'"
+                        "livestream.hls_storage.access_key_id must be set when livestream.hls_storage.type='oss'"
                             .to_string(),
                     );
                 }
-                if oss.secret_access_key.trim().is_empty() {
+                if config.secret_access_key.trim().is_empty() {
                     errors.push(
-                        "livestream.hls_oss.secret_access_key must be set when livestream.hls_storage_backend='oss'"
+                        "livestream.hls_storage.secret_access_key must be set when livestream.hls_storage.type='oss'"
                             .to_string(),
                     );
                 }
@@ -793,61 +817,63 @@ impl Config {
                 errors
                     .push("file_storage.backends keys must be non-empty trimmed names".to_string());
             }
-            if name == "disabled" && backend.backend_type != FileStorageBackendType::Disabled {
+            if name == "disabled" && !matches!(backend, FileStorageBackendConfig::Disabled) {
                 errors.push("file_storage.backends.disabled must use type='disabled'".to_string());
             }
-            if backend.backend_type == FileStorageBackendType::Database {
-                if backend.database.compression_min_size_bytes < 0 {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.database.compression_min_size_bytes must be non-negative"
-                    ));
+            match backend {
+                FileStorageBackendConfig::Disabled => {}
+                FileStorageBackendConfig::Database(database) => {
+                    if database.compression_min_size_bytes < 0 {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.compression_min_size_bytes must be non-negative"
+                        ));
+                    }
+                    if database.compression_min_savings_percent > 100 {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.compression_min_savings_percent must be between 0 and 100"
+                        ));
+                    }
                 }
-                if backend.database.compression_min_savings_percent > 100 {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.database.compression_min_savings_percent must be between 0 and 100"
-                    ));
-                }
-            }
-            if backend.backend_type == FileStorageBackendType::S3 {
-                let s3 = &backend.s3;
-                if s3.endpoint.trim().is_empty() {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.endpoint must be set when type='s3'"
-                    ));
-                }
-                if s3.bucket.trim().is_empty() {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.bucket must be set when type='s3'"
-                    ));
-                }
-                if s3.access_key_id.trim().is_empty() {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.access_key_id must be set when type='s3'"
-                    ));
-                }
-                if s3.secret_access_key.trim().is_empty() {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.secret_access_key must be set when type='s3'"
-                    ));
-                }
-                if s3.region.trim().is_empty() {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.region must be set when type='s3'"
-                    ));
-                }
-                if s3
-                    .public_base_url
-                    .as_deref()
-                    .is_none_or(|value| value.trim().is_empty())
-                {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.public_base_url must be set when type='s3'"
-                    ));
-                }
-                if s3.upload_expires_seconds <= 0 {
-                    errors.push(format!(
-                        "file_storage.backends.{name}.s3.upload_expires_seconds must be greater than 0"
-                    ));
+                FileStorageBackendConfig::S3(s3) => {
+                    if s3.endpoint.trim().is_empty() {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.endpoint must be set when type='s3'"
+                        ));
+                    }
+                    if s3.bucket.trim().is_empty() {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.bucket must be set when type='s3'"
+                        ));
+                    }
+                    if s3.access_key_id.trim().is_empty() {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.access_key_id must be set when type='s3'"
+                        ));
+                    }
+                    if s3.secret_access_key.trim().is_empty() {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.secret_access_key must be set when type='s3'"
+                        ));
+                    }
+                    if s3.region.trim().is_empty() {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.region must be set when type='s3'"
+                        ));
+                    }
+                    if s3
+                        .public_base_url
+                        .as_deref()
+                        .is_none_or(|value| value.trim().is_empty())
+                    {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.public_base_url must be set when type='s3'"
+                        ));
+                    }
+                    if s3.upload_expires_seconds <= 0 {
+                        errors.push(format!(
+                            "file_storage.backends.{name}.upload_expires_seconds must be greater than 0"
+                        ));
+                    }
                 }
             }
         }
@@ -1002,18 +1028,18 @@ impl Config {
         // preferable for high-traffic production HLS because it avoids routing
         // every remote segment request through the publisher node.
         if cluster_mode_active {
-            match self.livestream.hls_storage_backend {
+            match self.livestream.hls_storage.backend() {
                 HlsStorageBackend::Oss => {}
                 HlsStorageBackend::SharedFile => {
-                    let path = &self.livestream.hls_storage_path;
+                    let path = self.livestream.hls_storage.path();
                     let is_obviously_local = path.starts_with("/tmp/")
                         || path == "/tmp"
                         || path.starts_with("/var/tmp/")
                         || path.starts_with("/dev/shm/");
                     if is_obviously_local {
                         tracing::warn!(
-                            hls_storage_path = %path,
-                            "livestream.hls_storage_backend='shared_file' but hls_storage_path '{}' appears \
+                            storage_path = %path,
+                            "livestream.hls_storage.type='shared_file' but hls_storage.path '{}' appears \
                              to be a local-only path. Ensure this path is actually mounted from \
                              shared storage (NFS, CSI volume) on every replica. Otherwise remote \
                              HLS segment requests will read from a path that is not shared.",
@@ -1023,26 +1049,26 @@ impl Config {
                 }
                 HlsStorageBackend::File => {
                     tracing::warn!(
-                        "Cluster mode is enabled with livestream.hls_storage_backend='file'. \
+                        "Cluster mode is enabled with livestream.hls_storage.type='file'. \
                          HLS remains functional through publisher-node proxying, but shared_file or OSS is recommended for production multi-replica HLS."
                     );
                 }
                 HlsStorageBackend::Memory => {
                     tracing::warn!(
-                        "Cluster mode is enabled with livestream.hls_storage_backend='memory'. \
+                        "Cluster mode is enabled with livestream.hls_storage.type='memory'. \
                          HLS remains functional through publisher-node proxying, but memory storage is node-local and lost on restart. \
-                         Use livestream.hls_storage_backend='shared_file' or 'oss' for production multi-replica HLS."
+                         Use livestream.hls_storage.type='shared_file' or 'oss' for production multi-replica HLS."
                     );
                 }
             }
-        } else if self.livestream.hls_storage_backend == HlsStorageBackend::Memory {
+        } else if self.livestream.hls_storage.backend() == HlsStorageBackend::Memory {
             // Single-node: warn about MemoryStorage only when the effective
             // storage backend is actually the in-memory default.
             tracing::warn!(
                 "The default HLS storage backend is MemoryStorage, which is node-local. \
                  HLS segments are lost on restart. For production multi-replica HLS, \
-                 configure livestream.hls_storage_backend='shared_file' with shared filesystem storage \
-                 or livestream.hls_storage_backend='oss' with S3-compatible object storage."
+                 configure livestream.hls_storage.type='shared_file' with shared filesystem storage \
+                 or livestream.hls_storage.type='oss' with S3-compatible object storage."
             );
         }
 

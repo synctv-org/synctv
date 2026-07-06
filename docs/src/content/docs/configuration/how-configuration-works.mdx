@@ -88,8 +88,8 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 - `metrics.auth.basic_password`
 - `email.smtp_password`
 - `bootstrap.root_password`
-- `livestream.hls_oss.access_key_id`
-- `livestream.hls_oss.secret_access_key`
+- `livestream.hls_storage.access_key_id`
+- `livestream.hls_storage.secret_access_key`
 - Media provider 的 `token`、`api_key`、`password` 等 secret-like 字段
 
 ## `data_dir` 是什么？
@@ -100,7 +100,7 @@ export SYNCTV_JWT_SECRET_FILE=/run/secrets/jwt_secret
 
 - `management.unix_socket_path`
 - `logging.file_path`
-- `livestream.hls_storage_path`
+- `livestream.hls_storage.path`
 - `proxy_slice_cache.file_cache_dir`
 
 不会受 `data_dir` 影响的路径：

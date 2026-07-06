@@ -636,7 +636,7 @@ impl PlaybackSourceMetadataRepository {
         error: &str,
         retry_after: chrono::Duration,
     ) -> Result<bool> {
-        let next_retry_at = chrono::Utc::now() + retry_after;
+        let next_retry_at = crate::SystemClock.now() + retry_after;
         let error = error.chars().take(500).collect::<String>();
         let result = sqlx::query!(
             r"

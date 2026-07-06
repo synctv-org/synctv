@@ -29,7 +29,6 @@ use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
 use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
-use chrono::Utc;
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -729,7 +728,7 @@ impl AlistProvider {
     }
 
     pub fn current_otp_code(otp_secret: &str) -> Result<String, String> {
-        Self::otp_code_at_timestamp(otp_secret, Utc::now().timestamp())
+        Self::otp_code_at_timestamp(otp_secret, crate::SystemClock.now().timestamp())
     }
 
     pub fn otp_code_at_timestamp(otp_secret: &str, timestamp: i64) -> Result<String, String> {
@@ -785,7 +784,7 @@ impl AlistProvider {
             password: stored_password,
             otp_secret: request.otp_secret,
         };
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let credential = UserProviderCredential {
             id: 0,
             user_id: request.user_id,
@@ -1591,7 +1590,7 @@ impl AlistProvider {
 
                     // AliyunDrive live transcoding URLs are requested from AList/OpenList
                     // with url_expire_sec=14400.
-                    let task_expires_at = Some(Utc::now().timestamp() + 4 * 60 * 60);
+                    let task_expires_at = Some(crate::SystemClock.now().timestamp() + 4 * 60 * 60);
                     playback_infos.insert(
                         mode_name.clone(),
                         PlaybackInfo {
@@ -1646,7 +1645,7 @@ impl AlistProvider {
             // Alist raw URLs are provider-dependent. Use the same conservative
             // expiry window as AliyunDrive live transcoding when AList does not
             // return a per-URL expiry.
-            let direct_expires_at = Some(Utc::now().timestamp() + 4 * 60 * 60);
+            let direct_expires_at = Some(crate::SystemClock.now().timestamp() + 4 * 60 * 60);
 
             playback_infos.insert(
                 "direct".to_string(),
@@ -1849,7 +1848,7 @@ impl MediaProvider for AlistProvider {
                     .await?
                     .into();
                 Ok(
-                    (!file_info.thumb.trim().is_empty()).then(|| SourceCover::Url {
+                    (!file_info.thumb.trim().is_empty()).then_some(SourceCover::Url {
                         url: file_info.thumb,
                     }),
                 )

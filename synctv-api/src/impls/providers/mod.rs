@@ -29,7 +29,7 @@ pub(crate) fn publish_provider_credential_changed(
         user_id,
         provider: provider.to_string(),
         server_id: server_id.to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
     let outcome = event_service.broadcast_outcome(event);
     if !outcome.delivered_to_any() || outcome.distributed_delivery_missed() {

@@ -445,7 +445,7 @@ impl EmailService {
             )
         })?;
 
-        let sent_at = synctv_common::time::format_datetime_display(chrono::Utc::now());
+        let sent_at = synctv_common::time::format_datetime_display(crate::SystemClock.now());
         let (html_body, plain_text_body) = self
             .template_manager
             .render_test_email(&config.smtp_host, config.smtp_port, &sent_at)

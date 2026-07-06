@@ -36,7 +36,7 @@ use crate::{
         ContentFilter, PermissionService, RateLimitConfig, RequestRateLimiterService,
         RoomSettingsService, UserService,
     },
-    Error, Result,
+    Clock, Error, Result,
 };
 
 use super::file_storage::{FileStorageCleanupOrigin, FileStorageContext, FileStorageService};
@@ -63,6 +63,7 @@ struct ChatReactionDetailCacheKey {
 /// Chat service for managing chat messages
 #[derive(Clone)]
 pub struct ChatService {
+    clock: Arc<dyn Clock>,
     pub(crate) chat_repository: Arc<ChatRepository>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: RateLimitConfig,
@@ -141,6 +142,7 @@ impl ChatMessageCleanupService {
 
 #[derive(Clone)]
 pub struct ChatRuntime {
+    pub clock: Arc<dyn Clock>,
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: RateLimitConfig,
     pub content_filter: ContentFilter,
@@ -172,6 +174,7 @@ impl ChatService {
         dependencies: ChatDependencies,
     ) -> Self {
         let ChatRuntime {
+            clock,
             rate_limiter,
             rate_limit_config,
             content_filter,
@@ -187,6 +190,7 @@ impl ChatService {
         } = dependencies;
 
         Self {
+            clock,
             message_cleanup_service: ChatMessageCleanupService::new(
                 chat_repository.pool().clone(),
                 file_storage_service.clone(),
@@ -405,7 +409,7 @@ impl ChatService {
         let user_id = request.user_id;
 
         validate_client_message_id(request.client_message_id.as_deref())?;
-        validate_chat_metadata(&request.metadata)?;
+        validate_chat_metadata(request.metadata.as_ref())?;
         validate_submitted_chat_attachments(&request.attachments)?;
         normalize_chat_mentions(&request.content, &mut request.mentions)?;
         if request.content.trim().is_empty() && request.attachments.is_empty() {
@@ -529,7 +533,7 @@ impl ChatService {
         message.metadata = request.metadata.clone();
 
         // Persist to database
-        let occurred_at = Utc::now();
+        let occurred_at = self.clock.now();
         let event_id = synctv_common::snanoid!(16);
         let created = self
             .chat_repository
@@ -981,7 +985,7 @@ impl ChatService {
         request: EditChatMessage,
     ) -> Result<ChatMessageEventOutcome> {
         validate_client_operation_id(request.client_operation_id.as_deref())?;
-        validate_chat_metadata(&request.metadata)?;
+        validate_chat_metadata(request.metadata.as_ref())?;
         if request.content.trim().is_empty() {
             return Err(Error::InvalidInput(
                 "Message content cannot be empty".to_string(),
@@ -1082,7 +1086,7 @@ impl ChatService {
                 expected_version: request.expected_version,
                 event_id: &synctv_common::snanoid!(16),
                 actor_user_id: &request.user_id,
-                occurred_at: Utc::now(),
+                occurred_at: self.clock.now(),
                 operation: operation.as_ref(),
             })
             .await?;
@@ -1210,7 +1214,7 @@ impl ChatService {
                 reason: request.reason.as_deref(),
                 expected_version: request.expected_version,
                 event_id: &synctv_common::snanoid!(16),
-                occurred_at: Utc::now(),
+                occurred_at: self.clock.now(),
                 operation: operation.as_ref(),
             })
             .await?;
@@ -1394,7 +1398,7 @@ impl ChatService {
                 note: request.note.as_deref(),
                 max_pins_per_room: self.max_pinned_chat_messages_per_room()?,
                 event_id: &synctv_common::snanoid!(16),
-                occurred_at: Utc::now(),
+                occurred_at: self.clock.now(),
                 operation: operation.as_ref(),
             })
             .await?;
@@ -1459,7 +1463,7 @@ impl ChatService {
                 message_id: request.message_id,
                 unpinned_by: &request.user_id,
                 event_id: &synctv_common::snanoid!(16),
-                occurred_at: Utc::now(),
+                occurred_at: self.clock.now(),
                 operation: operation.as_ref(),
             })
             .await?;
@@ -1484,7 +1488,7 @@ impl ChatService {
 
         let inserted = self
             .chat_repository
-            .set_reaction_with_event(&request, &synctv_common::snanoid!(16), Utc::now())
+            .set_reaction_with_event(&request, &synctv_common::snanoid!(16), self.clock.now())
             .await?;
         self.invalidate_reaction_detail_cache(
             &request.room_id,

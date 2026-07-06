@@ -325,7 +325,7 @@ mod tests {
     }
 
     fn make_claims(user_id: &str, pv: i32) -> Claims {
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
         Claims {
             sub: user_id.to_string(),
             typ: "access".to_string(),

@@ -28,7 +28,7 @@ impl PreparedRoomCreatedOutboxFanout {
                 room_id: room.id,
                 room_name: room.name.clone(),
                 creator_id: prepared.creator_id,
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             };
             prepared.events.lock().push(event.clone());
             prepared
@@ -206,7 +206,7 @@ fn room_deleted_event(room_id: &RoomId, deleted_by: &UserId) -> RealtimeEvent {
         event_id: synctv_common::snanoid!(16),
         room_id: *room_id,
         deleted_by: *deleted_by,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -215,7 +215,7 @@ fn room_banned_event(room_id: &RoomId, banned_by: &UserId) -> RealtimeEvent {
         event_id: synctv_common::snanoid!(16),
         room_id: *room_id,
         banned_by: *banned_by,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -229,7 +229,7 @@ fn room_owner_inactive_event(
         room_id: *room_id,
         owner_id: *owner_id,
         triggered_by: *triggered_by,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 

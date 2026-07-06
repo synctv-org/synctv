@@ -240,11 +240,11 @@ mod tests {
         let room_id = create_test_room_id("room1");
         let mut state1 = create_test_state("room1");
         state1.version = 5;
-        state1.updated_at = chrono::Utc::now();
+        state1.updated_at = crate::SystemClock.now();
 
         let mut state2 = create_test_state("room1");
         state2.version = 10;
-        state2.updated_at = chrono::Utc::now() + chrono::Duration::seconds(10);
+        state2.updated_at = crate::SystemClock.now() + chrono::Duration::seconds(10);
 
         // Set initial state
         cache
@@ -256,7 +256,7 @@ mod tests {
         let older_state = {
             let mut s = state1.clone();
             s.version = 3;
-            s.updated_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+            s.updated_at = crate::SystemClock.now() - chrono::Duration::seconds(10);
             s
         };
         let was_set = cache
@@ -301,7 +301,7 @@ mod tests {
 
         let mut older_state = state1.clone();
         older_state.version = 9;
-        older_state.updated_at = chrono::Utc::now() + chrono::Duration::seconds(60);
+        older_state.updated_at = crate::SystemClock.now() + chrono::Duration::seconds(60);
 
         let was_set = cache
             .set_if_version_at_least(&room_id, older_state)

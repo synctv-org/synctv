@@ -161,7 +161,7 @@ assert_file_storage_s3_file_credentials_rendering() {
     synctv_yaml = config.dig("data", "synctv.yaml")
     abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
     app_config = YAML.safe_load(synctv_yaml)
-    s3 = app_config.dig("file_storage", "backends", "s3_public", "s3") || {}
+    s3 = app_config.dig("file_storage", "backends", "s3_public") || {}
     abort("S3 access_key_id_file was not rendered") unless s3["access_key_id_file"] == "/run/secrets/file-storage-s3/access_key_id"
     abort("S3 secret_access_key_file was not rendered") unless s3["secret_access_key_file"] == "/run/secrets/file-storage-s3/secret_access_key"
     abort("S3 inline access_key_id was rendered with file credentials") if s3.key?("access_key_id")
@@ -333,13 +333,13 @@ helm template synctv "$chart_dir" \
   --namespace "$namespace" \
   --set config.fileStorage.defaultBackend=s3_public \
   --set config.fileStorage.backends.s3_public.type=s3 \
-  --set config.fileStorage.backends.s3_public.s3.endpoint=https://s3.example.com \
-  --set config.fileStorage.backends.s3_public.s3.bucket=synctv-files \
-  --set config.fileStorage.backends.s3_public.s3.region=auto \
-  --set config.fileStorage.backends.s3_public.s3.basePath=files/ \
-  --set config.fileStorage.backends.s3_public.s3.publicBaseUrl=https://cdn.example.com/files \
-  --set config.fileStorage.backends.s3_public.s3.accessKeyIdFile=/run/secrets/file-storage-s3/access_key_id \
-  --set config.fileStorage.backends.s3_public.s3.secretAccessKeyFile=/run/secrets/file-storage-s3/secret_access_key \
+  --set config.fileStorage.backends.s3_public.endpoint=https://s3.example.com \
+  --set config.fileStorage.backends.s3_public.bucket=synctv-files \
+  --set config.fileStorage.backends.s3_public.region=auto \
+  --set config.fileStorage.backends.s3_public.basePath=files/ \
+  --set config.fileStorage.backends.s3_public.publicBaseUrl=https://cdn.example.com/files \
+  --set config.fileStorage.backends.s3_public.accessKeyIdFile=/run/secrets/file-storage-s3/access_key_id \
+  --set config.fileStorage.backends.s3_public.secretAccessKeyFile=/run/secrets/file-storage-s3/secret_access_key \
   --set extraVolumes[0].name=file-storage-s3 \
   --set extraVolumes[0].secret.secretName=synctv-file-storage-s3 \
   --set extraVolumeMounts[0].name=file-storage-s3 \

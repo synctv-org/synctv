@@ -2780,7 +2780,9 @@ async fn database_storage_cleans_expired_partial_upload_session() {
     );
     let expired = some(
         ok(
-            repository.list_expired_upload_sessions(10).await,
+            repository
+                .list_expired_upload_sessions(10, crate::SystemClock.now())
+                .await,
             "expired sessions should list",
         )
         .into_iter()
@@ -2788,7 +2790,9 @@ async fn database_storage_cleans_expired_partial_upload_session() {
         "expired session should be found",
     );
     assert!(ok(
-        storage.cleanup_expired_upload_session(expired).await,
+        storage
+            .cleanup_expired_upload_session(expired, crate::SystemClock.now())
+            .await,
         "expired session should clean"
     ));
     assert!(ok(

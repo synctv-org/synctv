@@ -32,6 +32,15 @@ pub(super) fn log_if_no_local_subscribers(
     }
 }
 
+pub(super) struct MemberJoinedSystemChatInsert {
+    pub room_id: RoomId,
+    pub target_user_id: UserId,
+    pub target_username: String,
+    pub actor_user_id: UserId,
+    pub actor_username: String,
+    pub role: RoomRole,
+}
+
 impl RoomService {
     pub(super) const fn role_member_event_scope() -> bool {
         true
@@ -297,13 +306,16 @@ impl RoomService {
     pub(super) async fn insert_member_joined_system_chat_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        room_id: RoomId,
-        target_user_id: UserId,
-        target_username: String,
-        actor_user_id: UserId,
-        actor_username: String,
-        role: RoomRole,
+        request: MemberJoinedSystemChatInsert,
     ) -> Result<()> {
+        let MemberJoinedSystemChatInsert {
+            room_id,
+            target_user_id,
+            target_username,
+            actor_user_id,
+            actor_username,
+            role,
+        } = request;
         let content = format!("{target_username} joined the room");
         let mut message = crate::models::ChatMessage::new(room_id, target_user_id, content);
         message.message_type = crate::models::ChatMessageType::SystemMemberJoined;
@@ -317,18 +329,20 @@ impl RoomService {
             },
         ));
 
-        let occurred_at = chrono::Utc::now();
+        let occurred_at = self.clock.now();
         let event_id = synctv_common::snanoid!(16);
         let logged = self
             .chat_repo
             .insert_message_event_in_tx(
                 tx,
-                &message,
-                &[],
-                &[],
-                actor_user_id,
-                &event_id,
-                occurred_at,
+                crate::repository::chat::InsertChatMessageEvent {
+                    message: &message,
+                    attachments: &[],
+                    mentions: &[],
+                    actor_user_id,
+                    event_id: &event_id,
+                    occurred_at,
+                },
             )
             .await?;
 

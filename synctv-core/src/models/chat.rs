@@ -360,7 +360,7 @@ impl ChatMessage {
             deleted_at: None,
             deleted_by: None,
             delete_reason: None,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         }
     }
 

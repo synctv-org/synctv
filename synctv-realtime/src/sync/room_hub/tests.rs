@@ -1,5 +1,4 @@
 use super::*;
-use chrono::Utc;
 use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -23,7 +22,7 @@ async fn test_subscribe_and_broadcast() -> TestResult {
         user_id,
         username: "testuser".to_string(),
         message: "Hello!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -76,7 +75,7 @@ async fn test_multiple_subscribers() -> TestResult {
         user_id: user1,
         username: "user1".to_string(),
         message: "Hello!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -212,7 +211,7 @@ async fn test_broadcast_reliably_waits_for_critical_event_queue_space() -> TestR
             user_id: deleted_by,
             username: "filler".to_string(),
             message: "fill".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -224,7 +223,7 @@ async fn test_broadcast_reliably_waits_for_critical_event_queue_space() -> TestR
         event_id: synctv_common::snanoid!(16),
         room_id,
         deleted_by,
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let hub_for_task = hub.clone();
@@ -291,7 +290,7 @@ async fn test_broadcast_drops_when_subscriber_queue_is_full() -> TestResult {
             user_id: UserId::expect_positive(10_000_163),
             username: "filler".to_string(),
             message: "fill".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -303,7 +302,7 @@ async fn test_broadcast_drops_when_subscriber_queue_is_full() -> TestResult {
         event_id: synctv_common::snanoid!(16),
         room_id,
         deleted_by: UserId::expect_positive(10_000_164),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let sent = hub.broadcast(&room_id, &critical);
@@ -332,7 +331,7 @@ async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout(
             user_id: UserId::expect_positive(10_000_163),
             username: "filler".to_string(),
             message: "fill".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -350,7 +349,7 @@ async fn test_broadcast_reliably_unsubscribes_connection_after_delivery_timeout(
                     event_id: synctv_common::snanoid!(16),
                     room_id: room_for_task,
                     deleted_by: UserId::expect_positive(10_000_164),
-                    timestamp: Utc::now(),
+                    timestamp: synctv_core::SystemClock.now(),
                 },
             )
             .await
@@ -401,7 +400,7 @@ async fn test_broadcast_reliably_times_out_full_subscribers_concurrently() -> Te
             user_id: UserId::expect_positive(10_000_171),
             username: "filler".to_string(),
             message: "fill".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -422,7 +421,7 @@ async fn test_broadcast_reliably_times_out_full_subscribers_concurrently() -> Te
                     event_id: synctv_common::snanoid!(16),
                     room_id: room_for_task,
                     deleted_by: UserId::expect_positive(10_000_172),
-                    timestamp: Utc::now(),
+                    timestamp: synctv_core::SystemClock.now(),
                 },
             )
             .await

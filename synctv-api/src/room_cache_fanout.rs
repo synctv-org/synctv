@@ -42,7 +42,7 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
             PublishRequest::new(RealtimeEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::Room { room_id: *room_id }],
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }),
         );
     }
@@ -52,7 +52,7 @@ impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
             .try_publish(PublishRequest::new(RealtimeEvent::CacheInvalidate {
                 event_id: synctv_common::snanoid!(16),
                 targets: vec![CacheTarget::All],
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }))
             .await
     }

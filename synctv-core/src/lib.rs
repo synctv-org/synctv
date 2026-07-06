@@ -76,6 +76,7 @@ fn default_jwt_crypto_provider() -> &'static jsonwebtoken::crypto::CryptoProvide
 
 pub mod bootstrap;
 pub mod cache;
+pub mod clock;
 pub mod config;
 pub mod credential_encryption;
 pub mod error;
@@ -98,8 +99,9 @@ pub mod validation;
 pub(crate) mod test_helpers;
 
 pub use cache::KeyBuilder;
+pub use clock::{Clock, SyncedClock, SyncedClockStatus, SystemClock};
 pub use config::{
-    ChatConfig, Config, FileStorageBackendConfig, FileStorageBackendType, FileStorageConfig,
+    ChatConfig, Config, FileStorageBackendConfig, FileStorageConfig,
     FileStorageDatabaseCompression, FileStorageDatabaseConfig, FileStorageS3Config,
     RateLimitScopeRule, RateLimitScopeStrategy, RequestRateLimitConfig,
 };

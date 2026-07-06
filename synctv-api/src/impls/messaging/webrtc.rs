@@ -102,7 +102,7 @@ impl StreamMessageHandler {
             from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: offer.to.clone(),
             data: offer.data.clone(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         // Cross-replica WebRTC signaling must reach Redis when distributed mode is enabled.
@@ -151,7 +151,7 @@ impl StreamMessageHandler {
             from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: answer.to.clone(),
             data: answer.data.clone(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         // Cross-replica WebRTC signaling must reach Redis when distributed mode is enabled.
@@ -205,7 +205,7 @@ impl StreamMessageHandler {
             from: format!("{}:{}", self.public_actor_id()?, conn_id),
             to: candidate.to.clone(),
             data: candidate.data.clone(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         // Cross-replica ICE signaling must reach Redis when distributed mode is enabled.
@@ -270,7 +270,7 @@ impl StreamMessageHandler {
             actor_id: self.public_actor_id()?,
             conn_id: conn_id.into_string(),
             username: self.username.clone(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         // WebRTC join is semi-critical: log at warn if not propagated to Redis.
@@ -327,7 +327,7 @@ impl StreamMessageHandler {
             room_id: self.room_id,
             actor_id: self.public_actor_id()?,
             conn_id: conn_id.into_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         // WebRTC leave is semi-critical: log at warn if distributed fan-out misses.

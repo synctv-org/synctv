@@ -20,7 +20,7 @@ use crate::{
         RoomPlaybackStateRepository,
     },
     service::{media::BackendPlaybackRequest, media::MediaService, PermissionService, UserService},
-    Error, Result,
+    Clock, Error, Result, SystemClock,
 };
 use rand::prelude::IteratorRandom;
 
@@ -44,6 +44,7 @@ pub use types::{
 /// Responsible for playback state coordination and optimistic locking.
 #[derive(Clone)]
 pub struct PlaybackService {
+    clock: Arc<dyn Clock>,
     playback_repo: RoomPlaybackStateRepository,
     source_metadata_repo: PlaybackSourceMetadataRepository,
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
@@ -67,6 +68,7 @@ pub struct PlaybackService {
 }
 
 pub struct PlaybackServiceRuntime {
+    pub clock: Arc<dyn Clock>,
     pub invalidation_service: Option<Arc<dyn CacheInvalidationRuntime>>,
     pub l2_cache: Option<PlaybackStateCache>,
     pub version_fence: Arc<dyn VersionFenceStore>,
@@ -78,6 +80,7 @@ impl PlaybackServiceRuntime {
     #[must_use]
     pub fn local_only() -> Self {
         Self {
+            clock: Arc::new(SystemClock),
             invalidation_service: None,
             l2_cache: None,
             version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
@@ -189,6 +192,7 @@ impl PlaybackService {
             .source_metadata_repo
             .unwrap_or_else(|| PlaybackSourceMetadataRepository::new(playback_repo.pool().clone()));
         Self {
+            clock: runtime.clock,
             playback_repo,
             source_metadata_repo,
             realtime_outbox: runtime.realtime_outbox,
@@ -475,7 +479,7 @@ impl PlaybackService {
                     state.position = state.computed_position();
                 }
                 state.is_playing = playing;
-                state.updated_at = chrono::Utc::now();
+                state.updated_at = self.clock.now();
                 // version is incremented by the SQL UPDATE, not here
             })
             .await?;
@@ -558,7 +562,7 @@ impl PlaybackService {
                 // computed_position() uses speed to extrapolate from updated_at.
                 state.position = state.computed_position();
                 state.speed = speed;
-                state.updated_at = chrono::Utc::now();
+                state.updated_at = self.clock.now();
                 // version is incremented by the SQL UPDATE, not here
             })
             .await?;
@@ -822,7 +826,7 @@ impl PlaybackService {
                     let ended_position = ended_state.computed_position();
                     ended_state.position = ended_position;
                     ended_state.is_playing = false;
-                    ended_state.updated_at = chrono::Utc::now();
+                    ended_state.updated_at = self.clock.now();
 
                     let saved_state = self
                         .persist_playback_state_update_with_previous_progress(
@@ -896,7 +900,7 @@ impl PlaybackService {
                 let observed_version = updated_state.version;
                 updated_state.position = 0.0;
                 updated_state.is_playing = true;
-                updated_state.updated_at = chrono::Utc::now();
+                updated_state.updated_at = self.clock.now();
                 let previous_progress_position =
                     previous_progress_position_for_source_transition(&previous_state, &updated_state);
 
@@ -1185,7 +1189,7 @@ impl PlaybackService {
                     state.position = 0.0;
                     state.speed = 1.0;
                     state.is_playing = false;
-                    state.updated_at = chrono::Utc::now();
+                    state.updated_at = self.clock.now();
                     let previous_progress_position =
                         previous_progress_position_for_source_transition(&previous_state, &state);
 
@@ -1295,7 +1299,7 @@ impl PlaybackService {
                         state.position = 0.0;
                         state.speed = 1.0;
                         state.is_playing = false;
-                        state.updated_at = chrono::Utc::now();
+                        state.updated_at = self.clock.now();
                     },
                     outbox_event_factory,
                 )
@@ -1360,7 +1364,7 @@ impl PlaybackService {
                     state.target.clone_from(&target.target);
                     state.position = 0.0;
                     state.is_playing = true;
-                    state.updated_at = chrono::Utc::now();
+                    state.updated_at = self.clock.now();
                 },
                 outbox_event_factory,
             )
@@ -1396,7 +1400,7 @@ impl PlaybackService {
                     state.playing_media_id = None;
                     state.playing_playlist_id = None;
                     state.target = None;
-                    state.updated_at = chrono::Utc::now();
+                    state.updated_at = self.clock.now();
                 },
                 outbox_event_factory,
             )
@@ -1424,7 +1428,7 @@ impl PlaybackService {
                 state.position = 0.0;
                 state.speed = 1.0;
                 state.is_playing = false;
-                state.updated_at = chrono::Utc::now();
+                state.updated_at = self.clock.now();
             })
             .await?;
 
@@ -1517,7 +1521,7 @@ impl PlaybackService {
             if let Some(s) = speed {
                 state.speed = s;
             }
-            state.updated_at = chrono::Utc::now();
+            state.updated_at = self.clock.now();
             // version is incremented by the SQL UPDATE, not here
         };
 

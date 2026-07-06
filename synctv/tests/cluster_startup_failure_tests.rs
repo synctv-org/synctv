@@ -10,9 +10,10 @@
 use synctv_core::config::{
     BootstrapConfig, BufferSizesConfig, CacheConfig, ChatConfig, ClusterChannelConfig, Config,
     ConnectionLimitsConfig, DatabaseConfig, ExternalIdsConfig, FileStorageConfig,
-    HlsStorageBackend, JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig,
-    MessagingRateLimitConfig, PasswordComplexityConfig, ProxySliceCacheConfig, RedisConfig,
-    RequestRateLimitConfig, SecurityConfig, ServerConfig, TimeConfig, WebAuthnConfig, WebRTCConfig,
+    HlsFileStorageConfig, HlsStorageConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+    MediaProvidersConfig, MessagingRateLimitConfig, PasswordComplexityConfig,
+    ProxySliceCacheConfig, RedisConfig, RequestRateLimitConfig, SecurityConfig, ServerConfig,
+    TimeConfig, WebAuthnConfig, WebRTCConfig,
 };
 
 fn relaxed_request_rate_limits() -> RequestRateLimitConfig {
@@ -128,8 +129,9 @@ fn cluster_test_config() -> Config {
         },
         logging: LoggingConfig::default(),
         livestream: LivestreamConfig {
-            hls_storage_backend: HlsStorageBackend::SharedFile,
-            hls_storage_path: "/var/lib/synctv/hls".to_string(),
+            hls_storage: HlsStorageConfig::SharedFile(HlsFileStorageConfig {
+                path: "/var/lib/synctv/hls".to_string(),
+            }),
             ..LivestreamConfig::default()
         },
         file_storage: FileStorageConfig::default(),

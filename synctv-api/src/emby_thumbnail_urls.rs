@@ -202,7 +202,8 @@ pub(crate) fn sign_emby_thumbnail_url(
         max_height,
         max_width,
     };
-    let expires_at = chrono::Utc::now().timestamp() + ProxySigningKey::default_expiry_secs();
+    let expires_at =
+        synctv_core::SystemClock.now().timestamp() + ProxySigningKey::default_expiry_secs();
     let signed_query =
         build_signed_thumbnail_query(signing_key, room_id, user_id, scope, expires_at);
 

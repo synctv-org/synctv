@@ -175,6 +175,7 @@ impl AuthorizedAdminActor {
 
 #[derive(Clone)]
 pub struct RoomServiceOptions {
+    pub clock: Arc<dyn crate::Clock>,
     pub read_pool: Option<sqlx::PgPool>,
     pub distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
     pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
@@ -222,6 +223,7 @@ impl RoomServiceOptions {
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
         Self {
+            clock: Arc::new(crate::SystemClock),
             read_pool: None,
             distributed_lock: None,
             cache_invalidation: None,

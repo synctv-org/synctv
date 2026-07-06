@@ -148,7 +148,7 @@ fn redis_tracker_initial_state_matches_failure_mode() {
 async fn in_memory_tracker_records_and_resets_attempts() {
     let tracker = InMemoryAttemptTracker::new(1000, 900);
     let key = "test:user";
-    let now = chrono::Utc::now().timestamp();
+    let now = crate::SystemClock.now().timestamp();
 
     ok(
         tracker.record_failure(key, now, 900).await,
@@ -174,7 +174,7 @@ async fn in_memory_tracker_operations_succeed() {
 
     assert!(tracker.get_attempts(key).await.is_ok());
     assert!(tracker
-        .record_failure(key, chrono::Utc::now().timestamp(), 900)
+        .record_failure(key, crate::SystemClock.now().timestamp(), 900)
         .await
         .is_ok());
     assert!(tracker.reset(key).await.is_ok());

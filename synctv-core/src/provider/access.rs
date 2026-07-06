@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -248,7 +247,7 @@ impl CachedProviderAccessService {
         let Some(expires_at) = credential.expires_at else {
             return BINDING_CACHE_TTL;
         };
-        let remaining = (expires_at - Utc::now()).num_seconds();
+        let remaining = (expires_at - crate::SystemClock.now()).num_seconds();
         if remaining <= 0 {
             Duration::from_secs(1)
         } else {
@@ -786,7 +785,6 @@ mod tests {
     use super::*;
     use crate::provider::InMemoryProviderStore;
     use crate::test_helpers::TestResultExt;
-    use chrono::Utc;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -855,7 +853,7 @@ mod tests {
         provider_instance_name: Option<&str>,
         credential: ProviderCredential,
     ) -> UserProviderCredential {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         UserProviderCredential {
             id: 42,
             user_id,

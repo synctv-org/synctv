@@ -186,15 +186,17 @@ Example:
 
 ```yaml
 livestream:
-  hls_storage_backend: "memory"
+  hls_storage:
+    type: "memory"
 ```
 
 or:
 
 ```yaml
 livestream:
-  hls_storage_backend: "file"
-  hls_storage_path: "/var/lib/synctv/hls"
+  hls_storage:
+    type: "file"
+    path: "/var/lib/synctv/hls"
 ```
 
 ### Shared Backend
@@ -205,8 +207,9 @@ Filesystem option:
 
 ```yaml
 livestream:
-  hls_storage_backend: "shared_file"
-  hls_storage_path: "/var/lib/synctv/hls"
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
 ```
 
 All replicas must read and write the same path, for example through NFS, an RWX PVC, or a CSI volume.
@@ -215,8 +218,8 @@ Object storage option:
 
 ```yaml
 livestream:
-  hls_storage_backend: "oss"
-  hls_oss:
+  hls_storage:
+    type: "oss"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     base_path: "synctv/hls/"

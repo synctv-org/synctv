@@ -30,6 +30,24 @@ use crate::{
 
 type ChatMessageKey = (i64, DateTime<Utc>);
 
+pub struct InsertChatMessageEvent<'a> {
+    pub message: &'a ChatMessage,
+    pub attachments: &'a [NewStoredFile],
+    pub mentions: &'a [ChatMentionInput],
+    pub actor_user_id: UserId,
+    pub event_id: &'a str,
+    pub occurred_at: DateTime<Utc>,
+}
+
+struct ChatHistoryCursorRequest<'a> {
+    room_id: &'a RoomId,
+    cursor: Option<ChatHistoryCursor>,
+    limit: i32,
+    include_deleted: bool,
+    viewer_user_id: Option<&'a UserId>,
+    selection: &'a ChatMessageSelection,
+}
+
 const CHAT_MESSAGE_CREATED_EVENT_TYPE: &str = "chat_message_created";
 const CHAT_MESSAGE_EDITED_EVENT_TYPE: &str = "chat_message_edited";
 const CHAT_MESSAGE_DELETED_EVENT_TYPE: &str = "chat_message_deleted";
@@ -438,12 +456,14 @@ impl ChatRepository {
         let logged = self
             .insert_message_event_in_tx(
                 &mut tx,
-                message,
-                attachments,
-                mentions,
-                actor_user_id,
-                event_id,
-                occurred_at,
+                InsertChatMessageEvent {
+                    message,
+                    attachments,
+                    mentions,
+                    actor_user_id,
+                    event_id,
+                    occurred_at,
+                },
             )
             .await?;
         tx.commit().await?;
@@ -453,28 +473,25 @@ impl ChatRepository {
     pub async fn insert_message_event_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        message: &ChatMessage,
-        attachments: &[NewStoredFile],
-        mentions: &[ChatMentionInput],
-        actor_user_id: UserId,
-        event_id: &str,
-        occurred_at: DateTime<Utc>,
+        request: InsertChatMessageEvent<'_>,
     ) -> Result<ChatMessageEventLog> {
-        validate_message_for_insert(message)?;
-        for attachment in attachments {
+        validate_message_for_insert(request.message)?;
+        for attachment in request.attachments {
             validate_chat_attachment_for_insert(attachment)?;
         }
 
-        let inserted = self.insert_message_in_tx(tx, message).await?;
+        let inserted = self.insert_message_in_tx(tx, request.message).await?;
         let inserted_attachments = self
-            .insert_attachments_in_tx(tx, &inserted, attachments)
+            .insert_attachments_in_tx(tx, &inserted, request.attachments)
             .await?;
-        let inserted_mentions = self.insert_mentions_in_tx(tx, &inserted, mentions).await?;
+        let inserted_mentions = self
+            .insert_mentions_in_tx(tx, &inserted, request.mentions)
+            .await?;
         let event = ChatMessageEvent {
-            event_id: event_id.to_string(),
+            event_id: request.event_id.to_string(),
             sequence: 0,
-            room_id: message.room_id,
-            actor_user_id,
+            room_id: request.message.room_id,
+            actor_user_id: request.actor_user_id,
             kind: ChatEventKind::Created,
             message: ChatMessageWithAttachments {
                 message: inserted,
@@ -483,7 +500,7 @@ impl ChatRepository {
                 mentions: inserted_mentions,
                 pin: None,
             },
-            occurred_at,
+            occurred_at: request.occurred_at,
         };
         self.insert_event_in_tx(tx, &event).await
     }
@@ -1099,7 +1116,7 @@ impl ChatRepository {
                 actor_user_id: *user_id,
                 kind: ChatEventKind::Created,
                 message: loaded,
-                occurred_at: Utc::now(),
+                occurred_at: crate::SystemClock.now(),
             };
             let logged = self.insert_event_in_tx(&mut tx, &event).await?;
             sqlx::query!(
@@ -1369,13 +1386,10 @@ impl ChatRepository {
         .fetch_optional(self.pool())
         .await?;
 
-        Ok(row.map_or(
-            EventCursor {
-                event_id: None,
-                sequence: 0,
-            },
-            |row| row,
-        ))
+        Ok(row.unwrap_or(EventCursor {
+            event_id: None,
+            sequence: 0,
+        }))
     }
 
     pub async fn retained_chat_event_sequence_bounds(
@@ -1958,12 +1972,14 @@ impl ChatRepository {
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         self.list_by_room_cursor_for_viewer_from_pool(
             self.eventually_consistent_pool(),
-            room_id,
-            cursor,
-            limit,
-            include_deleted,
-            viewer_user_id,
-            selection,
+            ChatHistoryCursorRequest {
+                room_id,
+                cursor,
+                limit,
+                include_deleted,
+                viewer_user_id,
+                selection,
+            },
         )
         .await
     }
@@ -1971,16 +1987,11 @@ impl ChatRepository {
     async fn list_by_room_cursor_for_viewer_from_pool(
         &self,
         pool: &PgPool,
-        room_id: &RoomId,
-        cursor: Option<ChatHistoryCursor>,
-        limit: i32,
-        include_deleted: bool,
-        viewer_user_id: Option<&UserId>,
-        selection: &ChatMessageSelection,
+        request: ChatHistoryCursorRequest<'_>,
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
-        let limit = limit.clamp(1, 100);
-        let included_message_type_codes = selection.message_type_codes();
-        let messages = if let Some(cursor) = cursor {
+        let limit = request.limit.clamp(1, 100);
+        let included_message_type_codes = request.selection.message_type_codes();
+        let messages = if let Some(cursor) = request.cursor {
             sqlx::query_as!(
                 ChatMessageRow,
                 r#"
@@ -2008,8 +2019,8 @@ impl ChatRepository {
                 ORDER BY created_at DESC, id DESC
                 LIMIT $6
                 "#,
-                room_id.as_i64(),
-                include_deleted,
+                request.room_id.as_i64(),
+                request.include_deleted,
                 i16::from(ChatMessageStatus::Deleted),
                 cursor.created_at,
                 cursor.id,
@@ -2046,8 +2057,8 @@ impl ChatRepository {
                 ORDER BY created_at DESC, id DESC
                 LIMIT $4
                 "#,
-                room_id.as_i64(),
-                include_deleted,
+                request.room_id.as_i64(),
+                request.include_deleted,
                 i16::from(ChatMessageStatus::Deleted),
                 i64::from(limit),
                 &included_message_type_codes,
@@ -2067,7 +2078,11 @@ impl ChatRepository {
         };
 
         let messages = self
-            .attach_attachments_and_reactions_to_messages_from_pool(pool, messages, viewer_user_id)
+            .attach_attachments_and_reactions_to_messages_from_pool(
+                pool,
+                messages,
+                request.viewer_user_id,
+            )
             .await?;
 
         Ok((messages, next_cursor))
@@ -2107,12 +2122,14 @@ impl ChatRepository {
         let (messages, next_cursor) = self
             .list_by_room_cursor_for_viewer_from_pool(
                 self.pool(),
-                room_id,
-                cursor,
-                limit,
-                include_deleted,
-                viewer_user_id,
-                selection,
+                ChatHistoryCursorRequest {
+                    room_id,
+                    cursor,
+                    limit,
+                    include_deleted,
+                    viewer_user_id,
+                    selection,
+                },
             )
             .await?;
 
@@ -4771,9 +4788,7 @@ impl ChatEventRow {
 }
 
 fn datetime_matches_database_precision(left: DateTime<Utc>, right: DateTime<Utc>) -> bool {
-    left.signed_duration_since(right)
-        .num_nanoseconds()
-        .is_some_and(|diff| diff.abs() <= 1_000)
+    left.signed_duration_since(right).abs() <= chrono::Duration::milliseconds(1)
 }
 
 fn file_reference_id_for_chat_attachment(attachment: &ChatAttachment) -> String {
@@ -4829,7 +4844,7 @@ mod tests {
                 mentions: Vec::new(),
                 pin: None,
             },
-            occurred_at: Utc::now(),
+            occurred_at: crate::SystemClock.now(),
         }
     }
 

@@ -14,7 +14,7 @@ use super::convert::{
     proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
     room_presence_stats_to_proto, try_members_to_proto, try_room_member_to_proto_with_permissions,
 };
-use super::media::prepare_delete_entries_outbox_fanout;
+use super::media::{prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout};
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 pub(crate) fn compute_room_members_response_version(
@@ -899,21 +899,23 @@ impl ClientApiImpl {
                 target_presence.connection_count,
             );
         let actor_username = required_member_username(self, &uid).await?;
-        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            uid,
-            actor_username,
-        );
+        let prepared_cleanup_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: uid,
+                username: actor_username,
+            });
         let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
             room_id: rid,
             user_id: target_uid,
             reason: "kicked".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: self.clock.now(),
         };
         let lifecycle_outbox_event = self
             .realtime_fanout

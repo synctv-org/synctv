@@ -11,7 +11,7 @@ use crate::{Error, RedisConnectionRuntime, Result};
 use async_trait::async_trait;
 use std::future::Future;
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[derive(Debug)]
 enum L2RedisAttemptError {
@@ -421,15 +421,7 @@ impl RedisCacheL2 {
     }
 
     fn now_unix_seconds() -> Result<i64> {
-        let duration = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| {
-                Error::Internal(format!(
-                    "System clock is before UNIX_EPOCH while computing L2 cache timestamp: {error}"
-                ))
-            })?;
-        i64::try_from(duration.as_secs())
-            .map_err(|_| Error::Internal("L2 cache timestamp exceeds i64::MAX".to_string()))
+        Ok(crate::SystemClock.now().timestamp())
     }
 
     fn expiry_timestamp(ttl_secs: u64) -> Result<i64> {

@@ -315,7 +315,7 @@ config:
   ## It rebases relative:
   ## - management.unix_socket_path
   ## - logging.file_path
-  ## - livestream.hls_storage_path
+  ## - livestream.hls_storage.path
   ## - proxy_slice_cache.file_cache_dir
   ## It does NOT rebase *_file secrets or metrics TLS cert/key paths.
   ## Leave empty to use SyncTV's built-in platform/container defaults.
@@ -326,6 +326,15 @@ config:
     ## IANA timezone name. Leave empty to fall back to SYNCTV_TIME_TIMEZONE, TZ,
     ## then the system timezone, and finally UTC.
     timezone: ""
+    clockSync:
+      enabled: false
+      provider:
+        type: sntp
+        servers:
+          - "time.cloudflare.com:123"
+          - "pool.ntp.org:123"
+        intervalSeconds: 300
+        timeoutMillis: 1000
 
   ## ServerConfig
   server:
@@ -454,15 +463,14 @@ config:
     pullMaxBackoffMs: 30000
     maxFlvTagSizeBytes: 10485760
     gopCacheMaxMemoryMb: 100
-    hlsMemoryMaxMb: 0
-    ## Allowed values: memory, file, shared_file, oss.
-    ## - memory: single-replica in-process HLS segment storage.
-    ## - file: node-local filesystem-backed HLS storage at hlsStoragePath.
-    ## - shared_file: shared filesystem-backed HLS storage at hlsStoragePath.
-    ## - oss: S3-compatible object storage configured by hlsOss and secrets.livestream.hlsOss.
-    hlsStorageBackend: "memory"
-    hlsStoragePath: ""
-    hlsOss:
+    ## HLS storage. type values: memory, file, shared_file, oss.
+    hlsStorage:
+      type: "memory"
+      ## For type=memory.
+      memoryMaxMb: 0
+      ## For type=file or shared_file. Kubernetes deployments require an absolute path.
+      path: ""
+      ## For type=oss.
       endpoint: ""
       bucket: ""
       region: ""
@@ -490,21 +498,19 @@ config:
     # backends:
     #   database:
     #     type: "database"
-    #     database:
-    #       compression: "zstd"
-    #       compressionMinSizeBytes: 4096
-    #       compressionMinSavingsPercent: 10
+    #     compression: "zstd"
+    #     compressionMinSizeBytes: 4096
+    #     compressionMinSavingsPercent: 10
     #   s3_public:
     #     type: "s3"
-    #     s3:
-    #       endpoint: "https://s3.example.com"
-    #       accessKeyIdFile: "/run/secrets/file-storage-s3/access_key_id"
-    #       secretAccessKeyFile: "/run/secrets/file-storage-s3/secret_access_key"
-    #       bucket: "synctv-files"
-    #       region: "auto"
-    #       basePath: "files/"
-    #       publicBaseUrl: "https://cdn.example.com/files"
-    #       uploadExpiresSeconds: 900
+    #     endpoint: "https://s3.example.com"
+    #     accessKeyIdFile: "/run/secrets/file-storage-s3/access_key_id"
+    #     secretAccessKeyFile: "/run/secrets/file-storage-s3/secret_access_key"
+    #     bucket: "synctv-files"
+    #     region: "auto"
+    #     basePath: "files/"
+    #     publicBaseUrl: "https://cdn.example.com/files"
+    #     uploadExpiresSeconds: 900
 
   ## ClusterChannelConfig (matches code defaults)
   cluster:
@@ -714,10 +720,10 @@ secrets:
 
   ## Livestream storage credentials.
   livestream:
-    hlsOss:
-      ## Required when config.livestream.hlsStorageBackend=oss.
+    hlsStorage:
+      ## Required when config.livestream.hlsStorage.type=oss.
       accessKeyId: ""
-      ## Required when config.livestream.hlsStorageBackend=oss.
+      ## Required when config.livestream.hlsStorage.type=oss.
       secretAccessKey: ""
 
 ## ============================================================================

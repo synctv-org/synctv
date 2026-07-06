@@ -174,7 +174,9 @@ impl OAuth2Service {
     ) -> Result<OAuth2State> {
         match Self::run_with_control(control, self.state_store.consume(state_token)).await? {
             Some(state) => {
-                let age = chrono::Utc::now().signed_duration_since(state.created_at);
+                let age = crate::SystemClock
+                    .now()
+                    .signed_duration_since(state.created_at);
                 if age.num_seconds() > OAUTH2_STATE_TTL_SECONDS_I64 {
                     debug!(
                         "OAuth2 state expired based on created_at (age: {}s, max: {}s)",

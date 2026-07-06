@@ -285,7 +285,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
         let guest_id = crate::impls::messaging::guest_public_id(&claims.session_id);
         let display_name = crate::impls::messaging::guest_display_name(&claims.session_id);
-        let now = chrono::Utc::now().timestamp();
+        let now = self.clock.now().timestamp();
         let expires_in_secs = nonnegative_token_ttl_seconds(claims.exp, now)?;
 
         Ok(synctv_proto::client::CreateGuestTokenResponse {
@@ -779,22 +779,28 @@ impl ClientApiImpl {
     /// Returns an error when token revocation fails so callers never treat a
     /// non-revoked token as successfully logged out.
     pub async fn logout(&self, raw_token: &str) -> Result<LogoutOutcome, ApiError> {
-        revoke_session_for_logout(&self.jwt_service, raw_token, |logout_token| async move {
-            revoke_logout_token_in_order(
-                logout_token,
-                |user_id, session_id, revoked_at| async move {
-                    self.user_service
-                        .revoke_refresh_token_session(&user_id, &session_id, revoked_at)
-                        .await
-                },
-                |jti, remaining_ttl_secs| async move {
-                    self.user_service
-                        .blacklist_access_token(&jti, remaining_ttl_secs)
-                        .await
-                },
-            )
-            .await
-        })
+        let now = self.clock.now().timestamp();
+        revoke_session_for_logout(
+            &self.jwt_service,
+            raw_token,
+            now,
+            |logout_token| async move {
+                revoke_logout_token_in_order(
+                    logout_token,
+                    |user_id, session_id, revoked_at| async move {
+                        self.user_service
+                            .revoke_refresh_token_session(&user_id, &session_id, revoked_at)
+                            .await
+                    },
+                    |jti, remaining_ttl_secs| async move {
+                        self.user_service
+                            .blacklist_access_token(&jti, remaining_ttl_secs)
+                            .await
+                    },
+                )
+                .await
+            },
+        )
         .await?;
         Ok(LogoutOutcome::success())
     }
@@ -834,6 +840,7 @@ where
 async fn revoke_session_for_logout<F, Fut>(
     jwt_service: &synctv_core::service::JwtService,
     raw_token: &str,
+    now: i64,
     revoke: F,
 ) -> Result<(), ApiError>
 where
@@ -856,7 +863,6 @@ where
         ));
     }
 
-    let now = chrono::Utc::now().timestamp();
     let remaining_ttl = (claims.exp - now).max(0).cast_unsigned();
     if remaining_ttl == 0 {
         return Err(ApiError::Authentication(
@@ -1073,11 +1079,16 @@ mod tests {
             &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
-        let result = revoke_session_for_logout(&jwt_service, &token, |_logout_token| async {
-            Err(synctv_core::Error::Internal(
-                "Blacklist store unavailable".to_string(),
-            ))
-        })
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            &token,
+            synctv_core::SystemClock.now().timestamp(),
+            |_logout_token| async {
+                Err(synctv_core::Error::Internal(
+                    "Blacklist store unavailable".to_string(),
+                ))
+            },
+        )
         .await;
 
         match result {
@@ -1099,15 +1110,19 @@ mod tests {
         let blacklist_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&blacklist_called);
 
-        let result =
-            revoke_session_for_logout(&jwt_service, "invalid.token.here", move |_logout_token| {
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            "invalid.token.here",
+            synctv_core::SystemClock.now().timestamp(),
+            move |_logout_token| {
                 let called = Arc::clone(&called);
                 async move {
                     called.store(true, Ordering::SeqCst);
                     Ok(())
                 }
-            })
-            .await;
+            },
+        )
+        .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -1137,8 +1152,13 @@ mod tests {
             &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
-        let result =
-            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            &token,
+            synctv_core::SystemClock.now().timestamp(),
+            |_logout_token| async { Ok(()) },
+        )
+        .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -1161,8 +1181,13 @@ mod tests {
         let jwt_service = create_test_jwt_service()?;
         let token = core_ok(jwt_service.sign_access_token(&UserId::new(), 0))?;
 
-        let result =
-            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            &token,
+            synctv_core::SystemClock.now().timestamp(),
+            |_logout_token| async { Ok(()) },
+        )
+        .await;
 
         assert!(
             matches!(result, Err(ApiError::Authentication(message)) if message.contains("session id"))
@@ -1187,8 +1212,13 @@ mod tests {
             &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
-        let result =
-            revoke_session_for_logout(&jwt_service, &token, |_logout_token| async { Ok(()) }).await;
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            &token,
+            synctv_core::SystemClock.now().timestamp(),
+            |_logout_token| async { Ok(()) },
+        )
+        .await;
 
         match result {
             Err(ApiError::Authentication(message)) => {
@@ -1219,14 +1249,19 @@ mod tests {
             &synctv_core::service::TokenCredentialBinding::Password { version: 0 },
         ))?;
 
-        let result = revoke_session_for_logout(&jwt_service, &token, |logout_token| async move {
-            assert_eq!(logout_token.user_id, user_id);
-            assert_eq!(logout_token.session_id, session_id);
-            assert!(!logout_token.jti.is_empty());
-            assert!(logout_token.remaining_ttl_secs > 0);
-            assert!(logout_token.revoked_at > 0);
-            Ok(())
-        })
+        let result = revoke_session_for_logout(
+            &jwt_service,
+            &token,
+            synctv_core::SystemClock.now().timestamp(),
+            |logout_token| async move {
+                assert_eq!(logout_token.user_id, user_id);
+                assert_eq!(logout_token.session_id, session_id);
+                assert!(!logout_token.jti.is_empty());
+                assert!(logout_token.remaining_ttl_secs > 0);
+                assert!(logout_token.revoked_at > 0);
+                Ok(())
+            },
+        )
         .await;
 
         assert!(result.is_ok());

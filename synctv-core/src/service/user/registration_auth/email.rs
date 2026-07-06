@@ -27,8 +27,10 @@ impl UserService {
         registration_policy: RegistrationPolicy,
     ) -> Result<CompletedEmailRegistration> {
         let mut tx = self.repository.pool().begin().await?;
+        let now = crate::SystemClock.now();
         let token_record = EmailRegistrationTokenRepository::lock_valid_for_update_with_executor(
             email_token,
+            now,
             &mut tx,
         )
         .await?
@@ -97,8 +99,12 @@ impl UserService {
             created_user
         };
 
-        let used_rows =
-            EmailRegistrationTokenRepository::mark_used_with_executor(email_token, &mut tx).await?;
+        let used_rows = EmailRegistrationTokenRepository::mark_used_with_executor(
+            email_token,
+            crate::SystemClock.now(),
+            &mut tx,
+        )
+        .await?;
         if used_rows != 1 {
             return Err(Error::InvalidInput(
                 synctv_common::messages::INVALID_OR_EXPIRED_TOKEN.to_string(),
@@ -134,7 +140,7 @@ impl UserService {
         .await?;
 
         let token = synctv_common::snanoid!(64);
-        let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+        let expires_at = crate::SystemClock.now() + chrono::Duration::minutes(15);
         self.email_registration_token_repository
             .create_or_replace_unused(&token, &username, &email, expires_at)
             .await?;

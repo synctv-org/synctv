@@ -125,7 +125,7 @@ fn test_mark_all_as_read_request_no_before() {
 /// Test MarkAllAsReadRequest with before timestamp
 #[test]
 fn test_mark_all_as_read_request_with_before() {
-    let before = chrono::Utc::now();
+    let before = crate::SystemClock.now();
     let req = MarkAllAsReadRequest {
         before: Some(before),
     };
@@ -562,7 +562,7 @@ async fn test_mark_all_as_read_with_before() {
     repo.create(&req).await.checked("operation should succeed");
 
     // Mark all as read before a future time (should mark this one)
-    let before = chrono::Utc::now() + chrono::Duration::days(1);
+    let before = crate::SystemClock.now() + chrono::Duration::days(1);
     let affected = repo
         .mark_all_as_read(&created_user.id, Some(before))
         .await

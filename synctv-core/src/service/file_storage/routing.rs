@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use chrono::{DateTime, Utc};
+
 use crate::{
     models::{
         CompleteFileUploadSession, CompleteFileUploadSessionResult, CreateFileUploadSession,
@@ -260,10 +262,11 @@ impl FileStorageService for RoutedFileStorageService {
     async fn cleanup_expired_upload_session(
         &self,
         session: crate::models::FileUploadSessionRecord,
+        now: DateTime<Utc>,
     ) -> Result<bool> {
         self.registry
             .backend(&session.storage_backend)?
-            .cleanup_expired_upload_session(session)
+            .cleanup_expired_upload_session(session, now)
             .await
     }
 

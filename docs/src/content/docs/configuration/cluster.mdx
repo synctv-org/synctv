@@ -184,15 +184,17 @@ Helm chart 会在需要时渲染相关 RBAC。
 
 ```yaml
 livestream:
-  hls_storage_backend: "memory"
+  hls_storage:
+    type: "memory"
 ```
 
 或：
 
 ```yaml
 livestream:
-  hls_storage_backend: "file"
-  hls_storage_path: "/var/lib/synctv/hls"
+  hls_storage:
+    type: "file"
+    path: "/var/lib/synctv/hls"
 ```
 
 ### 共享 backend
@@ -203,8 +205,9 @@ livestream:
 
 ```yaml
 livestream:
-  hls_storage_backend: "shared_file"
-  hls_storage_path: "/var/lib/synctv/hls"
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
 ```
 
 并确保所有 Pod 都能读写同一个路径，例如 NFS、RWX PVC 或 CSI volume。
@@ -213,8 +216,8 @@ livestream:
 
 ```yaml
 livestream:
-  hls_storage_backend: "oss"
-  hls_oss:
+  hls_storage:
+    type: "oss"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     base_path: "synctv/hls/"

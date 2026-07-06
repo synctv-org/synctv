@@ -39,6 +39,7 @@ async fn publish_key_service_uses_redis_single_use_state() {
     let conn = redis_connection_manager(&client).await;
     let service = PublishKeyService::from_store(
         test_jwt_service(),
+        Arc::new(synctv_core::SystemClock),
         24,
         Arc::new(RedisJtiStore::from_runtime(
             synctv_core::direct_runtime(conn),

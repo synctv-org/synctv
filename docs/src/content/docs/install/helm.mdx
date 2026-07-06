@@ -131,7 +131,7 @@ SyncTV 进程内部 HTTP REST 和 gRPC 使用同一个容器端口，但 Helm ch
 
 `config.server.grpcCompressionEnabled` 默认是 `true`，会让 gRPC 客户端和服务端协商 gzip 压缩。跨节点调用、Ingress 转发、批量响应较多时通常保持开启；如果你的 gRPC 调用都在本地低延迟网络且 CPU 比带宽更紧张，可以显式关闭。
 
-`config.fileStorage.backends.<name>.database.compression` 控制数据库文件存储后端写入 PostgreSQL `file_blob_parts` 永久分段的压缩算法，默认 `zstd`。`compressionMinSizeBytes` 默认 `4096`，`compressionMinSavingsPercent` 默认 `10`，压缩收益低于阈值时写入原始 bytes。Database 文件存储使用永久分段并从分段服务 HTTP Range；S3 文件存储使用原生 multipart 直传支持 GB 级断点续传。
+`config.fileStorage.backends.<name>.compression` 控制数据库文件存储后端写入 PostgreSQL `file_blob_parts` 永久分段的压缩算法，默认 `zstd`。`compressionMinSizeBytes` 默认 `4096`，`compressionMinSavingsPercent` 默认 `10`，压缩收益低于阈值时写入原始 bytes。Database 文件存储使用永久分段并从分段服务 HTTP Range；S3 文件存储使用原生 multipart 直传支持 GB 级断点续传。
 
 S3 文件存储凭证建议挂载 Kubernetes Secret，并在 Helm values 中设置 camelCase 的 `accessKeyIdFile` / `secretAccessKeyFile`。生成的 SyncTV YAML 会使用 snake_case 的 `access_key_id_file` / `secret_access_key_file` 路径，并在启动时读取 Secret 文件。
 
@@ -142,14 +142,13 @@ config:
     backends:
       s3_public:
         type: s3
-        s3:
-          endpoint: https://s3.example.com
-          bucket: synctv-files
-          region: auto
-          basePath: files/
-          publicBaseUrl: https://cdn.example.com/files
-          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
-          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+        endpoint: https://s3.example.com
+        bucket: synctv-files
+        region: auto
+        basePath: files/
+        publicBaseUrl: https://cdn.example.com/files
+        accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+        secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
 
 extraVolumes:
   - name: file-storage-s3
@@ -225,7 +224,7 @@ existingSecret: "my-external-synctv-secret"
 - `SYNCTV_EMAIL_SMTP_USERNAME` 和 `SYNCTV_EMAIL_SMTP_PASSWORD`，如果配置了 `config.email.smtpHost` 且 SMTP 需要认证。
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=bearer_token`。
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` 和 `SYNCTV_METRICS_AUTH_BASIC_PASSWORD`，如果 `metrics.enabled=true` 且 `metrics.auth.mode=basic`。
-- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorageBackend=oss`。
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` 和 `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY`，如果 `config.livestream.hlsStorage.type=oss`。
 
 ## 安全
 
@@ -339,7 +338,8 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "memory"
+    hlsStorage:
+      type: "memory"
 ```
 
 这种配置不需要 HLS PVC，但非 publisher Pod 的 playlist/segment 请求会通过 gRPC 回源到 publisher Pod。
@@ -351,8 +351,9 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "shared_file"
-    hlsStoragePath: "/var/lib/synctv/hls"
+    hlsStorage:
+      type: "shared_file"
+      path: "/var/lib/synctv/hls"
 
 persistence:
   hls:
@@ -361,10 +362,10 @@ persistence:
 
 Helm 会提前拒绝以下组合：
 
-- `hlsStorageBackend` 不是 `memory`、`file`、`shared_file` 或 `oss`。
-- `hlsStorageBackend=file/shared_file` 但 `hlsStoragePath` 为空。
-- Kubernetes 中 `hlsStorageBackend=file/shared_file` 但 `hlsStoragePath` 不是绝对路径。
-- `hlsStorageBackend=shared_file` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
+- `hlsStorage.type` 不是 `memory`、`file`、`shared_file` 或 `oss`。
+- `hlsStorage.type=file/shared_file` 但 `hlsStorage.path` 为空。
+- Kubernetes 中 `hlsStorage.type=file/shared_file` 但 `hlsStorage.path` 不是绝对路径。
+- `hlsStorage.type=shared_file` 但没有配置 `persistence.hls.existingClaim`，避免把 `emptyDir` 误当成共享存储。
 
 OSS 示例：
 
@@ -373,15 +374,15 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "oss"
-    hlsOss:
+    hlsStorage:
+      type: "oss"
       endpoint: "https://s3.example.com"
       bucket: "synctv-hls"
       basePath: "synctv/hls/"
 
 secrets:
   livestream:
-    hlsOss:
+    hlsStorage:
       accessKeyId: "..."
       secretAccessKey: "..."
 ```

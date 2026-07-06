@@ -1352,6 +1352,7 @@ async fn handle_socket(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
+            clock: state.shared_api_runtime.client_api.clock.clone(),
             playback_service: state.shared_api_runtime.client_api.clone(),
             playlist_items_snapshot_service: state.shared_api_runtime.client_api.clone(),
             room_members_snapshot_service: state.shared_api_runtime.client_api.clone(),

@@ -66,6 +66,28 @@ time:
   # Examples: "Asia/Shanghai", "UTC", "America/New_York"
   # Leave empty to use env/system detection.
   timezone: ""
+  # Application-level clock synchronization. This calibrates SyncTV's in-process
+  # UTC clock with NTP/SNTP servers and does not change the host OS clock.
+  #
+  # Keep host-level NTP/chrony enabled for PostgreSQL, Redis, TLS, JWT, logs, and
+  # other processes. Enable this when clients need SyncTV's own playback/chat
+  # timestamps to use an explicitly calibrated application clock.
+  #
+  # Environment variables:
+  #   SYNCTV_TIME_CLOCK_SYNC_ENABLED=true
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE=sntp
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_SERVERS='["time.cloudflare.com:123","pool.ntp.org:123"]'
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_INTERVAL_SECONDS=300
+  #   SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TIMEOUT_MILLIS=1000
+  clock_sync:
+    enabled: false
+    provider:
+      type: "sntp"
+      servers:
+        - "time.cloudflare.com:123"
+        - "pool.ntp.org:123"
+      interval_seconds: 300
+      timeout_millis: 1000
 
 # Public IDs are prefixed decimal IDs by default, for example usr_1 and room_1.
 # Set sqids to enable prefixed sqids instead, for example usr_<sqid>.
@@ -164,7 +186,7 @@ management:
 # It affects relative:
 #   - management.unix_socket_path
 #   - logging.file_path
-#   - livestream.hls_storage_path
+#   - livestream.hls_storage.path
 #   - proxy_slice_cache.file_cache_dir
 # It does NOT affect:
 #   - *_file secret paths (they stay relative to this config file)
@@ -333,15 +355,21 @@ livestream:
   # When exceeded, the oldest GOP is evicted even if gop_cache_size hasn't
   # been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
   gop_cache_max_memory_mb: 100
-  # Maximum memory (in megabytes) for in-memory HLS segment storage.
-  # 0 means use the built-in default.
-  hls_memory_max_mb: 0
-  # HLS segment storage backend: memory, file, shared_file, or oss.
-  # Use shared_file only when hls_storage_path is mounted from storage visible to every replica.
-  hls_storage_backend: "memory"
-  # Relative hls_storage_path values are resolved from data_dir.
-  # This is runtime-owned storage, unlike *_file secrets or metrics TLS files.
-  # hls_storage_path: "livestream/hls"
+  # HLS segment storage. type: memory, file, shared_file, or oss.
+  # Use shared_file only when path is mounted from storage visible to every replica.
+  hls_storage:
+    type: "memory"
+    # memory_max_mb limits in-memory HLS segment storage. 0 uses the built-in default.
+    memory_max_mb: 0
+    # For type=file or shared_file:
+    # path: "livestream/hls"
+    # For type=oss:
+    # endpoint: "https://s3.example.com"
+    # access_key_id_file: "/run/secrets/hls_storage_access_key_id"
+    # secret_access_key_file: "/run/secrets/hls_storage_secret_access_key"
+    # bucket: "synctv-hls"
+    # region: null
+    # base_path: "hls/"
   # Maximum HTTP-FLV connection duration and slow-client write timeout.
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
@@ -381,9 +409,8 @@ file_storage:
 #   backends:
 #     database:
 #       type: "database"
-#       database:
-#         # Compression for bytes stored in file_blobs: none, lz4, or zstd.
-#         compression: "zstd"
+#       # Compression for bytes stored in file_blobs: none, lz4, or zstd.
+#       compression: "zstd"
 
 # Example: store files in multiple S3-compatible backends.
 # file_storage:
@@ -397,26 +424,24 @@ file_storage:
 #   backends:
 #     s3_public:
 #       type: "s3"
-#       s3:
-#         endpoint: "https://s3.example.com"
-#         access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
-#         secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
-#         bucket: "synctv-files"
-#         region: "auto"
-#         base_path: "files/"
-#         public_base_url: "https://cdn.example.com/files"
-#         upload_expires_seconds: 900
+#       endpoint: "https://s3.example.com"
+#       access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#       secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#       bucket: "synctv-files"
+#       region: "auto"
+#       base_path: "files/"
+#       public_base_url: "https://cdn.example.com/files"
+#       upload_expires_seconds: 900
 #     s3_private:
 #       type: "s3"
-#       s3:
-#         endpoint: "https://s3.example.com"
-#         access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
-#         secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
-#         bucket: "synctv-private-files"
-#         region: "auto"
-#         base_path: "private-files/"
-#         public_base_url: null
-#         upload_expires_seconds: 900
+#       endpoint: "https://s3.example.com"
+#       access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+#       secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+#       bucket: "synctv-private-files"
+#       region: "auto"
+#       base_path: "private-files/"
+#       public_base_url: null
+#       upload_expires_seconds: 900
 
 # ============================================================================
 # Password Complexity Requirements

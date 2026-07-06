@@ -294,8 +294,39 @@ pub(crate) fn file_metadata_from_proto(
     }
 }
 
+pub(crate) fn chat_message_selection_from_proto_values(
+    include_message_types: &[i32],
+) -> Result<synctv_core::models::ChatMessageSelection, String> {
+    if include_message_types.is_empty() {
+        return Ok(synctv_core::models::ChatMessageSelection::user_default());
+    }
+
+    let include_message_types = include_message_types
+        .iter()
+        .map(|value| {
+            let message_type = client_proto::ChatMessageType::try_from(*value)
+                .map_err(|_| format!("Invalid chat message type: {value}"))?;
+            match message_type {
+                client_proto::ChatMessageType::Unspecified => {
+                    Err("Chat message type must be specified".to_string())
+                }
+                client_proto::ChatMessageType::User => {
+                    Ok(synctv_core::models::ChatMessageType::User)
+                }
+                client_proto::ChatMessageType::SystemMemberJoined => {
+                    Ok(synctv_core::models::ChatMessageType::SystemMemberJoined)
+                }
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(synctv_core::models::ChatMessageSelection {
+        include_message_types,
+    })
+}
+
 pub(crate) fn chat_metadata_to_proto(
-    metadata: &Option<synctv_core::models::ChatMetadata>,
+    metadata: Option<&synctv_core::models::ChatMetadata>,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<client_proto::ChatMetadata>, crate::impls::ApiError> {
     let Some(metadata) = metadata else {
@@ -383,7 +414,7 @@ pub(crate) fn chat_metadata_from_proto(
 }
 
 pub(crate) fn content_report_metadata_to_proto(
-    metadata: &Option<synctv_core::models::ContentReportMetadata>,
+    metadata: Option<&synctv_core::models::ContentReportMetadata>,
 ) -> Result<Option<client_proto::ContentReportMetadata>, crate::impls::ApiError> {
     let Some(metadata) = metadata else {
         return Ok(None);
@@ -542,7 +573,7 @@ mod file_variant_metadata_tests {
             quality: Some(78),
             sort_order: 20,
             metadata: synctv_core::models::FileVariantMetadata::default(),
-            created_at: chrono::Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
         };
         let metadata = synctv_core::models::FileMetadata {
             variants: vec![variant],
@@ -584,7 +615,7 @@ mod file_variant_metadata_tests {
             quality: Some(78),
             sort_order: 20,
             metadata: synctv_core::models::FileVariantMetadata::default(),
-            created_at: chrono::Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
         };
 
         let proto = file_object_variant_to_proto(&variant).expect("variant should convert");
@@ -1730,27 +1761,34 @@ fn media_resource_metadata_to_proto(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MediaProtoView<'a> {
+    pub(crate) is_available: bool,
+    pub(crate) viewer_id: Option<synctv_core::models::UserId>,
+    pub(crate) cover: Option<&'a synctv_core::models::StoredFileReference>,
+    pub(crate) cover_access: Option<&'a crate::impls::stored_files::StoredFileObjectAccess>,
+    pub(crate) thumbnail: Option<&'a synctv_core::models::StoredFileReference>,
+    pub(crate) thumbnail_access: Option<&'a crate::impls::stored_files::StoredFileObjectAccess>,
+    pub(crate) public_id_codec: &'a crate::public_id::PublicIdCodec,
+}
+
 pub(crate) fn try_media_to_proto_for_viewer_with_cover(
     media: &synctv_core::models::Media,
-    is_available: bool,
-    viewer_id: Option<synctv_core::models::UserId>,
-    cover: Option<&synctv_core::models::StoredFileReference>,
-    cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
-    thumbnail: Option<&synctv_core::models::StoredFileReference>,
-    thumbnail_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    view: MediaProtoView<'_>,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer_without_cover(
         media,
-        is_available,
-        viewer_id,
-        public_id_codec,
+        view.is_available,
+        view.viewer_id,
+        view.public_id_codec,
     )?;
-    proto.cover = cover
-        .map(|file| stored_file_reference_to_media_cover(file, cover_access))
+    proto.cover = view
+        .cover
+        .map(|file| stored_file_reference_to_media_cover(file, view.cover_access))
         .transpose()?;
-    proto.thumbnail = thumbnail
-        .map(|file| stored_file_reference_to_media_thumbnail(file, thumbnail_access))
+    proto.thumbnail = view
+        .thumbnail
+        .map(|file| stored_file_reference_to_media_thumbnail(file, view.thumbnail_access))
         .transpose()?;
     Ok(proto)
 }
@@ -1876,9 +1914,10 @@ pub(crate) fn try_playback_state_to_proto(
     state: &synctv_core::models::RoomPlaybackState,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::PlaybackState, crate::impls::ApiError> {
-    let generated_at_millis = chrono::Utc::now().timestamp_millis();
-    let generated_at = chrono::DateTime::from_timestamp_millis(generated_at_millis)
-        .unwrap_or_else(chrono::Utc::now);
+    let generated_at = synctv_core::SystemClock.now();
+    let generated_at_millis = generated_at.timestamp_millis();
+    let generated_at_for_position =
+        synctv_core::clock::utc_from_millis(generated_at_millis).unwrap_or(generated_at);
     Ok(synctv_proto::client::PlaybackState {
         room_id: encode_room_id_for_proto(state.room_id, public_id_codec)?,
         playing_media_id: state
@@ -1886,7 +1925,7 @@ pub(crate) fn try_playback_state_to_proto(
             .map(|id| encode_media_id_for_proto(id, public_id_codec))
             .transpose()?
             .unwrap_or_default(),
-        position: state.computed_position_at(generated_at),
+        position: state.computed_position_at(generated_at_for_position),
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),
@@ -2724,7 +2763,6 @@ fn is_provider_proxy_url(url: &str) -> bool {
 #[cfg(test)]
 mod playback_conversion_tests {
     use super::*;
-    use chrono::Utc;
     use std::collections::HashMap;
     use synctv_core::models::media::{
         PlaybackAlistMedia, PlaybackBilibiliDanmaku, PlaybackBilibiliMedia, PlaybackDanmaku,
@@ -2814,12 +2852,14 @@ mod playback_conversion_tests {
             .add_media(PlaybackMedia {
                 name: "DASH".to_string(),
                 format: "mpd".to_string(),
-                expire_at: Utc::now().checked_add_signed(chrono::Duration::minutes(30)),
+                expire_at: synctv_core::SystemClock
+                    .now()
+                    .checked_add_signed(chrono::Duration::minutes(30)),
                 metadata: None,
                 provider: PlaybackMediaProvider::Bilibili(
                     PlaybackBilibiliMedia::DirectDashManifest {
                         version: "v1".to_string(),
-                        expires_at: Utc::now().timestamp() + 1800,
+                        expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
                         mode_name: "dash".to_string(),
                         headers: headers.clone(),
                     },
@@ -2982,7 +3022,7 @@ mod playback_conversion_tests {
                 metadata: None,
                 provider: PlaybackMediaProvider::DirectUrl(PlaybackDirectUrlMedia::ProxyStream {
                     version: "v 1".to_string(),
-                    expires_at: Utc::now().timestamp() + 1800,
+                    expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
                     mode_name: mode_name.to_string(),
                     url_index: 0,
                     url: "https://example.com/video.mp4".to_string(),
@@ -3023,7 +3063,7 @@ mod playback_conversion_tests {
         let signing = signing_context(&key);
         let room_id = synctv_core::models::RoomId::new();
         let media_id = synctv_core::models::MediaId::new();
-        let expires_at = Utc::now().timestamp() + 1800;
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
         let info = PlaybackInfo::builder()
             .add_media(PlaybackMedia {
                 name: "live".to_string(),
@@ -3068,7 +3108,7 @@ mod playback_conversion_tests {
     fn alist_playback_info_thumbnail_exposes_signed_proxy_url() {
         let key = signing_key();
         let signing = signing_context(&key);
-        let expires_at = Utc::now().timestamp() + 1800;
+        let expires_at = synctv_core::SystemClock.now().timestamp() + 1800;
         let mut result = playback_result(
             PlaybackInfo::builder()
                 .thumbnail(Some("https://alist.example.com/thumb.jpg".to_string()))

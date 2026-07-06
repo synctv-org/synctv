@@ -152,7 +152,7 @@ impl S3CompatibleFileStorageService {
     #[cfg(feature = "test-support")]
     async fn create_bucket(&self) -> Result<()> {
         let url = self.s3_url("", &[])?;
-        let date = Utc::now();
+        let date = crate::SystemClock.now();
         let body_hash = hex::encode(Sha256::digest([]));
         let mut headers = BTreeMap::new();
         headers.insert("x-amz-content-sha256".to_string(), body_hash.clone());
@@ -254,7 +254,7 @@ impl S3CompatibleFileStorageService {
         }
 
         let url = self.s3_url(object_key, &[("uploads", "")])?;
-        let date = Utc::now();
+        let date = crate::SystemClock.now();
         let body_hash = hex::encode(Sha256::digest([]));
         let mut headers = BTreeMap::new();
         headers.insert("content-type".to_string(), mime_type.to_string());
@@ -323,7 +323,7 @@ impl S3CompatibleFileStorageService {
         }
         body.push_str("</CompleteMultipartUpload>");
         let url = self.s3_url(object_key, &[("uploadId", upload_id)])?;
-        let date = Utc::now();
+        let date = crate::SystemClock.now();
         let body_hash = hex::encode(Sha256::digest(body.as_bytes()));
         let mut headers = BTreeMap::new();
         headers.insert("content-type".to_string(), "application/xml".to_string());
@@ -361,7 +361,7 @@ impl S3CompatibleFileStorageService {
         }
 
         let url = self.s3_url(object_key, &[("uploadId", upload_id)])?;
-        let date = Utc::now();
+        let date = crate::SystemClock.now();
         let body_hash = hex::encode(Sha256::digest([]));
         let mut headers = BTreeMap::new();
         headers.insert("x-amz-content-sha256".to_string(), body_hash.clone());
@@ -442,7 +442,7 @@ impl S3CompatibleFileStorageService {
                 ("uploadId", upload_id),
             ],
         )?;
-        let date = Utc::now();
+        let date = crate::SystemClock.now();
         let body_hash = hex::encode(Sha256::digest(&data));
         let checksum_base64 = sha256_hex_to_base64(checksum_sha256)?;
         let mut headers = BTreeMap::new();
@@ -576,7 +576,7 @@ impl S3CompatibleFileStorageService {
                 .map_or_else(Default::default, |object| object.metadata.clone());
             let created_at = object
                 .as_ref()
-                .map_or_else(Utc::now, |object| object.created_at);
+                .map_or_else(|| crate::SystemClock.now(), |object| object.created_at);
             return Ok(FileObjectDownload {
                 metadata: FileObjectMetadata {
                     storage_backend: self.config.storage_backend.clone(),
@@ -622,7 +622,7 @@ impl S3CompatibleFileStorageService {
             .map_or_else(Default::default, |object| object.metadata.clone());
         let created_at = object
             .as_ref()
-            .map_or_else(Utc::now, |object| object.created_at);
+            .map_or_else(|| crate::SystemClock.now(), |object| object.created_at);
         let reader = self
             .operator
             .reader(&object_key)
@@ -698,7 +698,7 @@ impl S3CompatibleFileStorageService {
                 ("uploadId", upload_id),
             ],
         )?;
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let expires = (expires_at - now).num_seconds().clamp(1, 604_800);
         let mut headers = BTreeMap::new();
         headers.insert(
@@ -893,7 +893,7 @@ impl S3CompatibleFileStorageService {
             range: None,
             data: Vec::new(),
             metadata,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         };
         if let Err(error) =
             super::complete_uploaded_file_object(self, repository, &mut blob, &upload_policy).await
@@ -1027,7 +1027,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             metadata: request.metadata.clone(),
             upload_policy: &request.policy,
         });
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let expires = self
             .config
             .upload_expires_seconds
@@ -1114,6 +1114,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 &request.storage_scope,
                 &content_manifest_sha256,
                 request.size_bytes,
+                now,
             )
             .await?;
         let object_key = file_object_key(
@@ -1309,7 +1310,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             {
                 let payload = validate_file_upload_token_context(
                     token,
-                    Utc::now(),
+                    crate::SystemClock.now(),
                     &self.config.upload_token_secret,
                 )?;
                 if payload.user_id != context.user_id.as_i64()
@@ -1363,7 +1364,12 @@ impl FileStorageService for S3CompatibleFileStorageService {
         token: &str,
         context: FileStorageContext<'_>,
     ) -> Result<ValidatedFileReuseGrant> {
-        validate_file_reuse_grant(token, context, Utc::now(), &self.config.upload_token_secret)
+        validate_file_reuse_grant(
+            token,
+            context,
+            crate::SystemClock.now(),
+            &self.config.upload_token_secret,
+        )
     }
 
     async fn delete_files(
@@ -1455,11 +1461,12 @@ impl FileStorageService for S3CompatibleFileStorageService {
     async fn cleanup_expired_upload_session(
         &self,
         session: crate::models::FileUploadSessionRecord,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
         if session.storage_backend != self.config.storage_backend {
             return Ok(false);
         }
-        if session.completed_at.is_some() || session.expires_at > Utc::now() {
+        if session.completed_at.is_some() || session.expires_at > now {
             return Ok(false);
         }
         let repository = self.repository()?;
@@ -1538,7 +1545,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             &self.config.storage_backend,
             &upload_token,
             &upload_session_key,
-            Utc::now(),
+            crate::SystemClock.now(),
             &self.config.upload_token_secret,
         )?;
         let repository = self.repository()?;
@@ -1546,7 +1553,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             .get_upload_session(&self.config.storage_backend, &upload_session_key)
             .await?
             .ok_or_else(|| Error::InvalidInput("file upload session was not found".to_string()))?;
-        if session.completed_at.is_some() || session.expires_at <= Utc::now() {
+        if session.completed_at.is_some() || session.expires_at <= crate::SystemClock.now() {
             return Err(Error::InvalidInput(
                 "file upload session is not active".to_string(),
             ));
@@ -1716,7 +1723,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             &self.config.storage_backend,
             &request.upload_token,
             &object_key,
-            Utc::now(),
+            crate::SystemClock.now(),
             &self.config.upload_token_secret,
         )?;
         let Some(file_id) = request
@@ -1741,7 +1748,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                 ));
             }
             if let Some(ownership_proof) = session.metadata.ownership_proof.as_ref() {
-                if session.expires_at <= Utc::now() {
+                if session.expires_at <= crate::SystemClock.now() {
                     return Err(Error::InvalidInput(
                         "file upload session is not active".to_string(),
                     ));
@@ -1768,7 +1775,8 @@ impl FileStorageService for S3CompatibleFileStorageService {
                         uploaded_parts: vec![1],
                     });
                 }
-                if session.completed_at.is_some() || session.expires_at <= Utc::now() {
+                if session.completed_at.is_some() || session.expires_at <= crate::SystemClock.now()
+                {
                     return Err(Error::InvalidInput(
                         "file upload session is not active".to_string(),
                     ));
@@ -1893,7 +1901,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
                     range: None,
                     data: Vec::new(),
                     metadata: Default::default(),
-                    created_at: Utc::now(),
+                    created_at: crate::SystemClock.now(),
                 }),
                 uploaded_size_bytes: size_bytes,
                 uploaded_parts: Vec::new(),
@@ -2100,7 +2108,7 @@ impl FileStorageService for S3CompatibleFileStorageService {
             range: None,
             data,
             metadata,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         })
     }
 

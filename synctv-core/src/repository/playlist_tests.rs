@@ -16,7 +16,7 @@ fn alist_playlist_source_config(path: impl Into<String>) -> PlaylistSourceConfig
 }
 
 async fn insert_test_provider_instance(pool: &PgPool, name: &str, provider: &str) {
-    let now = chrono::Utc::now();
+    let now = crate::SystemClock.now();
     let instance = ProviderInstance {
         name: name.to_string(),
         endpoint: "http://localhost:50051".to_string(),

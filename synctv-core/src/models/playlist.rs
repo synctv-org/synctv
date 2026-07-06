@@ -139,7 +139,6 @@ mod tests {
             Err(error) => std::panic::panic_any(format!("{context}: {error}")),
         }
     }
-    use chrono::Utc;
 
     fn make_playlist(
         name: &str,
@@ -158,8 +157,8 @@ mod tests {
             source_provider,
             source_config: None,
             provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
             version: 0,
         }
     }

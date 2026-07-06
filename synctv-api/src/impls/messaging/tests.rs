@@ -213,7 +213,7 @@ fn chat_attachment() -> ChatAttachment {
         kind: synctv_core::models::ChatAttachmentKind::Image,
         room_id: room_id(),
         message_id: 10,
-        message_created_at: chrono::Utc::now(),
+        message_created_at: synctv_core::SystemClock.now(),
         filename: Some("chat-attachment-1.png".to_string()),
         storage_backend: "database".to_string(),
         object_key: "chat/attachments/chat-attachment-1".to_string(),
@@ -224,7 +224,7 @@ fn chat_attachment() -> ChatAttachment {
         width: Some(320),
         height: Some(240),
         metadata: synctv_core::models::FileMetadata::default(),
-        created_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
         reuse_token: None,
         reuse_expires_at: None,
     }
@@ -352,11 +352,12 @@ fn chat_display_metadata_reads_valid_presentation() {
     ));
 
     assert_eq!(
-        chat_display_position_from_metadata(&metadata).checked("display position should parse"),
+        chat_display_position_from_metadata(metadata.as_ref())
+            .checked("display position should parse"),
         "top"
     );
     assert_eq!(
-        chat_display_color_from_metadata(&metadata).checked("display color should parse"),
+        chat_display_color_from_metadata(metadata.as_ref()).checked("display color should parse"),
         "#ff0000"
     );
 }
@@ -374,7 +375,7 @@ fn chat_display_metadata_rejects_invalid_presentation_fields() {
     ));
 
     assert!(matches!(
-        chat_display_color_from_metadata(&control_character),
+        chat_display_color_from_metadata(control_character.as_ref()),
         Err(message) if message.contains("display color")
     ));
 }
@@ -396,26 +397,26 @@ fn chat_playback_metadata_encodes_public_ids() {
     let codec = public_id_codec();
 
     assert_eq!(
-        chat_playback_media_id_from_metadata(&metadata, &codec),
+        chat_playback_media_id_from_metadata(metadata.as_ref(), &codec),
         Ok(public_media_id())
     );
     assert_eq!(
-        chat_playback_playlist_id_from_metadata(&metadata, &codec),
+        chat_playback_playlist_id_from_metadata(metadata.as_ref(), &codec),
         Ok(public_playlist_id())
     );
 }
 
 #[test]
 fn chat_playback_metadata_without_source_returns_empty_ids() {
-    let metadata = None;
+    let metadata: Option<synctv_core::models::ChatMetadata> = None;
     let codec = public_id_codec();
 
     assert_eq!(
-        chat_playback_media_id_from_metadata(&metadata, &codec),
+        chat_playback_media_id_from_metadata(metadata.as_ref(), &codec),
         Ok(String::new())
     );
     assert_eq!(
-        chat_playback_playlist_id_from_metadata(&metadata, &codec),
+        chat_playback_playlist_id_from_metadata(metadata.as_ref(), &codec),
         Ok(String::new())
     );
 }
@@ -423,14 +424,14 @@ fn chat_playback_metadata_without_source_returns_empty_ids() {
 #[test]
 fn chat_playback_metadata_rejects_invalid_source_ids() {
     let codec = public_id_codec();
-    let metadata = None;
+    let metadata: Option<synctv_core::models::ChatMetadata> = None;
 
     assert_eq!(
-        chat_playback_media_id_from_metadata(&metadata, &codec),
+        chat_playback_media_id_from_metadata(metadata.as_ref(), &codec),
         Ok(String::new())
     );
     assert_eq!(
-        chat_playback_playlist_id_from_metadata(&metadata, &codec),
+        chat_playback_playlist_id_from_metadata(metadata.as_ref(), &codec),
         Ok(String::new())
     );
 }
@@ -453,7 +454,7 @@ fn chat_playback_metadata_decodes_structured_target() {
     ));
 
     assert_eq!(
-        chat_playback_target_from_metadata(&metadata),
+        chat_playback_target_from_metadata(metadata.as_ref()),
         Ok(Some(synctv_core::models::ProviderTarget::alist(
             "/episode-1.mp4".to_string()
         )))
@@ -476,7 +477,7 @@ fn chat_playback_metadata_derives_target_hash_from_target() {
             ..Default::default()
         },
     ));
-    let playback = chat_playback_metadata_from_metadata(&metadata, &public_id_codec())
+    let playback = chat_playback_metadata_from_metadata(metadata.as_ref(), &public_id_codec())
         .checked("playback metadata should parse");
 
     let target = synctv_core::models::ProviderTarget::alist("/episode-1.mp4".to_string());
@@ -508,16 +509,19 @@ fn chat_playback_metadata_rejects_invalid_position_seconds() {
     ));
 
     assert!(matches!(
-        chat_playback_metadata_from_metadata(&metadata, &public_id_codec()),
+        chat_playback_metadata_from_metadata(metadata.as_ref(), &public_id_codec()),
         Err(message) if message.contains("position_seconds")
     ));
 }
 
 #[test]
 fn chat_playback_metadata_rejects_invalid_target() {
-    let metadata = None;
+    let metadata: Option<synctv_core::models::ChatMetadata> = None;
 
-    assert_eq!(chat_playback_target_from_metadata(&metadata), Ok(None));
+    assert_eq!(
+        chat_playback_target_from_metadata(metadata.as_ref()),
+        Ok(None)
+    );
 }
 
 #[test]
@@ -595,7 +599,7 @@ fn chat_event_with_content(
     event_id: impl Into<String>,
     content: impl Into<String>,
 ) -> ChatMessageEvent {
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     ChatMessageEvent {
         event_id: event_id.into(),
         sequence: 1,
@@ -680,7 +684,7 @@ fn playlist() -> Playlist {
     }
 }
 fn now() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc::now()
+    synctv_core::SystemClock.now()
 }
 
 #[derive(Default)]
@@ -1247,6 +1251,7 @@ fn test_chat_service(pool: sqlx::PgPool) -> Arc<ChatService> {
     Arc::new(ChatService::new(
         chat_repo,
         ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter,
             rate_limit_config: RateLimitConfig::default(),
             content_filter,
@@ -2694,7 +2699,7 @@ async fn test_handle_client_message_sends_millisecond_heartbeat_ack() {
             synctv_proto::client::HeartbeatMessage { timestamp: 42 },
         )),
     };
-    let heartbeat_started_at = chrono::Utc::now().timestamp_millis();
+    let heartbeat_started_at = synctv_core::SystemClock.now_millis();
 
     handler
         .handle_client_message(&heartbeat)
@@ -3314,7 +3319,7 @@ async fn test_replay_room_resource_event_without_payload_advances_cursor() {
     let repository = synctv_core::repository::RoomResourceEventRepository::new(
         fixture.handler.room_service.pool().clone(),
     );
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     repository
         .insert(&synctv_core::repository::NewRoomResourceEvent {
             event_id: "playlist-items-audit-only".to_string(),
@@ -3468,7 +3473,7 @@ async fn test_observe_playback_with_matching_source_sends_current_playback() {
                 playback_infos: std::collections::HashMap::new(),
                 default_mode: String::new(),
                 metadata: None,
-                expires_at: Some(chrono::Utc::now().timestamp() + 3600),
+                expires_at: Some(synctv_core::SystemClock.now().timestamp() + 3600),
                 duration_seconds: None,
                 is_live: false,
                 target: None,
@@ -4811,7 +4816,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
         ..
     } = &fixture;
 
-    let refresh_at = chrono::Utc::now().timestamp() + 1;
+    let refresh_at = synctv_core::SystemClock.now().timestamp() + 1;
     let playback_service = SequencedPlaybackService::new([
         Ok(synctv_proto::client::Playback {
             media_id: String::new(),
@@ -8456,7 +8461,7 @@ fn test_disconnect_signal_requires_skip_cleanup_only_for_room_scoped_or_redundan
 fn test_admin_event_requires_skip_cleanup_only_for_room_scoped_or_redundant_exits() {
     let rid = room_id();
     let uid = user_id();
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
 
     assert!(!super::admin_event_requires_skip_cleanup(
         &RealtimeEvent::KickUser {
@@ -8563,7 +8568,7 @@ fn test_watch_admin_event_matches_access_revocation_events() {
     let uid = user_id();
     let other_uid = UserId::expect_positive(2);
     let other_rid = RoomId::expect_positive(2);
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
 
     assert!(super::watch_admin_event_matches(
         &RealtimeEvent::KickUser {
@@ -8713,6 +8718,7 @@ async fn test_resource_watch_prepare_enforces_room_connection_limit_and_releases
             principal: RealtimePrincipal::user(member.id, member.username.clone()),
             room_service: Arc::clone(&room_service),
             chat_service: None,
+            clock: Arc::new(synctv_core::SystemClock),
             event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
             connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
@@ -8795,6 +8801,7 @@ async fn test_resource_watch_prepare_rejects_missing_observe_resource_before_sub
         principal: RealtimePrincipal::user(owner.id, owner.username.clone()),
         room_service: Arc::clone(&room_service),
         chat_service: None,
+        clock: Arc::new(synctv_core::SystemClock),
         event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
         connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
         presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
@@ -8900,6 +8907,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         principal: RealtimePrincipal::user(member.id, member.username.clone()),
         room_service: Arc::clone(&room_service),
         chat_service: Some(chat_service),
+        clock: Arc::new(synctv_core::SystemClock),
         event_service: Arc::clone(&event_service) as Arc<dyn RealtimeEventService>,
         connection_service: Arc::clone(&connection_service) as Arc<dyn ConnectionRuntime>,
         presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),

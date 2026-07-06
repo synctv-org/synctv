@@ -398,7 +398,7 @@ mod tests {
                 event_id: format!("event-{room_id}"),
                 room_id,
                 deleted_by: UserId::expect_positive(1),
-                timestamp: chrono::Utc::now(),
+                timestamp: crate::SystemClock.now(),
             },
         }
     }

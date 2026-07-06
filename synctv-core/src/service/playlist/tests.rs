@@ -284,8 +284,8 @@ fn playlist_edit_requires_matching_creator() {
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
+        updated_at: crate::SystemClock.now(),
         version: 1,
     };
 

@@ -355,16 +355,7 @@ impl RedisPubSub {
     /// This is used to limit how far back we read from a stream when
     /// no valid cursor is available (e.g., cursor is "0" on reconnect).
     fn catchup_start_id(&self) -> String {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_else(|error| {
-                warn!(
-                    error = %error,
-                    "System clock is before UNIX_EPOCH; using zero Redis catch-up timestamp fallback"
-                );
-                Duration::ZERO
-            })
-            .as_millis();
+        let now_ms = u128::try_from(synctv_core::SystemClock.now_millis()).unwrap_or(0);
         let start_ms = now_ms.saturating_sub(self.catchup_window_ms);
         format!("{start_ms}-0")
     }

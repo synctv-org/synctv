@@ -2,7 +2,6 @@ use super::registry::PublisherInfo;
 use super::registry_trait::{ActivePublisherEntry, PublisherRefreshOutcome, StreamRegistryTrait};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
 
 use crate::util::{validate_stream_id_component, validate_stream_ids};
 
@@ -145,7 +144,7 @@ impl StreamRegistryTrait for TestStreamRegistry {
                 api_address: api_address.to_string(),
                 app_name: "live".to_string(),
                 user_id: user_id.to_string(),
-                started_at: Utc::now(),
+                started_at: synctv_core::SystemClock.now(),
                 epoch: *epoch,
             });
             Ok(true)
@@ -422,7 +421,7 @@ mod tests {
                 api_address: String::new(),
                 app_name: "live".to_string(),
                 user_id: String::new(),
-                started_at: Utc::now(),
+                started_at: synctv_core::SystemClock.now(),
                 epoch: 1,
             },
         );

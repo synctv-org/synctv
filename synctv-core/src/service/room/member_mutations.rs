@@ -300,12 +300,14 @@ impl RoomService {
             .await?;
         self.insert_member_joined_system_chat_tx(
             &mut tx,
-            room_id,
-            target_user_id,
-            snapshot.target_username.clone(),
-            actor_id,
-            snapshot.changed_by_username.clone(),
-            created.role,
+            super::outbox::MemberJoinedSystemChatInsert {
+                room_id,
+                target_user_id,
+                target_username: snapshot.target_username.clone(),
+                actor_user_id: actor_id,
+                actor_username: snapshot.changed_by_username.clone(),
+                role: created.role,
+            },
         )
         .await?;
         tx.commit().await?;
@@ -399,12 +401,14 @@ impl RoomService {
             .await?;
         self.insert_member_joined_system_chat_tx(
             &mut tx,
-            room_id,
-            target_user_id,
-            snapshot.target_username.clone(),
-            actor_id,
-            snapshot.changed_by_username.clone(),
-            updated.role,
+            super::outbox::MemberJoinedSystemChatInsert {
+                room_id,
+                target_user_id,
+                target_username: snapshot.target_username.clone(),
+                actor_user_id: actor_id,
+                actor_username: snapshot.changed_by_username.clone(),
+                role: updated.role,
+            },
         )
         .await?;
         tx.commit().await?;
@@ -603,12 +607,14 @@ impl RoomService {
             .await?;
         self.insert_member_joined_system_chat_tx(
             &mut tx,
-            room_id,
-            target_user_id,
-            snapshot.target_username.clone(),
-            actor_id,
-            snapshot.changed_by_username.clone(),
-            created.role,
+            super::outbox::MemberJoinedSystemChatInsert {
+                room_id,
+                target_user_id,
+                target_username: snapshot.target_username.clone(),
+                actor_user_id: actor_id,
+                actor_username: snapshot.changed_by_username.clone(),
+                role: created.role,
+            },
         )
         .await?;
         tx.commit().await?;
@@ -693,12 +699,14 @@ impl RoomService {
             .await?;
         self.insert_member_joined_system_chat_tx(
             &mut tx,
-            room_id,
-            target_user_id,
-            snapshot.target_username.clone(),
-            actor_id,
-            snapshot.changed_by_username.clone(),
-            updated.role,
+            super::outbox::MemberJoinedSystemChatInsert {
+                room_id,
+                target_user_id,
+                target_username: snapshot.target_username.clone(),
+                actor_user_id: actor_id,
+                actor_username: snapshot.changed_by_username.clone(),
+                role: updated.role,
+            },
         )
         .await?;
         tx.commit().await?;

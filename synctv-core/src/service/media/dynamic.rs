@@ -231,7 +231,6 @@ fn dynamic_playlist_source_provider(playlist: &Playlist) -> Result<SourceProvide
 mod tests {
     use super::*;
     use crate::models::{Playlist, SourceProvider};
-    use chrono::Utc;
 
     fn dynamic_playlist(
         source_provider: Option<SourceProvider>,
@@ -249,8 +248,8 @@ mod tests {
             source_provider,
             source_config,
             provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
             version: 0,
         }
     }

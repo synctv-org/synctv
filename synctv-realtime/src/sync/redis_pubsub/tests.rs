@@ -4,7 +4,6 @@ use crate::sync::{
     SharedRealtimeEvent, WebRTCSignalKind,
 };
 use async_trait::async_trait;
-use chrono::Utc;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use synctv_core::models::id::UserId;
@@ -25,7 +24,7 @@ fn critical_event(event_id: impl Into<String>) -> RealtimeEvent {
         event_id: event_id.into(),
         user_id: UserId::expect_positive(10_000_250),
         reason: "test".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -171,7 +170,7 @@ async fn test_cache_invalidate_dispatch_calls_handler_and_notifies_admin_subscri
         targets: vec![CacheTarget::Room {
             room_id: RoomId::expect_positive(10_000_150),
         }],
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
     let event_id = event.event_id().to_string();
 
@@ -200,7 +199,7 @@ fn test_event_envelope_serialization() -> serde_json::Result<()> {
         user_id: UserId::expect_positive(10_000_141),
         username: "testuser".to_string(),
         message: "Hello!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -291,7 +290,7 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
                 user_id,
                 username: "filler".to_string(),
                 message: "fill".to_string(),
-                timestamp: Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
                 display_position: None,
                 display_color: None,
             },
@@ -313,7 +312,7 @@ async fn test_dispatch_room_deleted_waits_for_reliable_delivery_before_cleanup()
         event_id: synctv_common::snanoid!(16),
         room_id,
         deleted_by: user_id,
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let room_for_task = room_id;
@@ -425,7 +424,7 @@ async fn test_pubsub_integration() -> TestResult {
         user_id,
         username: "testuser".to_string(),
         message: "Hello from node1!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -679,7 +678,7 @@ async fn test_pending_subscriptions_recovered_on_reconnect() -> TestResult {
             user_id: user1_id,
             username: "testuser1".to_string(),
             message: "Hello from room1!".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         },
@@ -703,7 +702,7 @@ async fn test_pending_subscriptions_recovered_on_reconnect() -> TestResult {
             user_id: user2_id,
             username: "testuser2".to_string(),
             message: "Hello from room2!".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         },
@@ -825,7 +824,7 @@ async fn test_dispatch_event_drops_malformed_webrtc_target() -> TestResult {
                 from: "user1|conn1".to_string(),
                 to: "conn2".to_string(),
                 data: "SDP".to_string(),
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             },
         )
         .await;
@@ -874,7 +873,7 @@ async fn test_dispatch_event_only_delivers_duplicate_once() -> TestResult {
         user_id,
         username: "dedup".to_string(),
         message: "hello".to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };

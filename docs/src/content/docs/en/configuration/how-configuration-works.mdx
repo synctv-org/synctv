@@ -90,8 +90,8 @@ Common fields that support file references include:
 - `metrics.auth.basic_password`
 - `email.smtp_password`
 - `bootstrap.root_password`
-- `livestream.hls_oss.access_key_id`
-- `livestream.hls_oss.secret_access_key`
+- `livestream.hls_storage.access_key_id`
+- `livestream.hls_storage.secret_access_key`
 - Media provider secret-like fields such as `token`, `api_key`, `password`, `access_token`, and `refresh_token`
 
 Relative `*_file` paths are resolved relative to the configuration file directory, not `data_dir`.
@@ -104,7 +104,7 @@ Paths affected by `data_dir`:
 
 - `management.unix_socket_path`
 - `logging.file_path`
-- `livestream.hls_storage_path`
+- `livestream.hls_storage.path`
 - `proxy_slice_cache.file_cache_dir`
 
 Paths not affected by `data_dir`:

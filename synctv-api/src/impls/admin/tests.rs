@@ -786,6 +786,7 @@ async fn make_admin_api_for_delete_user_test(
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
             "jwt",
         ),
+        Arc::new(synctv_core::SystemClock),
         24,
     );
     let publish_key_service = Arc::new(fixture_value(
@@ -815,6 +816,7 @@ async fn make_admin_api_for_delete_user_test(
                 public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
                     redis_publish_tx,
                 ),
@@ -884,6 +886,7 @@ async fn make_admin_api_with_livestream_for_test(
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
             "jwt",
         ),
+        Arc::new(synctv_core::SystemClock),
         24,
     );
     let publish_key_service = Arc::new(fixture_value(
@@ -927,6 +930,7 @@ async fn make_admin_api_with_livestream_for_test(
                 public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 realtime_fanout: crate::test_support::channel_realtime_fanout_service(
                     redis_publish_tx,
                 ),
@@ -1270,7 +1274,7 @@ async fn create_room_media(
 }
 
 fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     synctv_core::models::Room {
         id: RoomId::new(),
         name: "room-ban-test".to_string(),
@@ -1291,7 +1295,7 @@ fn make_test_room_model(created_by: &UserId) -> synctv_core::models::Room {
 }
 
 fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     synctv_core::models::Room {
         id: RoomId::expect_positive(101),
         name: "Admin Test Room".to_string(),
@@ -1679,8 +1683,8 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         banned_by: None,
         banned_reason: None,
         signup_method: synctv_core::models::SignupMethod::Email,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         deleted_at: None,
         version: 0,
     }
@@ -1698,8 +1702,8 @@ fn make_db_user(username: &str, role: UserRole) -> synctv_core::models::User {
         banned_by: None,
         banned_reason: None,
         signup_method: synctv_core::models::SignupMethod::Email,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         deleted_at: None,
         version: 0,
     }
@@ -1873,7 +1877,7 @@ fn test_admin_user_to_proto_fields() -> TestResult {
 fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
     let public_id_codec = crate::public_id::PublicIdCodec::plain();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
-    let banned_at = chrono::Utc::now();
+    let banned_at = synctv_core::SystemClock.now();
     user.is_banned = true;
     user.banned_at = Some(banned_at);
 
@@ -1917,7 +1921,7 @@ fn test_admin_user_to_proto_no_email() -> TestResult {
 #[test]
 fn review_rows_preserve_absent_optional_fields() -> TestResult {
     let public_id_codec = crate::public_id::PublicIdCodec::plain();
-    let requested_at = chrono::Utc::now();
+    let requested_at = synctv_core::SystemClock.now();
 
     let registration = user_registration_review_row_to_proto(
         &synctv_core::repository::UserRegistrationReviewRecord {
@@ -2057,7 +2061,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
-        joined_at: chrono::Utc::now(),
+        joined_at: synctv_core::SystemClock.now(),
         is_online: false,
         is_active: true,
     }
@@ -2123,7 +2127,7 @@ async fn test_list_admins_includes_root_and_admin_only() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool.clone()).await;
     let user_repo = UserRepository::new(pool);
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
 
     for user in [
         synctv_core::models::User {
@@ -2743,6 +2747,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             public_id_codec: admin_api.public_id_codec.clone(),
         },
         AdminApiRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: failing_fanout.clone(),
             realtime_event_service: admin_api.realtime_event_service.clone(),
             provider_stores: admin_api.provider_stores.clone(),
@@ -4317,6 +4322,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
         },
         AdminApiRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
             realtime_event_service: Arc::new(LocalNoopRealtimeEventService::new()),
             provider_stores: provider_stores.clone(),
@@ -4381,7 +4387,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             .await,
     )?;
     let lifecycle_store = provider_stores.load("playback_lifecycle");
-    let now_millis = chrono::Utc::now().timestamp_millis();
+    let now_millis = synctv_core::SystemClock.now_millis();
     lifecycle_store
         .set(
             &format!("room:{}:sessions", room.id),

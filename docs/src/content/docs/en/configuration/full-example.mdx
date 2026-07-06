@@ -90,19 +90,17 @@ file_storage:
   backends:
     database:
       type: "database"
-      database:
-        compression: "zstd"
+      compression: "zstd"
     s3_public:
       type: "s3"
-      s3:
-        endpoint: "https://s3.example.com"
-        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
-        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
-        bucket: "synctv-files"
-        region: "auto"
-        base_path: "files/"
-        public_base_url: "https://cdn.example.com/files"
-        upload_expires_seconds: 900
+      endpoint: "https://s3.example.com"
+      access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+      secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+      bucket: "synctv-files"
+      region: "auto"
+      base_path: "files/"
+      public_base_url: "https://cdn.example.com/files"
+      upload_expires_seconds: 900
 
 security:
   credential_encryption_key_file: "/run/secrets/credential_encryption_key"
@@ -265,18 +263,9 @@ livestream:
   pull_max_backoff_ms: 30000
   max_flv_tag_size_bytes: 10485760
   gop_cache_max_memory_mb: 100
-  hls_memory_max_mb: 0
-  hls_storage_backend: "memory"
-  hls_storage_path: ""
-  hls_oss:
-    endpoint: ""
-    access_key_id: ""
-    access_key_id_file: ""
-    secret_access_key: ""
-    secret_access_key_file: ""
-    bucket: ""
-    region: null
-    base_path: "hls/"
+  hls_storage:
+    type: "memory"
+    memory_max_mb: 0
   flv_max_connection_duration_seconds: 86400
   flv_write_timeout_seconds: 30
 
@@ -292,10 +281,9 @@ file_storage:
   backends:
     database:
       type: "database"
-      database:
-        compression: "zstd"
-        compression_min_size_bytes: 4096
-        compression_min_savings_percent: 10
+      compression: "zstd"
+      compression_min_size_bytes: 4096
+      compression_min_savings_percent: 10
 
 webauthn:
   enabled: true

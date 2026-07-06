@@ -387,15 +387,12 @@ fn test_from_env_rejects_invalid_webrtc_mode_override() {
 }
 
 #[test]
-fn test_from_env_rejects_invalid_hls_storage_backend_override() {
-    let error = Config::from_env_map(&env_map(&[(
-        "SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND",
-        "nfs",
-    )]))
-    .failed("invalid HLS storage backend override must fail closed");
+fn test_from_env_rejects_invalid_hls_storage_type_override() {
+    let error = Config::from_env_map(&env_map(&[("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE", "nfs")]))
+        .failed("invalid HLS storage backend override must fail closed");
 
     let message = error.to_string();
-    assert!(message.contains("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND"));
+    assert!(message.contains("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE"));
     assert!(message.contains("memory"));
     assert!(message.contains("file"));
     assert!(message.contains("shared_file"));
@@ -511,6 +508,54 @@ fn test_external_ids_sqids_env_enables_prefixed_sqids() {
             .checked("sqids should be enabled")
             .min_length,
         8
+    );
+}
+
+#[test]
+fn test_clock_sync_sntp_env_overrides_provider_fields() {
+    let config = Config::from_env_map(&env_map(&[
+        ("SYNCTV_TIME_CLOCK_SYNC_ENABLED", "true"),
+        ("SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE", "sntp"),
+        (
+            "SYNCTV_TIME_CLOCK_SYNC_PROVIDER_SERVERS",
+            r#"["time.cloudflare.com:123","pool.ntp.org:123"]"#,
+        ),
+        ("SYNCTV_TIME_CLOCK_SYNC_PROVIDER_INTERVAL_SECONDS", "120"),
+        ("SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TIMEOUT_MILLIS", "750"),
+    ]))
+    .checked("clock sync env overrides should parse");
+
+    assert!(config.time.clock_sync.enabled);
+    let ClockSyncProvider::Sntp(sntp) = &config.time.clock_sync.provider;
+    assert_eq!(
+        sntp.servers,
+        vec![
+            "time.cloudflare.com:123".to_string(),
+            "pool.ntp.org:123".to_string(),
+        ]
+    );
+    assert_eq!(sntp.interval_seconds, 120);
+    assert_eq!(sntp.timeout_millis, 750);
+}
+
+#[test]
+fn test_clock_sync_validation_rejects_enabled_sntp_without_servers() {
+    let mut config = valid_prod_config();
+    config.time.clock_sync.enabled = true;
+    config.time.clock_sync.provider = ClockSyncProvider::Sntp(ClockSyncSntpProviderConfig {
+        servers: Vec::new(),
+        ..ClockSyncSntpProviderConfig::default()
+    });
+
+    let errors = config
+        .validate()
+        .failed("clock sync servers should be required");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("time.clock_sync.provider.servers")),
+        "unexpected errors: {errors:?}"
     );
 }
 
@@ -637,8 +682,9 @@ fn valid_prod_config() -> Config {
         livestream: LivestreamConfig {
             // Keep a valid shared file backend so cluster-mode tests can opt in by
             // toggling `cluster.enabled` without unrelated HLS path errors.
-            hls_storage_backend: HlsStorageBackend::SharedFile,
-            hls_storage_path: "/var/lib/synctv/hls".to_string(),
+            hls_storage: HlsStorageConfig::SharedFile(HlsFileStorageConfig {
+                path: "/var/lib/synctv/hls".to_string(),
+            }),
             ..LivestreamConfig::default()
         },
         file_storage: FileStorageConfig::default(),
@@ -683,11 +729,12 @@ fn test_validate_cluster_mode_allows_local_hls_storage() {
     let mut config = valid_prod_config();
     config.cluster.enabled = true;
     config.server.advertise_host = "10.0.0.12".to_string();
-    config.livestream.hls_storage_backend = HlsStorageBackend::File;
+    config.livestream.hls_storage = HlsStorageConfig::File(HlsFileStorageConfig {
+        path: "/var/lib/synctv/hls".to_string(),
+    });
     assert!(config.validate().is_ok());
 
-    config.livestream.hls_storage_backend = HlsStorageBackend::Memory;
-    config.livestream.hls_storage_path = String::new();
+    config.livestream.hls_storage = HlsStorageConfig::Memory(HlsMemoryStorageConfig::default());
     assert!(config.validate().is_ok());
 }
 
@@ -704,7 +751,9 @@ fn test_validate_standalone_mode_allows_hls_local_storage() {
     // Also need to clear stun_external_addr since standalone mode no longer
     // requires an external STUN address.
     config.webrtc.stun_external_addr = String::new();
-    config.livestream.hls_storage_backend = HlsStorageBackend::File;
+    config.livestream.hls_storage = HlsStorageConfig::File(HlsFileStorageConfig {
+        path: "/var/lib/synctv/hls".to_string(),
+    });
     // This should pass validation (only a warning is logged)
     assert!(config.validate().is_ok());
 }
@@ -1217,7 +1266,9 @@ proxy_slice_cache:
 logging:
   file_path: "logs/server.log"
 livestream:
-  hls_storage_path: "hls"
+  hls_storage:
+    type: "file"
+    path: "hls"
 "#,
     )
     .checked("config file should be written");
@@ -1263,7 +1314,7 @@ livestream:
     assert_eq!(config.proxy_slice_cache.eviction_interval_seconds, 30);
     assert!((config.proxy_slice_cache.watermark_ratio - 0.75).abs() < f64::EPSILON);
     assert_eq!(
-        Path::new(&config.livestream.hls_storage_path),
+        Path::new(config.livestream.hls_storage.path()),
         expected_data_dir.join("hls")
     );
 }
@@ -1306,6 +1357,10 @@ fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
             "logs/server.log".to_string(),
         ),
         (
+            "SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE".to_string(),
+            "file".to_string(),
+        ),
+        (
             "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH".to_string(),
             "livestream/hls".to_string(),
         ),
@@ -1340,7 +1395,7 @@ fn test_from_env_map_resolves_relative_data_dir_from_current_dir() {
         cwd.join("tls").join("metrics.key")
     );
     assert_eq!(
-        Path::new(&config.livestream.hls_storage_path),
+        Path::new(config.livestream.hls_storage.path()),
         expected_data_dir.join("livestream").join("hls")
     );
 }
@@ -2499,17 +2554,19 @@ fn test_validate_rejects_invalid_logging_filter() {
 #[test]
 fn test_from_env_overrides_livestream_extended_runtime_limits() {
     let config = Config::from_env_map(&env_map(&[
-        ("SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB", "768"),
-        ("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND", "oss"),
+        ("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE", "oss"),
         (
-            "SYNCTV_LIVESTREAM_HLS_OSS_ENDPOINT",
+            "SYNCTV_LIVESTREAM_HLS_STORAGE_ENDPOINT",
             "https://s3.example.com",
         ),
-        ("SYNCTV_LIVESTREAM_HLS_OSS_BUCKET", "synctv-hls"),
-        ("SYNCTV_LIVESTREAM_HLS_OSS_REGION", "auto"),
-        ("SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH", "/synctv/hls"),
-        ("SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID", "access-key"),
-        ("SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY", "secret-key"),
+        ("SYNCTV_LIVESTREAM_HLS_STORAGE_BUCKET", "synctv-hls"),
+        ("SYNCTV_LIVESTREAM_HLS_STORAGE_REGION", "auto"),
+        ("SYNCTV_LIVESTREAM_HLS_STORAGE_BASE_PATH", "/synctv/hls"),
+        ("SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID", "access-key"),
+        (
+            "SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY",
+            "secret-key",
+        ),
         (
             "SYNCTV_LIVESTREAM_FLV_MAX_CONNECTION_DURATION_SECONDS",
             "7200",
@@ -2519,20 +2576,63 @@ fn test_from_env_overrides_livestream_extended_runtime_limits() {
     ]))
     .checked("livestream env overrides should parse");
 
-    assert_eq!(config.livestream.hls_memory_max_mb, 768);
     assert_eq!(
-        config.livestream.hls_storage_backend,
+        config.livestream.hls_storage.backend(),
         HlsStorageBackend::Oss
     );
-    assert_eq!(config.livestream.hls_oss.endpoint, "https://s3.example.com");
-    assert_eq!(config.livestream.hls_oss.bucket, "synctv-hls");
-    assert_eq!(config.livestream.hls_oss.region.as_deref(), Some("auto"));
-    assert_eq!(config.livestream.hls_oss.base_path, "synctv/hls/");
-    assert_eq!(config.livestream.hls_oss.access_key_id, "access-key");
-    assert_eq!(config.livestream.hls_oss.secret_access_key, "secret-key");
+    let hls_storage = config
+        .livestream
+        .hls_storage
+        .oss()
+        .checked("HLS OSS config");
+    assert_eq!(hls_storage.endpoint, "https://s3.example.com");
+    assert_eq!(hls_storage.bucket, "synctv-hls");
+    assert_eq!(hls_storage.region.as_deref(), Some("auto"));
+    assert_eq!(hls_storage.base_path, "synctv/hls/");
+    assert_eq!(hls_storage.access_key_id, "access-key");
+    assert_eq!(hls_storage.secret_access_key, "secret-key");
     assert_eq!(config.livestream.flv_max_connection_duration_seconds, 7200);
     assert_eq!(config.livestream.flv_write_timeout_seconds, 45);
     assert_eq!(config.livestream.public_rtmp_host, "stream.example.com");
+}
+
+#[test]
+fn test_hls_storage_type_env_preserves_matching_config_fields() {
+    let temp_dir = tempdir().checked("temp dir should be created");
+    let config_path = temp_dir.path().join("synctv.yaml");
+    std::fs::write(
+        &config_path,
+        r#"
+livestream:
+  hls_storage:
+    type: "oss"
+    endpoint: "https://s3.example.com"
+    access_key_id: "access-key"
+    secret_access_key: "secret-key"
+    bucket: "synctv-hls"
+    region: "auto"
+    base_path: "/synctv/hls"
+"#,
+    )
+    .checked("config file should be written");
+
+    let config = Config::load_with_env_map(
+        Some(config_path.to_str().checked("utf-8 path")),
+        &env_map(&[("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE", "oss")]),
+    )
+    .checked("config should load with HLS type override");
+
+    let hls_storage = config
+        .livestream
+        .hls_storage
+        .oss()
+        .checked("HLS OSS config");
+    assert_eq!(hls_storage.endpoint, "https://s3.example.com");
+    assert_eq!(hls_storage.bucket, "synctv-hls");
+    assert_eq!(hls_storage.region.as_deref(), Some("auto"));
+    assert_eq!(hls_storage.base_path, "synctv/hls/");
+    assert_eq!(hls_storage.access_key_id, "access-key");
+    assert_eq!(hls_storage.secret_access_key, "secret-key");
 }
 
 #[test]
@@ -2550,7 +2650,7 @@ fn test_from_env_overrides_file_s3_storage() {
         ("SYNCTV_FILE_UPLOAD_TOKEN_SECRET", "upload-token-secret"),
         (
             "SYNCTV_FILE_STORAGE_BACKENDS",
-            r#"{"s3_public":{"type":"s3","s3":{"endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600}},"database_files":{"type":"database","database":{"compression":"none"}}}"#,
+            r#"{"s3_public":{"type":"s3","endpoint":"https://s3.example.com","bucket":"synctv-files","region":"auto","base_path":"/synctv/files","access_key_id":"access-key","secret_access_key":"secret-key","public_base_url":"https://cdn.example.com/files","upload_expires_seconds":600},"database_files":{"type":"database","compression":"none"}}"#,
         ),
     ]))
     .checked("file storage S3 env overrides should parse");
@@ -2573,7 +2673,8 @@ fn test_from_env_overrides_file_s3_storage() {
         .backends
         .get("s3_public")
         .checked("s3 backend")
-        .s3;
+        .s3()
+        .checked("S3 config");
     assert_eq!(s3.endpoint, "https://s3.example.com");
     assert_eq!(s3.bucket, "synctv-files");
     assert_eq!(s3.region, "auto");
@@ -2589,31 +2690,27 @@ fn test_from_env_overrides_file_s3_storage() {
         .file_storage
         .backends
         .get("database_files")
-        .checked("database backend")
-        .database;
+        .checked("database backend");
+    let FileStorageBackendConfig::Database(database) = database else {
+        panic!("expected database backend");
+    };
     assert_eq!(database.compression, FileStorageDatabaseCompression::None);
 }
 
 #[test]
 fn test_file_storage_backend_accepts_disabled_database_and_s3() {
+    assert!(matches!(
+        FileStorageBackendConfig::default(),
+        FileStorageBackendConfig::Disabled
+    ));
     assert_eq!(
-        "disabled"
-            .parse::<FileStorageBackendType>()
-            .checked("operation should succeed"),
-        FileStorageBackendType::Disabled
-    );
-    assert_eq!(
+        FileStorageBackendConfig::Database(FileStorageDatabaseConfig::default()).kind(),
         "database"
-            .parse::<FileStorageBackendType>()
-            .checked("operation should succeed"),
-        FileStorageBackendType::Database
     );
     assert_eq!(
-        "s3".parse::<FileStorageBackendType>()
-            .checked("operation should succeed"),
-        FileStorageBackendType::S3
+        FileStorageBackendConfig::S3(FileStorageS3Config::default()).kind(),
+        "s3"
     );
-    assert!("metadata".parse::<FileStorageBackendType>().is_err());
     assert_eq!(
         FileStorageConfig::default().backend_for_chat_attachments(),
         "disabled"
@@ -2623,7 +2720,7 @@ fn test_file_storage_backend_accepts_disabled_database_and_s3() {
         86_400
     );
     assert_eq!(
-        FileStorageBackendConfig::default().database.compression,
+        FileStorageDatabaseConfig::default().compression,
         FileStorageDatabaseCompression::Zstd
     );
     assert_eq!(
@@ -2905,7 +3002,9 @@ fn test_validate_cluster_secret_without_cluster_enabled_is_standalone() {
     // cluster.secret alone must not implicitly enable cluster mode.
     config.cluster.secret = "shared-secret-long-enough".to_string();
     config.redis.url = String::new();
-    config.livestream.hls_storage_backend = HlsStorageBackend::File;
+    config.livestream.hls_storage = HlsStorageConfig::File(HlsFileStorageConfig {
+        path: "/var/lib/synctv/hls".to_string(),
+    });
     config.webrtc.stun_external_addr = String::new();
     assert!(
         config.validate().is_ok(),
@@ -3208,16 +3307,15 @@ fn test_validate_k8s_lease_requires_compiled_k8s_support() {
 #[test]
 fn test_validate_shared_file_hls_storage_requires_storage_path() {
     let mut config = valid_prod_config();
-    config.livestream.hls_storage_backend = HlsStorageBackend::SharedFile;
-    config.livestream.hls_storage_path = String::new();
+    config.livestream.hls_storage = HlsStorageConfig::SharedFile(HlsFileStorageConfig::default());
 
     let errors = config.validate().failed("operation should fail");
 
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("hls_storage_path") && e.contains("must be set")),
-        "Expected hls_storage_path validation error, got: {errors:?}"
+            .any(|e| e.contains("hls_storage.path") && e.contains("must be set")),
+        "Expected hls_storage.path validation error, got: {errors:?}"
     );
 }
 
@@ -3226,28 +3324,29 @@ fn test_validate_oss_hls_storage_requires_required_fields() {
     let mut config = valid_prod_config();
     config.cluster.enabled = false;
     config.cluster.secret.clear();
-    config.livestream.hls_storage_backend = HlsStorageBackend::Oss;
-    config.livestream.hls_oss = HlsOssConfig::default();
+    config.livestream.hls_storage = HlsStorageConfig::Oss(HlsOssConfig::default());
 
     let errors = config.validate().failed("operation should fail");
 
     assert!(
-        errors.iter().any(|e| e.contains("hls_oss.endpoint")),
-        "Expected hls_oss.endpoint validation error, got: {errors:?}"
+        errors.iter().any(|e| e.contains("hls_storage.endpoint")),
+        "Expected hls_storage.endpoint validation error, got: {errors:?}"
     );
     assert!(
-        errors.iter().any(|e| e.contains("hls_oss.bucket")),
-        "Expected hls_oss.bucket validation error, got: {errors:?}"
-    );
-    assert!(
-        errors.iter().any(|e| e.contains("hls_oss.access_key_id")),
-        "Expected hls_oss.access_key_id validation error, got: {errors:?}"
+        errors.iter().any(|e| e.contains("hls_storage.bucket")),
+        "Expected hls_storage.bucket validation error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("hls_oss.secret_access_key")),
-        "Expected hls_oss.secret_access_key validation error, got: {errors:?}"
+            .any(|e| e.contains("hls_storage.access_key_id")),
+        "Expected hls_storage.access_key_id validation error, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("hls_storage.secret_access_key")),
+        "Expected hls_storage.secret_access_key validation error, got: {errors:?}"
     );
 }
 
@@ -3260,14 +3359,10 @@ fn test_validate_file_s3_storage_requires_required_fields() {
     config.file_storage.chat_attachments_backend = "broken_s3".to_string();
     config.file_storage.backends.insert(
         "broken_s3".to_string(),
-        FileStorageBackendConfig {
-            backend_type: FileStorageBackendType::S3,
-            database: FileStorageDatabaseConfig::default(),
-            s3: FileStorageS3Config {
-                upload_expires_seconds: 0,
-                ..FileStorageS3Config::default()
-            },
-        },
+        FileStorageBackendConfig::S3(FileStorageS3Config {
+            upload_expires_seconds: 0,
+            ..FileStorageS3Config::default()
+        }),
     );
 
     let errors = config.validate().failed("operation should fail");
@@ -3275,31 +3370,31 @@ fn test_validate_file_s3_storage_requires_required_fields() {
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("file_storage.backends.broken_s3.s3.endpoint")),
+            .any(|e| e.contains("file_storage.backends.broken_s3.endpoint")),
         "Expected chat S3 endpoint validation error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("file_storage.backends.broken_s3.s3.bucket")),
+            .any(|e| e.contains("file_storage.backends.broken_s3.bucket")),
         "Expected chat S3 bucket validation error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("file_storage.backends.broken_s3.s3.access_key_id")),
+            .any(|e| e.contains("file_storage.backends.broken_s3.access_key_id")),
         "Expected chat S3 access_key_id validation error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("file_storage.backends.broken_s3.s3.secret_access_key")),
+            .any(|e| e.contains("file_storage.backends.broken_s3.secret_access_key")),
         "Expected chat S3 secret_access_key validation error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.contains("file_storage.backends.broken_s3.s3.upload_expires_seconds")),
+            .any(|e| e.contains("file_storage.backends.broken_s3.upload_expires_seconds")),
         "Expected chat S3 upload_expires_seconds validation error, got: {errors:?}"
     );
 }

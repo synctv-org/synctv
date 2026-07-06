@@ -600,7 +600,6 @@ impl MediaProvider for DirectUrlProvider {
                 .split('/')
                 .next_back()
                 .map(ToString::to_string),
-            ..Default::default()
         });
         let is_live = config.inferred_live_status();
         let duration_seconds = if is_live == Some(true) {

@@ -302,7 +302,7 @@ pub struct User {
 impl User {
     #[must_use]
     pub fn new(username: String, signup_method: SignupMethod) -> Self {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         Self {
             id: UserId::new(),
             username,

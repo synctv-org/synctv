@@ -194,16 +194,7 @@ fn create_redis_circuit_breaker(
 }
 
 fn unix_epoch_elapsed() -> Duration {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "System clock is before UNIX_EPOCH while reading cluster node registry time"
-            );
-            Duration::ZERO
-        }
-    }
+    Duration::from_millis(u64::try_from(synctv_core::SystemClock.now_millis()).unwrap_or(0))
 }
 
 fn unix_time_millis_u64() -> u64 {
@@ -260,7 +251,7 @@ impl NodeInfo {
         Self {
             node_id,
             api_address,
-            last_heartbeat: Utc::now(),
+            last_heartbeat: synctv_core::SystemClock.now(),
             metadata: HashMap::new(),
             epoch: 1, // Start at epoch 1
         }
@@ -296,7 +287,7 @@ impl NodeInfo {
     /// Check if node is stale (no recent heartbeat)
     #[must_use]
     pub fn is_stale(&self, timeout_secs: i64) -> bool {
-        let now = Utc::now();
+        let now = synctv_core::SystemClock.now();
         let elapsed = now.signed_duration_since(self.last_heartbeat);
         elapsed.num_seconds() > timeout_secs
     }
@@ -997,13 +988,13 @@ impl NodeRegistry {
 
             let mut node_info = NodeInfo::new(self.node_id.clone(), api_address);
             node_info.epoch = new_epoch;
-            node_info.last_heartbeat = Utc::now();
+            node_info.last_heartbeat = synctv_core::SystemClock.now();
             node_info
                 .metadata
                 .insert("local_epoch".to_string(), local_epoch.to_string());
             node_info.metadata.insert(
                 "registered_at".to_string(),
-                chrono::Utc::now().timestamp().to_string(),
+                synctv_core::SystemClock.now().timestamp().to_string(),
             );
 
             let mut nodes = self.local_nodes.write().await;
@@ -1037,12 +1028,12 @@ impl NodeRegistry {
         // Record registration timestamp for load balancer warmup logic
         node_info.metadata.insert(
             "registered_at".to_string(),
-            chrono::Utc::now().timestamp().to_string(),
+            synctv_core::SystemClock.now().timestamp().to_string(),
         );
         let node_json = serde_json::to_string(&node_info)
             .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
 
-        let now_rfc3339 = Utc::now().to_rfc3339();
+        let now_rfc3339 = synctv_core::SystemClock.now().to_rfc3339();
         let op_result: std::result::Result<u64, Error> = timeout(
             self.redis_operation_timeout(),
             REGISTER_NODE_SCRIPT
@@ -1066,7 +1057,7 @@ impl NodeRegistry {
 
         // Update local cache
         node_info.epoch = new_epoch;
-        node_info.last_heartbeat = Utc::now();
+        node_info.last_heartbeat = synctv_core::SystemClock.now();
         let mut nodes = self.local_nodes.write().await;
         nodes.insert(self.node_id.clone(), node_info);
         self.invalidate_node_view_cache().await;
@@ -1104,7 +1095,7 @@ impl NodeRegistry {
         if self.local_only {
             let mut nodes = self.local_nodes.write().await;
             if let Some(node) = nodes.get_mut(&self.node_id) {
-                node.last_heartbeat = Utc::now();
+                node.last_heartbeat = synctv_core::SystemClock.now();
             }
             return Ok(HeartbeatResult::Ok);
         }
@@ -1115,7 +1106,7 @@ impl NodeRegistry {
             let key = self.node_key(&self.node_id);
             let index_key = self.node_index_key();
             let current_epoch = self.current_epoch.load(Ordering::SeqCst);
-            let now = Utc::now();
+            let now = synctv_core::SystemClock.now();
             let now_rfc3339 = now.to_rfc3339();
             let ttl = self.heartbeat_timeout_secs * 2;
 
@@ -1276,7 +1267,7 @@ impl NodeRegistry {
         // Update local heartbeat time
         let mut nodes = self.local_nodes.write().await;
         if let Some(node) = nodes.get_mut(&self.node_id) {
-            node.last_heartbeat = Utc::now();
+            node.last_heartbeat = synctv_core::SystemClock.now();
         }
         self.invalidate_node_view_cache().await;
 
@@ -1989,7 +1980,7 @@ mod tests {
 
         assert!(!node.is_stale(30));
 
-        node.last_heartbeat = Utc::now() - Duration::seconds(60);
+        node.last_heartbeat = synctv_core::SystemClock.now() - Duration::seconds(60);
         assert!(node.is_stale(30));
     }
 

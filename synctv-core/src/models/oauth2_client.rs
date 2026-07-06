@@ -336,8 +336,8 @@ mod tests {
             username: "testuser".to_string(),
             email: Some("test@example.com".to_string()),
             avatar_url: Some("https://example.com/avatar.png".to_string()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         };
         assert_eq!(mapping.provider, OAuth2Provider::GitHub);
     }

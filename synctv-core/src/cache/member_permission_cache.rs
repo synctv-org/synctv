@@ -102,7 +102,7 @@ impl CachedMemberPermissionSource {
             admin_removed_permissions: self.admin_removed_permissions,
             remark_name: String::new(),
             display_tag: String::new(),
-            joined_at: chrono::Utc::now(),
+            joined_at: crate::SystemClock.now(),
             version: self.version,
         }
     }

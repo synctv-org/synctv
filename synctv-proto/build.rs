@@ -507,6 +507,7 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
             ".synctv.client.SearchChatMessagesRequest",
             ".synctv.client.ListChatReactionUsersRequest",
             ".synctv.client.GetHotRoomsRequest",
+            ".synctv.client.GetServerTimeRequest",
             ".synctv.client.GetAuthorizationUrlRequest",
             ".synctv.client.GetAuthorizationUrlForBindRequest",
             ".synctv.client.UnlinkProviderRequest",

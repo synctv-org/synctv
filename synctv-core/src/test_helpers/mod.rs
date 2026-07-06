@@ -4,7 +4,6 @@
 //! to reduce boilerplate and improve test consistency across the codebase.
 
 use crate::models::{PlaylistId, RoomId, UserId, UserRole, UserStatus};
-use chrono::Utc;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -145,7 +144,7 @@ impl UserFixture {
 
     #[must_use]
     pub fn build(self) -> crate::models::User {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         crate::models::User {
             id: self.id,
             username: self.username,
@@ -216,7 +215,7 @@ impl RoomFixture {
 
     #[must_use]
     pub fn build(self) -> crate::models::Room {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         crate::models::Room {
             id: self.id,
             name: self.name,
@@ -297,7 +296,7 @@ impl ChatMessageFixture {
             deleted_at: None,
             deleted_by: None,
             delete_reason: None,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         }
     }
 }
@@ -371,7 +370,7 @@ impl PlaylistFixture {
 
     #[must_use]
     pub fn build(self) -> crate::models::Playlist {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         crate::models::Playlist {
             id: self.id,
             room_id: self.room_id,

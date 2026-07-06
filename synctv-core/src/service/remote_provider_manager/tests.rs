@@ -1,7 +1,6 @@
 use super::*;
 use crate::cache::CacheInvalidationService;
 use crate::models::{ProviderInstance, SourceProvider};
-use chrono::Utc;
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {
@@ -29,8 +28,8 @@ fn remote_instance(endpoint: &str) -> ProviderInstance {
         insecure_tls: false,
         providers: vec![SourceProvider::Alist],
         enabled: true,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
+        created_at: crate::SystemClock.now(),
+        updated_at: crate::SystemClock.now(),
     }
 }
 

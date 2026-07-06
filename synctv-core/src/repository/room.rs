@@ -592,7 +592,7 @@ impl RoomRepository {
              SET deleted_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
             room_id as &RoomId,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         )
         .execute(&self.pool)
         .await?;
@@ -1235,7 +1235,7 @@ impl RoomRepository {
     pub async fn update_status(&self, room_id: &RoomId, status: RoomStatus) -> Result<Room> {
         let closed_at = match status {
             RoomStatus::Active => None,
-            RoomStatus::Closed => Some(chrono::Utc::now()),
+            RoomStatus::Closed => Some(crate::SystemClock.now()),
         };
         let room = sqlx::query_as!(
             RoomRow,

@@ -63,14 +63,14 @@ Limitations: process restarts lose segments; in multi-replica deployments, non-p
   </TabItem>
   <TabItem label="file" icon="seti:folder">
 
-`file` writes segments to this node's `hls_storage_path`. Single replicas can use local disk. Multi-replica deployments can use local disk with publisher-node proxying.
+`file` writes segments to this node's `hls_storage.path`. Single replicas can use local disk. Multi-replica deployments can use local disk with publisher-node proxying.
 
 Do not configure shared storage as `file`; if every replica can read and write the same path, use `shared_file`.
 
   </TabItem>
   <TabItem label="shared_file" icon="seti:folder">
 
-`shared_file` writes segments to `hls_storage_path` visible to every replica. The publisher node writes segments, and any node that receives a `.ts` request reads the file from its own shared mount.
+`shared_file` writes segments to `hls_storage.path` visible to every replica. The publisher node writes segments, and any node that receives a `.ts` request reads the file from its own shared mount.
 
 Typical choices: NFS, RWX PVCs, or CSI shared volumes. Do not configure `emptyDir`, `/tmp`, or node-local disks as `shared_file`.
 
@@ -159,49 +159,51 @@ This prevents abnormal streams from forcing excessive memory allocation. Do not 
 
 ## HLS
 
-`livestream.hls_storage_backend` default: `memory`.
+`livestream.hls_storage.type` default: `memory`.
 
 Allowed values:
 
 | Value | Meaning | Use case |
 | --- | --- | --- |
 | `memory` | Keep HLS segments in process memory | Single replica, temporary livestreams, development |
-| `file` | Write HLS segments to this node's `livestream.hls_storage_path` | Single-replica file storage or small multi-replica deployments with publisher-node proxying |
-| `shared_file` | Write HLS segments to a shared `livestream.hls_storage_path` visible to every replica | Multi-replica shared filesystem; TS segments are read by the current node from the shared path |
+| `file` | Write HLS segments to this node's `livestream.hls_storage.path` | Single-replica file storage or small multi-replica deployments with publisher-node proxying |
+| `shared_file` | Write HLS segments to a shared `livestream.hls_storage.path` visible to every replica | Multi-replica shared filesystem; TS segments are read by the current node from the shared path |
 | `oss` | Write HLS segments to S3-compatible object storage | Multi-replica Kubernetes or cross-node storage |
 
 Canonical values are `memory`, `file`, `shared_file`, and `oss`.
 
 Cluster mode can use `memory` or `file`. Non-publisher nodes read playlist/segment data from the publisher node through the HLS gRPC proxy. This is acceptable for small deployments or validation environments; high-traffic production HLS should use either:
 
-- `shared_file` with `hls_storage_path` mounted from a filesystem all replicas can read and write. `.ts` requests are served by the current node from that shared path.
-- `oss` with `livestream.hls_oss.*` configured.
+- `shared_file` with `hls_storage.path` mounted from a filesystem all replicas can read and write. `.ts` requests are served by the current node from that shared path.
+- `oss` with `livestream.hls_storage.*` configured.
 
-`livestream.hls_memory_max_mb` default: `0`, which means the built-in default is used.
+`livestream.hls_storage.memory_max_mb` default: `0`, which means the built-in default is used.
 
-This only applies when `hls_storage_backend=memory`. The current built-in default is 512 MB.
+This applies when `hls_storage.type=memory`. The current built-in default is 512 MB.
 
 ### Shared File Backend
 
 ```yaml
 livestream:
-  hls_storage_backend: "shared_file"
-  hls_storage_path: "/var/lib/synctv/hls"
+  hls_storage:
+    type: "shared_file"
+    path: "/var/lib/synctv/hls"
 ```
 
 `shared_file` explicitly means the path is shared by all replicas, for example through NFS, an RWX PVC, or a CSI volume. Do not configure pod-local `emptyDir`, `/tmp`, or node-local disks as `shared_file`.
 
 In `shared_file` mode, the publisher node writes HLS segments; any node that receives a `.ts` request reads the segment from its own mounted shared path instead of fetching the TS file from the publisher node.
 
-`livestream.hls_storage_path` default: empty.
+`livestream.hls_storage.path` default: empty.
 
-This is used when `hls_storage_backend=file` or `shared_file`. Relative paths are resolved under `data_dir`:
+This is used when `hls_storage.type=file` or `shared_file`. Relative paths are resolved under `data_dir`:
 
 ```yaml
 data_dir: "/var/lib/synctv"
 livestream:
-  hls_storage_backend: "file"
-  hls_storage_path: "livestream/hls"
+  hls_storage:
+    type: "file"
+    path: "livestream/hls"
 ```
 
 Effective path:
@@ -212,12 +214,12 @@ Effective path:
 
 ### S3-Compatible Object Storage
 
-When `hls_storage_backend=oss`, SyncTV stores HLS segments in S3-compatible object storage:
+When `hls_storage.type=oss`, SyncTV stores HLS segments in S3-compatible object storage:
 
 ```yaml
 livestream:
-  hls_storage_backend: "oss"
-  hls_oss:
+  hls_storage:
+    type: "oss"
     endpoint: "https://s3.example.com"
     bucket: "synctv-hls"
     region: "auto"
@@ -227,18 +229,18 @@ livestream:
 Inject credentials through environment variables or secret files:
 
 ```bash
-export SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID="..."
-export SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY="..."
+export SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID="..."
+export SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY="..."
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `livestream.hls_oss.endpoint` | `""` | S3/OSS endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
-| `livestream.hls_oss.bucket` | `""` | Bucket used for HLS segments |
-| `livestream.hls_oss.access_key_id` | `""` | Access key ID; supports `access_key_id_file` |
-| `livestream.hls_oss.secret_access_key` | `""` | Secret access key; supports `secret_access_key_file` |
-| `livestream.hls_oss.region` | `null` | S3 region; leave empty or use the provider-required value for compatible services |
-| `livestream.hls_oss.base_path` | `hls/` | Object key prefix inside the bucket; normalized without a leading `/` and with a trailing `/` |
+| `livestream.hls_storage.endpoint` | `""` | S3/OSS endpoint such as AWS S3, MinIO, Cloudflare R2, or a compatible service |
+| `livestream.hls_storage.bucket` | `""` | Bucket used for HLS segments |
+| `livestream.hls_storage.access_key_id` | `""` | Access key ID; supports `access_key_id_file` |
+| `livestream.hls_storage.secret_access_key` | `""` | Secret access key; supports `secret_access_key_file` |
+| `livestream.hls_storage.region` | `null` | S3 region; leave empty or use the provider-required value for compatible services |
+| `livestream.hls_storage.base_path` | `hls/` | Object key prefix inside the bucket; normalized without a leading `/` and with a trailing `/` |
 
 ## HTTP-FLV
 

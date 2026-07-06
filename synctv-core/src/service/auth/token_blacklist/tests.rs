@@ -577,7 +577,7 @@ async fn test_in_memory_family_multiple_entries() {
 #[test]
 fn test_pg_family_revocation_uses_single_primary_key_row() {
     let key = "family:user%_42\\segment";
-    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(3600);
+    let expires_at = crate::SystemClock.now() + chrono::Duration::seconds(3600);
     let timestamp = 1_700_000_123_i64;
 
     let row = (key, expires_at, Some(timestamp));

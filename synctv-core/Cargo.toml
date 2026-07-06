@@ -97,6 +97,7 @@ futures-util.workspace = true
 
 # Time
 chrono.workspace = true
+rsntp.workspace = true
 
 # Logging
 tracing.workspace = true

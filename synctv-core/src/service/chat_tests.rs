@@ -223,7 +223,7 @@ impl FileStorageService for PrefixingFileStorageService {
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
-            expires_at: Some(Utc::now()),
+            expires_at: Some(crate::SystemClock.now()),
             max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
             resumable: true,
             part_size_bytes: 4 * 1024 * 1024,
@@ -326,7 +326,7 @@ impl FileStorageService for RecordingFileStorageService {
             upload_url: Some(format!("https://upload.invalid/{id}")),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
-            expires_at: Some(Utc::now()),
+            expires_at: Some(crate::SystemClock.now()),
             max_size_bytes: MAX_CHAT_ATTACHMENT_SIZE_BYTES,
             resumable: true,
             part_size_bytes: 4 * 1024 * 1024,
@@ -413,7 +413,7 @@ fn test_user_service(pool: &sqlx::PgPool, username_cache: UsernameCache) -> Arc<
 #[test]
 fn validate_chat_metadata_accepts_typed_metadata() {
     ok(
-        validate_chat_metadata(&None),
+        validate_chat_metadata(None),
         "typed chat metadata should validate",
     );
 }
@@ -726,6 +726,7 @@ fn test_chat_service_with_options(
     ChatService::new(
         Arc::new(ChatRepository::new(pool.clone())),
         ChatRuntime {
+            clock: Arc::new(crate::SystemClock),
             rate_limiter: Arc::new(RateLimiter::local_only("test:chat:".to_string())),
             rate_limit_config: RateLimitConfig::default(),
             content_filter: ContentFilter::new(),
@@ -765,7 +766,7 @@ fn test_chat_message(id: i64, created_at: chrono::DateTime<Utc>) -> ChatMessage 
 
 #[test]
 fn read_state_covers_newer_message_cursor() {
-    let created_at = Utc::now();
+    let created_at = crate::SystemClock.now();
     let message = test_chat_message(10, created_at);
     let state = ChatReadState {
         room_id: message.room_id,
@@ -774,7 +775,7 @@ fn read_state_covers_newer_message_cursor() {
         last_read_message_created_at: Some(created_at),
         last_read_event_id: None,
         last_read_event_sequence: None,
-        updated_at: Utc::now(),
+        updated_at: crate::SystemClock.now(),
     };
 
     assert!(read_state_covers_message(Some(&state), &message, None));
@@ -782,7 +783,7 @@ fn read_state_covers_newer_message_cursor() {
 
 #[test]
 fn read_state_allows_forward_message_cursor() {
-    let created_at = Utc::now();
+    let created_at = crate::SystemClock.now();
     let message = test_chat_message(10, created_at);
     let state = ChatReadState {
         room_id: message.room_id,
@@ -791,7 +792,7 @@ fn read_state_allows_forward_message_cursor() {
         last_read_message_created_at: Some(created_at),
         last_read_event_id: None,
         last_read_event_sequence: None,
-        updated_at: Utc::now(),
+        updated_at: crate::SystemClock.now(),
     };
 
     assert!(!read_state_covers_message(Some(&state), &message, None));
@@ -799,7 +800,7 @@ fn read_state_allows_forward_message_cursor() {
 
 #[test]
 fn read_state_allows_forward_event_on_same_message() {
-    let created_at = Utc::now();
+    let created_at = crate::SystemClock.now();
     let message = test_chat_message(10, created_at);
     let event = ChatMessageEventLog {
         sequence: 12,
@@ -816,7 +817,7 @@ fn read_state_allows_forward_event_on_same_message() {
                 mentions: Vec::new(),
                 pin: None,
             },
-            occurred_at: Utc::now(),
+            occurred_at: crate::SystemClock.now(),
         },
     };
     let state = ChatReadState {
@@ -826,7 +827,7 @@ fn read_state_allows_forward_event_on_same_message() {
         last_read_message_created_at: Some(message.created_at),
         last_read_event_id: Some("event-11".to_string()),
         last_read_event_sequence: Some(11),
-        updated_at: Utc::now(),
+        updated_at: crate::SystemClock.now(),
     };
 
     assert!(!read_state_covers_message(

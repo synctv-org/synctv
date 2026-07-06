@@ -11,12 +11,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     models::{MediaId, RoomId, UserId},
     service::JwtService,
-    Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
+    Clock, Error, RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile,
 };
 
 mod jti;
@@ -56,16 +55,6 @@ pub struct PublishClaims {
     pub jti: String,
 }
 
-fn unix_timestamp_now() -> Result<i64> {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::Internal(format!("Time error: {e}")))?
-            .as_secs(),
-    )
-    .map_err(|_| Error::Internal("Time error: unix timestamp overflow".to_string()))
-}
-
 fn cache_ttl_secs(token_ttl_hours: i64) -> Result<u64> {
     if token_ttl_hours <= 0 {
         tracing::warn!(
@@ -101,6 +90,7 @@ fn token_lifetime_secs(token_ttl_hours: i64) -> Result<i64> {
 #[derive(Clone)]
 pub struct PublishKeyService {
     jwt_service: JwtService,
+    clock: Arc<dyn Clock>,
     token_ttl_hours: i64,
     jti_store: Arc<dyn JtiStore>,
 }
@@ -151,7 +141,7 @@ impl PublishKeyService {
             .verify_custom(token)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
 
-        let now = unix_timestamp_now()?;
+        let now = self.clock.now().timestamp();
 
         if now > claims.exp {
             return Err(Error::Authentication("Token has expired".to_string()));
@@ -208,30 +198,37 @@ impl PublishKeyService {
     /// Create a new publish key service with a custom JTI store.
     pub fn from_store(
         jwt_service: JwtService,
+        clock: Arc<dyn Clock>,
         token_ttl_hours: i64,
         jti_store: Arc<dyn JtiStore>,
     ) -> Self {
         Self {
             jwt_service,
+            clock,
             token_ttl_hours,
             jti_store,
         }
     }
 
     /// Create a new publish key service (local-only JTI deduplication)
-    pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Result<Self> {
+    pub fn new(
+        jwt_service: JwtService,
+        clock: Arc<dyn Clock>,
+        token_ttl_hours: i64,
+    ) -> Result<Self> {
         let cache_ttl_secs = cache_ttl_secs(token_ttl_hours)?;
         let store = Arc::new(InMemoryJtiStore::new(cache_ttl_secs));
-        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
+        Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
     /// Create a new publish key service with default TTL (24 hours)
-    pub fn with_default_ttl(jwt_service: JwtService) -> Result<Self> {
-        Self::new(jwt_service, 24)
+    pub fn with_default_ttl(jwt_service: JwtService, clock: Arc<dyn Clock>) -> Result<Self> {
+        Self::new(jwt_service, clock, 24)
     }
 
     fn with_redis_runtime(
         jwt_service: JwtService,
+        clock: Arc<dyn Clock>,
         token_ttl_hours: i64,
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
@@ -242,11 +239,12 @@ impl PublishKeyService {
             key_prefix,
             cache_ttl_secs,
         ));
-        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
+        Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
     fn with_redis_runtime_fail_closed(
         jwt_service: JwtService,
+        clock: Arc<dyn Clock>,
         token_ttl_hours: i64,
         redis_runtime: Arc<dyn RedisConnectionRuntime>,
         key_prefix: String,
@@ -257,28 +255,31 @@ impl PublishKeyService {
             key_prefix,
             cache_ttl_secs,
         ));
-        Ok(Self::from_store(jwt_service, token_ttl_hours, store))
+        Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
     pub(crate) fn from_shared_state_profile(
         jwt_service: JwtService,
+        clock: Arc<dyn Clock>,
         token_ttl_hours: i64,
         profile: &SharedStateProfile,
     ) -> Result<Self> {
         match profile.state_mode() {
             SharedStateMode::SharedRequired => Self::with_redis_runtime_fail_closed(
                 jwt_service,
+                clock,
                 token_ttl_hours,
                 profile.require_shared_runtime("publish-key deduplication state")?,
                 profile.key_prefix().to_string(),
             ),
             SharedStateMode::SharedBestEffort => Self::with_redis_runtime(
                 jwt_service,
+                clock,
                 token_ttl_hours,
                 profile.best_effort_shared_runtime("publish-key deduplication state")?,
                 profile.key_prefix().to_string(),
             ),
-            SharedStateMode::LocalOnly => Self::new(jwt_service, token_ttl_hours),
+            SharedStateMode::LocalOnly => Self::new(jwt_service, clock, token_ttl_hours),
         }
     }
 
@@ -289,7 +290,7 @@ impl PublishKeyService {
         media_id: &MediaId,
         user_id: &UserId,
     ) -> Result<PublishKey> {
-        let now = unix_timestamp_now()?;
+        let now = self.clock.now().timestamp();
         let exp = now
             .checked_add(token_lifetime_secs(self.token_ttl_hours)?)
             .ok_or_else(|| Error::InvalidInput("publish key expiration overflow".to_string()))?;

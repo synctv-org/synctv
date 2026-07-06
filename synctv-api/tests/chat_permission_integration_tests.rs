@@ -95,6 +95,7 @@ fn make_chat_service_with_audit(
     Arc::new(synctv_core::service::ChatService::new(
         Arc::new(ChatRepository::new(pool.clone())),
         ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter: Arc::new(RateLimiter::local_only(
                 "test_chat_permissions:chat:".to_string(),
             )) as Arc<dyn RequestRateLimiterService>,

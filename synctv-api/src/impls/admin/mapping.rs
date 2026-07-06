@@ -126,7 +126,7 @@ pub(crate) fn content_report_row_to_proto(
         target_chat_message_preview: row.target_chat_message_preview.clone(),
         reason_code: row.reason_code.clone(),
         reason: row.reason.clone(),
-        metadata: content_report_metadata_to_proto(&row.metadata)?,
+        metadata: content_report_metadata_to_proto(row.metadata.as_ref())?,
         status: content_report_status_to_proto(row.status),
         reviewed_by: encode_optional_user_id(public_id_codec, row.reviewed_by)?,
         reviewed_by_username: row.reviewed_by_username.clone(),

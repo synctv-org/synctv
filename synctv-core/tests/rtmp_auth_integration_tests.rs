@@ -78,7 +78,7 @@ fn create_room_service(pool: sqlx::PgPool) -> RoomService {
 fn create_publish_key_service() -> PublishKeyService {
     let jwt_service = create_jwt_service();
     ok(
-        PublishKeyService::new(jwt_service, 24),
+        PublishKeyService::new(jwt_service, Arc::new(synctv_core::SystemClock), 24),
         "publish key service should build",
     )
 }

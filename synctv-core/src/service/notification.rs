@@ -299,7 +299,7 @@ impl NotificationService {
             user_id: *user_id,
             username: username.to_string(),
             content: content.to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
         self.broadcast_to_room(room_id, &event)
     }
@@ -607,7 +607,7 @@ mod tests {
                 user_id: UserId::new(),
                 username: "test".to_string(),
                 content: "hello".to_string(),
-                timestamp: chrono::Utc::now(),
+                timestamp: crate::SystemClock.now(),
             },
             RoomEvent::MediaAdded {
                 user_id: UserId::new(),

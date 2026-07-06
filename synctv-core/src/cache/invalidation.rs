@@ -68,14 +68,7 @@ const SUBSCRIBER_MAX_BACKOFF_SECS: u64 = 30;
 const TRIM_EVERY_N_ITERATIONS: u32 = 60;
 
 fn current_unix_millis() -> Result<u64> {
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| {
-            Error::Internal(format!(
-                "System clock is before UNIX_EPOCH while trimming cache invalidation stream: {error}"
-            ))
-        })?;
-    u64::try_from(duration.as_millis()).map_err(|_| {
+    u64::try_from(crate::SystemClock.now_millis()).map_err(|_| {
         Error::Internal("Cache invalidation timestamp exceeds u64::MAX millis".to_string())
     })
 }

@@ -565,7 +565,7 @@ impl StreamRegistry {
             api_address: api_address.to_string(),
             app_name: "live".to_string(),
             user_id: user_id.to_string(),
-            started_at: Utc::now(),
+            started_at: synctv_core::SystemClock.now(),
             epoch: 0, // Placeholder, will be replaced by actual epoch in Lua script
         };
         let info_json = serde_json::to_string(&info)?;
@@ -1601,7 +1601,7 @@ mod tests {
 
         assert_eq!(publisher.node_id, "node1");
         assert_eq!(publisher.api_address, "localhost:50051");
-        assert!(publisher.started_at <= chrono::Utc::now());
+        assert!(publisher.started_at <= synctv_core::SystemClock.now());
 
         registry.unregister_publisher("room123", "media456").await?;
         Ok(())

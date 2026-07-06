@@ -541,7 +541,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::ProviderInstance;
@@ -634,7 +633,7 @@ mod tests {
         ))?);
         core_ok(providers_manager.create_builtin_defaults().await)?;
 
-        let now = Utc::now();
+        let now = synctv_core::SystemClock.now();
         repo.create(&ProviderInstance {
             name: "alist-remote".to_string(),
             endpoint: "http://provider.example.com:50051".to_string(),

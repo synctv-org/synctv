@@ -177,6 +177,7 @@ pub struct StreamMessageHandler {
     /// Chat messages are processed through `ChatService::send_message()`
     /// which handles permission checks, content filtering, rate limiting, and persistence.
     chat_service: Arc<ChatService>,
+    clock: Arc<dyn synctv_core::Clock>,
     event_service: Arc<dyn RealtimeEventService>,
     playback_fanout: Arc<dyn PlaybackFanoutService>,
     chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
@@ -255,6 +256,7 @@ pub struct StreamMessageHandlerConfig {
 
 #[derive(Clone)]
 pub struct StreamMessageHandlerRuntime {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub playback_service: Arc<dyn PlaybackService>,
     pub playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
     pub room_members_snapshot_service: Arc<dyn RoomMembersSnapshotService>,
@@ -273,6 +275,7 @@ impl StreamMessageHandlerRuntime {
     #[cfg(test)]
     pub fn local(event_service: &Arc<dyn RealtimeEventService>) -> Self {
         Self {
+            clock: Arc::new(synctv_core::SystemClock),
             playback_service: Arc::new(tests::UnconfiguredPlaybackService),
             playlist_items_snapshot_service: Arc::new(
                 tests::UnconfiguredPlaylistItemsSnapshotService,
@@ -306,6 +309,7 @@ impl Clone for StreamMessageHandler {
             connection_id: self.connection_id.clone(),
             room_service: Arc::clone(&self.room_service),
             chat_service: Arc::clone(&self.chat_service),
+            clock: Arc::clone(&self.clock),
             event_service: Arc::clone(&self.event_service),
             playback_fanout: Arc::clone(&self.playback_fanout),
             chat_event_dispatcher: Arc::clone(&self.chat_event_dispatcher),
@@ -396,6 +400,7 @@ impl StreamMessageHandler {
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
         let playback_fanout = runtime.playback_fanout;
         let presence_service = runtime.presence_service;
+        let clock = runtime.clock;
         let resource_observer = Arc::new(ResourceObserver::new(ResourceObserverParams {
             room_id,
             user_id,
@@ -403,6 +408,7 @@ impl StreamMessageHandler {
             connection_id: connection_id.as_str().to_string(),
             room_service: Arc::clone(&room_service),
             chat_service: Some(Arc::clone(&chat_service)),
+            clock: Arc::clone(&clock),
             presence_service: Arc::clone(&presence_service),
             public_id_codec: Arc::clone(&public_id_codec),
             sender: Arc::clone(&sender),
@@ -419,6 +425,7 @@ impl StreamMessageHandler {
             connection_id,
             room_service,
             chat_service,
+            clock,
             event_service,
             playback_fanout,
             chat_event_dispatcher,
@@ -1668,8 +1675,8 @@ impl StreamMessageHandler {
                 username: self.username.clone(),
                 permissions,
                 role: role_proto,
-                joined_at: chrono::Utc::now(),
-                timestamp: chrono::Utc::now(),
+                joined_at: self.clock.now(),
+                timestamp: self.clock.now(),
             }
         } else {
             RealtimeEvent::UserJoined {
@@ -1685,8 +1692,8 @@ impl StreamMessageHandler {
                 removed_permissions,
                 admin_added_permissions,
                 admin_removed_permissions,
-                joined_at: chrono::Utc::now(),
-                timestamp: chrono::Utc::now(),
+                joined_at: self.clock.now(),
+                timestamp: self.clock.now(),
             }
         };
         let outcome = self.event_service.broadcast_outcome(event);
@@ -1749,7 +1756,7 @@ impl StreamMessageHandler {
                             room_id: self.room_id,
                             actor_id,
                             conn_id: self.connection_id.as_str().to_string(),
-                            timestamp: chrono::Utc::now(),
+                            timestamp: self.clock.now(),
                         };
                         self.event_service.broadcast(leave_event);
                     }
@@ -1865,7 +1872,7 @@ impl StreamMessageHandler {
                 room_id: self.room_id,
                 guest_id,
                 username: self.username.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: self.clock.now(),
             }
         } else {
             let role = self
@@ -1879,7 +1886,7 @@ impl StreamMessageHandler {
                 remark_name: String::new(),
                 display_tag: String::new(),
                 role,
-                timestamp: chrono::Utc::now(),
+                timestamp: self.clock.now(),
             }
         };
         let result = if should_broadcast_left {
@@ -2641,7 +2648,7 @@ impl StreamMessageHandler {
 
         let msg = ServerMessage {
             message: Some(Message::HeartbeatAck(HeartbeatAck {
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: self.clock.now_millis(),
             })),
         };
 

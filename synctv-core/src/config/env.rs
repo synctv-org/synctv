@@ -220,6 +220,30 @@ impl Config {
         };
 
         env_override_str("SYNCTV_TIME_TIMEZONE", &mut self.time.timezone);
+        env_override_bool(
+            "SYNCTV_TIME_CLOCK_SYNC_ENABLED",
+            &mut self.time.clock_sync.enabled,
+        )?;
+        env_override_enum("SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TYPE", &mut |val| {
+            self.time.clock_sync.provider = val.parse()?;
+            Ok(())
+        })?;
+        match &mut self.time.clock_sync.provider {
+            ClockSyncProvider::Sntp(config) => {
+                env_override_json_or_csv(
+                    "SYNCTV_TIME_CLOCK_SYNC_PROVIDER_SERVERS",
+                    &mut config.servers,
+                );
+                env_override_parse(
+                    "SYNCTV_TIME_CLOCK_SYNC_PROVIDER_INTERVAL_SECONDS",
+                    &mut config.interval_seconds,
+                )?;
+                env_override_parse(
+                    "SYNCTV_TIME_CLOCK_SYNC_PROVIDER_TIMEOUT_MILLIS",
+                    &mut config.timeout_millis,
+                )?;
+            }
+        }
 
         if get_env("SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET").is_some()
             || get_env("SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH").is_some()
@@ -582,52 +606,53 @@ impl Config {
             "SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB",
             &mut self.livestream.gop_cache_max_memory_mb,
         )?;
-        env_override_parse(
-            "SYNCTV_LIVESTREAM_HLS_MEMORY_MAX_MB",
-            &mut self.livestream.hls_memory_max_mb,
-        )?;
-        env_override_enum("SYNCTV_LIVESTREAM_HLS_STORAGE_BACKEND", &mut |val| {
-            self.livestream.hls_storage_backend = val.parse()?;
+        env_override_enum("SYNCTV_LIVESTREAM_HLS_STORAGE_TYPE", &mut |val| {
+            let backend = val.parse()?;
+            self.livestream.hls_storage =
+                self.livestream.hls_storage.clone().select_backend(backend);
             Ok(())
         })?;
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_STORAGE_PATH",
-            &mut self.livestream.hls_storage_path,
-        );
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_ENDPOINT",
-            &mut self.livestream.hls_oss.endpoint,
-        );
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID",
-            &mut self.livestream.hls_oss.access_key_id,
-        );
-        env_override_str_file(
-            "SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID_FILE",
-            "livestream.hls_oss.access_key_id",
-            &mut self.livestream.hls_oss.access_key_id,
-        )?;
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY",
-            &mut self.livestream.hls_oss.secret_access_key,
-        );
-        env_override_str_file(
-            "SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY_FILE",
-            "livestream.hls_oss.secret_access_key",
-            &mut self.livestream.hls_oss.secret_access_key,
-        )?;
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_BUCKET",
-            &mut self.livestream.hls_oss.bucket,
-        );
-        env_override_opt_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_REGION",
-            &mut self.livestream.hls_oss.region,
-        );
-        env_override_str(
-            "SYNCTV_LIVESTREAM_HLS_OSS_BASE_PATH",
-            &mut self.livestream.hls_oss.base_path,
-        );
+        match &mut self.livestream.hls_storage {
+            HlsStorageConfig::Memory(config) => {
+                env_override_parse(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_MEMORY_MAX_MB",
+                    &mut config.memory_max_mb,
+                )?;
+            }
+            HlsStorageConfig::File(config) | HlsStorageConfig::SharedFile(config) => {
+                env_override_str("SYNCTV_LIVESTREAM_HLS_STORAGE_PATH", &mut config.path);
+            }
+            HlsStorageConfig::Oss(config) => {
+                env_override_str(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_ENDPOINT",
+                    &mut config.endpoint,
+                );
+                env_override_str(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID",
+                    &mut config.access_key_id,
+                );
+                env_override_str_file(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID_FILE",
+                    "livestream.hls_storage.access_key_id",
+                    &mut config.access_key_id,
+                )?;
+                env_override_str(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY",
+                    &mut config.secret_access_key,
+                );
+                env_override_str_file(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY_FILE",
+                    "livestream.hls_storage.secret_access_key",
+                    &mut config.secret_access_key,
+                )?;
+                env_override_str("SYNCTV_LIVESTREAM_HLS_STORAGE_BUCKET", &mut config.bucket);
+                env_override_opt_str("SYNCTV_LIVESTREAM_HLS_STORAGE_REGION", &mut config.region);
+                env_override_str(
+                    "SYNCTV_LIVESTREAM_HLS_STORAGE_BASE_PATH",
+                    &mut config.base_path,
+                );
+            }
+        }
 
         env_override_str(
             "SYNCTV_FILE_UPLOAD_TOKEN_SECRET",
@@ -1069,38 +1094,39 @@ impl Config {
                 .to_string()
         };
 
-        let hls_storage_path = self.livestream.hls_storage_path.trim();
-        self.livestream.hls_storage_path = if hls_storage_path.is_empty() {
-            String::new()
-        } else {
-            resolve_relative_path_from(hls_storage_path, &data_dir)
-                .display()
-                .to_string()
-        };
+        if let Some(file_storage) = self.livestream.hls_storage.file_mut() {
+            let storage_path = file_storage.path.trim();
+            file_storage.path = if storage_path.is_empty() {
+                String::new()
+            } else {
+                resolve_relative_path_from(storage_path, &data_dir)
+                    .display()
+                    .to_string()
+            };
+        }
 
-        let hls_oss_base_path = self
-            .livestream
-            .hls_oss
-            .base_path
-            .trim()
-            .trim_start_matches('/');
-        self.livestream.hls_oss.base_path = if hls_oss_base_path.is_empty() {
-            String::new()
-        } else if hls_oss_base_path.ends_with('/') {
-            hls_oss_base_path.to_string()
-        } else {
-            format!("{hls_oss_base_path}/")
-        };
+        if let Some(oss) = self.livestream.hls_storage.oss_mut() {
+            let storage_base_path = oss.base_path.trim().trim_start_matches('/');
+            oss.base_path = if storage_base_path.is_empty() {
+                String::new()
+            } else if storage_base_path.ends_with('/') {
+                storage_base_path.to_string()
+            } else {
+                format!("{storage_base_path}/")
+            };
+        }
 
         for backend in self.file_storage.backends.values_mut() {
-            let file_storage_s3_base_path = backend.s3.base_path.trim().trim_start_matches('/');
-            backend.s3.base_path = if file_storage_s3_base_path.is_empty() {
-                String::new()
-            } else if file_storage_s3_base_path.ends_with('/') {
-                file_storage_s3_base_path.to_string()
-            } else {
-                format!("{file_storage_s3_base_path}/")
-            };
+            if let Some(s3) = backend.s3_mut() {
+                let file_storage_s3_base_path = s3.base_path.trim().trim_start_matches('/');
+                s3.base_path = if file_storage_s3_base_path.is_empty() {
+                    String::new()
+                } else if file_storage_s3_base_path.ends_with('/') {
+                    file_storage_s3_base_path.to_string()
+                } else {
+                    format!("{file_storage_s3_base_path}/")
+                };
+            }
         }
 
         let proxy_slice_cache_dir = self.proxy_slice_cache.file_cache_dir.trim();

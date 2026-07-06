@@ -25,8 +25,8 @@ impl RuntimeSetting {
             group_name,
             value,
             version: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         }
     }
 }

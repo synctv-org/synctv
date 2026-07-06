@@ -467,8 +467,8 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         banned_by: None,
         banned_reason: None,
         signup_method: synctv_core::models::SignupMethod::Email,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         deleted_at: None,
         version: 0,
     }
@@ -676,11 +676,11 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         status,
         is_banned: false,
         closed_at: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         deleted_at: None,
         version: 1,
-        last_activity_at: chrono::Utc::now(),
+        last_activity_at: synctv_core::SystemClock.now(),
     }
 }
 
@@ -813,7 +813,7 @@ fn test_playback_state_to_proto() -> TestResult {
         position: 120.5,
         speed: 1.5,
         is_playing: false,
-        updated_at: chrono::Utc::now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };
 
@@ -852,7 +852,7 @@ fn test_playback_state_to_proto_computes_elapsed_time_while_playing() -> TestRes
         position: 120.5,
         speed: 1.5,
         is_playing: true,
-        updated_at: chrono::Utc::now() - chrono::TimeDelta::seconds(2),
+        updated_at: synctv_core::SystemClock.now() - chrono::TimeDelta::seconds(2),
         version: 42,
     };
 
@@ -881,7 +881,7 @@ fn test_playback_state_to_proto_dynamic_playlist_target() -> TestResult {
         position: 120.5,
         speed: 1.5,
         is_playing: true,
-        updated_at: chrono::Utc::now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };
 
@@ -918,7 +918,7 @@ fn test_playback_state_to_proto_no_media() -> TestResult {
 }
 
 fn make_test_media() -> synctv_core::models::Media {
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     synctv_core::models::Media {
         id: MediaId::expect_positive(302),
         playlist_id: Some(PlaylistId::expect_positive(303)),
@@ -939,7 +939,7 @@ fn make_test_media() -> synctv_core::models::Media {
 }
 
 fn make_test_cover_reference() -> synctv_core::models::StoredFileReference {
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     synctv_core::models::StoredFileReference {
         file_reference_id: 901,
         storage_backend: "database".to_string(),
@@ -1033,13 +1033,15 @@ fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
     );
     let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
         &media,
-        true,
-        media.creator_id,
-        Some(&cover),
-        Some(&cover_access),
-        None,
-        None,
-        &public_id_codec,
+        MediaProtoView {
+            is_available: true,
+            viewer_id: media.creator_id,
+            cover: Some(&cover),
+            cover_access: Some(&cover_access),
+            thumbnail: None,
+            thumbnail_access: None,
+            public_id_codec: &public_id_codec,
+        },
     ))?;
     let proto_cover = proto
         .cover
@@ -1080,13 +1082,15 @@ fn test_media_to_proto_with_object_access_cover_includes_structured_access() -> 
     );
     let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
         &media,
-        true,
-        media.creator_id,
-        Some(&cover),
-        Some(&cover_access),
-        None,
-        None,
-        &public_id_codec,
+        MediaProtoView {
+            is_available: true,
+            viewer_id: media.creator_id,
+            cover: Some(&cover),
+            cover_access: Some(&cover_access),
+            thumbnail: None,
+            thumbnail_access: None,
+            public_id_codec: &public_id_codec,
+        },
     ))?;
     let proto_cover = proto
         .cover
@@ -1122,13 +1126,15 @@ fn test_media_to_proto_with_thumbnail_includes_distinct_payload() -> TestResult 
     );
     let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
         &media,
-        true,
-        media.creator_id,
-        None,
-        None,
-        Some(&thumbnail),
-        Some(&thumbnail_access),
-        &public_id_codec,
+        MediaProtoView {
+            is_available: true,
+            viewer_id: media.creator_id,
+            cover: None,
+            cover_access: None,
+            thumbnail: Some(&thumbnail),
+            thumbnail_access: Some(&thumbnail_access),
+            public_id_codec: &public_id_codec,
+        },
     ))?;
     let proto_thumbnail = proto
         .thumbnail
@@ -1222,7 +1228,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
         removed_permissions: 0,
         admin_added_permissions: 0,
         admin_removed_permissions: 0,
-        joined_at: chrono::Utc::now(),
+        joined_at: synctv_core::SystemClock.now(),
         is_online: true,
         is_active: true,
     }
@@ -1305,8 +1311,8 @@ fn test_playlist_to_proto() -> TestResult {
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
 
@@ -1352,8 +1358,8 @@ fn test_playlist_to_proto_with_cover_includes_cover_payload() -> TestResult {
         source_provider: None,
         source_config: None,
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
     let cover = make_test_cover_reference();
@@ -1408,8 +1414,8 @@ fn test_playlist_to_proto_dynamic() -> TestResult {
             "/tv",
         )),
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
 
@@ -1456,8 +1462,8 @@ fn test_playlist_to_proto_for_owner_includes_source_config() -> TestResult {
             "/tv",
         )),
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
 
@@ -1491,8 +1497,8 @@ fn test_playlist_to_proto_for_non_owner_hides_source_config() -> TestResult {
             "/tv",
         )),
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
 
@@ -1523,8 +1529,8 @@ fn test_playlist_to_proto_dynamic_requires_source_config() -> TestResult {
         source_provider: Some(synctv_core::models::SourceProvider::Bilibili),
         source_config: None,
         provider_instance_name: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     };
 
@@ -1707,7 +1713,7 @@ fn test_playback_state_version_no_truncation() -> TestResult {
         position: 0.0,
         speed: 1.0,
         is_playing: false,
-        updated_at: chrono::Utc::now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: large_version,
     };
 
@@ -1731,7 +1737,7 @@ fn test_playback_state_version_i32_range_still_works() -> TestResult {
         position: 0.0,
         speed: 1.0,
         is_playing: false,
-        updated_at: chrono::Utc::now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 42,
     };
 

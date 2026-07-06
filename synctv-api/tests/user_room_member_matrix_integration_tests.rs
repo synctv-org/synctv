@@ -139,6 +139,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     let publish_key_service = Arc::new(
         PublishKeyService::new(
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars").unwrap(),
+            Arc::new(synctv_core::SystemClock),
             24,
         )
         .expect("publish key service should build"),

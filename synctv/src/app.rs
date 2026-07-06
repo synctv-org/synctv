@@ -5,10 +5,11 @@
 //! monolithic `main()` function with a readable, maintainable structure.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{future::Future, pin::Pin};
 
 use anyhow::Result;
 use sqlx::PgPool;
@@ -274,6 +275,7 @@ type AsyncOnceTaskFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Se
 /// The assembled application, ready to be started.
 pub struct Application {
     config: Config,
+    clock: Arc<synctv_core::SyncedClock>,
     database_pools: DatabasePools,
     services: Services,
     livestream_state: Option<LivestreamState>,
@@ -648,6 +650,8 @@ impl Application {
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
         let mut shutdown = ShutdownCoordinator::new(shutdown_budget);
 
+        let clock = Self::init_application_clock(&config, &mut shutdown).await?;
+
         // Phase 1: Infrastructure (Redis, Database, NodeID)
         let infra = match Self::init_infrastructure(config, &mut shutdown).await {
             Ok(infra) => infra,
@@ -665,14 +669,21 @@ impl Application {
         }
 
         // Phase 3: Core services
-        let core =
-            match Self::init_core_services(&infra, &runtime_plan, &mut shutdown, &options).await {
-                Ok(core) => core,
-                Err(e) => {
-                    shutdown.shutdown().await;
-                    return Err(e);
-                }
-            };
+        let core = match Self::init_core_services(
+            &infra,
+            &runtime_plan,
+            clock.clone(),
+            &mut shutdown,
+            &options,
+        )
+        .await
+        {
+            Ok(core) => core,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
         if options.allow_password_registration {
             let mut settings = core.services.runtime_settings_store.runtime_settings()?;
             settings.user.enable_password_signup = true;
@@ -717,13 +728,33 @@ impl Application {
         };
 
         // Assemble
-        Ok(Self::assemble(infra, core, cluster, servers, shutdown))
+        Ok(Self::assemble(
+            infra, core, cluster, servers, clock, shutdown,
+        ))
+    }
+
+    async fn init_application_clock(
+        config: &Config,
+        shutdown: &mut ShutdownCoordinator,
+    ) -> Result<Arc<synctv_core::SyncedClock>> {
+        let clock = Arc::new(synctv_core::SyncedClock::from_config(&config.time));
+        if clock.enabled() {
+            clock.sync_once().await.map_err(|error| {
+                anyhow::anyhow!("initial application clock synchronization failed: {error}")
+            })?;
+        }
+        let cancel = shutdown.register_token("application_clock_sync");
+        if let Some(task) = clock.start(cancel) {
+            shutdown.register_task("application_clock_sync", task);
+        }
+        Ok(clock)
     }
 
     /// Start all servers and wait for shutdown.
     pub async fn run(self) -> Result<()> {
         let server = SyncTvServer::new(
             self.config,
+            self.clock,
             self.services,
             self.livestream_state,
             self.database_pools,
@@ -742,6 +773,7 @@ impl Application {
     {
         let server = SyncTvServer::new(
             self.config,
+            self.clock,
             self.services,
             self.livestream_state,
             self.database_pools,
@@ -842,6 +874,7 @@ impl Application {
     async fn init_core_services(
         infra: &Infrastructure,
         runtime_plan: &RuntimeModePlan,
+        clock: Arc<synctv_core::SyncedClock>,
         shutdown: &mut ShutdownCoordinator,
         options: &ApplicationBuildOptions,
     ) -> Result<CoreState> {
@@ -895,6 +928,7 @@ impl Application {
             cache_invalidation.clone(),
             cache_invalidation_listener_task,
             InitServicesOptions {
+                clock,
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
                 credential_encryption_key_override,
@@ -1532,6 +1566,7 @@ impl Application {
         core: CoreState,
         cluster: ClusterState,
         servers: ServerComponents,
+        clock: Arc<synctv_core::SyncedClock>,
         shutdown: ShutdownCoordinator,
     ) -> Self {
         let services = Services {
@@ -1579,6 +1614,7 @@ impl Application {
 
         Self {
             config: infra.config,
+            clock,
             database_pools: infra.database_pools,
             services,
             livestream_state: servers.livestream_state,
@@ -1739,8 +1775,11 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                hls_storage_backend: synctv_core::config::HlsStorageBackend::SharedFile,
-                hls_storage_path: "/var/lib/synctv/hls".to_string(),
+                hls_storage: synctv_core::config::HlsStorageConfig::SharedFile(
+                    synctv_core::config::HlsFileStorageConfig {
+                        path: "/var/lib/synctv/hls".to_string(),
+                    },
+                ),
                 ..LivestreamConfig::default()
             },
             file_storage: synctv_core::config::FileStorageConfig::default(),

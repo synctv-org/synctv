@@ -617,7 +617,7 @@ mod tests {
                     },
                 },
             },
-            occurred_at: Utc::now(),
+            occurred_at: crate::SystemClock.now(),
         }
     }
 

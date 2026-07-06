@@ -107,7 +107,7 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
                     user_id,
                     username: username.clone(),
                     playlist: playlist.clone(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: synctv_core::SystemClock.now(),
                 },
             ),
         }
@@ -128,7 +128,7 @@ impl PlaylistFanoutService for DefaultPlaylistFanoutService {
                     user_id,
                     username: username.clone(),
                     playlist: playlist.clone(),
-                    timestamp: chrono::Utc::now(),
+                    timestamp: synctv_core::SystemClock.now(),
                 },
             ),
         }
@@ -161,7 +161,7 @@ fn playlist_deleted_event(
         user_id: *user_id,
         username: username.to_string(),
         playlist_id: *playlist_id,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -251,8 +251,8 @@ mod tests {
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
+            updated_at: synctv_core::SystemClock.now(),
             version: 0,
         }
     }

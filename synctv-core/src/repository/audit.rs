@@ -135,7 +135,7 @@ impl AuditLogRepository {
     /// Uses `sqlx::QueryBuilder` for all dynamic SQL construction to ensure
     /// all values are properly parameterized and immune to SQL injection.
     pub async fn list(&self, query: &AuditLogQuery) -> Result<(Vec<AuditLogRow>, i64)> {
-        let default_from = Utc::now() - chrono::Duration::days(90);
+        let default_from = crate::SystemClock.now() - chrono::Duration::days(90);
         let effective_from = query.from.unwrap_or(default_from);
         let pool = self.pools.read();
 

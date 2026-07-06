@@ -1,16 +1,18 @@
-{{- $hlsBackend := .Values.config.livestream.hlsStorageBackend | default "memory" -}}
+{{- $hlsStorage := .Values.config.livestream.hlsStorage | default dict -}}
+{{- $hlsBackend := $hlsStorage.type | default "memory" -}}
+{{- $hlsStoragePath := $hlsStorage.path | default "" -}}
 {{- $hlsFileBackend := or (eq $hlsBackend "file") (eq $hlsBackend "shared_file") -}}
 {{- if not (has $hlsBackend (list "memory" "file" "shared_file" "oss")) -}}
-{{- fail "config.livestream.hlsStorageBackend must be one of: memory, file, shared_file, oss" -}}
+{{- fail "config.livestream.hlsStorage.type must be one of: memory, file, shared_file, oss" -}}
 {{- end -}}
-{{- if and $hlsFileBackend (not .Values.config.livestream.hlsStoragePath) -}}
-{{- fail "config.livestream.hlsStorageBackend=file/shared_file requires config.livestream.hlsStoragePath" -}}
+{{- if and $hlsFileBackend (not $hlsStoragePath) -}}
+{{- fail "config.livestream.hlsStorage.type=file/shared_file requires config.livestream.hlsStorage.path" -}}
 {{- end -}}
-{{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath (not (hasPrefix "/" .Values.config.livestream.hlsStoragePath)) -}}
-{{- fail "config.livestream.hlsStorageBackend=file/shared_file requires an absolute config.livestream.hlsStoragePath in Kubernetes" -}}
+{{- if and $hlsFileBackend $hlsStoragePath (not (hasPrefix "/" $hlsStoragePath)) -}}
+{{- fail "config.livestream.hlsStorage.type=file/shared_file requires an absolute config.livestream.hlsStorage.path in Kubernetes" -}}
 {{- end -}}
 {{- if and (eq $hlsBackend "shared_file") (not .Values.persistence.hls.existingClaim) -}}
-{{- fail "config.livestream.hlsStorageBackend=shared_file requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
+{{- fail "config.livestream.hlsStorage.type=shared_file requires persistence.hls.existingClaim so HLS storage is actually shared across replicas" -}}
 {{- end -}}
 {{- if and (eq (include "synctv.postgresql.mode" .) "external") (not .Values.existingSecret) (not .Values.secrets.database.password) -}}
 {{- fail "postgresql.mode=external requires existingSecret with SYNCTV_DATABASE_PASSWORD or secrets.database.password" -}}
@@ -328,16 +330,16 @@ spec:
                   key: SYNCTV_METRICS_AUTH_BASIC_PASSWORD
             {{- end }}
             {{- if eq $hlsBackend "oss" }}
-            - name: SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID
+            - name: SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID
-            - name: SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY
+                  key: SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID
+            - name: SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY
+                  key: SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY
             {{- end }}
             - name: SYNCTV_MANAGEMENT_AUTH_TOKEN
               valueFrom:
@@ -376,9 +378,9 @@ spec:
               mountPath: /tmp
             - name: app-data
               mountPath: /data
-            {{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath }}
+            {{- if and $hlsFileBackend $hlsStoragePath }}
             - name: hls-storage
-              mountPath: {{ .Values.config.livestream.hlsStoragePath | quote }}
+              mountPath: {{ $hlsStoragePath | quote }}
             {{- end }}
             {{- if and .Values.metrics.enabled .Values.metrics.tls.enabled }}
             - name: metrics-tls
@@ -403,7 +405,7 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
-        {{- if and $hlsFileBackend .Values.config.livestream.hlsStoragePath }}
+        {{- if and $hlsFileBackend $hlsStoragePath }}
         - name: hls-storage
           {{- if .Values.persistence.hls.existingClaim }}
           persistentVolumeClaim:

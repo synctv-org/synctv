@@ -8,6 +8,10 @@ use super::query::SortDirection;
 use super::RoomSettings;
 use crate::Error;
 
+fn default_last_activity_at() -> DateTime<Utc> {
+    crate::SystemClock.now()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoomCategory {
     pub id: RoomCategoryId,
@@ -218,14 +222,14 @@ pub struct Room {
     /// Tracks the last significant activity in this room (chat messages,
     /// playback state changes, member joins/leaves). Used by the room TTL
     /// cleanup to avoid expiring active rooms.
-    #[serde(default = "Utc::now")]
+    #[serde(default = "default_last_activity_at")]
     pub last_activity_at: DateTime<Utc>,
 }
 
 impl Room {
     #[must_use]
     pub fn new(name: String, created_by: UserId) -> Self {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         Self {
             id: RoomId::new(),
             name,
@@ -248,7 +252,7 @@ impl Room {
     /// Create a new room with description
     #[must_use]
     pub fn new_with_description(name: String, description: String, created_by: UserId) -> Self {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         Self {
             id: RoomId::new(),
             name,
@@ -299,15 +303,15 @@ impl Room {
     }
 
     pub fn close(&mut self) {
-        self.closed_at = Some(Utc::now());
+        self.closed_at = Some(crate::SystemClock.now());
         self.status = RoomStatus::Closed;
-        self.updated_at = Utc::now();
+        self.updated_at = crate::SystemClock.now();
     }
 
     pub fn reopen(&mut self) {
         self.closed_at = None;
         self.status = RoomStatus::Active;
-        self.updated_at = Utc::now();
+        self.updated_at = crate::SystemClock.now();
     }
 
     #[must_use]
@@ -317,12 +321,12 @@ impl Room {
 
     pub fn ban(&mut self) {
         self.is_banned = true;
-        self.updated_at = Utc::now();
+        self.updated_at = crate::SystemClock.now();
     }
 
     pub fn unban(&mut self) {
         self.is_banned = false;
-        self.updated_at = Utc::now();
+        self.updated_at = crate::SystemClock.now();
     }
 }
 

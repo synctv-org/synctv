@@ -208,15 +208,15 @@ curl -fsS http://localhost:8080/health/ready
 | `livestream.pull_max_backoff_ms` | 毫秒 | `30000` | 拉流最大退避 |
 | `livestream.max_flv_tag_size_bytes` | 字节数 | `10485760` | 最大 FLV tag 大小 |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP 缓存最大内存 |
-| `livestream.hls_memory_max_mb` | MB | `0` | 内存 HLS 存储上限，0 表示内置默认 |
-| `livestream.hls_storage_backend` | `memory`、`file`、`shared_file`、`oss` | `memory` | HLS 分片存储后端 |
-| `livestream.hls_storage_path` | 路径 | `""` | `file` / `shared_file` 后端 HLS 文件存储路径 |
-| `livestream.hls_oss.endpoint` | 字符串 | `""` | `oss` 后端 S3/OSS endpoint，启用 `oss` 时必填 |
-| `livestream.hls_oss.access_key_id` | secret 字符串 | `""` | `oss` 后端 access key ID，启用 `oss` 时必填 |
-| `livestream.hls_oss.secret_access_key` | secret 字符串 | `""` | `oss` 后端 secret access key，启用 `oss` 时必填 |
-| `livestream.hls_oss.bucket` | 字符串 | `""` | `oss` 后端 bucket，启用 `oss` 时必填 |
-| `livestream.hls_oss.region` | 字符串或空 | `null` | `oss` 后端 region |
-| `livestream.hls_oss.base_path` | 字符串 | `hls/` | `oss` 后端 bucket 内对象前缀 |
+| `livestream.hls_storage.type` | `memory`、`file`、`shared_file`、`oss` | `memory` | HLS 分片存储后端 |
+| `livestream.hls_storage.memory_max_mb` | MB | `0` | `memory` 后端 HLS 存储上限，0 表示内置默认 |
+| `livestream.hls_storage.path` | 路径 | `""` | `file` / `shared_file` 后端 HLS 文件存储路径 |
+| `livestream.hls_storage.endpoint` | 字符串 | `""` | `oss` 后端 S3/OSS endpoint，启用 `oss` 时必填 |
+| `livestream.hls_storage.access_key_id` | secret 字符串 | `""` | `oss` 后端 access key ID，启用 `oss` 时必填 |
+| `livestream.hls_storage.secret_access_key` | secret 字符串 | `""` | `oss` 后端 secret access key，启用 `oss` 时必填 |
+| `livestream.hls_storage.bucket` | 字符串 | `""` | `oss` 后端 bucket，启用 `oss` 时必填 |
+| `livestream.hls_storage.region` | 字符串或空 | `null` | `oss` 后端 region |
+| `livestream.hls_storage.base_path` | 字符串 | `hls/` | `oss` 后端 bucket 内对象前缀 |
 | `livestream.flv_max_connection_duration_seconds` | 秒数 | `86400` | HTTP-FLV 最大连接时长 |
 | `livestream.flv_write_timeout_seconds` | 秒数 | `30` | HTTP-FLV 写超时 |
 
@@ -233,10 +233,10 @@ curl -fsS http://localhost:8080/health/ready
 | `file_storage.upload_token_secret` | secret 字符串 | `""` | 文件上传/读取 token 签名密钥；空值在启动时由 `jwt.secret` 派生 |
 | `file_storage.unreferenced_object_retention_seconds` | 秒数 | `86400` | 未被业务引用的已上传对象清理宽限期；`0` 表示关闭孤儿对象清理 |
 | `file_storage.backends.<name>.type` | `disabled`、`database` 或 `s3` | `disabled` | 已注册后端实现类型 |
-| `file_storage.backends.<name>.database.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL 永久 `file_blob_parts` 分段的压缩算法 |
-| `file_storage.backends.<name>.database.compression_min_size_bytes` | 字节数 | `4096` | 原始 payload 达到该大小后才尝试压缩 |
-| `file_storage.backends.<name>.database.compression_min_savings_percent` | `0` 到 `100` | `10` | 压缩节省比例达到该百分比才存储压缩结果 |
-| `file_storage.backends.<name>.s3.*` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置；`public_base_url` 必填，用于上传或 ownership proof 通过后的可读文件 URL |
+| `file_storage.backends.<name>.compression` | `none`、`lz4` 或 `zstd` | `zstd` | `type: "database"` 后端写入 PostgreSQL 永久 `file_blob_parts` 分段的压缩算法 |
+| `file_storage.backends.<name>.compression_min_size_bytes` | 字节数 | `4096` | 原始 payload 达到该大小后才尝试压缩 |
+| `file_storage.backends.<name>.compression_min_savings_percent` | `0` 到 `100` | `10` | 压缩节省比例达到该百分比才存储压缩结果 |
+| `file_storage.backends.<name>.<s3-field>` | S3 配置 | S3 默认字段 | `type: "s3"` 后端的 S3-compatible 配置；`public_base_url` 必填，用于上传或 ownership proof 通过后的可读文件 URL |
 
 上传会话使用服务端分片计划：客户端先用空 `parts` 请求 `FileUploadPlan`，按计划计算每片 SHA-256，再提交 `FileUploadManifestPart[]`。SyncTV 根据 canonical manifest 计算 `content_manifest_sha256`，用它命中秒传对象和未完成断点续传会话。Database 后端持久化固定 `file_blob_parts` 分段，并直接从分段服务 HTTP Range 请求，只解压覆盖请求区间的分段。S3 后端使用原生 multipart upload 和预签名 part URL，part URL 签入 `x-amz-checksum-sha256`，完成时用已记录分片 manifest 校验对象身份，服务端无需从 S3 读回 GB 级对象。重复对象返回 `upload_required=false` 和 ownership proof challenge；可读 URL 会在 proof 通过并写入业务引用后签发。
 
@@ -264,8 +264,7 @@ file_storage:
   backends:
     database:
       type: "database"
-      database:
-        compression: "zstd"
+      compression: "zstd"
 ```
 
 使用 S3-compatible 对象存储：
@@ -282,15 +281,14 @@ file_storage:
   backends:
     s3_public:
       type: "s3"
-      s3:
-        endpoint: "https://s3.example.com"
-        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
-        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
-        bucket: "synctv-files"
-        region: "auto"
-        base_path: "files/"
-        public_base_url: "https://cdn.example.com/files"
-        upload_expires_seconds: 900
+      endpoint: "https://s3.example.com"
+      access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+      secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+      bucket: "synctv-files"
+      region: "auto"
+      base_path: "files/"
+      public_base_url: "https://cdn.example.com/files"
+      upload_expires_seconds: 900
 ```
 
 ## `webauthn` 和 `email`

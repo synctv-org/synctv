@@ -154,6 +154,7 @@ pub(super) async fn message_stream(
             concurrency_config: Arc::new(MessageConcurrencyConfig::default()),
         },
         StreamMessageHandlerRuntime {
+            clock: service.client_api.clock.clone(),
             playback_service: service.client_api.clone(),
             playlist_items_snapshot_service: service.client_api.clone(),
             room_members_snapshot_service: service.client_api.clone(),

@@ -20,6 +20,12 @@ metadata:
 {{- $fileStorage := .Values.config.fileStorage | default dict }}
 {{- $security := .Values.config.security | default dict }}
 {{- $ssrf := $security.ssrf | default dict }}
+{{- $time := .Values.config.time | default dict }}
+{{- $clockSync := $time.clockSync | default dict }}
+{{- $clockSyncProvider := $clockSync.provider | default dict }}
+{{- $livestream := .Values.config.livestream | default dict }}
+{{- $hlsStorage := $livestream.hlsStorage | default dict }}
+{{- $hlsStorageType := $hlsStorage.type | default "memory" }}
 data:
   synctv.yaml: |
     {{ if .Values.config.dataDir }}
@@ -27,7 +33,17 @@ data:
     {{ end }}
 
     time:
-      timezone: {{ .Values.config.time.timezone | default "" | quote }}
+      timezone: {{ $time.timezone | default "" | quote }}
+      clock_sync:
+        enabled: {{ $clockSync.enabled | default false }}
+        provider:
+          type: {{ $clockSyncProvider.type | default "sntp" | quote }}
+          servers:
+          {{- range ($clockSyncProvider.servers | default (list "time.cloudflare.com:123" "pool.ntp.org:123")) }}
+            - {{ . | quote }}
+          {{- end }}
+          interval_seconds: {{ $clockSyncProvider.intervalSeconds | default 300 }}
+          timeout_millis: {{ $clockSyncProvider.timeoutMillis | default 1000 }}
 
     server:
       host: {{ .Values.config.server.host | quote }}
@@ -172,30 +188,34 @@ data:
     livestream:
       rtmp_port: {{ .Values.config.livestream.rtmpPort }}
       public_rtmp_host: {{ .Values.config.livestream.publicRtmpHost | default "" | quote }}
-      gop_cache_size: {{ .Values.config.livestream.gopCacheSize }}
-      stream_timeout_seconds: {{ .Values.config.livestream.streamTimeoutSeconds }}
-      cleanup_check_interval_seconds: {{ .Values.config.livestream.cleanupCheckIntervalSeconds }}
-      pull_max_retries: {{ .Values.config.livestream.pullMaxRetries | default 10 }}
-      pull_initial_backoff_ms: {{ .Values.config.livestream.pullInitialBackoffMs | default 1000 }}
-      pull_max_backoff_ms: {{ .Values.config.livestream.pullMaxBackoffMs | default 30000 }}
-      max_flv_tag_size_bytes: {{ printf "%d" (int64 (.Values.config.livestream.maxFlvTagSizeBytes | default 10485760)) }}
-      gop_cache_max_memory_mb: {{ printf "%d" (int64 (.Values.config.livestream.gopCacheMaxMemoryMb | default 100)) }}
-      hls_memory_max_mb: {{ printf "%d" (int64 (.Values.config.livestream.hlsMemoryMaxMb | default 0)) }}
-      hls_storage_backend: {{ .Values.config.livestream.hlsStorageBackend | default "memory" | quote }}
-      hls_storage_path: {{ .Values.config.livestream.hlsStoragePath | default "" | quote }}
-      {{- if eq (.Values.config.livestream.hlsStorageBackend | default "memory") "oss" }}
-      hls_oss:
-        endpoint: {{ .Values.config.livestream.hlsOss.endpoint | default "" | quote }}
-        bucket: {{ .Values.config.livestream.hlsOss.bucket | default "" | quote }}
-        {{- if .Values.config.livestream.hlsOss.region }}
-        region: {{ .Values.config.livestream.hlsOss.region | quote }}
-        {{- else }}
+      gop_cache_size: {{ $livestream.gopCacheSize }}
+      stream_timeout_seconds: {{ $livestream.streamTimeoutSeconds }}
+      cleanup_check_interval_seconds: {{ $livestream.cleanupCheckIntervalSeconds }}
+      pull_max_retries: {{ $livestream.pullMaxRetries | default 10 }}
+      pull_initial_backoff_ms: {{ $livestream.pullInitialBackoffMs | default 1000 }}
+      pull_max_backoff_ms: {{ $livestream.pullMaxBackoffMs | default 30000 }}
+      max_flv_tag_size_bytes: {{ printf "%d" (int64 ($livestream.maxFlvTagSizeBytes | default 10485760)) }}
+      gop_cache_max_memory_mb: {{ printf "%d" (int64 ($livestream.gopCacheMaxMemoryMb | default 100)) }}
+      hls_storage:
+        type: {{ $hlsStorageType | quote }}
+        {{ if eq $hlsStorageType "memory" }}
+        memory_max_mb: {{ printf "%d" (int64 ($hlsStorage.memoryMaxMb | default 0)) }}
+        {{ end }}
+        {{ if or (eq $hlsStorageType "file") (eq $hlsStorageType "shared_file") }}
+        path: {{ $hlsStorage.path | default "" | quote }}
+        {{ end }}
+        {{ if eq $hlsStorageType "oss" }}
+        endpoint: {{ $hlsStorage.endpoint | default "" | quote }}
+        bucket: {{ $hlsStorage.bucket | default "" | quote }}
+        {{ if $hlsStorage.region }}
+        region: {{ $hlsStorage.region | quote }}
+        {{ else }}
         region: null
-        {{- end }}
-        base_path: {{ .Values.config.livestream.hlsOss.basePath | default "hls/" | quote }}
-      {{- end }}
-      flv_max_connection_duration_seconds: {{ .Values.config.livestream.flvMaxConnectionDurationSeconds | default 86400 }}
-      flv_write_timeout_seconds: {{ .Values.config.livestream.flvWriteTimeoutSeconds | default 30 }}
+        {{ end }}
+        base_path: {{ $hlsStorage.basePath | default "hls/" | quote }}
+        {{ end }}
+      flv_max_connection_duration_seconds: {{ $livestream.flvMaxConnectionDurationSeconds | default 86400 }}
+      flv_write_timeout_seconds: {{ $livestream.flvWriteTimeoutSeconds | default 30 }}
 
     file_storage:
       default_backend: {{ $fileStorage.defaultBackend | default "disabled" | quote }}
@@ -213,33 +233,29 @@ data:
         {{- $backendType := index $backend "type" | default "disabled" }}
         {{ $name }}:
           type: {{ $backendType | quote }}
-          {{- if eq $backendType "database" }}
-          {{- $database := index $backend "database" | default dict }}
-          database:
-            compression: {{ $database.compression | default "zstd" | quote }}
-            compression_min_size_bytes: {{ $database.compressionMinSizeBytes | default 4096 }}
-            compression_min_savings_percent: {{ $database.compressionMinSavingsPercent | default 10 }}
-          {{- end }}
-          {{- if eq $backendType "s3" }}
-          {{- $s3 := index $backend "s3" | default dict }}
-          s3:
-            endpoint: {{ $s3.endpoint | default "" | quote }}
-            {{- if $s3.accessKeyIdFile }}
-            access_key_id_file: {{ $s3.accessKeyIdFile | quote }}
-            {{- else }}
-            access_key_id: {{ $s3.accessKeyId | default "" | quote }}
-            {{- end }}
-            {{- if $s3.secretAccessKeyFile }}
-            secret_access_key_file: {{ $s3.secretAccessKeyFile | quote }}
-            {{- else }}
-            secret_access_key: {{ $s3.secretAccessKey | default "" | quote }}
-            {{- end }}
-            bucket: {{ $s3.bucket | default "" | quote }}
-            region: {{ $s3.region | default "auto" | quote }}
-            base_path: {{ $s3.basePath | default "files/" | quote }}
-            public_base_url: {{ $s3.publicBaseUrl | default "" | quote }}
-            upload_expires_seconds: {{ $s3.uploadExpiresSeconds | default 900 }}
-          {{- end }}
+          {{ if eq $backendType "database" }}
+          compression: {{ $backend.compression | default "zstd" | quote }}
+          compression_min_size_bytes: {{ $backend.compressionMinSizeBytes | default 4096 }}
+          compression_min_savings_percent: {{ $backend.compressionMinSavingsPercent | default 10 }}
+          {{ end }}
+          {{ if eq $backendType "s3" }}
+          endpoint: {{ $backend.endpoint | default "" | quote }}
+          {{ if $backend.accessKeyIdFile }}
+          access_key_id_file: {{ $backend.accessKeyIdFile | quote }}
+          {{ else }}
+          access_key_id: {{ $backend.accessKeyId | default "" | quote }}
+          {{ end }}
+          {{ if $backend.secretAccessKeyFile }}
+          secret_access_key_file: {{ $backend.secretAccessKeyFile | quote }}
+          {{ else }}
+          secret_access_key: {{ $backend.secretAccessKey | default "" | quote }}
+          {{ end }}
+          bucket: {{ $backend.bucket | default "" | quote }}
+          region: {{ $backend.region | default "auto" | quote }}
+          base_path: {{ $backend.basePath | default "files/" | quote }}
+          public_base_url: {{ $backend.publicBaseUrl | default "" | quote }}
+          upload_expires_seconds: {{ $backend.uploadExpiresSeconds | default 900 }}
+          {{ end }}
         {{- end }}
       {{- else }}
       backends: {}

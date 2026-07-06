@@ -76,7 +76,7 @@ impl CachedUser {
             role,
             status,
             created_at,
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::SystemClock.now(),
             is_banned: false,
             is_deleted: false,
         }
@@ -264,8 +264,8 @@ mod tests {
             username: username.to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
             is_deleted: false,
             is_banned: false,
         }

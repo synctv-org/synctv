@@ -390,7 +390,7 @@ async fn test_store_and_consume_state() {
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
         target_user_id: None,
         pkce_verifier: "verifier123".to_string(),
@@ -421,7 +421,7 @@ async fn test_state_single_use_consumed_on_first_retrieval() {
     let state = OAuth2State {
         instance_name: "google".to_string(),
         redirect_url: None,
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
         target_user_id: None,
         pkce_verifier: "v".to_string(),
@@ -466,7 +466,7 @@ async fn test_state_preserves_target_user_id() {
     let state = OAuth2State {
         instance_name: "logto".to_string(),
         redirect_url: None,
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Bind,
         target_user_id: Some(user_id),
         pkce_verifier: "bind_verifier".to_string(),
@@ -498,7 +498,7 @@ async fn test_verify_state_consumes_token() {
     let state = OAuth2State {
         instance_name: "oidc".to_string(),
         redirect_url: None,
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
         target_user_id: None,
         pkce_verifier: "pkce_v".to_string(),
@@ -1124,7 +1124,7 @@ fn test_oauth2_state_serialization_roundtrip() {
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: Some("http://127.0.0.1:34567/dashboard".to_string()),
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Bind,
         target_user_id: Some(UserId::expect_positive(93_004)),
         pkce_verifier: "S256_challenge_verifier".to_string(),
@@ -1153,7 +1153,7 @@ fn test_oauth2_state_serialization_none_fields() {
     let state = OAuth2State {
         instance_name: "oidc".to_string(),
         redirect_url: None,
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
         target_user_id: None,
         pkce_verifier: "v".to_string(),
@@ -1175,7 +1175,7 @@ async fn test_multiple_concurrent_states() {
         let state = OAuth2State {
             instance_name: format!("provider_{i}"),
             redirect_url: None,
-            created_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
             operation: OAuth2Operation::Login,
             target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
@@ -1273,7 +1273,7 @@ async fn test_concurrent_state_consumption_only_first_succeeds() {
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: None,
-        created_at: chrono::Utc::now(),
+        created_at: crate::SystemClock.now(),
         operation: OAuth2Operation::Login,
         target_user_id: None,
         pkce_verifier: "concurrent_verifier".to_string(),
@@ -1358,7 +1358,7 @@ async fn test_consuming_one_state_does_not_affect_others() {
         let state = OAuth2State {
             instance_name: format!("provider_{i}"),
             redirect_url: None,
-            created_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
             operation: OAuth2Operation::Login,
             target_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
@@ -1394,7 +1394,7 @@ async fn test_consuming_one_state_does_not_affect_others() {
 async fn test_state_expired_created_at_rejected() {
     let service = create_test_service();
 
-    let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
+    let expired_time = crate::SystemClock.now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: None,
@@ -1423,7 +1423,7 @@ async fn test_state_expired_created_at_rejected() {
 async fn test_state_within_ttl_accepted() {
     let service = create_test_service();
 
-    let within_ttl_time = chrono::Utc::now() - chrono::Duration::seconds(240);
+    let within_ttl_time = crate::SystemClock.now() - chrono::Duration::seconds(240);
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: None,
@@ -1450,7 +1450,7 @@ async fn test_state_at_ttl_boundary() {
     let service = create_test_service();
 
     let past_boundary_time =
-        chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS_I64 + 1);
+        crate::SystemClock.now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS_I64 + 1);
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: None,
@@ -1481,7 +1481,7 @@ async fn test_verify_state_checks_created_at_expiry() {
         )
         .await;
 
-    let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
+    let expired_time = crate::SystemClock.now() - chrono::Duration::seconds(360);
     let state = OAuth2State {
         instance_name: "github".to_string(),
         redirect_url: None,

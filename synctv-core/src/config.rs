@@ -334,8 +334,8 @@ fn supports_secret_file_reference(current_path: &str, base_key: &str) -> bool {
             | "redis.password"
             | "redis.url"
             | "jwt.secret"
-            | "livestream.hls_oss.access_key_id"
-            | "livestream.hls_oss.secret_access_key"
+            | "livestream.hls_storage.access_key_id"
+            | "livestream.hls_storage.secret_access_key"
             | "file_storage.upload_token_secret"
             | "bootstrap.root_password"
     ) || (current_path.starts_with("file_storage.backends.")
@@ -522,7 +522,7 @@ pub struct Config {
     ///
     /// This affects default runtime paths and relative overrides for
     /// `management.unix_socket_path`, `logging.file_path`,
-    /// `livestream.hls_storage_path`, and
+    /// `livestream.hls_storage.path`, and
     /// `proxy_slice_cache.file_cache_dir`.
     ///
     /// It does not rebase static input files such as `*_file` secrets or
@@ -705,8 +705,9 @@ impl SecurityConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct TimeConfig {
     /// Default IANA timezone used for human-readable formatting and local datetime parsing.
     ///
@@ -717,6 +718,69 @@ pub struct TimeConfig {
     /// 4. system timezone
     /// 5. `UTC`
     pub timezone: String,
+    pub clock_sync: ClockSyncConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct ClockSyncConfig {
+    /// Enable application-level clock synchronization.
+    ///
+    /// When enabled, SyncTV periodically queries `servers` and applies the computed
+    /// offset inside the application process. It does not adjust the host operating system clock.
+    pub enabled: bool,
+    /// Provider-specific application clock synchronization configuration.
+    pub provider: ClockSyncProvider,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClockSyncProvider {
+    Sntp(ClockSyncSntpProviderConfig),
+}
+
+impl FromStr for ClockSyncProvider {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "sntp" => Ok(Self::Sntp(ClockSyncSntpProviderConfig::default())),
+            _ => Err(ConfigError::Message(format!(
+                "clock sync provider type '{value}' must be one of: sntp"
+            ))),
+        }
+    }
+}
+
+impl Default for ClockSyncProvider {
+    fn default() -> Self {
+        Self::Sntp(ClockSyncSntpProviderConfig::default())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ClockSyncSntpProviderConfig {
+    /// NTP/SNTP servers used to calibrate the application clock.
+    pub servers: Vec<String>,
+    /// Interval between successful background clock synchronization attempts.
+    pub interval_seconds: u64,
+    /// Timeout for each NTP/SNTP server request.
+    pub timeout_millis: u64,
+}
+
+impl Default for ClockSyncSntpProviderConfig {
+    fn default() -> Self {
+        Self {
+            servers: vec![
+                "time.cloudflare.com:123".to_string(),
+                "pool.ntp.org:123".to_string(),
+            ],
+            interval_seconds: 300,
+            timeout_millis: 1_000,
+        }
+    }
 }
 
 /// Domain-level messaging rate limits for chat.
@@ -1237,13 +1301,141 @@ impl FromStr for HlsStorageBackend {
             "shared_file" => Ok(Self::SharedFile),
             "oss" => Ok(Self::Oss),
             _ => Err(ConfigError::Message(format!(
-                "livestream.hls_storage_backend '{value}' must be one of: memory, file, shared_file, oss"
+                "livestream.hls_storage.type '{value}' must be one of: memory, file, shared_file, oss"
             ))),
         }
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HlsStorageConfig {
+    Memory(HlsMemoryStorageConfig),
+    File(HlsFileStorageConfig),
+    SharedFile(HlsFileStorageConfig),
+    Oss(HlsOssConfig),
+}
+
+impl Default for HlsStorageConfig {
+    fn default() -> Self {
+        Self::Memory(HlsMemoryStorageConfig::default())
+    }
+}
+
+impl FromStr for HlsStorageConfig {
+    type Err = ConfigError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "memory" => Ok(Self::Memory(HlsMemoryStorageConfig::default())),
+            "file" => Ok(Self::File(HlsFileStorageConfig::default())),
+            "shared_file" => Ok(Self::SharedFile(HlsFileStorageConfig::default())),
+            "oss" => Ok(Self::Oss(HlsOssConfig::default())),
+            _ => Err(ConfigError::Message(format!(
+                "livestream HLS storage type '{value}' must be one of: memory, file, shared_file, oss"
+            ))),
+        }
+    }
+}
+
+impl HlsStorageConfig {
+    #[must_use]
+    pub fn select_backend(self, backend: HlsStorageBackend) -> Self {
+        match (backend, self) {
+            (HlsStorageBackend::Memory, Self::Memory(config)) => Self::Memory(config),
+            (HlsStorageBackend::File, Self::File(config) | Self::SharedFile(config)) => {
+                Self::File(config)
+            }
+            (HlsStorageBackend::SharedFile, Self::File(config) | Self::SharedFile(config)) => {
+                Self::SharedFile(config)
+            }
+            (HlsStorageBackend::Oss, Self::Oss(config)) => Self::Oss(config),
+            (HlsStorageBackend::Memory, _) => Self::Memory(HlsMemoryStorageConfig::default()),
+            (HlsStorageBackend::File, _) => Self::File(HlsFileStorageConfig::default()),
+            (HlsStorageBackend::SharedFile, _) => Self::SharedFile(HlsFileStorageConfig::default()),
+            (HlsStorageBackend::Oss, _) => Self::Oss(HlsOssConfig::default()),
+        }
+    }
+
+    #[must_use]
+    pub const fn backend(&self) -> HlsStorageBackend {
+        match self {
+            Self::Memory(_) => HlsStorageBackend::Memory,
+            Self::File(_) => HlsStorageBackend::File,
+            Self::SharedFile(_) => HlsStorageBackend::SharedFile,
+            Self::Oss(_) => HlsStorageBackend::Oss,
+        }
+    }
+
+    #[must_use]
+    pub const fn memory(&self) -> Option<&HlsMemoryStorageConfig> {
+        match self {
+            Self::Memory(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn file(&self) -> Option<&HlsFileStorageConfig> {
+        match self {
+            Self::File(config) | Self::SharedFile(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn file_mut(&mut self) -> Option<&mut HlsFileStorageConfig> {
+        match self {
+            Self::File(config) | Self::SharedFile(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn oss(&self) -> Option<&HlsOssConfig> {
+        match self {
+            Self::Oss(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn oss_mut(&mut self) -> Option<&mut HlsOssConfig> {
+        match self {
+            Self::Oss(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        self.file().map_or("", |config| config.path.as_str())
+    }
+
+    #[must_use]
+    pub fn memory_max_mb(&self) -> u64 {
+        self.memory().map_or(0, |config| config.memory_max_mb)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct HlsMemoryStorageConfig {
+    /// Maximum memory (in megabytes) for in-memory HLS segment storage.
+    /// 0 means use the built-in default (512 MB).
+    pub memory_max_mb: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct HlsFileStorageConfig {
+    /// Base path for HLS segment storage.
+    ///
+    /// Relative paths are resolved against the effective `data_dir`.
+    pub path: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct HlsOssConfig {
     /// S3/OSS endpoint, for example `https://s3.amazonaws.com` or `https://minio.example.com`.
@@ -1315,25 +1507,8 @@ pub struct LivestreamConfig {
     /// When exceeded, the oldest GOP is evicted even if `gop_cache_size` hasn't
     /// been reached. Default: 100 MB. Set to 0 to use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
-    /// Maximum memory (in megabytes) for in-memory HLS segment storage.
-    /// 0 means use the built-in default (512 MB).
-    pub hls_memory_max_mb: u64,
-    /// HLS segment storage backend.
-    ///
-    /// - `memory`: in-process memory storage.
-    /// - `file`: node-local filesystem storage at `hls_storage_path`.
-    /// - `shared_file`: shared filesystem storage at `hls_storage_path`.
-    /// - `oss`: S3-compatible object storage configured by `hls_oss`.
-    pub hls_storage_backend: HlsStorageBackend,
-    /// Base path for HLS segment storage.
-    ///
-    /// Used for validation: paths that are obviously local-only (e.g. /tmp/)
-    /// trigger a stronger warning in cluster mode when `hls_storage_backend=shared_file`.
-    /// Required when `hls_storage_backend=file` or `shared_file`.
-    /// Relative paths are resolved against the effective `data_dir`.
-    pub hls_storage_path: String,
-    /// S3-compatible object storage settings used when `hls_storage_backend=oss`.
-    pub hls_oss: HlsOssConfig,
+    /// HLS segment storage configuration.
+    pub hls_storage: HlsStorageConfig,
     /// Maximum HTTP-FLV connection duration in seconds.
     ///
     /// Prevents slow-client `DoS` attacks by enforcing a maximum connection lifetime.
@@ -1362,48 +1537,9 @@ impl Default for LivestreamConfig {
             pull_max_backoff_ms: 30_000,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             gop_cache_max_memory_mb: 100,
-            hls_memory_max_mb: 0,
-            hls_storage_backend: HlsStorageBackend::Memory,
-            hls_storage_path: String::new(),
-            hls_oss: HlsOssConfig::default(),
+            hls_storage: HlsStorageConfig::default(),
             flv_max_connection_duration_seconds: 86400, // 24 hours
             flv_write_timeout_seconds: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum FileStorageBackendType {
-    #[default]
-    Disabled,
-    Database,
-    S3,
-}
-
-impl FromStr for FileStorageBackendType {
-    type Err = ConfigError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "disabled" => Ok(Self::Disabled),
-            "database" => Ok(Self::Database),
-            "s3" => Ok(Self::S3),
-            _ => Err(ConfigError::Message(format!(
-                "file storage backend type '{value}' must be one of: disabled, database, s3"
-            ))),
-        }
-    }
-}
-
-impl FileStorageBackendType {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Database => "database",
-            Self::S3 => "s3",
         }
     }
 }
@@ -1532,34 +1668,57 @@ impl std::fmt::Debug for FileStorageDatabaseConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FileStorageBackendConfig {
-    /// Backend implementation type.
-    #[serde(rename = "type")]
-    pub backend_type: FileStorageBackendType,
-    /// Database settings used when `type=database`.
-    pub database: FileStorageDatabaseConfig,
-    /// S3-compatible settings used when `type=s3`.
-    pub s3: FileStorageS3Config,
+#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Default)]
+pub enum FileStorageBackendConfig {
+    #[default]
+    Disabled,
+    Database(FileStorageDatabaseConfig),
+    S3(FileStorageS3Config),
 }
 
-impl Default for FileStorageBackendConfig {
-    fn default() -> Self {
-        Self {
-            backend_type: FileStorageBackendType::Disabled,
-            database: FileStorageDatabaseConfig::default(),
-            s3: FileStorageS3Config::default(),
+impl FileStorageBackendConfig {
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Database(_) => "database",
+            Self::S3(_) => "s3",
+        }
+    }
+
+    #[must_use]
+    pub const fn s3(&self) -> Option<&FileStorageS3Config> {
+        match self {
+            Self::S3(config) => Some(config),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn s3_mut(&mut self) -> Option<&mut FileStorageS3Config> {
+        match self {
+            Self::S3(config) => Some(config),
+            _ => None,
         }
     }
 }
 
 impl std::fmt::Debug for FileStorageBackendConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FileStorageBackendConfig")
-            .field("type", &self.backend_type)
-            .field("database", &self.database)
-            .field("s3", &self.s3)
-            .finish()
+        match self {
+            Self::Disabled => f
+                .debug_struct("FileStorageBackendConfig::Disabled")
+                .finish(),
+            Self::Database(config) => f
+                .debug_struct("FileStorageBackendConfig::Database")
+                .field("database", config)
+                .finish(),
+            Self::S3(config) => f
+                .debug_struct("FileStorageBackendConfig::S3")
+                .field("s3", config)
+                .finish(),
+        }
     }
 }
 

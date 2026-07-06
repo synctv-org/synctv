@@ -6,6 +6,10 @@ use crate::models::{ChatMessageEvent, ChatPinEvent, Playlist, RoomSettings};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+fn default_realtime_joined_at() -> DateTime<Utc> {
+    crate::SystemClock.now()
+}
+
 /// The kind of cache to invalidate in a `CacheInvalidate` realtime event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,7 +120,7 @@ pub enum RealtimeEvent {
         admin_added_permissions: RoomPermissionSet,
         #[serde(default)]
         admin_removed_permissions: RoomPermissionSet,
-        #[serde(default = "chrono::Utc::now")]
+        #[serde(default = "default_realtime_joined_at")]
         joined_at: DateTime<Utc>,
         timestamp: DateTime<Utc>,
     },
@@ -775,7 +779,7 @@ mod tests {
             user_id: UserId::expect_positive(10_000_141),
             username: "testuser".to_string(),
             message: "Hello world!".to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -796,7 +800,7 @@ mod tests {
             user_id: UserId::expect_positive(42),
             provider: "bilibili".to_string(),
             server_id: "global".to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert_eq!(event.event_type(), "provider_credential_changed");
@@ -816,7 +820,7 @@ mod tests {
             event_id: synctv_common::snanoid!(16),
             message: "maintenance".to_string(),
             level: NotificationLevel::Warning,
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert!(event.room_id().is_none());
@@ -832,7 +836,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_151),
             room_name: "created room".to_string(),
             creator_id: UserId::expect_positive(10_000_152),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert_eq!(event.delivery_route(), RealtimeDeliveryRoute::RoomAndAdmin);
@@ -848,7 +852,7 @@ mod tests {
             "userId": 456,
             "username": "testuser",
             "message": "Hello world!",
-            "timestamp": Utc::now(),
+            "timestamp": crate::SystemClock.now(),
             "displayPosition": null,
             "displayColor": null
         });
@@ -867,7 +871,7 @@ mod tests {
         let json = serde_json::json!({
             "type": "futureEventType",
             "eventId": synctv_common::snanoid!(16),
-            "timestamp": Utc::now()
+            "timestamp": crate::SystemClock.now()
         });
 
         let err = serde_json::from_value::<RealtimeEvent>(json)
@@ -894,8 +898,8 @@ mod tests {
             removed_permissions: RoomPermissionSet(0),
             admin_added_permissions: RoomPermissionSet(0),
             admin_removed_permissions: RoomPermissionSet(0),
-            joined_at: Utc::now(),
-            timestamp: Utc::now(),
+            joined_at: crate::SystemClock.now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert_eq!(
@@ -914,7 +918,7 @@ mod tests {
             event_id: synctv_common::snanoid!(16),
             message: "Server maintenance in 1 hour".to_string(),
             level: NotificationLevel::Warning,
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert!(event.room_id().is_none());
@@ -929,7 +933,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_140),
             media_id: MediaId::expect_positive(10_000_142),
             reason: "user_banned".to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         let json = serde_json::to_string(&event)?;
@@ -968,7 +972,7 @@ mod tests {
             room_id: RoomId::expect_positive(10_000_143),
             media_id: MediaId::expect_positive(10_000_144),
             reason: "room_deleted".to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         assert_eq!(
@@ -985,7 +989,7 @@ mod tests {
             event_id: synctv_common::snanoid!(16),
             user_id: UserId::expect_positive(10_000_145),
             reason: "user_banned".to_string(),
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         let json = serde_json::to_string(&event)?;
@@ -1018,7 +1022,7 @@ mod tests {
                 },
                 CacheTarget::All,
             ],
-            timestamp: Utc::now(),
+            timestamp: crate::SystemClock.now(),
         };
 
         let json = serde_json::to_string(&event)?;

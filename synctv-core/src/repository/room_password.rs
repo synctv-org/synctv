@@ -134,7 +134,7 @@ impl RoomPasswordRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let row = sqlx::query_as!(
             RoomPasswordCredentialStateRow,
             r#"
@@ -183,7 +183,7 @@ impl RoomPasswordRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let row = sqlx::query_as!(
             RoomPasswordCredentialStateRow,
             r#"

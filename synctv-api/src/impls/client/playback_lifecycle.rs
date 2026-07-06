@@ -53,6 +53,8 @@ pub(crate) struct ProviderPlaybackRegistration<'a> {
 
 #[async_trait]
 pub(crate) trait ProviderPlaybackLifecycleApi {
+    fn lifecycle_now_millis(&self) -> i64;
+
     fn lifecycle_room_service(&self) -> &RoomService;
 
     fn lifecycle_provider_stores(&self) -> &Arc<dyn ProviderStoreResolver>;
@@ -299,7 +301,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
             room_target_key,
             provider_session_id,
             started: false,
-            started_at_millis: now_millis(),
+            started_at_millis: self.lifecycle_now_millis(),
             last_progress_position: None,
             last_progress_at_millis: None,
             last_paused: Some(!state.is_playing),
@@ -383,7 +385,14 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
             if session.room_target_key != target_key {
                 continue;
             }
-            if !force && !should_report_progress(session, position, is_paused) {
+            if !force
+                && !should_report_progress(
+                    session,
+                    position,
+                    is_paused,
+                    self.lifecycle_now_millis(),
+                )
+            {
                 continue;
             }
             let Some(provider) = self.resolve_lifecycle_provider(session).await else {
@@ -432,7 +441,7 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
                 continue;
             }
             session.last_progress_position = Some(position);
-            session.last_progress_at_millis = Some(now_millis());
+            session.last_progress_at_millis = Some(self.lifecycle_now_millis());
             session.last_paused = Some(is_paused);
             changed = true;
         }
@@ -485,10 +494,6 @@ pub(crate) trait ProviderPlaybackLifecycleApi {
     }
 }
 
-fn now_millis() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 fn playback_target_key(state: &RoomPlaybackState) -> Result<Option<String>, ApiError> {
     if let Some(media_id) = &state.playing_media_id {
         return Ok(Some(format!("media:{media_id}")));
@@ -520,6 +525,7 @@ fn should_report_progress(
     session: &ProviderPlaybackSession,
     position: f64,
     is_paused: bool,
+    now_millis: i64,
 ) -> bool {
     if session.last_paused != Some(is_paused) {
         return true;
@@ -528,7 +534,7 @@ fn should_report_progress(
     let Some(last_at) = session.last_progress_at_millis else {
         return true;
     };
-    let interval_elapsed = now_millis().saturating_sub(last_at) >= PROGRESS_MIN_INTERVAL_MILLIS;
+    let interval_elapsed = now_millis.saturating_sub(last_at) >= PROGRESS_MIN_INTERVAL_MILLIS;
     let position_changed = session
         .last_progress_position
         .is_none_or(|last| (position - last).abs() >= PROGRESS_MIN_POSITION_DELTA);
@@ -538,6 +544,10 @@ fn should_report_progress(
 
 #[async_trait]
 impl ProviderPlaybackLifecycleApi for ClientApiImpl {
+    fn lifecycle_now_millis(&self) -> i64 {
+        self.clock.now_millis()
+    }
+
     fn lifecycle_room_service(&self) -> &RoomService {
         self.room_service.as_ref()
     }
@@ -572,6 +582,10 @@ impl ProviderPlaybackLifecycleApi for ClientApiImpl {
 
 #[async_trait]
 impl ProviderPlaybackLifecycleApi for AdminApiImpl {
+    fn lifecycle_now_millis(&self) -> i64 {
+        self.clock.now_millis()
+    }
+
     fn lifecycle_room_service(&self) -> &RoomService {
         self.room_service.as_ref()
     }
@@ -632,6 +646,10 @@ mod tests {
     use synctv_core_testing::{TestOptionExt, TestResultExt};
 
     const LIFECYCLE_TEST_PROVIDER_NAME: &str = synctv_core::provider::DirectUrlProvider::NAME;
+
+    fn now_millis() -> i64 {
+        synctv_core::SystemClock.now_millis()
+    }
 
     fn locked_clone<T: Clone>(mutex: &std::sync::Mutex<T>) -> T {
         mutex
@@ -908,8 +926,9 @@ mod tests {
             last_paused: Some(false),
         };
 
-        assert!(should_report_progress(&session, 10.0, true));
-        assert!(!should_report_progress(&session, 10.0, false));
+        let now = now_millis();
+        assert!(should_report_progress(&session, 10.0, true, now));
+        assert!(!should_report_progress(&session, 10.0, false, now));
     }
 
     #[tokio::test]

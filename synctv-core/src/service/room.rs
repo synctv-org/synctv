@@ -167,6 +167,8 @@ pub struct RoomService {
     // Optional distributed lock (requires Redis, used in multi-replica mode)
     distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
 
+    clock: Arc<dyn crate::Clock>,
+
     // Core repositories
     room_repo: RoomRepository,
     taxonomy_repo: RoomTaxonomyRepository,

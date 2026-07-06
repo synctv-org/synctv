@@ -21,7 +21,9 @@ use super::client::convert::{
 use super::client::user_notification_preferences_to_proto;
 use super::ApiError;
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
-use crate::impls::client::media::prepare_delete_entries_outbox_fanout;
+use crate::impls::client::media::{
+    prepare_delete_entries_outbox_fanout, PrepareDeleteEntriesOutboxFanout,
+};
 
 use crate::impls::client::playback_lifecycle::ProviderPlaybackLifecycleApi;
 use crate::impls::playback::{playback_expires_at, playback_generation_error_allows_state_only};
@@ -101,6 +103,7 @@ pub struct AdminReadServices {
 }
 
 pub struct AdminApiRuntime {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
@@ -119,6 +122,7 @@ impl AdminApiRuntime {
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
                 realtime_event_service.clone(),
             ),
@@ -135,6 +139,7 @@ impl AdminApiRuntime {
 /// Admin API implementation
 #[derive(Clone)]
 pub struct AdminApiImpl {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
     pub system_stats_service: Arc<synctv_core::service::SystemStatsService>,
@@ -193,6 +198,7 @@ impl AdminApiImpl {
             ban_record_service,
             content_report_service,
         } = read_services;
+        let clock = runtime.clock;
         let realtime_fanout = runtime.realtime_fanout;
         let realtime_event_service = runtime.realtime_event_service;
         let room_settings_fanout = default_room_settings_fanout_service(realtime_fanout.clone());
@@ -214,6 +220,7 @@ impl AdminApiImpl {
             realtime_event_service.clone(),
         );
         Self {
+            clock,
             room_service,
             user_service,
             system_stats_service,

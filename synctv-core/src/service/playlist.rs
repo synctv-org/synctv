@@ -521,8 +521,8 @@ impl PlaylistService {
             source_provider,
             source_config,
             provider_instance_name,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
             version: 0,
         };
 

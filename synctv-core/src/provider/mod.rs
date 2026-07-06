@@ -344,7 +344,7 @@ pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
 pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult {
     use std::collections::HashMap;
 
-    let live_expires_at = chrono::Utc::now().timestamp() + 30;
+    let live_expires_at = crate::SystemClock.now().timestamp() + 30;
 
     let mut playback_infos = HashMap::new();
 
@@ -447,7 +447,7 @@ pub(crate) fn build_versioned_playback_response(
 }
 
 fn remaining_versioned_ttl(expires_at: i64) -> std::time::Duration {
-    let remaining_secs = (expires_at - chrono::Utc::now().timestamp())
+    let remaining_secs = (expires_at - crate::SystemClock.now().timestamp())
         .max(1)
         .cast_unsigned();
     std::time::Duration::from_secs(remaining_secs)
@@ -525,7 +525,8 @@ async fn cache_versioned_playback(
             "Provider '{provider_name}' playback cache TTL exceeds i64::MAX seconds"
         ))
     })?;
-    let expires_at = chrono::Utc::now()
+    let expires_at = crate::SystemClock
+        .now()
         .timestamp()
         .checked_add(ttl_secs)
         .ok_or_else(|| {
@@ -616,10 +617,10 @@ impl ProviderSourceCoverCache {
         provider_name: &'static str,
         store: &dyn ProviderStore,
         l2_key: &str,
-        cover: &Option<SourceCover>,
+        cover: Option<&SourceCover>,
         ttl: Duration,
     ) {
-        if let Err(error) = store.set(l2_key, cover, ttl).await {
+        if let Err(error) = store.set(l2_key, &cover, ttl).await {
             tracing::debug!(
                 provider = provider_name,
                 cache_key = l2_key,
@@ -688,8 +689,14 @@ impl ProviderSourceCoverCache {
                 }
 
                 let cover = fill().await.map_err(ProviderPlaybackFillError::from)?;
-                self.set_l2(provider_name, store.as_ref(), cache_key, &cover, cache_ttl)
-                    .await;
+                self.set_l2(
+                    provider_name,
+                    store.as_ref(),
+                    cache_key,
+                    cover.as_ref(),
+                    cache_ttl,
+                )
+                .await;
                 Ok(cover)
             })
             .await

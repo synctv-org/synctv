@@ -131,7 +131,7 @@ Why split them:
 
 `config.server.grpcCompressionEnabled` defaults to `true` and allows gRPC peers to negotiate gzip compression. Keep it enabled for cross-node calls, Ingress forwarding, and larger batch responses. Disable it only when gRPC traffic is local and CPU is tighter than bandwidth.
 
-`config.fileStorage.backends.<name>.database.compression` controls PostgreSQL `file_blob_parts` compression for database file-storage backends. It defaults to `zstd`; `compressionMinSizeBytes` defaults to `4096`, and `compressionMinSavingsPercent` defaults to `10`, so low-value compression stores raw bytes. Database file storage uses permanent segments and serves HTTP Range from those segments. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
+`config.fileStorage.backends.<name>.compression` controls PostgreSQL `file_blob_parts` compression for database file-storage backends. It defaults to `zstd`; `compressionMinSizeBytes` defaults to `4096`, and `compressionMinSavingsPercent` defaults to `10`, so low-value compression stores raw bytes. Database file storage uses permanent segments and serves HTTP Range from those segments. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
 
 For S3 file-storage credentials, mount a Kubernetes Secret and set Helm camelCase values `accessKeyIdFile` / `secretAccessKeyFile`. The generated SyncTV YAML stores snake_case `access_key_id_file` / `secret_access_key_file` paths and reads the secret files at startup.
 
@@ -142,14 +142,13 @@ config:
     backends:
       s3_public:
         type: s3
-        s3:
-          endpoint: https://s3.example.com
-          bucket: synctv-files
-          region: auto
-          basePath: files/
-          publicBaseUrl: https://cdn.example.com/files
-          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
-          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+        endpoint: https://s3.example.com
+        bucket: synctv-files
+        region: auto
+        basePath: files/
+        publicBaseUrl: https://cdn.example.com/files
+        accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+        secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
 
 extraVolumes:
   - name: file-storage-s3
@@ -227,7 +226,7 @@ Required keys include:
 - `SYNCTV_EMAIL_SMTP_USERNAME` and `SYNCTV_EMAIL_SMTP_PASSWORD` when `config.email.smtpHost` is set and SMTP authentication is required
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
-- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` and `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=oss`
 
 ## Security
 
@@ -339,7 +338,8 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "memory"
+    hlsStorage:
+      type: "memory"
 ```
 
 This does not require an HLS PVC, but playlist/segment requests on non-publisher Pods proxy back to the publisher Pod over gRPC.
@@ -351,8 +351,9 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "shared_file"
-    hlsStoragePath: "/var/lib/synctv/hls"
+    hlsStorage:
+      type: "shared_file"
+      path: "/var/lib/synctv/hls"
 
 persistence:
   hls:
@@ -361,10 +362,10 @@ persistence:
 
 Helm rejects these combinations during rendering:
 
-- `hlsStorageBackend` is not `memory`, `file`, `shared_file`, or `oss`.
-- `hlsStorageBackend=file/shared_file` with an empty `hlsStoragePath`.
-- `hlsStorageBackend=file/shared_file` in Kubernetes with a non-absolute `hlsStoragePath`.
-- `hlsStorageBackend=shared_file` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
+- `hlsStorage.type` is not `memory`, `file`, `shared_file`, or `oss`.
+- `hlsStorage.type=file/shared_file` with an empty `hlsStorage.path`.
+- `hlsStorage.type=file/shared_file` in Kubernetes with a non-absolute `hlsStorage.path`.
+- `hlsStorage.type=shared_file` without `persistence.hls.existingClaim`, so `emptyDir` cannot be mistaken for shared storage.
 
 OSS example:
 
@@ -373,15 +374,15 @@ config:
   cluster:
     enabled: true
   livestream:
-    hlsStorageBackend: "oss"
-    hlsOss:
+    hlsStorage:
+      type: "oss"
       endpoint: "https://s3.example.com"
       bucket: "synctv-hls"
       basePath: "synctv/hls/"
 
 secrets:
   livestream:
-    hlsOss:
+    hlsStorage:
       accessKeyId: "..."
       secretAccessKey: "..."
 ```

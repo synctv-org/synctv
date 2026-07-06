@@ -402,7 +402,7 @@ impl VersionFenceStore for LocalVersionFenceStore {
         let reservation = VersionFenceReservation {
             version: observed_version + 1,
             token: Uuid::new_v4().to_string(),
-            started_at_ms: Some(chrono::Utc::now().timestamp_millis()),
+            started_at_ms: Some(crate::SystemClock.now_millis()),
         };
         state.pending.insert(domain.clone(), reservation.clone());
         Ok(reservation)
@@ -765,7 +765,7 @@ impl VersionFenceStore for RedisVersionFenceStore {
         let key = self.key(domain);
         let pending_key = format!("{key}:pending");
         let token = Uuid::new_v4().to_string();
-        let started_at_ms = chrono::Utc::now().timestamp_millis();
+        let started_at_ms = crate::SystemClock.now_millis();
         let mut conn = self.conn("begin cache version fence write").await?;
         let reserved = tokio::time::timeout(
             self.timeout(),
@@ -1307,7 +1307,7 @@ impl ConsistencyCoordinator {
         let Some(started_at_ms) = state.pending_started_at_ms else {
             return false;
         };
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = crate::SystemClock.now_millis();
         let elapsed_ms = now_ms.saturating_sub(started_at_ms);
         let Ok(pending_lease_ms) = i64::try_from(pending_lease.as_millis()) else {
             return true;

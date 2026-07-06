@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT storage_backend, upload_session_key, object_key,\n                   session_kind AS \"session_kind!: FileUploadSessionKind\",\n                   upload_id, user_id,\n                   storage_scope, mime_type, size_bytes, content_manifest_sha256,\n                   part_size_bytes, metadata AS \"metadata!: FileUploadSessionMetadata\",\n                   expires_at, completed_at, created_at, updated_at\n            FROM file_upload_sessions\n            WHERE storage_backend = $1\n              AND user_id = $2\n              AND storage_scope = $3\n              AND content_manifest_sha256 = $4\n              AND size_bytes = $5\n              AND completed_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            ORDER BY updated_at DESC\n            LIMIT 1\n            ",
+  "query": "\n            SELECT storage_backend, upload_session_key, object_key,\n                   session_kind AS \"session_kind!: FileUploadSessionKind\",\n                   upload_id, user_id,\n                   storage_scope, mime_type, size_bytes, content_manifest_sha256,\n                   part_size_bytes, metadata AS \"metadata!: FileUploadSessionMetadata\",\n                   expires_at, completed_at, created_at, updated_at\n            FROM file_upload_sessions\n            WHERE storage_backend = $1\n              AND object_key = $2\n              AND completed_at IS NULL\n              AND expires_at > $3\n            ORDER BY updated_at DESC\n            LIMIT 1\n            ",
   "describe": {
     "columns": [
       {
@@ -183,10 +183,8 @@
     "parameters": {
       "Left": [
         "Text",
-        "Int8",
         "Text",
-        "Text",
-        "Int8"
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -208,5 +206,5 @@
       false
     ]
   },
-  "hash": "9724357591df6c3b66d8078facc2986bbcc572c892ae1bed369ff71f6944c390"
+  "hash": "b73ac64a6c3e6053b54b827c4d7a21583f6d2925aafc18eeabee2e22e7d1fc33"
 }

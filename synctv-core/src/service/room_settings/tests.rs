@@ -7,7 +7,6 @@ use crate::repository::UserRepository;
 use crate::service::BruteForceProtection;
 use crate::service::NotificationService;
 use crate::service::{InMemoryTokenBlacklistStore, JwtService, UserService};
-use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core_testing::create_test_pool;
 
@@ -819,7 +818,7 @@ fn make_user_service(pool: &PgPool) -> UserService {
 }
 
 fn make_user(username: &str) -> User {
-    let now = Utc::now();
+    let now = crate::SystemClock.now();
     User {
         id: UserId::new(),
         username: username.to_string(),

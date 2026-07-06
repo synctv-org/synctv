@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use jsonwebtoken::{
     decode, encode, Algorithm, DecodingKey, EncodingKey, Header, TokenData, Validation,
 };
@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     models::{RoomId, UserId},
-    Error, InternalExt, Result,
+    Clock, Error, InternalExt, Result, SystemClock,
 };
 
 mod types;
@@ -53,6 +53,29 @@ fn decode_untrusted_token_type_hint(token: &str) -> Option<TokenTypeHint> {
     serde_json::from_slice::<TokenTypeHint>(&decoded).ok()
 }
 
+fn validate_expiration(clock: &dyn Clock, exp: i64, leeway_secs: u64, context: &str) -> Result<()> {
+    let leeway = i64::try_from(leeway_secs).unwrap_or(i64::MAX);
+    let expires_with_leeway = exp.saturating_add(leeway);
+    if clock.now().timestamp() > expires_with_leeway {
+        return Err(Error::Authentication(format!("{context} expired")));
+    }
+    Ok(())
+}
+
+fn validate_serialized_claims_expiration<T: Serialize>(
+    clock: &dyn Clock,
+    claims: &T,
+    leeway_secs: u64,
+    context: &str,
+) -> Result<()> {
+    let value =
+        serde_json::to_value(claims).internal_with_err("Failed to inspect custom token claims")?;
+    if let Some(exp) = value.get("exp").and_then(serde_json::Value::as_i64) {
+        validate_expiration(clock, exp, leeway_secs, context)?;
+    }
+    Ok(())
+}
+
 const MIN_JWT_SECRET_ENTROPY_BITS_F64: f64 = 128.0;
 const MIN_SHANNON_ENTROPY: f64 = 3.5;
 
@@ -64,6 +87,7 @@ struct TokenTypeHint {
 /// JWT service for signing and verifying tokens
 #[derive(Clone)]
 pub struct JwtService {
+    clock: Arc<dyn Clock>,
     encoding_key: Arc<EncodingKey>,
     decoding_key: Arc<DecodingKey>,
     algorithm: Algorithm,
@@ -75,6 +99,17 @@ pub struct JwtService {
     issuer: Option<String>,
     /// Expected audience for token validation. If set, tokens must have matching `aud` claim.
     audience: Option<String>,
+}
+
+pub struct JwtServiceOptions {
+    pub secret: String,
+    pub access_token_duration_hours: u64,
+    pub refresh_token_duration_days: u64,
+    pub guest_token_duration_hours: u64,
+    pub clock_skew_leeway_secs: u64,
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for JwtService {
@@ -174,6 +209,30 @@ impl JwtService {
         issuer: Option<String>,
         audience: Option<String>,
     ) -> Result<Self> {
+        Self::with_options(JwtServiceOptions {
+            secret: secret.to_string(),
+            access_token_duration_hours,
+            refresh_token_duration_days,
+            guest_token_duration_hours,
+            clock_skew_leeway_secs,
+            issuer,
+            audience,
+            clock: Arc::new(SystemClock),
+        })
+    }
+
+    /// Create a new JWT service with custom token durations, issuer/audience, and clock.
+    pub fn with_options(options: JwtServiceOptions) -> Result<Self> {
+        let JwtServiceOptions {
+            secret,
+            access_token_duration_hours,
+            refresh_token_duration_days,
+            guest_token_duration_hours,
+            clock_skew_leeway_secs,
+            issuer,
+            audience,
+            clock,
+        } = options;
         if secret.is_empty() {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
@@ -181,7 +240,7 @@ impl JwtService {
         crate::install_process_crypto_provider();
 
         // Always validate secret entropy
-        Self::validate_secret_entropy(secret)?;
+        Self::validate_secret_entropy(&secret)?;
         duration_hours(access_token_duration_hours, "access token duration hours")?;
         duration_days(refresh_token_duration_days, "refresh token duration days")?;
         duration_hours(guest_token_duration_hours, "guest token duration hours")?;
@@ -191,6 +250,7 @@ impl JwtService {
         let decoding_key = DecodingKey::from_secret(secret.as_bytes());
 
         Ok(Self {
+            clock,
             encoding_key: Arc::new(encoding_key),
             decoding_key: Arc::new(decoding_key),
             algorithm: Algorithm::HS256,
@@ -493,7 +553,7 @@ impl JwtService {
                 "Refresh token signing requires a session id".to_string(),
             ));
         }
-        let now = Utc::now();
+        let now = self.clock.now();
         let duration = match token_kind {
             UserTokenSigningKind::Access => duration_hours(
                 self.access_token_duration_hours,
@@ -568,9 +628,8 @@ impl JwtService {
     /// - Audience validation (if configured)
     pub fn verify_token(&self, token: &str) -> Result<Claims> {
         let mut validation = Validation::new(self.algorithm);
-        validation.validate_exp = true;
+        validation.validate_exp = false;
         validation.validate_nbf = false;
-        validation.leeway = self.clock_skew_leeway_secs;
 
         // Configure issuer validation if expected issuer is set
         if let Some(ref expected_iss) = self.issuer {
@@ -586,6 +645,12 @@ impl JwtService {
             .map_err(|e| map_jwt_error(&e, "Token"))?;
 
         let claims = token_data.claims;
+        validate_expiration(
+            self.clock.as_ref(),
+            claims.exp,
+            self.clock_skew_leeway_secs,
+            "Token",
+        )?;
         claims.user_id()?;
 
         Ok(claims)
@@ -651,7 +716,7 @@ impl JwtService {
         room_id: &RoomId,
         room_guest_version: i64,
     ) -> Result<String> {
-        let now = Utc::now();
+        let now = self.clock.now();
         let duration = duration_hours(
             self.guest_token_duration_hours,
             "guest token duration hours",
@@ -691,9 +756,8 @@ impl JwtService {
     /// - Audience validation (if configured)
     pub fn verify_guest_token(&self, token: &str) -> Result<GuestClaims> {
         let mut validation = Validation::new(self.algorithm);
-        validation.validate_exp = true;
+        validation.validate_exp = false;
         validation.validate_nbf = false;
-        validation.leeway = self.clock_skew_leeway_secs;
 
         // Configure issuer validation if expected issuer is set
         if let Some(ref expected_iss) = self.issuer {
@@ -709,6 +773,12 @@ impl JwtService {
             .map_err(|e| map_jwt_error(&e, "Guest token"))?;
 
         let claims = token_data.claims;
+        validate_expiration(
+            self.clock.as_ref(),
+            claims.exp,
+            self.clock_skew_leeway_secs,
+            "Guest token",
+        )?;
 
         // Verify it's actually a guest token
         if !claims.is_guest() {
@@ -760,15 +830,21 @@ impl JwtService {
 
     pub fn verify_custom<T>(&self, token: &str) -> Result<T>
     where
-        T: DeserializeOwned,
+        T: DeserializeOwned + Serialize,
     {
         let mut validation = Validation::new(self.algorithm);
-        validation.validate_exp = true;
+        validation.validate_exp = false;
         validation.validate_nbf = false;
-        validation.leeway = self.clock_skew_leeway_secs;
 
         let token_data = decode(token, &self.decoding_key, &validation)
             .map_err(|e| map_jwt_error(&e, "Token"))?;
+
+        validate_serialized_claims_expiration(
+            self.clock.as_ref(),
+            &token_data.claims,
+            self.clock_skew_leeway_secs,
+            "Token",
+        )?;
 
         Ok(token_data.claims)
     }

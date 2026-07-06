@@ -61,7 +61,7 @@ impl UserService {
                 ));
             }
             let session_id = synctv_common::snanoid!(48);
-            let expires_at = chrono::Utc::now().timestamp() + MFA_SESSION_TTL_SECS_I64;
+            let expires_at = crate::SystemClock.now().timestamp() + MFA_SESSION_TTL_SECS_I64;
             let session = MfaSession {
                 user_id: user.id,
                 first_factor,

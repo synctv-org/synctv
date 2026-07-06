@@ -6,6 +6,7 @@ pub(crate) mod email_bind;
 pub(crate) mod email_registration_token;
 pub(crate) mod email_token;
 pub(crate) mod file_storage;
+pub(crate) mod jsonb;
 pub(crate) mod media;
 pub(crate) mod notification;
 pub(crate) mod playback;
@@ -53,6 +54,7 @@ pub use file_storage::{
     UpsertFileObjectGroup, UpsertFileObjectVariant, UpsertFileUploadSession,
     UpsertFileUploadSessionPart,
 };
+pub(crate) use jsonb::{JsonbArray, OptionalJsonbArray};
 pub use media::{MediaListItem, MediaRepository};
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;

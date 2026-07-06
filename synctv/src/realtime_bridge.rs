@@ -15,7 +15,7 @@ pub fn room_event_to_realtime_event(
     room_id: &synctv_core::models::RoomId,
     event: &synctv_core::service::RoomEvent,
 ) -> Option<RealtimeEvent> {
-    let timestamp = chrono::Utc::now();
+    let timestamp = synctv_core::SystemClock.now();
     match event {
         synctv_core::service::RoomEvent::MediaAdded {
             user_id,
@@ -299,7 +299,7 @@ mod tests {
             user_id,
             username: "chat-user".to_string(),
             content: "hello".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         }];
 
         for event in events {

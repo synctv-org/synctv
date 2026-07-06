@@ -255,7 +255,7 @@ impl RoomMember {
             admin_removed_permissions: 0,
             remark_name: String::new(),
             display_tag: String::new(),
-            joined_at: Utc::now(),
+            joined_at: crate::SystemClock.now(),
             version: 0,
         }
     }

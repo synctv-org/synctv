@@ -8,9 +8,11 @@ use synctv_core::{
 use crate::impls::client::convert::{
     optional_provider_target_to_proto, provider_target_from_proto,
     try_media_to_proto_for_viewer_with_cover, try_playlist_path_node_to_proto,
-    try_playlist_to_proto_for_viewer_with_cover,
+    try_playlist_to_proto_for_viewer_with_cover, MediaProtoView,
 };
-use crate::impls::client::media::{prepare_delete_entries_outbox_fanout, MoveMediaFanoutPlanner};
+use crate::impls::client::media::{
+    prepare_delete_entries_outbox_fanout, MoveMediaFanoutPlanner, PrepareDeleteEntriesOutboxFanout,
+};
 use crate::impls::source_provider::proto_source_provider_filter;
 
 use super::{
@@ -55,13 +57,15 @@ impl AdminApiImpl {
             .flatten();
         try_media_to_proto_for_viewer_with_cover(
             media,
-            is_available,
-            media.creator_id,
-            cover.as_ref(),
-            cover_access.as_ref(),
-            thumbnail.as_ref(),
-            thumbnail_access.as_ref(),
-            &self.public_id_codec,
+            MediaProtoView {
+                is_available,
+                viewer_id: media.creator_id,
+                cover: cover.as_ref(),
+                cover_access: cover_access.as_ref(),
+                thumbnail: thumbnail.as_ref(),
+                thumbnail_access: thumbnail_access.as_ref(),
+                public_id_codec: &self.public_id_codec,
+            },
         )
     }
 
@@ -377,15 +381,17 @@ impl AdminApiImpl {
             req,
             &self.public_id_codec,
         )?;
-        let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            *admin_user_id,
-            actor.username().to_string(),
-        );
+        let prepared_outbox_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: *admin_user_id,
+                username: actor.username().to_string(),
+            });
         let result = self
             .room_service
             .admin_delete_entries_as_with_outbox(
@@ -916,15 +922,17 @@ impl AdminApiImpl {
             .decode_room_id(room_id)
             .map_err(|e| ApiError::InvalidInput(e.clone()))?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
-        let prepared_outbox_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            *admin_user_id,
-            actor.username().to_string(),
-        );
+        let prepared_outbox_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: *admin_user_id,
+                username: actor.username().to_string(),
+            });
         let result = self
             .room_service
             .admin_delete_entries_as_with_outbox(

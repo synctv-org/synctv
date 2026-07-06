@@ -897,17 +897,7 @@ impl LeaderElector {
         // period entirely once Redis recovers, while local time preserves the
         // intended grace period duration (minor clock skew is acceptable).
         let redis_ts = self.get_redis_time().await.unwrap_or_else(|_| {
-            match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                Ok(duration) => duration.as_secs(),
-                Err(error) => {
-                    warn!(
-                        identity = %self.identity,
-                        error = %error,
-                        "System clock is before UNIX_EPOCH while recording leadership loss"
-                    );
-                    0
-                }
-            }
+            u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0)
         });
         *self.leadership_lost_at_redis_ts.lock().await = Some(redis_ts);
 

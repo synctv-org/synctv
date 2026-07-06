@@ -25,7 +25,6 @@ use base64::Engine;
 use rand::RngExt;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use synctv_common::ExecutionControl;
 use tracing::debug;
 
@@ -70,16 +69,7 @@ const DEFAULT_TICKET_TTL_SECS: u64 = 30;
 const TICKET_LENGTH: usize = 32;
 
 fn now_unix_seconds() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "System clock is before UNIX_EPOCH while evaluating WebSocket ticket TTL"
-            );
-            0
-        }
-    }
+    u64::try_from(crate::SystemClock.now().timestamp()).unwrap_or(0)
 }
 
 fn normalize_ticket_ttl_secs(ticket_ttl_secs: Option<u64>) -> u64 {

@@ -812,7 +812,7 @@ mod tests {
     }
 
     fn make_user(username: &str) -> User {
-        let now = chrono::Utc::now();
+        let now = synctv_core::SystemClock.now();
         User {
             id: UserId::new(),
             username: username.to_string(),

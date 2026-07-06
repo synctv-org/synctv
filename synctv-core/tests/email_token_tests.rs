@@ -147,7 +147,11 @@ async fn test_validate_and_consume_valid_token() {
 
     // Validate and consume
     let consumed = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
+        .validate_and_consume(
+            &token_str,
+            EmailTokenType::PasswordReset,
+            synctv_core::SystemClock.now(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(consumed.is_some(), "Valid token should be consumed");
@@ -158,7 +162,11 @@ async fn test_validate_and_consume_valid_token() {
 
     // Consuming again should return None (already used)
     let consumed_again = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
+        .validate_and_consume(
+            &token_str,
+            EmailTokenType::PasswordReset,
+            synctv_core::SystemClock.now(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(
@@ -189,7 +197,11 @@ async fn test_validate_wrong_type_fails() {
 
     // Try to consume as PasswordReset - wrong type
     let result = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::PasswordReset)
+        .validate_and_consume(
+            &token_str,
+            EmailTokenType::PasswordReset,
+            synctv_core::SystemClock.now(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(
@@ -199,7 +211,11 @@ async fn test_validate_wrong_type_fails() {
 
     // The original type should still work
     let result = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::EmailBind)
+        .validate_and_consume(
+            &token_str,
+            EmailTokenType::EmailBind,
+            synctv_core::SystemClock.now(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(result.is_some());
@@ -228,7 +244,11 @@ async fn test_expired_token_not_consumable() {
 
     // Should not be consumable (expired)
     let result = token_repo
-        .validate_and_consume(&token_str, EmailTokenType::EmailBind)
+        .validate_and_consume(
+            &token_str,
+            EmailTokenType::EmailBind,
+            synctv_core::SystemClock.now(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(result.is_none(), "Expired token should not be consumable");
@@ -274,7 +294,7 @@ async fn test_cleanup_expired_tokens() {
 
     // Cleanup expired
     let cleaned = token_repo
-        .cleanup_expired()
+        .cleanup_expired(synctv_core::SystemClock.now())
         .await
         .checked("test operation should succeed");
     assert_eq!(cleaned, 3, "Should clean up 3 expired tokens");

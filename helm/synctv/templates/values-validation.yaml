@@ -26,3 +26,48 @@ Validate production-impacting value combinations before rendering resources.
 {{- if and $builtinStunEnabled $stunServiceEnabled $stunExternalAddr (eq $stunServiceType "ClusterIP") -}}
 {{- fail "config.webrtc.stunExternalAddr with stunService.type=ClusterIP is not client-reachable; use stunService.type=LoadBalancer/NodePort or disable stunService" -}}
 {{- end -}}
+{{- $fileStorage := .Values.config.fileStorage | default dict -}}
+{{- range $name, $backend := ($fileStorage.backends | default dict) -}}
+  {{- $backendType := index $backend "type" | default "disabled" -}}
+  {{- if not (has $backendType (list "disabled" "database" "s3")) -}}
+    {{- fail (printf "config.fileStorage.backends.%s.type must be one of: disabled, database, s3" $name) -}}
+  {{- end -}}
+  {{- if eq $backendType "database" -}}
+    {{- $compression := $backend.compression | default "zstd" -}}
+    {{- if not (has $compression (list "none" "lz4" "zstd")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compression must be one of: none, lz4, zstd" $name) -}}
+    {{- end -}}
+    {{- $compressionMinSizeBytes := int64 ($backend.compressionMinSizeBytes | default 4096) -}}
+    {{- if lt $compressionMinSizeBytes 0 -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compressionMinSizeBytes must be non-negative" $name) -}}
+    {{- end -}}
+    {{- $compressionMinSavingsPercent := int64 ($backend.compressionMinSavingsPercent | default 10) -}}
+    {{- if or (lt $compressionMinSavingsPercent 0) (gt $compressionMinSavingsPercent 100) -}}
+      {{- fail (printf "config.fileStorage.backends.%s.compressionMinSavingsPercent must be between 0 and 100" $name) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if eq $backendType "s3" -}}
+    {{- if not ($backend.endpoint | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.endpoint is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.bucket | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.bucket is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.region | default "auto") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.region is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not ($backend.publicBaseUrl | default "") -}}
+      {{- fail (printf "config.fileStorage.backends.%s.publicBaseUrl is required when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not (or ($backend.accessKeyId | default "") ($backend.accessKeyIdFile | default "")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s requires accessKeyId or accessKeyIdFile when type=s3" $name) -}}
+    {{- end -}}
+    {{- if not (or ($backend.secretAccessKey | default "") ($backend.secretAccessKeyFile | default "")) -}}
+      {{- fail (printf "config.fileStorage.backends.%s requires secretAccessKey or secretAccessKeyFile when type=s3" $name) -}}
+    {{- end -}}
+    {{- $uploadExpiresSeconds := int64 ($backend.uploadExpiresSeconds | default 900) -}}
+    {{- if le $uploadExpiresSeconds 0 -}}
+      {{- fail (printf "config.fileStorage.backends.%s.uploadExpiresSeconds must be greater than 0" $name) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}

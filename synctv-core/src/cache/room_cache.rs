@@ -88,7 +88,7 @@ impl CachedRoom {
             is_banned: false,
             deleted_at: None,
             created_at,
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::SystemClock.now(),
         }
     }
 
@@ -321,7 +321,7 @@ mod tests {
             name.to_string(),
             owner_id.to_string(),
             true,
-            chrono::Utc::now(),
+            crate::SystemClock.now(),
         )
     }
 
@@ -440,7 +440,7 @@ mod tests {
         );
 
         let room_id = create_test_room_id("room_closed");
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
         let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
             id: "room_closed".to_string(),
             name: "Closed Room".to_string(),
@@ -480,7 +480,7 @@ mod tests {
         );
 
         let room_id = create_test_room_id("room_banned");
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
         let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
             id: "room_banned".to_string(),
             name: "Banned Room".to_string(),
@@ -523,7 +523,7 @@ mod tests {
         );
 
         let room_id = create_test_room_id("room_deleted");
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
         let deleted_time = now - chrono::Duration::hours(1);
         let room = CachedRoom::from_snapshot(CachedRoomSnapshot {
             id: "room_deleted".to_string(),
@@ -563,7 +563,7 @@ mod tests {
         use crate::models::UserId;
         use crate::models::{Room, RoomStatus};
 
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
         let room = Room {
             id: crate::models::RoomId::expect_positive(3),
             name: "From Room".to_string(),

@@ -247,8 +247,8 @@ The chart creates separate Services for application traffic:
 Important transport defaults:
 
 - `config.server.grpcCompressionEnabled=true` enables gzip negotiation for public gRPC traffic and cluster gRPC calls.
-- `config.fileStorage.backends.<name>.database.compression=zstd` controls PostgreSQL `file_blob_parts` compression for database file-storage backends; `compressionMinSizeBytes` gates small payloads and `compressionMinSavingsPercent=10` stores raw bytes when compression saves less than 10%. Database file storage uses permanent segments and serves HTTP Range from those segments.
-- `config.fileStorage.backends.<name>.s3.publicBaseUrl` is required for S3 file-storage backends because clients receive readable file URLs after upload or ownership proof validation. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
+- `config.fileStorage.backends.<name>.compression=zstd` controls PostgreSQL `file_blob_parts` compression for database file-storage backends; `compressionMinSizeBytes` gates small payloads and `compressionMinSavingsPercent=10` stores raw bytes when compression saves less than 10%. Database file storage uses permanent segments and serves HTTP Range from those segments.
+- `config.fileStorage.backends.<name>.publicBaseUrl` is required for S3 file-storage backends because clients receive readable file URLs after upload or ownership proof validation. S3 file storage uses native multipart direct uploads for resumable GB-scale objects.
 - For S3 file-storage credentials, mount a Kubernetes Secret and set `accessKeyIdFile` / `secretAccessKeyFile` so the generated ConfigMap stores file paths:
 
 ```yaml
@@ -258,14 +258,13 @@ config:
     backends:
       s3_public:
         type: s3
-        s3:
-          endpoint: https://s3.example.com
-          bucket: synctv-files
-          region: auto
-          basePath: files/
-          publicBaseUrl: https://cdn.example.com/files
-          accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
-          secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
+        endpoint: https://s3.example.com
+        bucket: synctv-files
+        region: auto
+        basePath: files/
+        publicBaseUrl: https://cdn.example.com/files
+        accessKeyIdFile: /run/secrets/file-storage-s3/access_key_id
+        secretAccessKeyFile: /run/secrets/file-storage-s3/secret_access_key
 
 extraVolumes:
   - name: file-storage-s3
@@ -315,10 +314,10 @@ When using `existingSecret`, provide these keys with current names:
 - `SYNCTV_MANAGEMENT_AUTH_TOKEN` when `config.management.transport=tcp`
 - `SYNCTV_METRICS_AUTH_BEARER_TOKEN` when `metrics.enabled=true` and `metrics.auth.mode=bearer_token`
 - `SYNCTV_METRICS_AUTH_BASIC_USERNAME` and `SYNCTV_METRICS_AUTH_BASIC_PASSWORD` when `metrics.enabled=true` and `metrics.auth.mode=basic`
-- `SYNCTV_LIVESTREAM_HLS_OSS_ACCESS_KEY_ID` when `config.livestream.hlsStorageBackend=oss`
-- `SYNCTV_LIVESTREAM_HLS_OSS_SECRET_ACCESS_KEY` when `config.livestream.hlsStorageBackend=oss`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_ACCESS_KEY_ID` when `config.livestream.hlsStorage.type=oss`
+- `SYNCTV_LIVESTREAM_HLS_STORAGE_SECRET_ACCESS_KEY` when `config.livestream.hlsStorage.type=oss`
 
-HLS storage rendering fails fast for invalid combinations: `hlsStorageBackend=file/shared_file` requires a non-empty `hlsStoragePath`, and `hlsStorageBackend=shared_file` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but `shared_file` or OSS is the recommended production model.
+HLS storage rendering fails fast for invalid combinations: `hlsStorage.type=file/shared_file` requires a non-empty `hlsStorage.path`, and `hlsStorage.type=shared_file` requires `persistence.hls.existingClaim` so `emptyDir` is not mistaken for shared storage. Cluster mode can use `memory` or local `file` through publisher-node HLS proxying, but `shared_file` or OSS is the recommended production model.
 
 ## Verify the Deployment
 

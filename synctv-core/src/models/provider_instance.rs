@@ -187,7 +187,7 @@ pub struct NewProviderInstance {
 impl ProviderInstance {
     #[must_use]
     pub fn new_remote(request: NewProviderInstance) -> Self {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let timeout_seconds = if request.timeout_seconds == 0 {
             DEFAULT_PROVIDER_INSTANCE_TIMEOUT_SECONDS
         } else {
@@ -286,7 +286,7 @@ impl UserProviderCredential {
     #[must_use]
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
-            expires_at <= Utc::now()
+            expires_at <= crate::SystemClock.now()
         } else {
             false // No expiration set, never expires
         }
@@ -370,8 +370,8 @@ mod tests {
             insecure_tls: false,
             providers: vec![SourceProvider::Bilibili, SourceProvider::Alist],
             enabled: true,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         };
 
         assert!(instance.supports_provider("bilibili"));
@@ -392,8 +392,8 @@ mod tests {
             insecure_tls: false,
             providers: vec![],
             enabled: true,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         };
 
         let duration = ok(instance.parse_timeout(), "provider timeout should parse");
@@ -462,16 +462,16 @@ mod tests {
             server_id: "bilibili-credential".to_string(),
             provider_instance_name: None,
             credential_data: ProviderCredential::default(),
-            expires_at: Some(Utc::now() - Duration::hours(1)),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            expires_at: Some(crate::SystemClock.now() - Duration::hours(1)),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         };
         assert!(expired.is_expired());
         assert!(!expired.is_valid());
 
         // Valid credential
         let valid = UserProviderCredential {
-            expires_at: Some(Utc::now() + Duration::hours(1)),
+            expires_at: Some(crate::SystemClock.now() + Duration::hours(1)),
             ..expired.clone()
         };
         assert!(!valid.is_expired());

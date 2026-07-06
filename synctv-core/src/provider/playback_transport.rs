@@ -232,7 +232,7 @@ mod tests {
                 is_live: Some(false),
                 metadata: None,
             },
-            expires_at: chrono::Utc::now().timestamp() + 3600,
+            expires_at: crate::SystemClock.now().timestamp() + 3600,
         };
         store
             .set("v:v1", &vp, Duration::from_mins(1))
@@ -257,7 +257,7 @@ mod tests {
                 is_live: Some(false),
                 metadata: None,
             },
-            expires_at: chrono::Utc::now().timestamp() + 60,
+            expires_at: crate::SystemClock.now().timestamp() + 60,
         };
         store
             .set("v:v1", &vp, Duration::from_mins(1))

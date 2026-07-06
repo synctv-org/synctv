@@ -263,7 +263,7 @@ pub struct DirectMultimodeParams {
 impl Media {
     #[must_use]
     pub fn from_provider_with_params(params: FromProviderParams) -> Self {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         Self {
             id: MediaId::new(),
             playlist_id: params.playlist_id,
@@ -309,7 +309,7 @@ impl Media {
             super::DirectUrlMediaSourceConfig::single(default_url.to_string(), default_headers),
         );
 
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         Ok(Self {
             id: MediaId::new(),
             playlist_id: params.playlist_id,

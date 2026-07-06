@@ -139,17 +139,19 @@ impl EmailTokenRepository {
     /// conditions where two concurrent requests both try to consume the same
     /// token.
     pub async fn mark_as_used(&self, token: &str) -> Result<EmailToken> {
+        let now = crate::SystemClock.now();
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as!(
             EmailToken,
             r#"
             UPDATE auth_email_tokens
-            SET used_at = CURRENT_TIMESTAMP
+            SET used_at = $2
             WHERE token = $1
               AND used_at IS NULL
             RETURNING id, token, user_id as "user_id: UserId", token_type, expires_at, used_at, created_at
             "#,
             token_hash,
+            now,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -171,21 +173,23 @@ impl EmailTokenRepository {
         &self,
         token: &str,
         token_type: EmailTokenType,
+        now: chrono::DateTime<Utc>,
     ) -> Result<Option<EmailToken>> {
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as!(
             EmailToken,
             r#"
             UPDATE auth_email_tokens
-            SET used_at = CURRENT_TIMESTAMP
+            SET used_at = $3
             WHERE token = $1
               AND token_type = $2
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $3
             RETURNING id, token, user_id as "user_id: UserId", token_type, expires_at, used_at, created_at
             "#,
             token_hash,
             i16::from(token_type),
+            now,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -202,23 +206,25 @@ impl EmailTokenRepository {
         token: &str,
         token_type: EmailTokenType,
         expected_user_id: &UserId,
+        now: chrono::DateTime<Utc>,
     ) -> Result<Option<EmailToken>> {
         let token_hash = Self::hash_token(token);
         let t = sqlx::query_as!(
             EmailToken,
             r#"
             UPDATE auth_email_tokens
-            SET used_at = CURRENT_TIMESTAMP
+            SET used_at = $4
             WHERE token = $1
               AND token_type = $2
               AND user_id = $3
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $4
             RETURNING id, token, user_id as "user_id: UserId", token_type, expires_at, used_at, created_at
             "#,
             token_hash,
             i16::from(token_type),
             expected_user_id as &UserId,
+            now,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -272,12 +278,13 @@ impl EmailTokenRepository {
     }
 
     /// Cleanup expired tokens
-    pub async fn cleanup_expired(&self) -> Result<usize> {
+    pub async fn cleanup_expired(&self, now: chrono::DateTime<Utc>) -> Result<usize> {
         let result = sqlx::query!(
             r"
             DELETE FROM auth_email_tokens
-            WHERE expires_at < CURRENT_TIMESTAMP
+            WHERE expires_at < $1
             ",
+            now,
         )
         .execute(&self.pool)
         .await?;

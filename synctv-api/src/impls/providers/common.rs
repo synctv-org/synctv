@@ -472,7 +472,7 @@ impl ProviderCommonApiImpl {
             instance.custom_ca = trim_to_optional(custom_ca);
         }
 
-        instance.updated_at = chrono::Utc::now();
+        instance.updated_at = synctv_core::SystemClock.now();
 
         self.provider_instance_manager
             .update_with_control(instance.clone(), control)
@@ -776,7 +776,7 @@ fn mask_url_credentials(endpoint: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Utc};
+    use chrono::Duration;
     use std::sync::Arc;
     use synctv_core::cache::{KeyBuilder, UsernameCache};
     use synctv_core::models::ProviderInstance;
@@ -894,7 +894,7 @@ mod tests {
             provider_instance_manager.clone(),
         ))?);
         let api = make_provider_common_api(pool, provider_instance_manager, providers_manager)?;
-        let now = Utc::now();
+        let now = synctv_core::SystemClock.now();
 
         for index in 0..25 {
             repo.create(&ProviderInstance {

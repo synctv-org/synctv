@@ -141,7 +141,7 @@ impl NotificationRepository {
 
     /// Create a new notification
     pub async fn create(&self, req: &CreateNotificationRequest) -> Result<Notification> {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
 
         let row = sqlx::query_as!(
             NotificationRow,
@@ -180,7 +180,7 @@ impl NotificationRepository {
     /// range filter (last year to now) lets the planner prune irrelevant
     /// partitions and use a targeted index scan instead.
     pub async fn get_by_id(&self, notification_id: i64) -> Result<Option<Notification>> {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let one_year_ago = now - chrono::Duration::days(365);
 
         let row = sqlx::query_as!(
@@ -216,7 +216,7 @@ impl NotificationRepository {
         user_id: &UserId,
         notification_id: i64,
     ) -> Result<Option<Notification>> {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let one_year_ago = now - chrono::Duration::days(365);
 
         let row = sqlx::query_as!(

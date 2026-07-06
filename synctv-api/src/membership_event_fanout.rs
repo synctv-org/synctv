@@ -67,7 +67,7 @@ impl PreparedPermissionChangedFanout {
                 admin_removed_permissions: snapshot.admin_removed_permissions,
                 target_is_online: prepared.target_is_online,
                 target_connection_count: prepared.target_connection_count,
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             };
             prepared.events.lock().push(event.clone());
             prepared
@@ -117,7 +117,7 @@ impl PreparedUserLeftFanout {
                 remark_name: snapshot.remark_name.clone(),
                 display_tag: snapshot.display_tag.clone(),
                 role: snapshot.role,
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             };
             *prepared.event.lock() = Some(event.clone());
             prepared

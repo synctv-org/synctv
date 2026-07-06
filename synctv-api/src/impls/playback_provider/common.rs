@@ -384,7 +384,7 @@ pub async fn stream_live_flv_chunks(
         loop {
             tokio::select! {
                 _ = lifecycle_tick.tick() => {
-                    if chrono::Utc::now().timestamp() > expires_at {
+                    if synctv_core::SystemClock.now().timestamp() > expires_at {
                         tracing::info!(room_id = %room_id, expires_at, "FLV stream terminated: proxy signature expired");
                         break;
                     }
@@ -1270,7 +1270,7 @@ mod tests {
             resource: "hls-segments".to_string(),
             room_id: "room-1".to_string(),
             user_id: "user-1".to_string(),
-            expires_at: chrono::Utc::now().timestamp() + 1800,
+            expires_at: synctv_core::SystemClock.now().timestamp() + 1800,
             target_url: None,
         };
         let deps = PlaybackTransportExecutorDeps {

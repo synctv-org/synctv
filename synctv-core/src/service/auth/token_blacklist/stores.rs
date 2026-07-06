@@ -229,7 +229,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
@@ -257,7 +257,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
 
         // xmax = 0 means the row was inserted (no conflict)
         // xmax != 0 means the row already existed (conflict, nothing inserted)
@@ -310,7 +310,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
     }
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) -> Result<()> {
-        let expires_at = chrono::Utc::now() + ttl_secs_to_chrono_duration(ttl_secs)?;
+        let expires_at = crate::SystemClock.now() + ttl_secs_to_chrono_duration(ttl_secs)?;
         sqlx::query!(
             "INSERT INTO auth_token_blacklist (jti, expires_at, family_revoked_at) VALUES ($1, $2, $3) \
              ON CONFLICT (jti) DO UPDATE

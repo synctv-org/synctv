@@ -181,7 +181,7 @@ mod tests {
                     end_inclusive: 5,
                 }),
                 metadata: synctv_core::models::FileMetadata::default(),
-                created_at: chrono::Utc::now(),
+                created_at: synctv_core::SystemClock.now(),
             },
             stream: futures::stream::iter([
                 Ok::<_, synctv_core::Error>(Bytes::from_static(b"ab")),

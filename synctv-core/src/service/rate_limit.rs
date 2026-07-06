@@ -33,7 +33,6 @@
 use crate::{RedisConnectionRuntime, Result, SharedStateMode, SharedStateProfile};
 use async_trait::async_trait;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use synctv_common::{ExecutionControl, ExecutionControlError};
 use thiserror::Error;
 
@@ -112,14 +111,7 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
 }
 
 fn timestamp_millis() -> std::result::Result<u64, RateLimitError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            RateLimitError::BackendUnavailable(format!(
-                "System clock is before UNIX_EPOCH: {error}"
-            ))
-        })?;
-    u64::try_from(duration.as_millis()).map_err(|_| {
+    u64::try_from(crate::SystemClock.now_millis()).map_err(|_| {
         RateLimitError::BackendUnavailable("current timestamp exceeds u64::MAX millis".to_string())
     })
 }

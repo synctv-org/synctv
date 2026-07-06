@@ -603,16 +603,7 @@ impl ClusterHealthRuntime for HealthMonitor {
 }
 
 fn current_unix_timestamp_secs() -> u64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "System clock is before UNIX_EPOCH while reading cluster health timestamp"
-            );
-            0
-        }
-    }
+    u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0)
 }
 
 #[cfg(test)]

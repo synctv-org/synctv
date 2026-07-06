@@ -111,7 +111,7 @@ impl RoomSettingsFanoutService for DefaultRoomSettingsFanoutService {
             username: actor_username.to_string(),
             settings: RoomSettings::default(),
             version: 0,
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         PreparedRoomSettingsFanout::from_event(event, self.realtime_fanout.clone())
     }

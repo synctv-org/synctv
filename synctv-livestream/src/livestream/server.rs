@@ -1161,7 +1161,7 @@ mod tests {
         config.hls_storage_path = dir.path().display().to_string();
 
         let storage = build_hls_storage(&config)?;
-        let bucket = chrono::Utc::now().timestamp() / 60;
+        let bucket = synctv_core::SystemClock.now().timestamp() / 60;
         let segment = format!("{bucket}_seg1");
         storage
             .write("room1", "media1", &segment, Bytes::from_static(b"segment"))

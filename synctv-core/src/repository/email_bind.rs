@@ -97,8 +97,9 @@ impl EmailBindRepository {
         token: &str,
     ) -> Result<(String, chrono::DateTime<Utc>)> {
         let mut tx = self.pool.begin().await?;
+        let now = crate::SystemClock.now();
         let (email, now) = self
-            .consume_with_executor(user_id, email, token, &mut *tx)
+            .consume_with_executor(user_id, email, token, now, &mut *tx)
             .await?;
         tx.commit().await?;
 
@@ -110,12 +111,12 @@ impl EmailBindRepository {
         user_id: &UserId,
         email: &str,
         token: &str,
+        now: chrono::DateTime<Utc>,
         executor: E,
     ) -> Result<(String, chrono::DateTime<Utc>)>
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
         let token_hash = Self::hash_token(token);
 
         let email = sqlx::query_scalar!(
@@ -126,7 +127,7 @@ impl EmailBindRepository {
               AND user_id = $2
               AND LOWER(email) = LOWER($3)
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $4
             RETURNING email
             ",
             token_hash,
@@ -148,6 +149,7 @@ impl EmailBindRepository {
         user_id: &UserId,
         email: &str,
         token: &str,
+        now: chrono::DateTime<Utc>,
         executor: E,
     ) -> Result<String>
     where
@@ -163,12 +165,13 @@ impl EmailBindRepository {
               AND user_id = $2
               AND LOWER(email) = LOWER($3)
               AND used_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $4
             FOR UPDATE
             ",
             token_hash,
             user_id as &UserId,
             email,
+            now,
         )
         .fetch_optional(executor)
         .await?

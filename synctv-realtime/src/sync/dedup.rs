@@ -147,7 +147,6 @@ impl Default for MessageDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use synctv_core::models::id::{RoomId, UserId};
 
     #[tokio::test]
@@ -219,7 +218,7 @@ mod tests {
             user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -240,7 +239,7 @@ mod tests {
             user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -250,7 +249,7 @@ mod tests {
             user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };
@@ -272,7 +271,7 @@ mod tests {
             user_id: UserId::expect_positive(10_000_010),
             username: "test".to_string(),
             message: "Hello".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
             display_position: None,
             display_color: None,
         };

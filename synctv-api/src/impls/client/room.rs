@@ -22,6 +22,7 @@ use super::media::{
     prepare_delete_entries_outbox_fanout, proto_file_range_request, proto_file_upload_range,
     proto_upload_manifest_parts, required_file_upload_reference, room_cover_object_to_proto,
     room_cover_upload_create_result_to_proto, uploaded_parts_response_fields,
+    PrepareDeleteEntriesOutboxFanout,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
@@ -42,6 +43,20 @@ fn required_room_availability(
             "Missing client availability for room {room_id} in batch response"
         ))
     })
+}
+
+fn build_server_time_response(
+    req: synctv_proto::client::GetServerTimeRequest,
+    clock: &dyn synctv_core::Clock,
+) -> synctv_proto::client::GetServerTimeResponse {
+    let server_received_at_nanos = clock.now_nanos();
+    let server_sent_at_nanos = clock.now_nanos().max(server_received_at_nanos);
+
+    synctv_proto::client::GetServerTimeResponse {
+        client_sent_at_nanos: req.client_sent_at_nanos,
+        server_received_at_nanos,
+        server_sent_at_nanos,
+    }
 }
 
 impl ClientApiImpl {
@@ -984,15 +999,17 @@ impl ClientApiImpl {
             .membership_event_fanout
             .prepare_user_left_outbox_fanout();
         let username = self.user_username_for_event(&uid).await?;
-        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            uid,
-            username,
-        );
+        let prepared_cleanup_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: uid,
+                username,
+            });
         self.room_service
             .leave_room_with_outbox(
                 rid,
@@ -1349,6 +1366,13 @@ impl ClientApiImpl {
             server_id,
             server_name: self.config.webauthn.rp_name.clone(),
         })
+    }
+
+    pub fn get_server_time(
+        &self,
+        req: synctv_proto::client::GetServerTimeRequest,
+    ) -> synctv_proto::client::GetServerTimeResponse {
+        build_server_time_response(req, self.clock.as_ref())
     }
 
     /// Check if a room exists and whether it requires a password (public endpoint).
@@ -2367,7 +2391,6 @@ mod tests {
         required_room_availability, runtime_settings_store_unavailable_error,
     };
     use crate::impls::ErrorKind;
-    use chrono::Utc;
     use std::collections::HashMap;
     use synctv_core::service::ClientResourceAvailability;
     use synctv_core::{
@@ -2909,7 +2932,7 @@ mod tests {
             .map_err(|error| test_error(error.to_string()))?;
         let api = test_client_api(pool, user_service);
         let room_id = RoomId::expect_positive(7);
-        let occurred_at = Utc::now();
+        let occurred_at = synctv_core::SystemClock.now();
         let mut message = ChatMessage::new(room_id, user.id, "pinned body".to_string());
         message.id = 42;
         message.created_at = occurred_at;
@@ -3064,7 +3087,7 @@ mod tests {
             upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: None,
             upload_headers: Default::default(),
-            expires_at: Some(chrono::Utc::now()),
+            expires_at: Some(synctv_core::SystemClock.now()),
             max_size_bytes: 1024 * 1024,
             resumable: true,
             part_size_bytes: 4 * 1024 * 1024,
@@ -3108,7 +3131,7 @@ mod tests {
             upload_url: Some("https://upload.example.test/attachment-1".to_string()),
             upload_method: Some("PUT".to_string()),
             upload_headers: Default::default(),
-            expires_at: Some(chrono::Utc::now()),
+            expires_at: Some(synctv_core::SystemClock.now()),
             max_size_bytes: 1024 * 1024,
             resumable: true,
             part_size_bytes: 4 * 1024 * 1024,
@@ -3122,7 +3145,7 @@ mod tests {
                 upload_url: "https://upload.example.test/part-1".to_string(),
                 upload_method: "PUT".to_string(),
                 upload_headers: Default::default(),
-                expires_at: Some(chrono::Utc::now()),
+                expires_at: Some(synctv_core::SystemClock.now()),
             }],
         };
 
@@ -3339,6 +3362,25 @@ mod tests {
             err.message(),
             "Public settings are not available on this server."
         );
+    }
+
+    #[test]
+    fn get_server_time_echoes_client_timestamp_and_sets_server_window() {
+        let clock = synctv_core::SyncedClock::system();
+        let before = clock.now_nanos();
+        let response = super::build_server_time_response(
+            synctv_proto::client::GetServerTimeRequest {
+                client_sent_at_nanos: 1_700_000_000_123_456_789,
+            },
+            &clock,
+        );
+        let after = clock.now_nanos();
+
+        assert_eq!(response.client_sent_at_nanos, 1_700_000_000_123_456_789);
+        assert!(response.server_received_at_nanos >= before);
+        assert!(response.server_received_at_nanos <= after);
+        assert!(response.server_sent_at_nanos >= response.server_received_at_nanos);
+        assert!(response.server_sent_at_nanos <= after);
     }
 
     #[test]

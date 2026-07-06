@@ -1,11 +1,12 @@
 use tonic::{Request, Response, Status};
 
 use super::{map_api_error, ClientServiceImpl};
-use crate::impls::EndpointRateLimitCategory;
+use crate::impls::{ApiError, EndpointRateLimitCategory};
 use synctv_proto::client::{
     public_service_server::PublicService, CheckRoomRequest, CheckRoomResponse, GetHotRoomsRequest,
     GetHotRoomsResponse, GetPublicSettingsRequest, GetPublicSettingsResponse, GetServerInfoRequest,
-    GetServerInfoResponse, ListRoomsRequest, ListRoomsResponse,
+    GetServerInfoResponse, GetServerTimeRequest, GetServerTimeResponse, ListRoomsRequest,
+    ListRoomsResponse,
 };
 
 #[tonic::async_trait]
@@ -89,6 +90,23 @@ impl PublicService for ClientServiceImpl {
         let response = executor
             .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
                 client_api.get_server_info().await
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_server_time(
+        &self,
+        request: Request<GetServerTimeRequest>,
+    ) -> Result<Response<GetServerTimeResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
+                Ok::<GetServerTimeResponse, ApiError>(client_api.get_server_time(req))
             })
             .await
             .map_err(map_api_error)?;

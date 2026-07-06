@@ -104,6 +104,7 @@ pub struct ClientApiConfig {
 }
 
 pub struct ClientApiRuntime {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub chat_event_dispatcher: Arc<dyn ChatEventDispatcher>,
@@ -120,6 +121,7 @@ pub struct ClientApiRuntime {
 }
 
 pub struct ClientApiRuntimeServices {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub realtime_event_service: Arc<dyn RealtimeEventService>,
     pub redis_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
@@ -138,6 +140,7 @@ impl ClientApiRuntime {
     #[must_use]
     pub fn new_with_services(services: ClientApiRuntimeServices) -> Self {
         Self {
+            clock: services.clock,
             chat_event_dispatcher: default_chat_event_dispatcher(
                 services.realtime_event_service.clone(),
             ),
@@ -163,6 +166,7 @@ impl ClientApiRuntime {
     ) -> Self {
         let realtime_event_service = Arc::new(LocalNoopRealtimeEventService::new());
         Self {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: crate::realtime_fanout::local_realtime_fanout_service(
                 realtime_event_service.clone(),
             ),
@@ -229,6 +233,7 @@ impl RoomActor {
 /// Client API implementation
 #[derive(Clone)]
 pub struct ClientApiImpl {
+    pub clock: Arc<dyn synctv_core::Clock>,
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
@@ -584,13 +589,15 @@ impl ClientApiImpl {
             .flatten();
         let mut proto = convert::try_media_to_proto_for_viewer_with_cover(
             media,
-            is_available,
-            viewer_id,
-            cover.as_ref(),
-            cover_access.as_ref(),
-            thumbnail.as_ref(),
-            thumbnail_access.as_ref(),
-            &self.public_id_codec,
+            convert::MediaProtoView {
+                is_available,
+                viewer_id,
+                cover: cover.as_ref(),
+                cover_access: cover_access.as_ref(),
+                thumbnail: thumbnail.as_ref(),
+                thumbnail_access: thumbnail_access.as_ref(),
+                public_id_codec: &self.public_id_codec,
+            },
         )?;
         if proto.cover.is_none() {
             proto.cover = source_cover_url.map(convert::source_url_to_media_cover);
@@ -892,6 +899,7 @@ impl ClientApiImpl {
         );
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
         Self {
+            clock: runtime.clock,
             user_service: config.user_service,
             room_service: config.room_service,
             chat_service: config.chat_service,

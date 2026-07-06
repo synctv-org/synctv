@@ -237,7 +237,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             user_id: *user_id,
             username: username.to_string(),
             media_ids,
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
@@ -255,7 +255,7 @@ impl MediaFanoutService for DefaultMediaFanoutService {
             user_id: *user_id,
             username: username.to_string(),
             media_ids,
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         publish_best_effort(self.realtime_fanout.clone(), PublishRequest::new(event));
     }
@@ -357,7 +357,7 @@ fn media_added_event(
         username: username.to_string(),
         media_id: *media_id,
         media_title: media_title.to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -375,7 +375,7 @@ fn media_updated_event(
         username: username.to_string(),
         media_id: *media_id,
         media_title: media_title.to_string(),
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -391,7 +391,7 @@ fn media_removed_event(
         user_id: *user_id,
         username: username.to_string(),
         media_id: *media_id,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -411,7 +411,7 @@ fn move_media_events(
                 user_id: *user_id,
                 username: username.to_string(),
                 media_ids: moved_media.iter().map(|media| media.id).collect(),
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }]
         }
         crate::impls::client::media::MoveMediaFanoutPlan::PerMedia(steps) => {
@@ -525,8 +525,8 @@ mod tests {
             provider_instance_name: None,
             cover_file_reference_id: None,
             thumbnail_file_reference_id: None,
-            added_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            added_at: synctv_core::SystemClock.now(),
+            updated_at: synctv_core::SystemClock.now(),
             version: 1,
         }
     }

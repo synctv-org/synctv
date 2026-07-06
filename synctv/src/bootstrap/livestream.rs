@@ -141,10 +141,15 @@ pub async fn init_livestream(
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
             max_flv_tag_size_bytes: config.livestream.max_flv_tag_size_bytes,
             api_address: config.advertise_api_address(),
-            hls_memory_max_mb: config.livestream.hls_memory_max_mb,
-            hls_storage_backend: config.livestream.hls_storage_backend,
-            hls_storage_path: config.livestream.hls_storage_path.clone(),
-            hls_oss: config.livestream.hls_oss.clone(),
+            hls_memory_max_mb: config.livestream.hls_storage.memory_max_mb(),
+            hls_storage_backend: config.livestream.hls_storage.backend(),
+            hls_storage_path: config.livestream.hls_storage.path().to_string(),
+            hls_oss: config
+                .livestream
+                .hls_storage
+                .oss()
+                .cloned()
+                .unwrap_or_default(),
             ssrf_guard: config.security.ssrf_guard(),
         },
         publisher_registry,

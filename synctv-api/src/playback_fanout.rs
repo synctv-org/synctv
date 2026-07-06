@@ -199,7 +199,7 @@ fn playback_state_changed_event(
         username: actor.username.to_string(),
         state: state.clone(),
         source_changed,
-        timestamp: chrono::Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }
 }
 
@@ -288,7 +288,7 @@ mod tests {
             position: 12.5,
             speed: 1.0,
             is_playing: true,
-            updated_at: chrono::Utc::now(),
+            updated_at: synctv_core::SystemClock.now(),
             version,
         }
     }

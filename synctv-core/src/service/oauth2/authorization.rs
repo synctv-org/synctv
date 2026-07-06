@@ -94,7 +94,7 @@ impl OAuth2Service {
             instance_name: instance_name.to_string(),
             operation,
             redirect_url,
-            created_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
             target_user_id,
             pkce_verifier: auth.pkce_verifier,
             nonce: auth.nonce,

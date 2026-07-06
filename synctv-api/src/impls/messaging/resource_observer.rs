@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{ChatMessageSelection, ChatMessageType, RoomId, UserId},
+    models::{ChatMessageSelection, RoomId, UserId},
     repository::{RoomResourceEventPayload, RoomResourceEventRepository, RoomResourceKind},
     service::{ChatService, OnlinePresenceService, RoomService},
 };
@@ -13,8 +13,9 @@ use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
 use super::MessageSender;
 use crate::impls::client::convert::{
-    playback_client_profile_from_proto, proto_role_filter_to_room_role, room_settings_to_proto,
-    try_playback_state_to_proto, try_room_member_to_proto_with_permissions,
+    chat_message_selection_from_proto_values, playback_client_profile_from_proto,
+    proto_role_filter_to_room_role, room_settings_to_proto, try_playback_state_to_proto,
+    try_room_member_to_proto_with_permissions,
 };
 use crate::impls::client::RoomActor;
 use crate::impls::messaging::{
@@ -55,33 +56,6 @@ fn event_cursor_for_chat_pin_event(
         event_id: Some(event.event_id.clone()),
         sequence: event.sequence,
     }
-}
-
-fn chat_message_selection_from_proto(
-    include_message_types: &[i32],
-) -> Result<ChatMessageSelection, String> {
-    if include_message_types.is_empty() {
-        return Ok(ChatMessageSelection::user_default());
-    }
-    let include_message_types = include_message_types
-        .iter()
-        .map(|value| {
-            let message_type = synctv_proto::client::ChatMessageType::try_from(*value)
-                .map_err(|_| format!("Invalid chat message type: {value}"))?;
-            match message_type {
-                synctv_proto::client::ChatMessageType::Unspecified => {
-                    Err("Chat message type must be specified".to_string())
-                }
-                synctv_proto::client::ChatMessageType::User => Ok(ChatMessageType::User),
-                synctv_proto::client::ChatMessageType::SystemMemberJoined => {
-                    Ok(ChatMessageType::SystemMemberJoined)
-                }
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ChatMessageSelection {
-        include_message_types,
-    })
 }
 
 fn proto_event_cursor(
@@ -524,6 +498,7 @@ pub(super) struct ResourceObserver {
     connection_id: String,
     room_service: Arc<RoomService>,
     chat_service: Option<Arc<ChatService>>,
+    clock: Arc<dyn synctv_core::Clock>,
     presence_service: Arc<OnlinePresenceService>,
     public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
@@ -543,6 +518,7 @@ pub(super) struct ResourceObserverParams {
     pub(super) connection_id: String,
     pub(super) room_service: Arc<RoomService>,
     pub(super) chat_service: Option<Arc<ChatService>>,
+    pub(super) clock: Arc<dyn synctv_core::Clock>,
     pub(super) presence_service: Arc<OnlinePresenceService>,
     pub(super) public_id_codec: Arc<crate::public_id::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
@@ -560,6 +536,7 @@ impl ResourceObserver {
             connection_id,
             room_service,
             chat_service,
+            clock,
             presence_service,
             public_id_codec,
             sender,
@@ -577,6 +554,7 @@ impl ResourceObserver {
             connection_id,
             room_service,
             chat_service,
+            clock,
             presence_service,
             public_id_codec,
             sender,
@@ -1984,7 +1962,7 @@ impl MediaResourceHub {
             match evaluation {
                 Ok(evaluation) => {
                     for mut entry in entries {
-                        let update = ResourceObserver::apply_resource_evaluation(
+                        let update = entry.observer.apply_resource_evaluation(
                             &mut entry.observation,
                             entry.force,
                             evaluation.clone(),
@@ -2221,7 +2199,9 @@ impl ResourceObserver {
             Resource::RoomMemberEvents(_) => ObservedResource::RoomMemberEvents,
             Resource::SelfRoomMember(_) => ObservedResource::SelfRoomMember,
             Resource::ChatEvents(observe) => ObservedResource::ChatEvents {
-                selection: chat_message_selection_from_proto(&observe.include_message_types)?,
+                selection: chat_message_selection_from_proto_values(
+                    &observe.include_message_types,
+                )?,
             },
             Resource::ChatPinEvents(_) => ObservedResource::ChatPinEvents,
             Resource::OnlineCount(observe) => ObservedResource::OnlineCount {
@@ -2386,7 +2366,7 @@ impl ResourceObserver {
         else {
             return Ok(());
         };
-        let selection = chat_message_selection_from_proto(&observe.include_message_types)?;
+        let selection = chat_message_selection_from_proto_values(&observe.include_message_types)?;
         let observe_id = request.observe_id.trim();
         let Some(mut after_event_sequence) = Self::validated_requested_replay_sequence(request)
         else {
@@ -2680,7 +2660,7 @@ impl ResourceObserver {
             .values()
             .filter_map(|observation| observation.expires_at)
             .min()?;
-        let now_wall = chrono::Utc::now().timestamp();
+        let now_wall = self.clock.now().timestamp();
         let now_instant = tokio::time::Instant::now();
         if expires_at <= now_wall {
             return Some(now_instant);
@@ -2712,7 +2692,7 @@ impl ResourceObserver {
     pub(super) async fn refresh_expired_resource_observations(&self) -> Result<(), String> {
         let observations = {
             let state = self.state.lock().await;
-            let now = chrono::Utc::now().timestamp();
+            let now = self.clock.now().timestamp();
             state
                 .observations
                 .values()
@@ -2941,11 +2921,7 @@ impl ResourceObserver {
                 !force,
             )
             .await?;
-        Ok(Self::apply_resource_evaluation(
-            observation,
-            force,
-            evaluation,
-        ))
+        Ok(self.apply_resource_evaluation(observation, force, evaluation))
     }
 
     async fn load_resource_evaluation(
@@ -3158,7 +3134,7 @@ impl ResourceObserver {
                 (snapshot.version.clone(), None, payload)
             }
             ObservedResource::RoomMemberEvents | ObservedResource::OnlineEvent { .. } => {
-                let version = chrono::Utc::now().timestamp_millis().to_string();
+                let version = self.clock.now_millis().to_string();
                 (
                     version,
                     None,
@@ -3182,7 +3158,7 @@ impl ResourceObserver {
                 (hex::encode(fingerprint), None, payload)
             }
             ObservedResource::ChatEvents { .. } | ObservedResource::ChatPinEvents => {
-                let version = chrono::Utc::now().timestamp_millis().to_string();
+                let version = self.clock.now_millis().to_string();
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly
                     | ResourceDeliveryMode::Unspecified
@@ -3198,7 +3174,7 @@ impl ResourceObserver {
                     .await
                     .map_err(|error| error.clone())?;
                 let expires_at =
-                    Some(chrono::Utc::now().timestamp() + ONLINE_COUNT_REFRESH_INTERVAL_SECONDS);
+                    Some(self.clock.now().timestamp() + ONLINE_COUNT_REFRESH_INTERVAL_SECONDS);
                 let payload = match delivery_mode {
                     ResourceDeliveryMode::NotifyOnly => {
                         Payload::ChangedOnly(synctv_proto::client::ResourceEventOnly {})
@@ -3362,6 +3338,7 @@ impl ResourceObserver {
     }
 
     fn apply_resource_evaluation(
+        &self,
         observation: &mut ResourceObservation,
         force: bool,
         evaluation: ResourceEvaluation,
@@ -3374,7 +3351,7 @@ impl ResourceObserver {
 
         let expired = observation
             .expires_at
-            .is_some_and(|expires_at| chrono::Utc::now().timestamp() >= expires_at);
+            .is_some_and(|expires_at| self.clock.now().timestamp() >= expires_at);
         let changed = force || observation.last_fingerprint != fingerprint || expired;
 
         observation.last_fingerprint.clone_from(&fingerprint);
@@ -3487,8 +3464,8 @@ mod tests {
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
-            joined_at: chrono::Utc::now(),
-            timestamp: chrono::Utc::now(),
+            joined_at: synctv_core::SystemClock.now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let wrong_user = RealtimeEvent::UserJoined {
             event_id: "online-wrong-user".to_string(),
@@ -3503,8 +3480,8 @@ mod tests {
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
-            joined_at: chrono::Utc::now(),
-            timestamp: chrono::Utc::now(),
+            joined_at: synctv_core::SystemClock.now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let wrong_kind = RealtimeEvent::UserLeft {
             event_id: "online-left".to_string(),
@@ -3514,7 +3491,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Admin as i32,
-            timestamp: chrono::Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert!(ResourceObserver::online_event_matches_observation(

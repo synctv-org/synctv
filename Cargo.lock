@@ -5724,6 +5724,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rsntp"
+version = "4.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc507d0efdc8ce91a17455b1efe9ada6a21e2414470b3f1d84aefc7ebcf247bd"
+dependencies = [
+ "chrono",
+ "tokio",
+]
+
+[[package]]
 name = "rust-embed"
 version = "8.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7151,6 +7161,7 @@ dependencies = [
  "redis",
  "regex",
  "reqwest",
+ "rsntp",
  "rustls",
  "serde",
  "serde_ignored",

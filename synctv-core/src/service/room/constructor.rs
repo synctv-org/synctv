@@ -170,6 +170,7 @@ impl RoomService {
             media_service.clone(),
             user_service.clone(),
             crate::service::PlaybackServiceRuntime {
+                clock: options.clock.clone(),
                 invalidation_service: options.cache_invalidation.clone(),
                 l2_cache: Some(options.playback_l2_cache.clone()),
                 version_fence: options.version_fence.clone(),
@@ -195,6 +196,7 @@ impl RoomService {
         Self {
             pool,
             distributed_lock: options.distributed_lock,
+            clock: options.clock,
             room_repo,
             taxonomy_repo,
             room_settings_repo,

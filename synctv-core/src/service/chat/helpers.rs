@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::Duration;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -122,7 +122,7 @@ pub(super) fn empty_read_state(room_id: RoomId, user_id: UserId) -> ChatReadStat
         last_read_message_created_at: None,
         last_read_event_id: None,
         last_read_event_sequence: None,
-        updated_at: Utc::now(),
+        updated_at: crate::SystemClock.now(),
     }
 }
 
@@ -274,7 +274,7 @@ pub(super) fn chat_file_storage_scope(room_id: RoomId, user_id: UserId) -> Strin
 }
 
 pub(super) fn validate_chat_metadata(
-    _metadata: &Option<crate::models::ChatMetadata>,
+    _metadata: Option<&crate::models::ChatMetadata>,
 ) -> Result<()> {
     Ok(())
 }
@@ -460,7 +460,8 @@ pub(super) fn attach_chat_attachment_reuse_grants(
     }
 
     for attachment in attachments {
-        let expires_at = Utc::now() + Duration::seconds(CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS);
+        let expires_at =
+            crate::SystemClock.now() + Duration::seconds(CHAT_ATTACHMENT_REUSE_TOKEN_TTL_SECONDS);
         let storage_scope = chat_file_storage_scope(attachment.room_id, viewer_user_id);
         let grant = storage.create_reuse_grant(CreateFileReuseGrant {
             user_id: viewer_user_id,

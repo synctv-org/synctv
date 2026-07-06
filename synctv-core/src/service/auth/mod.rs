@@ -12,7 +12,8 @@ pub use brute_force::{
 };
 pub use guest_validator::GuestTokenValidator;
 pub use jwt::{
-    Claims, GuestClaims, JwtService, TokenAuthContext, TokenCredentialBinding, TokenType,
+    Claims, GuestClaims, JwtService, JwtServiceOptions, TokenAuthContext, TokenCredentialBinding,
+    TokenType,
 };
 pub use opaque_password::OpaquePasswordService;
 pub use security_pipeline::{

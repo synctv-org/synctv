@@ -11,7 +11,7 @@ use crate::{
         CacheInvalidationRuntime, CacheL2Backend, CacheManager, ConsistencyCoordinator, KeyBuilder,
         RoomCache, UserCache, UsernameCache, VersionFenceStore,
     },
-    config::FileStorageBackendType,
+    config::FileStorageBackendConfig,
     provider::{
         AlistProvider, CachedProviderAccessService, ProviderAccessService, ProviderStoreRegistry,
         ProviderStoreResolver,
@@ -142,6 +142,7 @@ pub struct Services {
 
 #[derive(Clone)]
 pub struct InitServicesOptions {
+    pub clock: Arc<dyn crate::Clock>,
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub credential_encryption_key_override: Option<String>,
@@ -152,6 +153,7 @@ pub struct InitServicesOptions {
 impl Default for InitServicesOptions {
     fn default() -> Self {
         Self {
+            clock: Arc::new(crate::SystemClock),
             provider_address_overrides: HashMap::new(),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
             credential_encryption_key_override: None,
@@ -164,6 +166,7 @@ impl Default for InitServicesOptions {
 impl std::fmt::Debug for InitServicesOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InitServicesOptions")
+            .field("clock", &"Clock")
             .field(
                 "provider_address_overrides",
                 &self.provider_address_overrides,
@@ -195,11 +198,13 @@ impl Services {
 fn build_email_token_service(
     pool: PgPool,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
+    clock: Arc<dyn crate::Clock>,
 ) -> Arc<EmailTokenService> {
     Arc::new(EmailTokenService::new_with_runtime(
         pool,
         rate_limiter,
         Some(crate::service::email_token::EmailTokenRateLimitConfig::default()),
+        clock,
     ))
 }
 
@@ -353,7 +358,7 @@ pub async fn init_services_with_options(
 
     // Initialize JWT service
     info!("Loading JWT keys...");
-    let jwt_service = load_jwt_service(config)?;
+    let jwt_service = load_jwt_service(config, options.clock.clone())?;
     info!("JWT service initialized");
 
     let shared_state_profile = SharedStateProfile::for_cluster_runtime(
@@ -640,6 +645,7 @@ pub async fn init_services_with_options(
     let email_token_service = Some(build_email_token_service(
         pool.clone(),
         rate_limiter.clone(),
+        options.clock.clone(),
     ));
     info!("Email token service initialized");
 
@@ -652,8 +658,11 @@ pub async fn init_services_with_options(
     // Initialize Publish Key service (for RTMP streaming)
     // Use Redis-backed JTI dedup when available (shared handle follows Sentinel failover).
     // Falls back to in-memory for standalone mode.
-    let publish_key_service =
-        build_publish_key_service(jwt_service.clone(), &shared_state_profile)?;
+    let publish_key_service = build_publish_key_service(
+        jwt_service.clone(),
+        options.clock.clone(),
+        &shared_state_profile,
+    )?;
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -673,24 +682,21 @@ pub async fn init_services_with_options(
     let mut file_storage_backends: HashMap<String, Arc<dyn FileStorageService>> = HashMap::new();
     file_storage_backends.insert("disabled".to_string(), Arc::new(DisabledFileStorageService));
     for (name, backend_config) in &config.file_storage.backends {
-        let service: Arc<dyn FileStorageService> = match backend_config.backend_type {
-            FileStorageBackendType::Disabled => Arc::new(DisabledFileStorageService),
-            FileStorageBackendType::Database => {
+        let service: Arc<dyn FileStorageService> = match backend_config {
+            FileStorageBackendConfig::Disabled => Arc::new(DisabledFileStorageService),
+            FileStorageBackendConfig::Database(database) => {
                 Arc::new(DatabaseFileStorageService::new_with_compression_config(
                     name.clone(),
                     file_storage_repo.clone(),
                     file_upload_token_secret.clone(),
                     DatabaseFileStorageCompressionConfig {
-                        algorithm: backend_config.database.compression.into(),
-                        min_size_bytes: backend_config.database.compression_min_size_bytes,
-                        min_savings_percent: backend_config
-                            .database
-                            .compression_min_savings_percent,
+                        algorithm: database.compression.into(),
+                        min_size_bytes: database.compression_min_size_bytes,
+                        min_savings_percent: database.compression_min_savings_percent,
                     },
                 ))
             }
-            FileStorageBackendType::S3 => {
-                let s3 = &backend_config.s3;
+            FileStorageBackendConfig::S3(s3) => {
                 let file_storage = S3CompatibleFileStorageService::new_with_repository(
                     S3FileStorageConfig {
                         endpoint: s3.endpoint.clone(),
@@ -834,6 +840,7 @@ pub async fn init_services_with_options(
     }
 
     let room_service = build_room_service(RoomServiceBuildArgs {
+        clock: options.clock.clone(),
         pool: pool.clone(),
         read_pool: Some(read_pool.clone()),
         user_service: (*user_service).clone(),
@@ -901,6 +908,7 @@ pub async fn init_services_with_options(
     let chat_service = ChatService::new(
         chat_repo.clone(),
         crate::service::ChatRuntime {
+            clock: options.clock.clone(),
             rate_limiter: rate_limiter.clone(),
             rate_limit_config: rate_limit_config.clone(),
             content_filter: content_filter.clone(),
@@ -1007,7 +1015,10 @@ fn build_oauth_state_store(
 }
 
 /// Load JWT service from secret in configuration
-fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
+fn load_jwt_service(
+    config: &Config,
+    clock: Arc<dyn crate::Clock>,
+) -> Result<JwtService, anyhow::Error> {
     if config.jwt.secret.is_empty() {
         return Err(anyhow::anyhow!(
             "JWT secret is empty. Please set SYNCTV_JWT_SECRET environment variable or configure jwt.secret in config file"
@@ -1019,17 +1030,21 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
         warn!("Please set SYNCTV_JWT_SECRET to a strong random value.");
     }
 
-    JwtService::with_durations(
-        &config.jwt.secret,
-        config.jwt.access_token_duration_hours,
-        config.jwt.refresh_token_duration_days,
-        config.jwt.guest_token_duration_hours,
-        config.jwt.clock_skew_leeway_secs,
-    )
+    JwtService::with_options(crate::service::JwtServiceOptions {
+        secret: config.jwt.secret.clone(),
+        access_token_duration_hours: config.jwt.access_token_duration_hours,
+        refresh_token_duration_days: config.jwt.refresh_token_duration_days,
+        guest_token_duration_hours: config.jwt.guest_token_duration_hours,
+        clock_skew_leeway_secs: config.jwt.clock_skew_leeway_secs,
+        issuer: None,
+        audience: None,
+        clock,
+    })
     .map_err(|e| anyhow::anyhow!("Failed to initialize JWT service: {e}"))
 }
 
 struct RoomServiceBuildArgs {
+    clock: Arc<dyn crate::Clock>,
     pool: PgPool,
     read_pool: Option<PgPool>,
     user_service: UserService,
@@ -1139,6 +1154,7 @@ fn build_room_service_runtime(
 
 fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService> {
     let RoomServiceBuildArgs {
+        clock,
         pool,
         read_pool,
         user_service,
@@ -1185,6 +1201,7 @@ fn build_room_service(args: RoomServiceBuildArgs) -> anyhow::Result<RoomService>
             providers_manager,
             permission_service,
             crate::service::RoomServiceOptions {
+                clock,
                 read_pool,
                 distributed_lock: runtime.distributed_lock,
                 cache_invalidation: Some(cache_invalidation),
@@ -1229,11 +1246,17 @@ fn test_provider_stores() -> Arc<dyn ProviderStoreResolver> {
 
 fn build_publish_key_service(
     jwt_service: JwtService,
+    clock: Arc<dyn crate::Clock>,
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn StreamingPublishKeyService>, anyhow::Error> {
     let service: Arc<dyn StreamingPublishKeyService> = Arc::new(
-        crate::service::PublishKeyService::from_shared_state_profile(jwt_service, 24, profile)
-            .map_err(anyhow::Error::from)?,
+        crate::service::PublishKeyService::from_shared_state_profile(
+            jwt_service,
+            clock,
+            24,
+            profile,
+        )
+        .map_err(anyhow::Error::from)?,
     );
     match profile.state_mode() {
         SharedStateMode::SharedRequired => {
@@ -1411,7 +1434,9 @@ mod tests {
         .checked("jwt service");
 
         let profile = SharedStateProfile::for_cluster_runtime(None, "test:", true);
-        let Err(error) = build_publish_key_service(jwt_service, &profile) else {
+        let Err(error) =
+            build_publish_key_service(jwt_service, Arc::new(crate::SystemClock), &profile)
+        else {
             std::panic::panic_any("cluster runtime must reject local publish-key deduplication");
         };
 
@@ -1580,6 +1605,7 @@ mod tests {
         let cache_invalidation = test_cache_invalidation();
 
         let room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service,
@@ -1646,6 +1672,7 @@ mod tests {
         let cache_invalidation = test_cache_invalidation();
 
         let standalone_room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service: user_service.clone(),
@@ -1691,6 +1718,7 @@ mod tests {
         );
 
         let cluster_room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service,
@@ -1751,6 +1779,7 @@ mod tests {
         let runtime_settings_store = Arc::new(RuntimeSettingsStore::new(settings_service));
 
         let room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service: user_service.clone(),
@@ -1799,6 +1828,7 @@ mod tests {
         let providers_manager = test_providers_manager().checked("providers manager should build");
 
         let room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service,
@@ -1850,6 +1880,7 @@ mod tests {
         let encryption = crate::credential_encryption::CredentialEncryption::new(&[7u8; 32])
             .checked("credential encryption should construct");
         let room_service = build_room_service(RoomServiceBuildArgs {
+            clock: Arc::new(crate::SystemClock),
             pool: pool.clone(),
             read_pool: None,
             user_service,
@@ -2003,7 +2034,7 @@ mod tests {
         let limiter: Arc<dyn RequestRateLimiterService> =
             Arc::new(RateLimiter::local_only("test-email-token:".to_string()));
 
-        let service = build_email_token_service(pool, limiter);
+        let service = build_email_token_service(pool, limiter, Arc::new(crate::SystemClock));
         assert!(
             service.has_rate_limiter(),
             "email token service should inherit the shared rate limiter by default"

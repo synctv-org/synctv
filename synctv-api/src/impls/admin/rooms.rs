@@ -10,8 +10,8 @@ use super::{
     i64_to_i32_api, normalize_non_empty_filter, prepare_delete_entries_outbox_fanout,
     proto_admin_room_list_sort_by, proto_admin_room_member_list_sort_by,
     proto_admin_sort_direction, proto_room_status_filter, required_room_settings,
-    try_managed_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError, RequestContext,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    try_managed_room_to_proto, try_members_to_proto, AdminApiImpl, ApiError,
+    PrepareDeleteEntriesOutboxFanout, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 use crate::impls::client::{
     convert::{room_category_to_proto, room_label_to_proto, room_presence_stats_to_proto},
@@ -960,21 +960,23 @@ impl AdminApiImpl {
                 target_presence.is_online,
                 target_presence.connection_count,
             );
-        let prepared_cleanup_fanout = prepare_delete_entries_outbox_fanout(
-            self.media_fanout.clone(),
-            self.playlist_fanout.clone(),
-            self.playback_fanout.clone(),
-            self.realtime_fanout.clone(),
-            rid,
-            *admin_user_id,
-            admin_username.clone(),
-        );
+        let prepared_cleanup_fanout =
+            prepare_delete_entries_outbox_fanout(PrepareDeleteEntriesOutboxFanout {
+                clock: self.clock.clone(),
+                media_fanout: self.media_fanout.clone(),
+                playlist_fanout: self.playlist_fanout.clone(),
+                playback_fanout: self.playback_fanout.clone(),
+                realtime_fanout: self.realtime_fanout.clone(),
+                room_id: rid,
+                user_id: *admin_user_id,
+                username: admin_username.clone(),
+            });
         let lifecycle_event = synctv_realtime::sync::RealtimeEvent::KickUserFromRoom {
             event_id: synctv_common::snanoid!(16),
             room_id: rid,
             user_id: target_uid,
             reason: "kicked".to_string(),
-            timestamp: chrono::Utc::now(),
+            timestamp: self.clock.now(),
         };
         let lifecycle_outbox_event = self
             .realtime_fanout

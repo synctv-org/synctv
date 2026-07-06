@@ -8,7 +8,6 @@
 //! - Per-user limit: 5 tokens per hour per token type
 //! - This prevents email flooding and database bloat attacks
 
-use chrono::Utc;
 use sqlx::PgPool;
 use std::future::Future;
 use std::sync::Arc;
@@ -19,7 +18,7 @@ use crate::{
     models::UserId,
     repository::EmailTokenRepository,
     service::{RateLimitError, RequestRateLimiterService},
-    Error, Result,
+    Clock, Error, Result, SystemClock,
 };
 
 use crate::models::EmailTokenType;
@@ -46,6 +45,7 @@ impl Default for EmailTokenRateLimitConfig {
 /// Email token service
 #[derive(Clone)]
 pub struct EmailTokenService {
+    clock: Arc<dyn Clock>,
     repository: EmailTokenRepository,
     rate_limiter: Option<Arc<dyn RequestRateLimiterService>>,
     rate_limit_config: EmailTokenRateLimitConfig,
@@ -75,6 +75,7 @@ impl EmailTokenService {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self {
+            clock: Arc::new(SystemClock),
             repository: EmailTokenRepository::new(pool),
             rate_limiter: None,
             rate_limit_config: EmailTokenRateLimitConfig::default(),
@@ -87,8 +88,10 @@ impl EmailTokenService {
         pool: PgPool,
         rate_limiter: Arc<dyn RequestRateLimiterService>,
         rate_limit_config: Option<EmailTokenRateLimitConfig>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
+            clock,
             repository: EmailTokenRepository::new(pool),
             rate_limiter: Some(rate_limiter),
             rate_limit_config: rate_limit_config.unwrap_or_default(),
@@ -221,7 +224,7 @@ impl EmailTokenService {
         // Generate random token
         let token = synctv_common::snanoid!(64);
 
-        let expires_at = Utc::now() + token_type.expiration_duration();
+        let expires_at = self.clock.now() + token_type.expiration_duration();
 
         if token_type.keeps_multiple_unused_tokens() {
             self.repository
@@ -254,9 +257,10 @@ impl EmailTokenService {
         token_type: EmailTokenType,
         control: Option<&ExecutionControl>,
     ) -> Result<UserId> {
+        let now = self.clock.now();
         let token_record = Self::run_with_control(
             control,
-            self.repository.validate_and_consume(token, token_type),
+            self.repository.validate_and_consume(token, token_type, now),
         )
         .await?
         .ok_or_else(|| {
@@ -289,10 +293,11 @@ impl EmailTokenService {
         expected_user_id: &UserId,
         control: Option<&ExecutionControl>,
     ) -> Result<UserId> {
+        let now = self.clock.now();
         let token_record = Self::run_with_control(
             control,
             self.repository
-                .validate_and_consume_for_user(token, token_type, expected_user_id),
+                .validate_and_consume_for_user(token, token_type, expected_user_id, now),
         )
         .await?
         .ok_or_else(|| {
@@ -376,7 +381,8 @@ impl EmailTokenService {
         &self,
         control: Option<&ExecutionControl>,
     ) -> Result<usize> {
-        let count = Self::run_with_control(control, self.repository.cleanup_expired()).await?;
+        let now = self.clock.now();
+        let count = Self::run_with_control(control, self.repository.cleanup_expired(now)).await?;
         if count > 0 {
             info!("Cleaned up {} expired email tokens", count);
         }

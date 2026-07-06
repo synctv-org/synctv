@@ -691,6 +691,7 @@ mod websocket_e2e {
         Arc::new(synctv_core::service::ChatService::new(
             chat_repo,
             synctv_core::service::ChatRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 rate_limiter: chat_rate_limiter,
                 rate_limit_config,
                 content_filter,
@@ -1093,6 +1094,7 @@ mod websocket_e2e {
                 passkey_service: None,
             },
             synctv_api::ClientApiRuntime::new_with_services(synctv_api::ClientApiRuntimeServices {
+                clock: Arc::new(synctv_core::SyncedClock::system()),
                 realtime_fanout: synctv_api::disabled_realtime_fanout_service(),
                 realtime_event_service: realtime_manager.clone(),
                 redis_runtime: None,

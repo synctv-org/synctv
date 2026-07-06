@@ -90,7 +90,6 @@ pub fn chat_pin_event_to_realtime(event: &ChatPinEvent) -> RealtimeEvent {
 mod tests {
     use super::*;
     use crate::test_support::RecordingRealtimeEventService;
-    use chrono::Utc;
     use synctv_core::models::{
         ChatEventKind, ChatMessage, ChatMessageWithAttachments, RoomId, UserId,
     };
@@ -102,7 +101,7 @@ mod tests {
     }
 
     fn chat_event() -> ChatMessageEvent {
-        let occurred_at = Utc::now();
+        let occurred_at = synctv_core::SystemClock.now();
         let room_id = RoomId::expect_positive(7);
         let user_id = UserId::expect_positive(11);
         let mut message = ChatMessage::new(room_id, user_id, "hello".to_string());

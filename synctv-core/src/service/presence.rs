@@ -1422,7 +1422,7 @@ impl OnlinePresenceService {
 }
 
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    crate::SystemClock.now_millis()
 }
 
 fn cache_entry<T>(value: T, now_ms: i64) -> PresenceCacheEntry<T> {

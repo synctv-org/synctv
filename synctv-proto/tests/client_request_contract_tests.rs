@@ -5,16 +5,17 @@ use synctv_proto::client::{
     DeleteNotificationRequest, DeletePlaylistRequest, EditMediaRequest,
     ExchangeAuthorizationCodeRequest, GetAuthorizationUrlForBindRequest,
     GetAuthorizationUrlRequest, GetChatHistoryRequest, GetNotificationRequest, GetPlaylistRequest,
-    GetRoomMembersRequest, GetRoomRequest, ListMyRoomsRequest, ListNotificationsRequest,
-    ListPlaylistItemsRequest, ListPlaylistsRequest, ListRoomJoinReviewsRequest,
-    ListRoomLabelsRequest, ListRoomStreamsRequest, MarkAsReadRequest, MoveMediaRequest,
-    MovePlaylistRequest, OAuth2ProviderInstancePathRequest, OAuth2ProviderTypePathRequest,
-    PasskeyAuthenticatorAssertionResponse, RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest,
-    RoomMediaTargetPathRequest, RoomMemberTargetPathRequest, RoomPathRequest,
-    RoomPlaylistTargetPathRequest, RoomStreamListSortBy, SortDirection, StartOpaqueLoginRequest,
-    StartPlaybackRequest, TransferRoomOwnershipRequest, UnlinkProviderRequest,
-    UpdatePlaybackStateRequest, UpdatePlaylistRequest, UpdateRoomSettingsRequest,
-    UploadUserAvatarObjectRequest, WebSocketConnectRequest,
+    GetRoomMembersRequest, GetRoomRequest, GetServerTimeRequest, ListMyRoomsRequest,
+    ListNotificationsRequest, ListPlaylistItemsRequest, ListPlaylistsRequest,
+    ListRoomJoinReviewsRequest, ListRoomLabelsRequest, ListRoomStreamsRequest, MarkAsReadRequest,
+    MoveMediaRequest, MovePlaylistRequest, OAuth2ProviderInstancePathRequest,
+    OAuth2ProviderTypePathRequest, PasskeyAuthenticatorAssertionResponse,
+    RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMediaTargetPathRequest,
+    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
+    RoomStreamListSortBy, SortDirection, StartOpaqueLoginRequest, StartPlaybackRequest,
+    TransferRoomOwnershipRequest, UnlinkProviderRequest, UpdatePlaybackStateRequest,
+    UpdatePlaylistRequest, UpdateRoomSettingsRequest, UploadUserAvatarObjectRequest,
+    WebSocketConnectRequest,
 };
 use synctv_proto::providers::common::{ListProviderBackendsRequest, ProviderInstanceQuery};
 use synctv_proto::providers::rtmp::{CreatePublishKeyRequest, GetStreamInfoRequest};
@@ -158,6 +159,15 @@ fn test_room_settings_patch_uses_lower_camel_case_fields() {
     )
     .expect_err("snake_case room settings patch fields should be rejected");
     assert!(error.to_string().contains("chat_enabled"));
+}
+
+#[test]
+fn test_get_server_time_request_uses_lower_camel_case_query_field() {
+    let request: GetServerTimeRequest =
+        serde_urlencoded::from_str("clientSentAtNanos=1700000000123456789")
+            .expect("lowerCamelCase server time query should deserialize");
+
+    assert_eq!(request.client_sent_at_nanos, 1_700_000_000_123_456_789);
 }
 
 #[test]

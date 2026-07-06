@@ -58,10 +58,10 @@ pub use audit_partition_manager::{
 pub use auth::{
     AttemptTracker, AuthErrorCategory, AuthenticatedToken, BruteForceConfig, BruteForceProtection,
     BruteForceProtectionService, Claims, GuestClaims, GuestTokenValidator, InMemoryAttemptTracker,
-    InMemoryTokenBlacklistStore, JwtService, JwtValidator, OpaquePasswordService,
-    PgTokenBlacklistStore, RedisAttemptTracker, SecurityPipeline, SecurityPipelineRuntime,
-    TieredTokenBlacklistStore, TokenAuthContext, TokenBlacklistStore, TokenCredentialBinding,
-    TokenType,
+    InMemoryTokenBlacklistStore, JwtService, JwtServiceOptions, JwtValidator,
+    OpaquePasswordService, PgTokenBlacklistStore, RedisAttemptTracker, SecurityPipeline,
+    SecurityPipelineRuntime, TieredTokenBlacklistStore, TokenAuthContext, TokenBlacklistStore,
+    TokenCredentialBinding, TokenType,
 };
 pub use ban_record::{
     BanRecordListQuery, BanRecordPage, BanRecordRow, BanRecordService, BanRecordTargetType,

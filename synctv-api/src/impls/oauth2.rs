@@ -1250,7 +1250,7 @@ mod tests {
         use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
         use synctv_core::models::UserId;
 
-        let now = chrono::Utc::now();
+        let now = synctv_core::SystemClock.now();
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,
@@ -1296,7 +1296,7 @@ mod tests {
         use synctv_core::models::oauth2_client::{OAuth2Provider, UserOAuthProviderMapping};
         use synctv_core::models::UserId;
 
-        let now = chrono::Utc::now();
+        let now = synctv_core::SystemClock.now();
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,
@@ -1355,7 +1355,7 @@ mod tests {
         use synctv_core::models::oauth2_client::UserOAuthProviderMapping;
         use synctv_core::models::{OAuth2Provider, UserId};
 
-        let now = chrono::Utc::now();
+        let now = synctv_core::SystemClock.now();
         let mappings = vec![
             UserOAuthProviderMapping {
                 id: 1,

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use futures::StreamExt;
 use sha2::{Digest, Sha256};
 
@@ -254,7 +253,7 @@ impl DatabaseFileStorageService {
             range: None,
             data,
             metadata,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         };
         if let Err(error) = super::complete_uploaded_file_object(
             self,
@@ -487,7 +486,7 @@ async fn decompress_blob_part(part: FileBlobPart) -> Result<DecompressedBlobPart
 }
 
 fn ensure_session_open(session: &crate::models::FileUploadSessionRecord) -> Result<()> {
-    if session.completed_at.is_some() || session.expires_at <= Utc::now() {
+    if session.completed_at.is_some() || session.expires_at <= crate::SystemClock.now() {
         return Err(Error::InvalidInput(
             "file upload session is not active".to_string(),
         ));
@@ -552,7 +551,8 @@ impl FileStorageService for DatabaseFileStorageService {
             metadata: request.metadata.clone(),
             upload_policy: &request.policy,
         });
-        let expires_at = Utc::now() + chrono::Duration::seconds(FILE_UPLOAD_EXPIRES_SECONDS);
+        let now = crate::SystemClock.now();
+        let expires_at = now + chrono::Duration::seconds(FILE_UPLOAD_EXPIRES_SECONDS);
         if let Some(existing) = self
             .repository
             .get_object_by_manifest(
@@ -644,6 +644,7 @@ impl FileStorageService for DatabaseFileStorageService {
                 &request.storage_scope,
                 &content_manifest_sha256,
                 request.size_bytes,
+                now,
             )
             .await?;
         let object_key = file_object_key(
@@ -831,7 +832,7 @@ impl FileStorageService for DatabaseFileStorageService {
             {
                 let payload = validate_file_upload_token_context(
                     token,
-                    Utc::now(),
+                    crate::SystemClock.now(),
                     &self.upload_token_secret,
                 )?;
                 if payload.user_id != context.user_id.as_i64()
@@ -882,7 +883,12 @@ impl FileStorageService for DatabaseFileStorageService {
         token: &str,
         context: FileStorageContext<'_>,
     ) -> Result<ValidatedFileReuseGrant> {
-        validate_file_reuse_grant(token, context, Utc::now(), &self.upload_token_secret)
+        validate_file_reuse_grant(
+            token,
+            context,
+            crate::SystemClock.now(),
+            &self.upload_token_secret,
+        )
     }
 
     async fn delete_files(
@@ -956,11 +962,12 @@ impl FileStorageService for DatabaseFileStorageService {
     async fn cleanup_expired_upload_session(
         &self,
         session: crate::models::FileUploadSessionRecord,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
         if session.storage_backend != self.storage_backend {
             return Ok(false);
         }
-        if session.completed_at.is_some() || session.expires_at > Utc::now() {
+        if session.completed_at.is_some() || session.expires_at > now {
             return Ok(false);
         }
         self.repository
@@ -1027,7 +1034,7 @@ impl FileStorageService for DatabaseFileStorageService {
             &self.storage_backend,
             &upload_token,
             &upload_session_key,
-            Utc::now(),
+            crate::SystemClock.now(),
             &self.upload_token_secret,
         )?;
         let session = self
@@ -1221,7 +1228,7 @@ impl FileStorageService for DatabaseFileStorageService {
             &self.storage_backend,
             &request.upload_token,
             &decoded_object_key,
-            Utc::now(),
+            crate::SystemClock.now(),
             &self.upload_token_secret,
         )?;
         if let Some(file_id) = request
@@ -1245,7 +1252,7 @@ impl FileStorageService for DatabaseFileStorageService {
                         "file reference does not match upload session".to_string(),
                     ));
                 }
-                if reference_session.expires_at <= Utc::now() {
+                if reference_session.expires_at <= crate::SystemClock.now() {
                     return Err(Error::InvalidInput(
                         "file upload session is not active".to_string(),
                     ));
@@ -1348,7 +1355,7 @@ impl FileStorageService for DatabaseFileStorageService {
                             range: None,
                             data: Vec::new(),
                             metadata: Default::default(),
-                            created_at: Utc::now(),
+                            created_at: crate::SystemClock.now(),
                         }),
                         uploaded_size_bytes: size_bytes,
                         uploaded_parts: Vec::new(),
@@ -1553,7 +1560,7 @@ impl FileStorageService for DatabaseFileStorageService {
             range: None,
             data,
             metadata,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         })
     }
 

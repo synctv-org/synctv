@@ -166,7 +166,7 @@ fn test_verify_wrong_token_type() {
 #[test]
 fn test_access_token_rejects_invalid_user_id_claim() {
     let jwt = create_jwt_service();
-    let now = Utc::now();
+    let now = crate::SystemClock.now();
     let claims = Claims {
         sub: "not-a-user-id".to_string(),
         typ: "access".to_string(),
@@ -201,7 +201,7 @@ fn test_access_token_rejects_invalid_user_id_claim() {
 #[test]
 fn test_guest_token_rejects_invalid_room_id_claim() {
     let jwt = create_jwt_service();
-    let now = Utc::now();
+    let now = crate::SystemClock.now();
     let claims = GuestClaims {
         sub: "guest:not-a-room-id:session".to_string(),
         room_id: "not-a-room-id".to_string(),
@@ -558,7 +558,7 @@ fn test_expired_token_is_rejected() {
         "JWT service with no leeway should build",
     );
 
-    let past = Utc::now() - Duration::hours(2);
+    let past = crate::SystemClock.now() - Duration::hours(2);
     let claims = Claims {
         sub: "expired_user".into(),
         typ: "access".into(),
@@ -639,9 +639,9 @@ fn test_token_iat_is_recent() {
     let jwt = create_jwt_service();
     let user_id = UserId::new();
 
-    let before = Utc::now().timestamp();
+    let before = crate::SystemClock.now().timestamp();
     let token = sign_access_token(&jwt, &user_id);
-    let after = Utc::now().timestamp();
+    let after = crate::SystemClock.now().timestamp();
 
     let claims = ok(jwt.verify_token(&token), "token should verify");
     assert!(claims.iat >= before && claims.iat <= after);
@@ -670,7 +670,7 @@ fn test_sign_and_verify_custom_token() {
     let claims = CustomClaims {
         sub: "custom_subject".to_string(),
         custom_field: "custom_value".to_string(),
-        exp: Utc::now().timestamp() + 3600,
+        exp: crate::SystemClock.now().timestamp() + 3600,
     };
 
     let token = ok(jwt.sign_custom(&claims), "custom token should sign");
@@ -700,7 +700,7 @@ fn test_custom_token_wrong_secret_rejected() {
 
     let claims = CustomClaims {
         sub: "test".to_string(),
-        exp: Utc::now().timestamp() + 3600,
+        exp: crate::SystemClock.now().timestamp() + 3600,
     };
     let token = ok(jwt1.sign_custom(&claims), "custom token should sign");
     let result = jwt2.verify_custom::<CustomClaims>(&token);

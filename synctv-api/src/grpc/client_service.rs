@@ -359,6 +359,7 @@ impl ClientServiceImpl {
             principal,
             room_service: self.room_service.clone(),
             chat_service: Some(self.chat_service.clone()),
+            clock: self.client_api.clock.clone(),
             event_service,
             connection_service: self.connection_service.clone(),
             presence_service: self.presence_service.clone(),

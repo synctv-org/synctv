@@ -131,6 +131,7 @@ fn test_core_api_impls(
             passkey_service: None,
         },
         crate::impls::ClientApiRuntime::new_with_services(crate::impls::ClientApiRuntimeServices {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
             realtime_event_service: realtime_event_service.clone(),
             redis_runtime: None,
@@ -165,6 +166,7 @@ fn test_core_api_impls(
                 public_id_codec: public_id_codec.clone(),
             },
             crate::impls::AdminApiRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 realtime_event_service,
                 provider_stores,
@@ -406,7 +408,7 @@ async fn file_blob_response_sets_partial_content_headers() -> TestResult {
                 end_inclusive: 5,
             }),
             metadata: synctv_core::models::FileMetadata::default(),
-            created_at: chrono::Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
         },
         stream: futures::stream::once(async {
             Ok::<_, synctv_core::Error>(Bytes::from_static(b"cdef"))
@@ -453,7 +455,7 @@ async fn file_object_download_response_sets_streaming_headers() -> TestResult {
             compression: synctv_core::models::FileBlobCompression::None,
             range: None,
             metadata: synctv_core::models::FileMetadata::default(),
-            created_at: chrono::Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
         },
         stream: futures::stream::iter([
             Ok::<_, synctv_core::Error>(Bytes::from_static(b"ab")),
@@ -822,6 +824,7 @@ async fn test_app_state_with_websocket_runtime(
     let chat_service = synctv_core::service::ChatService::new(
         Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
         synctv_core::service::ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter: router_config.rate_limiter.clone(),
             rate_limit_config: state
                 .shared_api_runtime
@@ -906,6 +909,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
     let chat_service = Arc::new(synctv_core::service::ChatService::new(
         Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
         synctv_core::service::ChatRuntime {
+            clock: Arc::new(synctv_core::SystemClock),
             rate_limiter: Arc::new(RateLimiter::local_only("test:http-chat:".to_string())),
             rate_limit_config: RateLimitConfig::default(),
             content_filter: ContentFilter::new(),
@@ -970,6 +974,7 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
             passkey_service: router_config.passkey_service.clone(),
         },
         crate::impls::ClientApiRuntime::new_with_services(crate::impls::ClientApiRuntimeServices {
+            clock: Arc::new(synctv_core::SystemClock),
             realtime_fanout: router_config.realtime_fanout_service.clone(),
             realtime_event_service: realtime_manager.clone(),
             redis_runtime: router_config.redis_runtime.clone(),
@@ -1477,7 +1482,7 @@ async fn test_chat_message_delete_route_is_reachable_via_project_router() -> Tes
 async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     let owner = core_ok(
         synctv_core::repository::UserRepository::new(pool)
             .create(&synctv_core::models::User {
@@ -1595,7 +1600,7 @@ async fn test_chat_events_sse_receives_live_send_event() -> TestResult {
 async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     let owner = core_ok(
         synctv_core::repository::UserRepository::new(pool)
             .create(&synctv_core::models::User {
@@ -1742,7 +1747,7 @@ async fn test_chat_events_sse_replays_after_last_event_id_header() -> TestResult
 async fn test_chat_events_sse_unknown_last_event_id_returns_bad_request() -> TestResult {
     let (_container, pool) = synctv_core_testing::create_test_pool().await;
     let state = test_app_state_with_real_chat_runtime(pool.clone()).await;
-    let now = chrono::Utc::now();
+    let now = synctv_core::SystemClock.now();
     let owner = core_ok(
         synctv_core::repository::UserRepository::new(pool)
             .create(&synctv_core::models::User {
@@ -1825,6 +1830,44 @@ async fn test_public_rooms_route_is_reachable_without_auth() -> TestResult {
         StatusCode::NOT_FOUND,
         "public room listing route must be registered"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_public_time_route_echoes_client_timestamp_without_auth() -> TestResult {
+    let state = test_app_state();
+    let clock = state.shared_api_runtime.client_api.clock.clone();
+    let app = register_all_routes().with_state(state);
+    let client_sent_at_nanos = 1_700_000_000_123_456_789_i64;
+    let before = clock.now_nanos();
+
+    let request = test_request(
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/public/time?clientSentAtNanos={client_sent_at_nanos}"
+            ))
+            .body(Body::empty()),
+    )?;
+    let response = test_response(app.oneshot(request).await)?;
+    let after = clock.now_nanos();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["clientSentAtNanos"], client_sent_at_nanos.to_string());
+    let server_received_at_nanos = json["serverReceivedAtNanos"]
+        .as_str()
+        .ok_or_else(|| test_error("serverReceivedAtNanos should be a string"))?
+        .parse::<i64>()?;
+    let server_sent_at_nanos = json["serverSentAtNanos"]
+        .as_str()
+        .ok_or_else(|| test_error("serverSentAtNanos should be a string"))?
+        .parse::<i64>()?;
+    assert!(server_received_at_nanos >= before);
+    assert!(server_received_at_nanos <= after);
+    assert!(server_sent_at_nanos >= server_received_at_nanos);
+    assert!(server_sent_at_nanos <= after);
     Ok(())
 }
 

@@ -1,11 +1,11 @@
 use crate::impls::ApiError;
 use std::net::IpAddr;
 use synctv_core::models::{
-    ChatMessageEvent, ChatMessageSelection, ChatMessageType, ChatMessageWithAttachments,
-    DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, NewStoredFile, UserId,
+    ChatMessageEvent, ChatMessageSelection, ChatMessageWithAttachments, DeleteChatMessage,
+    EditChatMessage, FileBlob, FileUploadSession, NewStoredFile, UserId,
 };
 
-use super::super::convert::chat_metadata_from_proto;
+use super::super::convert::{chat_message_selection_from_proto_values, chat_metadata_from_proto};
 #[cfg(test)]
 use super::super::media::required_stored_file_fields;
 use super::super::media::upload_session_fields;
@@ -824,30 +824,7 @@ pub(super) fn build_get_chat_history_request(
 pub(crate) fn chat_message_selection_from_proto(
     include_message_types: &[i32],
 ) -> Result<ChatMessageSelection, ApiError> {
-    if include_message_types.is_empty() {
-        return Ok(ChatMessageSelection::user_default());
-    }
-    let include_message_types = include_message_types
-        .iter()
-        .map(|value| {
-            let message_type =
-                synctv_proto::client::ChatMessageType::try_from(*value).map_err(|_| {
-                    ApiError::InvalidInput(format!("Invalid chat message type: {value}"))
-                })?;
-            match message_type {
-                synctv_proto::client::ChatMessageType::Unspecified => Err(ApiError::InvalidInput(
-                    "Chat message type must be specified".to_string(),
-                )),
-                synctv_proto::client::ChatMessageType::User => Ok(ChatMessageType::User),
-                synctv_proto::client::ChatMessageType::SystemMemberJoined => {
-                    Ok(ChatMessageType::SystemMemberJoined)
-                }
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ChatMessageSelection {
-        include_message_types,
-    })
+    chat_message_selection_from_proto_values(include_message_types).map_err(ApiError::InvalidInput)
 }
 
 pub(super) fn build_search_chat_messages_query(

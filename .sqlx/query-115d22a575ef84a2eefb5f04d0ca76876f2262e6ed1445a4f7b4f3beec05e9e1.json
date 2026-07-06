@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            UPDATE auth_email_bind_requests\n            SET used_at = $4\n            WHERE token = $1\n              AND user_id = $2\n              AND LOWER(email) = LOWER($3)\n              AND used_at IS NULL\n              AND expires_at > CURRENT_TIMESTAMP\n            RETURNING email\n            ",
+  "query": "\n            SELECT email\n            FROM auth_email_bind_requests\n            WHERE token = $1\n              AND user_id = $2\n              AND LOWER(email) = LOWER($3)\n              AND used_at IS NULL\n              AND expires_at > $4\n            FOR UPDATE\n            ",
   "describe": {
     "columns": [
       {
@@ -27,5 +27,5 @@
       false
     ]
   },
-  "hash": "3cdc5a396271fc0618115584d552ba7d51f8221fbb0d6073933c1536dadc56eb"
+  "hash": "115d22a575ef84a2eefb5f04d0ca76876f2262e6ed1445a4f7b4f3beec05e9e1"
 }

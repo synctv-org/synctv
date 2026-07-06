@@ -49,13 +49,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::{
     models::{AuditAction, AuditDetails, AuditTargetType},
+    repository::JsonbArray,
     Result,
 };
 
@@ -65,29 +65,6 @@ const DEFAULT_BUFFER_CAPACITY: usize = 10_000;
 const FLUSH_BATCH_SIZE: usize = 100;
 /// Flush interval in seconds
 const FLUSH_INTERVAL_SECS: u64 = 5;
-
-struct JsonbArray<T> {
-    values: Vec<serde_json::Value>,
-    _marker: PhantomData<fn() -> T>,
-}
-
-impl<T: Serialize> JsonbArray<T> {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(capacity),
-            _marker: PhantomData,
-        }
-    }
-
-    fn push(&mut self, value: &T) -> Result<()> {
-        self.values.push(serde_json::to_value(value)?);
-        Ok(())
-    }
-
-    fn as_slice(&self) -> &[serde_json::Value] {
-        &self.values
-    }
-}
 
 /// Audit log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,7 +242,7 @@ impl AuditService {
         } = params;
         let action_str = action.as_str();
         let target_str = target_type.as_str();
-        let created_at = Utc::now();
+        let created_at = crate::SystemClock.now();
 
         // If we have a buffered sender, enqueue the event
         if let Some(ref sender) = self.sender {
@@ -750,7 +727,7 @@ mod tests {
             details: AuditDetails::reason("test"),
             ip_address: Some("127.0.0.1".to_string()),
             user_agent: None,
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         };
 
         assert_eq!(record.action.as_str(), "room_deleted");

@@ -5,7 +5,6 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -89,7 +88,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
                         api_address: api_address.to_string(),
                         app_name: "live".to_string(),
                         user_id: user_id.to_string(),
-                        started_at: Utc::now(),
+                        started_at: synctv_core::SystemClock.now(),
                         epoch,
                     },
                 );

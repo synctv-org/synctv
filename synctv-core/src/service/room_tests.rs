@@ -298,7 +298,7 @@ fn test_room_is_active_considers_lifecycle_and_deleted() {
     assert!(room.is_active());
 
     // Deleted room is not active
-    room.deleted_at = Some(chrono::Utc::now());
+    room.deleted_at = Some(crate::SystemClock.now());
     assert!(!room.is_active());
 }
 

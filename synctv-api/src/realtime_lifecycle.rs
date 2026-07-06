@@ -127,7 +127,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 room_id: *room_id,
                 media_id: *media_id,
                 reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }))
             .await
             && self.realtime_fanout.is_distributed_enabled()
@@ -276,7 +276,7 @@ impl RealtimeLifecycleService for DefaultRealtimeLifecycleService {
                 event_id: synctv_common::snanoid!(16),
                 user_id: *user_id,
                 reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
+                timestamp: synctv_core::SystemClock.now(),
             }))
             .await
         {

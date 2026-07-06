@@ -208,15 +208,15 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `livestream.pull_max_backoff_ms` | milliseconds | `30000` | Maximum pull retry backoff |
 | `livestream.max_flv_tag_size_bytes` | bytes | `10485760` | Maximum accepted FLV tag size |
 | `livestream.gop_cache_max_memory_mb` | MB | `100` | GOP cache memory limit |
-| `livestream.hls_memory_max_mb` | MB | `0` | In-memory HLS storage limit; `0` uses the built-in default |
-| `livestream.hls_storage_backend` | `memory`, `file`, `shared_file`, or `oss` | `memory` | HLS segment storage backend |
-| `livestream.hls_storage_path` | path | `""` | HLS file path for the `file` / `shared_file` backend |
-| `livestream.hls_oss.endpoint` | string | `""` | S3/OSS endpoint for the `oss` backend; required when `oss` is enabled |
-| `livestream.hls_oss.access_key_id` | secret string | `""` | Access key ID for the `oss` backend; required when `oss` is enabled |
-| `livestream.hls_oss.secret_access_key` | secret string | `""` | Secret access key for the `oss` backend; required when `oss` is enabled |
-| `livestream.hls_oss.bucket` | string | `""` | Bucket for the `oss` backend; required when `oss` is enabled |
-| `livestream.hls_oss.region` | string or null | `null` | Region for the `oss` backend |
-| `livestream.hls_oss.base_path` | string | `hls/` | Object key prefix inside the bucket |
+| `livestream.hls_storage.type` | `memory`, `file`, `shared_file`, or `oss` | `memory` | HLS segment storage backend |
+| `livestream.hls_storage.memory_max_mb` | MB | `0` | HLS storage limit for `memory`; `0` uses the built-in default |
+| `livestream.hls_storage.path` | path | `""` | HLS file path for the `file` / `shared_file` backend |
+| `livestream.hls_storage.endpoint` | string | `""` | S3/OSS endpoint for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_storage.access_key_id` | secret string | `""` | Access key ID for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_storage.secret_access_key` | secret string | `""` | Secret access key for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_storage.bucket` | string | `""` | Bucket for the `oss` backend; required when `oss` is enabled |
+| `livestream.hls_storage.region` | string or null | `null` | Region for the `oss` backend |
+| `livestream.hls_storage.base_path` | string | `hls/` | Object key prefix inside the bucket |
 | `livestream.flv_max_connection_duration_seconds` | seconds | `86400` | Maximum HTTP-FLV connection duration |
 | `livestream.flv_write_timeout_seconds` | seconds | `30` | HTTP-FLV write timeout |
 
@@ -233,10 +233,10 @@ Use the field index below for bare-metal, Kubernetes, secret files, or custom YA
 | `file_storage.upload_token_secret` | secret string | `""` | Signing secret for file upload/read tokens; empty value derives from `jwt.secret` at startup |
 | `file_storage.unreferenced_object_retention_seconds` | seconds | `86400` | Grace period before uploaded objects with no active product reference are cleaned; `0` disables orphan cleanup |
 | `file_storage.backends.<name>.type` | `disabled`, `database`, or `s3` | `disabled` | Registered backend implementation type |
-| `file_storage.backends.<name>.database.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for persisted `file_blob_parts` segments |
-| `file_storage.backends.<name>.database.compression_min_size_bytes` | bytes | `4096` | Minimum original payload size before compression is attempted |
-| `file_storage.backends.<name>.database.compression_min_savings_percent` | `0` to `100` | `10` | Minimum saved percentage required before compressed bytes are stored |
-| `file_storage.backends.<name>.s3.*` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"`; `public_base_url` is required for readable file URLs after upload or ownership proof validation |
+| `file_storage.backends.<name>.compression` | `none`, `lz4`, or `zstd` | `zstd` | Compression algorithm used by `type: "database"` backends for persisted `file_blob_parts` segments |
+| `file_storage.backends.<name>.compression_min_size_bytes` | bytes | `4096` | Minimum original payload size before compression is attempted |
+| `file_storage.backends.<name>.compression_min_savings_percent` | `0` to `100` | `10` | Minimum saved percentage required before compressed bytes are stored |
+| `file_storage.backends.<name>.<s3-field>` | S3 config | default S3 fields | S3-compatible settings for backends with `type: "s3"`; `public_base_url` is required for readable file URLs after upload or ownership proof validation |
 
 Upload sessions use a server-provided part plan: clients first request `FileUploadPlan` with empty `parts`, hash every planned part with SHA-256, then submit `FileUploadManifestPart[]`. SyncTV computes `content_manifest_sha256` from the canonical manifest and uses it for instant-upload object lookup and unfinished resumable-session lookup. Database backends persist fixed `file_blob_parts` segments and serve HTTP Range requests directly from those segments, decompressing only the parts that overlap the requested byte range. S3 backends use native multipart uploads with presigned part URLs, sign `x-amz-checksum-sha256` into each part URL, and validate object identity from the recorded part manifest at completion without reading GB-scale objects back from S3. Duplicate objects return `upload_required=false` with an ownership proof challenge; readable URLs are signed after proof validation and business-reference persistence.
 
@@ -264,8 +264,7 @@ file_storage:
   backends:
     database:
       type: "database"
-      database:
-        compression: "zstd"
+      compression: "zstd"
 ```
 
 Use S3-compatible object storage:
@@ -282,15 +281,14 @@ file_storage:
   backends:
     s3_public:
       type: "s3"
-      s3:
-        endpoint: "https://s3.example.com"
-        access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
-        secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
-        bucket: "synctv-files"
-        region: "auto"
-        base_path: "files/"
-        public_base_url: "https://cdn.example.com/files"
-        upload_expires_seconds: 900
+      endpoint: "https://s3.example.com"
+      access_key_id_file: "/run/secrets/file_storage_s3_access_key_id"
+      secret_access_key_file: "/run/secrets/file_storage_s3_secret_access_key"
+      bucket: "synctv-files"
+      region: "auto"
+      base_path: "files/"
+      public_base_url: "https://cdn.example.com/files"
+      upload_expires_seconds: 900
 ```
 
 ## `webauthn` and `email`

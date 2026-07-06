@@ -548,7 +548,7 @@ impl BruteForceProtection {
             run_with_control(control, self.username_tracker.get_attempts(subject_key)).await?;
         let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::SystemClock.now().timestamp();
             let elapsed = nonnegative_elapsed_secs(now, last_failure_at);
             if elapsed < lockout_secs {
                 let remaining = lockout_secs - elapsed;
@@ -580,7 +580,7 @@ impl BruteForceProtection {
             let (ip_attempts, ip_last_failure_at) =
                 run_with_control(control, self.ip_tracker.get_attempts(&ip_key)).await?;
             if ip_attempts >= self.config.ip_threshold {
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::SystemClock.now().timestamp();
                 let elapsed = nonnegative_elapsed_secs(now, ip_last_failure_at);
                 if elapsed < self.config.ip_lockout_secs {
                     let remaining = self.config.ip_lockout_secs - elapsed;
@@ -629,7 +629,7 @@ impl BruteForceProtection {
         ip: Option<IpAddr>,
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::SystemClock.now().timestamp();
 
         // Record IP-level failure
         if let Some(ip_addr) = ip {
@@ -671,7 +671,7 @@ impl BruteForceProtection {
         control: Option<&ExecutionControl>,
     ) -> Result<()> {
         if let Some(ip_addr) = ip {
-            let now = chrono::Utc::now().timestamp();
+            let now = crate::SystemClock.now().timestamp();
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
             run_with_control(
                 control,

@@ -14,7 +14,6 @@ use aes_gcm::{
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::Utc;
 use futures::StreamExt;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -281,7 +280,7 @@ impl BilibiliSmsLoginTokenCodec {
             .map_err(|_| invalid())?;
         let session: BilibiliSmsLoginSession =
             serde_json::from_slice(&payload).map_err(|_| invalid())?;
-        if Utc::now().timestamp() >= session.expires_at {
+        if crate::SystemClock.now().timestamp() >= session.expires_at {
             return Err(invalid());
         }
         Ok(session)
@@ -725,7 +724,7 @@ impl BilibiliProvider {
             .new_captcha_with_context(instance_name, request_context)
             .await?;
 
-        let now = Utc::now().timestamp();
+        let now = crate::SystemClock.now().timestamp();
         let expires_at = now + SMS_LOGIN_SESSION_TTL_SECONDS;
         let session = BilibiliSmsLoginSession {
             token: resp.token,
@@ -857,7 +856,7 @@ impl BilibiliProvider {
     ) -> Result<String, ProviderError> {
         let server_id = Self::credential_server_id();
         let credential_data = ProviderCredential::Bilibili { cookies };
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let credential = UserProviderCredential {
             id: 0,
             user_id,
@@ -1927,7 +1926,7 @@ mod tests {
             phone: Some("13800000000".to_string()),
             captcha_key: Some("captcha-key".to_string()),
             instance_name: Some("bilibili_remote".to_string()),
-            expires_at: chrono::Utc::now().timestamp() + 60,
+            expires_at: crate::SystemClock.now().timestamp() + 60,
         };
 
         let encoded = provider_ok(codec_one.encode(&session))?;
@@ -1959,10 +1958,10 @@ mod tests {
             phone: None,
             captcha_key: None,
             instance_name: None,
-            expires_at: chrono::Utc::now().timestamp() + 60,
+            expires_at: crate::SystemClock.now().timestamp() + 60,
         };
         let expired = BilibiliSmsLoginSession {
-            expires_at: chrono::Utc::now().timestamp() - 1,
+            expires_at: crate::SystemClock.now().timestamp() - 1,
             ..valid.clone()
         };
 
@@ -2543,7 +2542,7 @@ impl BilibiliProvider {
                     }
                 }
 
-                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
+                let expires_at = Some(crate::SystemClock.now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
 
                 let default_mode = if let Some(dash_resp) = dash_resp {
@@ -2698,7 +2697,7 @@ impl BilibiliProvider {
                     }
                 }
 
-                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
+                let expires_at = Some(crate::SystemClock.now().timestamp() + 2 * 3600);
                 let mut playback_infos = HashMap::new();
 
                 let default_mode = if let Some(dash_resp) = dash_resp {
@@ -2813,7 +2812,7 @@ impl BilibiliProvider {
                     room_id: Some(room_id),
                     ..Default::default()
                 });
-                let live_expires_at = Some(Utc::now().timestamp() + 120);
+                let live_expires_at = Some(crate::SystemClock.now().timestamp() + 120);
 
                 for stream in live_resp.live_streams {
                     let quality_name = if stream.desc.is_empty() {

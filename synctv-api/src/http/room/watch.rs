@@ -245,6 +245,7 @@ pub(in crate::http::room) async fn open_resource_watch_sse(
         principal,
         room_service: state.room_service.clone(),
         chat_service: state.chat_service.clone(),
+        clock: state.shared_api_runtime.client_api.clock.clone(),
         event_service,
         connection_service: state.connection_manager.clone(),
         presence_service: state.presence_service.clone(),

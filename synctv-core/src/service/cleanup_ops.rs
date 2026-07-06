@@ -701,7 +701,9 @@ pub(super) async fn cleanup_expired_file_references(
     storage: &Arc<dyn FileStorageService>,
 ) -> Result<u64> {
     let repository = FileStorageRepository::new(pool.clone());
-    let references = repository.list_expired_references(100).await?;
+    let references = repository
+        .list_expired_references(100, crate::SystemClock.now())
+        .await?;
     if references.is_empty() {
         return Ok(0);
     }
@@ -718,14 +720,20 @@ pub(super) async fn cleanup_expired_file_upload_sessions(
     storage: &Arc<dyn FileStorageService>,
 ) -> Result<u64> {
     let repository = FileStorageRepository::new(pool.clone());
-    let sessions = repository.list_expired_upload_sessions(100).await?;
+    let sessions = repository
+        .list_expired_upload_sessions(100, crate::SystemClock.now())
+        .await?;
     if sessions.is_empty() {
         return Ok(0);
     }
 
+    let cleanup_now = crate::SystemClock.now();
     let mut cleaned = 0_u64;
     for session in sessions {
-        if storage.cleanup_expired_upload_session(session).await? {
+        if storage
+            .cleanup_expired_upload_session(session, cleanup_now)
+            .await?
+        {
             cleaned += 1;
         }
     }

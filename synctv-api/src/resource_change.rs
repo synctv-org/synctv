@@ -206,7 +206,6 @@ fn push_unique(invalidations: &mut Vec<ResourceInvalidation>, invalidation: Reso
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use synctv_core::models::{
         ChatEventKind, ChatMessage, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
         Playlist, RoomPlaybackState,
@@ -221,7 +220,7 @@ mod tests {
     }
 
     fn chat_event() -> ChatMessageEvent {
-        let now = Utc::now();
+        let now = synctv_core::SystemClock.now();
         ChatMessageEvent {
             event_id: "chat-event".to_string(),
             sequence: 1,
@@ -265,7 +264,7 @@ mod tests {
             username: "actor".to_string(),
             state: RoomPlaybackState::new(room_id()),
             source_changed: false,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(
@@ -283,7 +282,7 @@ mod tests {
             username: "actor".to_string(),
             state: RoomPlaybackState::new(room_id()),
             source_changed: true,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(
@@ -327,8 +326,8 @@ mod tests {
             source_provider: None,
             source_config: None,
             provider_instance_name: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: synctv_core::SystemClock.now(),
+            updated_at: synctv_core::SystemClock.now(),
             version: 1,
         }
     }
@@ -342,7 +341,7 @@ mod tests {
             user_id: user_id(),
             username: "actor".to_string(),
             playlist: playlist_with_id(playlist_id),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(
@@ -365,7 +364,7 @@ mod tests {
             user_id: user_id(),
             username: "actor".to_string(),
             media_id,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(
@@ -386,7 +385,7 @@ mod tests {
             user_id: user_id(),
             username: "actor".to_string(),
             media_ids: media_ids.clone(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let reordered = RealtimeEvent::PlaylistReordered {
             event_id: "evt-reorder".to_string(),
@@ -394,7 +393,7 @@ mod tests {
             user_id: user_id(),
             username: "actor".to_string(),
             media_ids: media_ids.clone(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let expected = vec![
             ResourceInvalidation::PlaylistItems,
@@ -416,7 +415,7 @@ mod tests {
             user_id: user_id(),
             username: "actor".to_string(),
             playlist_id,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(
@@ -484,22 +483,22 @@ mod tests {
             username: "Guest".to_string(),
             permissions: synctv_core::models::RoomPermissionSet::default_guest(),
             role: synctv_proto::common::RoomMemberRole::Guest as i32,
-            joined_at: Utc::now(),
-            timestamp: Utc::now(),
+            joined_at: synctv_core::SystemClock.now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let left = RealtimeEvent::GuestLeft {
             event_id: "guest-left".to_string(),
             room_id: room_id(),
             guest_id: "gst_test".to_string(),
             username: "Guest".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let kicked = RealtimeEvent::KickUserFromRoom {
             event_id: "kick-user-from-room".to_string(),
             room_id: room_id(),
             user_id: user_id(),
             reason: "removed".to_string(),
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let user_joined = RealtimeEvent::UserJoined {
             event_id: "user-joined".to_string(),
@@ -514,8 +513,8 @@ mod tests {
             removed_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_added_permissions: synctv_core::models::RoomPermissionSet(0),
             admin_removed_permissions: synctv_core::models::RoomPermissionSet(0),
-            joined_at: Utc::now(),
-            timestamp: Utc::now(),
+            joined_at: synctv_core::SystemClock.now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
         let user_left = RealtimeEvent::UserLeft {
             event_id: "user-left".to_string(),
@@ -525,7 +524,7 @@ mod tests {
             remark_name: String::new(),
             display_tag: String::new(),
             role: synctv_proto::common::RoomMemberRole::Member as i32,
-            timestamp: Utc::now(),
+            timestamp: synctv_core::SystemClock.now(),
         };
 
         assert_eq!(

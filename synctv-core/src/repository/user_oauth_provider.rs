@@ -313,11 +313,10 @@ impl From<OAuth2ClientRow> for UserOAuthProviderMapping {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
 
     #[test]
     fn test_oauth2_client_row_to_mapping_all_fields() {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let row = OAuth2ClientRow {
             id: 1,
             provider: OAuth2Provider::GitHub,
@@ -354,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_oauth2_client_row_to_mapping_optional_fields_none() {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let row = OAuth2ClientRow {
             id: 2,
             provider: OAuth2Provider::Oidc,
@@ -376,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_mapping_provider_enum_from_row() {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let row = OAuth2ClientRow {
             id: 3,
             provider: OAuth2Provider::Google,

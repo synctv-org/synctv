@@ -435,7 +435,7 @@ impl UserPasswordRepository {
     where
         E: sqlx::PgExecutor<'e>,
     {
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let credentials = credentials.parts();
         let opaque_record = credentials.opaque_record;
         let opaque_record_bytes = opaque_record.map(|record| record.record.as_slice());

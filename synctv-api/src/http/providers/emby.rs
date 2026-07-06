@@ -658,7 +658,7 @@ mod tests {
                 max_height: 300,
                 max_width: 0,
             },
-            chrono::Utc::now().timestamp() + 300,
+            synctv_core::SystemClock.now().timestamp() + 300,
         );
 
         let err = route_err(authorize_thumbnail_request(

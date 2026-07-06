@@ -250,8 +250,8 @@ fmt: ## Format all Rust code.
 check: ## Check all workspace targets.
 	cargo check -j "$(DEV_JOBS)" --workspace --all-targets
 
-nextest: dev-up ## Run the full workspace nextest suite, including ignored tests.
-	DATABASE_URL="$(DEV_DATABASE_URL)" cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
+nextest: ## Run the full workspace nextest suite, including ignored tests.
+	cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
 
 clippy: ## Run Clippy fixes across all workspace targets.
 	cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty

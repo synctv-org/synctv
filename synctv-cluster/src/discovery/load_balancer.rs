@@ -194,7 +194,7 @@ impl LoadBalancer {
                 sorted[index].node_id.clone()
             }
             LoadBalancingStrategy::LeastConnections => {
-                let now_timestamp = chrono::Utc::now().timestamp();
+                let now_timestamp = synctv_core::SystemClock.now().timestamp();
                 nodes
                     .iter()
                     .min_by_key(|node| least_connections_score(node, now_timestamp))
@@ -436,7 +436,7 @@ mod tests {
                 .metadata
                 .insert("registered_at".to_string(), "0".to_string());
             // node-1: recently registered (current time), no connections reported
-            let now = chrono::Utc::now().timestamp().to_string();
+            let now = synctv_core::SystemClock.now().timestamp().to_string();
             node_mut(&mut nodes, "node-1")?
                 .metadata
                 .insert("registered_at".to_string(), now);

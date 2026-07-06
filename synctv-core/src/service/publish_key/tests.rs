@@ -1,5 +1,5 @@
 use super::*;
-use crate::service::JwtService;
+use crate::service::{JwtService, JwtServiceOptions};
 use crate::test_helpers::failing_redis_runtime;
 use async_trait::async_trait;
 use std::time::Duration;
@@ -28,6 +28,40 @@ fn joined<T>(result: std::result::Result<T, tokio::task::JoinError>, context: &s
 fn create_jwt_service() -> JwtService {
     ok(
         JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890"),
+        "JWT service should build",
+    )
+}
+
+fn test_clock() -> Arc<dyn crate::Clock> {
+    Arc::new(crate::SystemClock)
+}
+
+struct FixedClock {
+    millis: i64,
+}
+
+impl crate::Clock for FixedClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        crate::clock::utc_from_millis(self.millis).expect("fixed clock millis should be valid")
+    }
+}
+
+fn fixed_clock(millis: i64) -> Arc<dyn crate::Clock> {
+    Arc::new(FixedClock { millis })
+}
+
+fn create_jwt_service_with_clock(clock: Arc<dyn crate::Clock>) -> JwtService {
+    ok(
+        JwtService::with_options(JwtServiceOptions {
+            secret: "test-secret-key-for-publish-key-tests-long-enough-1234567890".to_string(),
+            access_token_duration_hours: 24,
+            refresh_token_duration_days: 30,
+            guest_token_duration_hours: 24,
+            clock_skew_leeway_secs: 60,
+            issuer: None,
+            audience: None,
+            clock,
+        }),
         "JWT service should build",
     )
 }
@@ -80,7 +114,7 @@ async fn test_redis_jti_store_snapshot_timeout_fails_closed() {
 #[tokio::test]
 async fn test_publish_key_service_supports_service_trait_object() {
     let service: Arc<dyn StreamingPublishKeyService> = Arc::new(ok(
-        PublishKeyService::new(create_jwt_service(), 24),
+        PublishKeyService::new(create_jwt_service(), test_clock(), 24),
         "publish key service should build",
     ));
     let room_id = RoomId::expect_positive(40_001);
@@ -108,7 +142,7 @@ async fn test_publish_key_shared_state_builder_returns_live_service() {
     let jwt = create_jwt_service();
     let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", false);
     let service = ok(
-        PublishKeyService::from_shared_state_profile(jwt, 12, &profile),
+        PublishKeyService::from_shared_state_profile(jwt, test_clock(), 12, &profile),
         "standalone mode should allow local publish-key service",
     );
     let room_id = RoomId::expect_positive(40_004);
@@ -135,7 +169,8 @@ async fn test_publish_key_shared_state_builder_returns_live_service() {
 fn test_publish_key_shared_state_builder_requires_shared_runtime_in_cluster_mode() {
     let jwt = create_jwt_service();
     let profile = SharedStateProfile::for_cluster_runtime(None, "trait-test:", true);
-    let Err(error) = PublishKeyService::from_shared_state_profile(jwt, 12, &profile) else {
+    let Err(error) = PublishKeyService::from_shared_state_profile(jwt, test_clock(), 12, &profile)
+    else {
         std::panic::panic_any("cluster runtime must reject local publish-key deduplication");
     };
 
@@ -150,7 +185,7 @@ fn test_publish_key_shared_state_builder_requires_shared_runtime_in_cluster_mode
 fn create_publish_key_service() -> PublishKeyService {
     let jwt = create_jwt_service();
     ok(
-        PublishKeyService::new(jwt, 24),
+        PublishKeyService::new(jwt, test_clock(), 24),
         "publish key service should build",
     )
 }
@@ -158,7 +193,7 @@ fn create_publish_key_service() -> PublishKeyService {
 fn create_publish_key_service_with_ttl(ttl_hours: i64) -> PublishKeyService {
     let jwt = create_jwt_service();
     ok(
-        PublishKeyService::new(jwt, ttl_hours),
+        PublishKeyService::new(jwt, test_clock(), ttl_hours),
         "publish key service should build",
     )
 }
@@ -194,7 +229,7 @@ async fn test_generate_publish_key_expiration_matches_ttl() {
         "publish key should be generated",
     );
 
-    let now = ok(unix_timestamp_now(), "current timestamp should load");
+    let now = test_clock().now().timestamp();
 
     let expected_exp = now + (2 * 3600);
     let diff = (key.expires_at - expected_exp).abs();
@@ -202,6 +237,33 @@ async fn test_generate_publish_key_expiration_matches_ttl() {
         diff < 5,
         "Expiration time is off by more than 5 seconds: diff={diff}"
     );
+}
+
+#[tokio::test]
+async fn test_publish_key_uses_configured_clock_for_issue_and_validation() {
+    let now_secs = 2_000_000_000;
+    let clock = fixed_clock(now_secs * 1_000);
+    let jwt = create_jwt_service_with_clock(clock.clone());
+    let service = ok(
+        PublishKeyService::new(jwt, clock, 2),
+        "publish key service should build",
+    );
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    let key = ok(
+        service.generate_publish_key(&room_id, &media_id, &user_id),
+        "publish key should be generated",
+    );
+    let claims = ok(
+        service.validate_publish_key(&key.token).await,
+        "publish key should validate with the configured clock",
+    );
+
+    assert_eq!(claims.iat, now_secs);
+    assert_eq!(claims.exp, now_secs + 7_200);
+    assert_eq!(key.expires_at, claims.exp);
 }
 
 #[tokio::test]
@@ -238,10 +300,10 @@ async fn test_validate_publish_key_invalid_token() {
 async fn test_validate_publish_key_rejects_expired_token() {
     let jwt_service = create_jwt_service();
     let service = ok(
-        PublishKeyService::new(jwt_service.clone(), 24),
+        PublishKeyService::new(jwt_service.clone(), test_clock(), 24),
         "publish key service should build",
     );
-    let now = ok(unix_timestamp_now(), "current timestamp should load");
+    let now = test_clock().now().timestamp();
 
     let expired_claims = PublishClaims {
         room_id: RoomId::new().to_string(),
@@ -274,6 +336,7 @@ async fn test_validate_publish_key_wrong_secret() {
                 JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890"),
                 "different JWT service should build",
             ),
+            test_clock(),
             24,
         ),
         "publish key service should build",
@@ -514,7 +577,7 @@ async fn test_in_memory_jti_store_is_local_only() {
 #[test]
 fn test_publish_key_service_debug_reports_capabilities_not_backend_names() {
     let service = ok(
-        PublishKeyService::new(create_jwt_service(), 24),
+        PublishKeyService::new(create_jwt_service(), test_clock(), 24),
         "publish key service should build",
     );
     let debug = format!("{service:?}");
@@ -552,7 +615,7 @@ async fn test_in_memory_jti_store_claim_and_reject() {
 async fn test_publish_key_service_from_store_custom_backend() {
     let store = Arc::new(InMemoryJtiStore::new(3600));
     let jwt = create_jwt_service();
-    let service = PublishKeyService::from_store(jwt, 12, store);
+    let service = PublishKeyService::from_store(jwt, test_clock(), 12, store);
 
     let debug = format!("{service:?}");
     assert!(debug.contains("12"));

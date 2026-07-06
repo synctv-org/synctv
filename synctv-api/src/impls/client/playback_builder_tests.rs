@@ -2,7 +2,6 @@ use super::{
     apply_static_direct_url_thumbnail, build_playback_state_update, build_start_playback_request,
     static_media_source_provider, PlaybackStateUpdateCommand,
 };
-use chrono::Utc;
 use synctv_core::models::{
     Media, MediaId, PlaybackExternalMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
     PlaybackResult, PlaylistId, ProviderTarget, RoomId, SourceProvider,
@@ -305,8 +304,8 @@ fn make_media(provider_instance_name: &str) -> Media {
         provider_instance_name: Some(provider_instance_name.to_string()),
         cover_file_reference_id: None,
         thumbnail_file_reference_id: None,
-        added_at: Utc::now(),
-        updated_at: Utc::now(),
+        added_at: synctv_core::SystemClock.now(),
+        updated_at: synctv_core::SystemClock.now(),
         version: 0,
     }
 }

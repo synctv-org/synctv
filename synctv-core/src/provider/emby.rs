@@ -22,7 +22,6 @@ use crate::models::{
 use crate::repository::UserProviderCredentialRepository;
 use crate::service::RemoteProviderManager;
 use async_trait::async_trait;
-use chrono::Utc;
 use rand::prelude::IndexedRandom;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -837,7 +836,7 @@ impl EmbyProvider {
             api_key,
             emby_user_id,
         };
-        let now = Utc::now();
+        let now = crate::SystemClock.now();
         let credential = UserProviderCredential {
             id: 0,
             user_id,
@@ -1262,7 +1261,7 @@ impl EmbyProvider {
         let mut playback_infos = HashMap::new();
 
         // Emby session-based URLs: default to 30 minutes
-        let emby_expires_at = Utc::now().timestamp() + 30 * 60;
+        let emby_expires_at = crate::SystemClock.now().timestamp() + 30 * 60;
 
         // Auth headers for Emby: use X-Emby-Token header instead of
         // embedding api_key in query strings to avoid credential exposure

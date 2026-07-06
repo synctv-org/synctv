@@ -1049,7 +1049,7 @@ async fn build_axum_router_with_health(
                                         content: event.notification.content,
                                         notification_type: event.notification.notification_type,
                                         data: event.notification.data,
-                                        timestamp: chrono::Utc::now(),
+                                        timestamp: synctv_core::SystemClock.now(),
                                     };
                                     let outcome = event_service.publish_only_outcome(realtime_event);
                                     if !outcome.satisfies(
@@ -1467,7 +1467,7 @@ mod tests {
     }
 
     fn make_chat_watch_user(username: &str) -> User {
-        let now = chrono::Utc::now();
+        let now = synctv_core::SystemClock.now();
         User {
             id: UserId::new(),
             username: username.to_string(),
@@ -1523,6 +1523,7 @@ mod tests {
         Ok(Arc::new(synctv_core::service::ChatService::new(
             Arc::new(ChatRepository::new(pool.clone())),
             synctv_core::service::ChatRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 rate_limiter: Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string()))
                     as Arc<dyn RequestRateLimiterService>,
                 rate_limit_config: RateLimitConfig::default(),
@@ -2013,6 +2014,7 @@ mod tests {
                 passkey_service: None,
             },
             ClientApiRuntime::new_with_services(ClientApiRuntimeServices {
+                clock: Arc::new(synctv_core::SystemClock),
                 realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 realtime_event_service: event_service.clone(),
                 redis_runtime: None,
@@ -2047,6 +2049,7 @@ mod tests {
                 public_id_codec: public_id_codec.clone(),
             },
             AdminApiRuntime {
+                clock: Arc::new(synctv_core::SystemClock),
                 realtime_fanout: crate::realtime_fanout::disabled_realtime_fanout_service(),
                 realtime_event_service: event_service.clone(),
                 provider_stores: provider_stores.clone(),

@@ -1,7 +1,6 @@
 use super::*;
 use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager, SharedRealtimeEvent};
 use async_trait::async_trait;
-use chrono::Utc;
 use std::sync::atomic::AtomicUsize;
 use synctv_cluster::NodeRegistry;
 use synctv_core::config::ClusterChannelConfig;
@@ -200,7 +199,7 @@ async fn test_realtime_manager_single_node() -> TestResult {
         user_id,
         username: "user1".to_string(),
         message: "Hello!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -272,7 +271,7 @@ async fn test_local_critical_broadcast_does_not_panic_on_current_thread_runtime(
         remark_name: String::new(),
         display_tag: String::new(),
         role: i32::from(synctv_core::models::RoomRole::Member),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     assert_eq!(manager.broadcast_local(event), 1);
@@ -363,7 +362,7 @@ async fn test_admin_event_channel_subscription() -> TestResult {
         room_id: RoomId::expect_positive(10_000_092),
         media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
         reason: "user_banned".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     manager
@@ -425,7 +424,7 @@ async fn test_admin_event_channel_multiple_subscribers() -> TestResult {
         room_id: RoomId::expect_positive(10_000_092),
         media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
         reason: "room_deleted".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
     manager
         .admin_event_tx()
@@ -472,7 +471,7 @@ async fn test_outbox_side_effect_broadcast_does_not_poison_dedup_or_replay_subsc
         room_id: RoomId::expect_positive(10_000_092),
         media_id: synctv_core::models::MediaId::expect_positive(10_000_093),
         reason: "outbox_retry".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let side_effect_sent = manager.broadcast_local_outbox_side_effect(event.clone());
@@ -542,7 +541,7 @@ async fn test_outbox_side_effect_ignores_non_lifecycle_events() -> TestResult {
         username: "tester".to_string(),
         settings: synctv_core::models::RoomSettings::default(),
         version: 1,
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     assert_eq!(manager.broadcast_local_outbox_side_effect(event), 0);
@@ -600,7 +599,7 @@ async fn test_non_cluster_mode_with_event_handler() -> TestResult {
         user_id,
         username: "user1".to_string(),
         message: "Hello local!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -667,7 +666,7 @@ async fn test_non_cluster_mode_without_event_handler() -> TestResult {
         user_id,
         username: "user2".to_string(),
         message: "Hello!".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -887,7 +886,7 @@ async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_fo
         event_id: synctv_common::snanoid!(16),
         user_id: UserId::expect_positive(10_000_096),
         reason: "fill queue".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     }))?;
     manager.redis_critical_tx = Some(critical_tx);
 
@@ -900,7 +899,7 @@ async fn test_shutdown_stops_accepting_new_critical_redis_work_before_waiting_fo
         event_id: synctv_common::snanoid!(16),
         user_id: UserId::expect_positive(10_000_097),
         reason: "must not start new retry after drain closes".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let result = manager.broadcast(event);
@@ -988,7 +987,7 @@ async fn test_shutdown_still_allows_critical_events_to_reach_redis_channels() ->
         event_id: synctv_common::snanoid!(16),
         user_id: UserId::expect_positive(10_000_098),
         reason: "must propagate during draining".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let result = manager.broadcast(event.clone());
@@ -1037,7 +1036,7 @@ async fn test_shutdown_still_blocks_non_critical_events_from_redis_channels() ->
         user_id,
         username: "shutdown".to_string(),
         message: "non critical".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -1123,7 +1122,7 @@ async fn test_epoch_mismatch_enforcement() -> TestResult {
         user_id,
         username: "test_user".to_string(),
         message: "Test message".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -1171,7 +1170,7 @@ async fn test_quarantined_broadcast_is_rejected_without_poisoning_dedup() -> Tes
         user_id,
         username: "quarantined-user".to_string(),
         message: "blocked while quarantined".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     };
@@ -1281,7 +1280,7 @@ async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() -> 
         user_id: UserId::expect_positive(10_000_105),
         username: "buffer".to_string(),
         message: "fill channel".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
         display_position: None,
         display_color: None,
     }))?;
@@ -1293,7 +1292,7 @@ async fn test_critical_events_do_not_fall_back_to_droppable_normal_channel() -> 
         event_id: synctv_common::snanoid!(16),
         user_id: UserId::expect_positive(10_000_106),
         reason: "must not drop".to_string(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let result = manager.broadcast(critical_event.clone());
@@ -1352,7 +1351,7 @@ async fn test_publish_only_enqueues_redis_without_rebroadcasting_locally() -> Te
         remark_name: String::new(),
         display_tag: String::new(),
         role: i32::from(synctv_core::models::RoomRole::Member),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     assert!(
@@ -1404,7 +1403,7 @@ async fn test_publish_only_user_notification_does_not_hit_admin_channel() -> Tes
         content: "content".to_string(),
         notification_type: synctv_core::models::NotificationType::SystemAnnouncement,
         data: synctv_core::models::NotificationData::default(),
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     assert!(
@@ -1450,7 +1449,7 @@ async fn test_publish_only_confirmed_waits_for_publisher_ack() -> TestResult {
     let event = RealtimeEvent::CacheInvalidate {
         event_id: synctv_common::snanoid!(16),
         targets: vec![CacheTarget::All],
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
     let publish = manager.publish_only_confirmed(event, Duration::from_millis(50));
     tokio::pin!(publish);
@@ -1494,7 +1493,7 @@ async fn test_publish_only_confirmed_observes_publisher_success_ack() -> TestRes
     let event = RealtimeEvent::CacheInvalidate {
         event_id: synctv_common::snanoid!(16),
         targets: vec![CacheTarget::All],
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
     let publish = manager.publish_only_confirmed(event, Duration::from_secs(1));
     tokio::pin!(publish);
@@ -1534,7 +1533,7 @@ async fn test_broadcast_cache_invalidate_reaches_admin_channel() -> TestResult {
         targets: vec![CacheTarget::Room {
             room_id: RoomId::expect_positive(10_000_110),
         }],
-        timestamp: Utc::now(),
+        timestamp: synctv_core::SystemClock.now(),
     };
 
     let result = manager.broadcast(event.clone());

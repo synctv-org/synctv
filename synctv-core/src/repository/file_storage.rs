@@ -299,7 +299,7 @@ impl FileStorageRepository {
             range: None,
             data: blob.data,
             metadata: blob.metadata.clone(),
-            created_at: Utc::now(),
+            created_at: crate::SystemClock.now(),
         })
     }
 
@@ -731,6 +731,7 @@ impl FileStorageRepository {
         storage_scope: &str,
         content_manifest_sha256: &str,
         size_bytes: i64,
+        now: DateTime<Utc>,
     ) -> Result<Option<FileUploadSessionRecord>> {
         validate_required_text(storage_scope, "file storage_scope", 512)?;
         validate_required_sha256(content_manifest_sha256, "content_manifest_sha256")?;
@@ -750,7 +751,7 @@ impl FileStorageRepository {
               AND content_manifest_sha256 = $4
               AND size_bytes = $5
               AND completed_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $6
             ORDER BY updated_at DESC
             LIMIT 1
             "#,
@@ -759,6 +760,7 @@ impl FileStorageRepository {
             storage_scope,
             content_manifest_sha256.trim().to_ascii_lowercase(),
             size_bytes,
+            now,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -769,6 +771,7 @@ impl FileStorageRepository {
         &self,
         storage_backend: &str,
         object_key: &str,
+        now: DateTime<Utc>,
     ) -> Result<Option<FileUploadSessionRecord>> {
         let session = sqlx::query_as!(
             FileUploadSessionRecord,
@@ -783,12 +786,13 @@ impl FileStorageRepository {
             WHERE storage_backend = $1
               AND object_key = $2
               AND completed_at IS NULL
-              AND expires_at > CURRENT_TIMESTAMP
+              AND expires_at > $3
             ORDER BY updated_at DESC
             LIMIT 1
             "#,
             storage_backend,
             object_key,
+            now,
         )
         .fetch_optional(&self.pool)
         .await?;
@@ -1642,6 +1646,7 @@ impl FileStorageRepository {
     pub async fn list_expired_upload_sessions(
         &self,
         limit: i64,
+        now: DateTime<Utc>,
     ) -> Result<Vec<FileUploadSessionRecord>> {
         let rows = sqlx::query_as!(
             FileUploadSessionRecord,
@@ -1654,11 +1659,12 @@ impl FileStorageRepository {
                    expires_at, completed_at, created_at, updated_at
             FROM file_upload_sessions
             WHERE completed_at IS NULL
-              AND expires_at <= CURRENT_TIMESTAMP
+              AND expires_at <= $2
             ORDER BY expires_at ASC, created_at ASC
             LIMIT $1
             "#,
             limit.clamp(1, 1000),
+            now,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1864,18 +1870,23 @@ impl FileStorageRepository {
         Ok(rows)
     }
 
-    pub async fn list_expired_references(&self, limit: i64) -> Result<Vec<FileReferenceTarget>> {
+    pub async fn list_expired_references(
+        &self,
+        limit: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<FileReferenceTarget>> {
         let rows = sqlx::query!(
             r#"
             SELECT storage_backend, object_key, reference_kind, reference_id
             FROM file_references
             WHERE released_at IS NULL
               AND expires_at IS NOT NULL
-              AND expires_at <= CURRENT_TIMESTAMP
+              AND expires_at <= $2
             ORDER BY expires_at ASC, id ASC
             LIMIT $1
             "#,
             limit.clamp(1, 1000),
+            now,
         )
         .fetch_all(&self.pool)
         .await?;

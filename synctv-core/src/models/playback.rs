@@ -154,7 +154,7 @@ impl RoomPlaybackState {
             position: 0.0,
             speed: 1.0,
             is_playing: false,
-            updated_at: Utc::now(),
+            updated_at: crate::SystemClock.now(),
             version: 0,
         }
     }
@@ -162,7 +162,7 @@ impl RoomPlaybackState {
     /// Computes the server-side playback position from the persisted anchor.
     #[must_use]
     pub fn computed_position(&self) -> f64 {
-        self.computed_position_at(Utc::now())
+        self.computed_position_at(crate::SystemClock.now())
     }
 
     /// Computes playback position at a caller-supplied instant.
@@ -203,7 +203,7 @@ mod tests {
         state.position = 30.0;
         state.speed = 2.0;
         state.is_playing = true;
-        state.updated_at = Utc::now() - chrono::Duration::seconds(5);
+        state.updated_at = crate::SystemClock.now() - chrono::Duration::seconds(5);
 
         let position = state.computed_position();
 
@@ -219,7 +219,7 @@ mod tests {
         state.position = 120.5;
         state.speed = 2.0;
         state.is_playing = false;
-        state.updated_at = Utc::now() - chrono::Duration::seconds(30);
+        state.updated_at = crate::SystemClock.now() - chrono::Duration::seconds(30);
 
         assert!((state.computed_position() - 120.5).abs() < f64::EPSILON);
     }
@@ -230,7 +230,7 @@ mod tests {
         state.position = 45.0;
         state.speed = 1.5;
         state.is_playing = true;
-        state.updated_at = Utc::now() + chrono::Duration::seconds(30);
+        state.updated_at = crate::SystemClock.now() + chrono::Duration::seconds(30);
 
         assert!((state.computed_position() - 45.0).abs() < f64::EPSILON);
     }

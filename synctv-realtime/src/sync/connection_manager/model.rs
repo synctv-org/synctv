@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use synctv_core::models::id::{RoomId, UserId};
-use tracing::warn;
 
 type ConnectionDeadline = (Instant, String);
 
@@ -169,10 +168,13 @@ pub(super) struct RoomTransition {
     pub(super) room_id: RoomId,
 }
 
-pub(super) fn system_time_to_unix_secs(now: SystemTime) -> u64 {
-    now.duration_since(UNIX_EPOCH)
+#[cfg(test)]
+pub(super) fn system_time_to_unix_secs(now: std::time::SystemTime) -> u64 {
+    now.duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_else(|error| {
-            warn!("System clock is before UNIX_EPOCH; using zero timestamp fallback: {error}");
+            tracing::warn!(
+                "System clock is before UNIX_EPOCH; using zero timestamp fallback: {error}"
+            );
             Duration::ZERO
         })
         .as_secs()
@@ -200,8 +202,7 @@ pub(super) fn usize_to_u64_saturating(value: usize) -> u64 {
 
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
     fn from(info: &ConnectionInfo) -> Self {
-        let now = SystemTime::now();
-        let now_unix = system_time_to_unix_secs(now);
+        let now_unix = u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0);
         let connected_at_unix = now_unix.saturating_sub(info.connected_at.elapsed().as_secs());
         let last_activity_unix = now_unix.saturating_sub(info.last_activity.elapsed().as_secs());
         let rtc_joined_at_unix = info

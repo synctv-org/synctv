@@ -461,7 +461,7 @@ pub(super) fn session_record_blob(
         range: None,
         data,
         metadata,
-        created_at: Utc::now(),
+        created_at: crate::SystemClock.now(),
     }
 }
 
@@ -683,6 +683,7 @@ pub trait FileStorageService: Send + Sync {
     async fn cleanup_expired_upload_session(
         &self,
         _session: crate::models::FileUploadSessionRecord,
+        _now: DateTime<Utc>,
     ) -> Result<bool> {
         Ok(false)
     }

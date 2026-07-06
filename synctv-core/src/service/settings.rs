@@ -957,8 +957,8 @@ mod tests {
             group_name: group_name_from_setting_key(crate::service::DefaultMaxMembersSetting::KEY),
             value: "100".to_string(),
             version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: crate::SystemClock.now(),
+            updated_at: crate::SystemClock.now(),
         };
         service.cache.insert(existing.key.clone(), existing.clone());
 

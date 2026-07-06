@@ -1201,7 +1201,7 @@ mod tests {
     fn make_value(name: &str) -> TestValue {
         TestValue {
             name: name.to_string(),
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::SystemClock.now(),
         }
     }
 
@@ -1368,7 +1368,7 @@ mod tests {
         let cache = make_cache();
 
         let key = TestId("k1".to_string());
-        let now = chrono::Utc::now();
+        let now = crate::SystemClock.now();
 
         let old_value = TestValue {
             name: "old".to_string(),

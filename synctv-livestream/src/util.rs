@@ -95,13 +95,7 @@ fn validate_hls_segment_url_part(value: &str, field: &str) -> anyhow::Result<()>
 ///
 /// Returns 0 if the system clock is before the Unix epoch (defensive fallback).
 pub(crate) fn unix_now_secs() -> u64 {
-    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(duration) => duration.as_secs(),
-        Err(error) => {
-            tracing::warn!(%error, "system clock is before Unix epoch");
-            0
-        }
-    }
+    u64::try_from(synctv_core::SystemClock.now().timestamp()).unwrap_or(0)
 }
 
 /// Exponential backoff with jitter.

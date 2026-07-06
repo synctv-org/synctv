@@ -605,7 +605,7 @@ pub(crate) async fn soft_delete_room_and_cleanup_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
 ) -> Result<RoomCleanupImpact> {
-    let now = chrono::Utc::now();
+    let now = crate::SystemClock.now();
     let deleted = sqlx::query!(
         r#"UPDATE rooms
          SET deleted_at = $2, updated_at = $2, version = version + 1

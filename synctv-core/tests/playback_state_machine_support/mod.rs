@@ -82,6 +82,7 @@ pub async fn set_current_test_media(
         ),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

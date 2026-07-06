@@ -66,7 +66,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-db dev-redis dev-open dev-smoke fmt check sqlx-prepare nextest clippy
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check sqlx-prepare nextest clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -236,7 +236,10 @@ dev-shell: dev-up ## Open a shell with SyncTV development environment variables.
 		$${SHELL:-/bin/bash}
 
 dev-migrate: dev-up ## Run database migrations against the local PostgreSQL container.
-	SYNCTV_DATABASE_URL="$(DEV_DATABASE_URL)" cargo run -p synctv --bin synctv -- db migrate
+	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx migrate run
+
+dev-dropdb: dev-up ## Drop and recreate the local development PostgreSQL database.
+	$(COMPOSE_DEV) exec -T postgres sh -lc 'dropdb -U synctv --if-exists synctv && createdb -U synctv synctv'
 
 sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
 	DATABASE_URL="$(DEV_DATABASE_URL)" cargo sqlx prepare --workspace -- --all-targets

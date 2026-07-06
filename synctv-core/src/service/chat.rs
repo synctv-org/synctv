@@ -16,8 +16,8 @@ use crate::{
         AuditAction, AuditDetails, AuditTargetType, ChatAttachment, ChatEventKind,
         ChatHistoryCursor, ChatHistoryPage, ChatMessage, ChatMessageContext, ChatMessageEvent,
         ChatMessageEventLog, ChatMessageOperationKind, ChatMessageReadReceiptsPage,
-        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatPinEvent,
-        ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
+        ChatMessageSelection, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
+        ChatPinEvent, ChatPinnedMessage, ChatPlaybackMessagesQuery, ChatReactionUsersCursor,
         ChatReactionUsersPage, ChatReadStateWithUnread, ChatSearchMessagesPage,
         ChatSearchMessagesQuery, CompleteFileUploadSession, CompleteFileUploadSessionResult,
         CreateChatAttachmentUploadSession, DeleteChatMessage, EditChatMessage, FileBlob,
@@ -361,9 +361,9 @@ impl ChatService {
                     user_id,
                     client_message_id: None,
                     content,
-                    message_type: ChatMessageType::Text,
+                    message_type: ChatMessageType::User,
                     reply_to_message_id: None,
-                    metadata: crate::models::ChatMetadata::default(),
+                    metadata: None,
                     attachments: Vec::new(),
                     mentions: Vec::new(),
                 },
@@ -518,9 +518,7 @@ impl ChatService {
             ));
         }
         request.content = filtered_content.clone();
-        if !attachments.is_empty() {
-            request.message_type = ChatMessageType::Attachment;
-        }
+        request.message_type = ChatMessageType::User;
 
         // Create message
         let mut message = ChatMessage::new(room_id, user_id, filtered_content.clone());
@@ -649,10 +647,18 @@ impl ChatService {
         limit: i32,
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
+        selection: &ChatMessageSelection,
     ) -> Result<ChatHistoryPage> {
         let mut page = self
             .chat_repository
-            .list_history_page_for_viewer(room_id, cursor, limit, include_deleted, viewer_user_id)
+            .list_history_page_for_viewer_with_selection(
+                room_id,
+                cursor,
+                limit,
+                include_deleted,
+                viewer_user_id,
+                selection,
+            )
             .await?;
         self.attach_attachment_view_metadata(&mut page.messages, viewer_user_id)
             .await?;
@@ -785,10 +791,11 @@ impl ChatService {
         room_id: &RoomId,
         after_event_id: Option<&str>,
         limit: i32,
+        selection: &ChatMessageSelection,
     ) -> Result<Vec<ChatMessageEventLog>> {
         let mut events = match self
             .chat_repository
-            .list_events_after(room_id, after_event_id, limit)
+            .list_events_after_with_selection(room_id, after_event_id, limit, selection)
             .await
         {
             Err(Error::NotFound(message)) if message == "Chat event not found" => {
@@ -806,14 +813,25 @@ impl ChatService {
         room_id: &RoomId,
         after_sequence: i64,
         limit: i32,
+        selection: &ChatMessageSelection,
     ) -> Result<Vec<ChatMessageEventLog>> {
         let mut events = self
             .chat_repository
-            .list_events_after_sequence(room_id, after_sequence, limit)
+            .list_events_after_sequence_with_selection(room_id, after_sequence, limit, selection)
             .await?;
         self.attach_event_log_attachment_view_metadata(&mut events, None)
             .await?;
         Ok(events)
+    }
+
+    pub async fn latest_event_cursor_for_room(
+        &self,
+        room_id: &RoomId,
+        selection: &ChatMessageSelection,
+    ) -> Result<crate::models::EventCursor> {
+        self.chat_repository
+            .latest_event_cursor_for_room_with_selection(room_id, selection)
+            .await
     }
 
     pub async fn is_event_sequence_retained_for_room(

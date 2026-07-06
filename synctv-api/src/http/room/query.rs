@@ -26,6 +26,7 @@ pub struct WatchQuery {
     pub delivery_mode: Option<i32>,
     pub format: Option<String>,
     pub after_event_sequence: Option<i64>,
+    pub include_message_types: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

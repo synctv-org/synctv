@@ -7,7 +7,6 @@ use crate::proxy_signature::ProxySigningKeyQueryExt;
 pub(crate) use crate::impls::source_provider::{
     core_source_provider_to_proto,
     proto_source_provider_filter as optional_proto_source_provider_to_core,
-    proto_source_provider_required as proto_source_provider_to_core,
 };
 
 pub(crate) struct PlaybackHttpSigningContext<'a> {
@@ -296,56 +295,99 @@ pub(crate) fn file_metadata_from_proto(
 }
 
 pub(crate) fn chat_metadata_to_proto(
-    metadata: &synctv_core::models::ChatMetadata,
+    metadata: &Option<synctv_core::models::ChatMetadata>,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<client_proto::ChatMetadata>, crate::impls::ApiError> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
     if metadata.is_empty() {
         return Ok(None);
     }
-    Ok(Some(client_proto::ChatMetadata {
-        presentation: metadata.presentation.as_ref().map(|presentation| {
-            client_proto::ChatPresentationMetadata {
-                display_position: presentation.display_position.clone(),
-                display_color: presentation.display_color.clone(),
-            }
-        }),
-        playback: metadata
-            .playback
-            .as_ref()
-            .map(|playback| client_proto::ChatPlaybackMetadata {
-                media_id: playback
-                    .media_id
-                    .map(|id| id.as_i64().to_string())
-                    .unwrap_or_default(),
-                playlist_id: playback
-                    .playlist_id
-                    .map(|id| id.as_i64().to_string())
-                    .unwrap_or_default(),
-                target: playback.target.as_ref().map(provider_target_to_proto),
-                position_seconds: playback.position_seconds,
-            }),
-    }))
+    match metadata {
+        synctv_core::models::ChatMetadata::User(user) => Ok(Some(client_proto::ChatMetadata {
+            metadata: Some(client_proto::chat_metadata::Metadata::User(
+                client_proto::ChatUserMetadata {
+                    presentation: user.presentation.as_ref().map(|presentation| {
+                        client_proto::ChatPresentationMetadata {
+                            display_position: presentation.display_position.clone(),
+                            display_color: presentation.display_color.clone(),
+                        }
+                    }),
+                    playback: user
+                        .playback
+                        .as_ref()
+                        .map(|playback| {
+                            let media_id = playback
+                                .media_id
+                                .map(|id| encode_media_id_for_proto(id, public_id_codec))
+                                .transpose()?
+                                .unwrap_or_default();
+                            let playlist_id = playback
+                                .playlist_id
+                                .map(|id| encode_playlist_id_for_proto(id, public_id_codec))
+                                .transpose()?
+                                .unwrap_or_default();
+                            Ok::<_, crate::impls::ApiError>(client_proto::ChatPlaybackMetadata {
+                                media_id,
+                                playlist_id,
+                                target: playback.target.as_ref().map(provider_target_to_proto),
+                                position_seconds: playback.position_seconds,
+                            })
+                        })
+                        .transpose()?,
+                },
+            )),
+        })),
+        synctv_core::models::ChatMetadata::MemberJoined(payload) => {
+            Ok(Some(client_proto::ChatMetadata {
+                metadata: Some(client_proto::chat_metadata::Metadata::MemberJoined(
+                    client_proto::ChatMemberJoinedMetadata {
+                        user_id: encode_user_id_for_proto(payload.user_id, public_id_codec)?,
+                        username: payload.username.clone(),
+                        actor_user_id: payload
+                            .actor_user_id
+                            .map(|id| encode_user_id_for_proto(id, public_id_codec))
+                            .transpose()?
+                            .unwrap_or_default(),
+                        actor_username: payload.actor_username.clone().unwrap_or_default(),
+                        role: room_role_to_proto(payload.role),
+                    },
+                )),
+            }))
+        }
+    }
 }
 
 pub(crate) fn chat_metadata_from_proto(
     metadata: Option<&client_proto::ChatMetadata>,
-) -> Result<synctv_core::models::ChatMetadata, crate::impls::ApiError> {
+) -> Result<Option<synctv_core::models::ChatMetadata>, crate::impls::ApiError> {
     let Some(metadata) = metadata else {
-        return Ok(synctv_core::models::ChatMetadata::default());
+        return Ok(None);
     };
-    Ok(synctv_core::models::ChatMetadata {
-        presentation: metadata.presentation.as_ref().map(|presentation| {
+    let Some(client_proto::chat_metadata::Metadata::User(user)) = metadata.metadata.as_ref() else {
+        return Err(crate::impls::ApiError::InvalidInput(
+            "Client chat metadata must use user metadata".to_string(),
+        ));
+    };
+    let metadata = synctv_core::models::ChatMetadata::User(synctv_core::models::ChatUserMetadata {
+        presentation: user.presentation.as_ref().map(|presentation| {
             synctv_core::models::ChatPresentationMetadata {
                 display_position: presentation.display_position.clone(),
                 display_color: presentation.display_color.clone(),
             }
         }),
         playback: None,
-    })
+    });
+    Ok((!metadata.is_empty()).then_some(metadata))
 }
 
 pub(crate) fn content_report_metadata_to_proto(
-    metadata: &synctv_core::models::ContentReportMetadata,
+    metadata: &Option<synctv_core::models::ContentReportMetadata>,
 ) -> Result<Option<client_proto::ContentReportMetadata>, crate::impls::ApiError> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
     if metadata.is_empty() {
         return Ok(None);
     }
@@ -356,15 +398,15 @@ pub(crate) fn content_report_metadata_to_proto(
 
 pub(crate) fn content_report_metadata_from_proto(
     metadata: Option<&client_proto::ContentReportMetadata>,
-) -> Result<synctv_core::models::ContentReportMetadata, crate::impls::ApiError> {
-    Ok(match metadata {
-        Some(metadata) => synctv_core::models::ContentReportMetadata {
-            client_reason: metadata.client_reason.clone(),
-        },
-        None => synctv_core::models::ContentReportMetadata::default(),
-    })
+) -> Result<Option<synctv_core::models::ContentReportMetadata>, crate::impls::ApiError> {
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
+    let metadata = synctv_core::models::ContentReportMetadata {
+        client_reason: metadata.client_reason.clone(),
+    };
+    Ok((!metadata.is_empty()).then_some(metadata))
 }
-
 pub(crate) fn provider_target_to_proto(
     target: &synctv_core::models::ProviderTarget,
 ) -> client_proto::ProviderTarget {
@@ -1167,7 +1209,51 @@ pub(crate) fn stored_file_reference_to_media_cover(
     })
 }
 
+pub(crate) fn stored_file_reference_to_media_thumbnail(
+    file: &synctv_core::models::StoredFileReference,
+    access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
+) -> Result<synctv_proto::client::MediaThumbnail, crate::impls::ApiError> {
+    Ok(synctv_proto::client::MediaThumbnail {
+        id: file.file_reference_id.to_string(),
+        url: access_url_field(access, "media thumbnail")?,
+        object_access: proto_object_access(access),
+        mime_type: file.mime_type.clone(),
+        size_bytes: file.size_bytes,
+        width: file.metadata.width.unwrap_or_default(),
+        height: file.metadata.height.unwrap_or_default(),
+        metadata: file_metadata_to_proto(&file.metadata)?,
+        variants: file_object_variants_from_metadata(&file.metadata, "media thumbnail")?,
+    })
+}
+
+pub(crate) fn source_url_to_resource_cover(url: String) -> synctv_proto::client::ResourceCover {
+    synctv_proto::client::ResourceCover {
+        url,
+        object_access: None,
+        metadata: None,
+        variants: Vec::new(),
+    }
+}
+
+pub(crate) fn source_url_to_media_cover(url: String) -> synctv_proto::client::MediaCover {
+    synctv_proto::client::MediaCover {
+        id: String::new(),
+        url,
+        object_access: None,
+        mime_type: String::new(),
+        size_bytes: 0,
+        width: 0,
+        height: 0,
+        metadata: None,
+        variants: Vec::new(),
+    }
+}
+
 fn empty_media_cover() -> Option<synctv_proto::client::MediaCover> {
+    None
+}
+
+fn empty_media_thumbnail() -> Option<synctv_proto::client::MediaThumbnail> {
     None
 }
 
@@ -1600,6 +1686,7 @@ pub(crate) fn try_media_to_proto_for_viewer_without_cover(
         version: i64::from(media.version),
         description: media.description.clone(),
         cover: empty_media_cover(),
+        thumbnail: empty_media_thumbnail(),
     })
 }
 
@@ -1649,6 +1736,8 @@ pub(crate) fn try_media_to_proto_for_viewer_with_cover(
     viewer_id: Option<synctv_core::models::UserId>,
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
+    thumbnail: Option<&synctv_core::models::StoredFileReference>,
+    thumbnail_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<synctv_proto::client::Media, crate::impls::ApiError> {
     let mut proto = try_media_to_proto_for_viewer_without_cover(
@@ -1659,6 +1748,9 @@ pub(crate) fn try_media_to_proto_for_viewer_with_cover(
     )?;
     proto.cover = cover
         .map(|file| stored_file_reference_to_media_cover(file, cover_access))
+        .transpose()?;
+    proto.thumbnail = thumbnail
+        .map(|file| stored_file_reference_to_media_thumbnail(file, thumbnail_access))
         .transpose()?;
     Ok(proto)
 }
@@ -1855,6 +1947,7 @@ pub(crate) fn provider_playback_info_to_model(
     info: &synctv_core::provider::PlaybackInfo,
 ) -> synctv_core::models::media::PlaybackInfo {
     synctv_core::models::media::PlaybackInfo {
+        thumbnail: info.thumbnail.clone(),
         medias: info.medias.clone(),
         default_media_index: info.default_media_index,
         subtitles: info.subtitles.clone(),
@@ -1883,7 +1976,7 @@ pub(crate) fn try_playback_to_proto(
         })
         .collect::<Result<_, crate::impls::ApiError>>()?;
 
-    let metadata = playback_metadata_to_proto(result, signing)?;
+    let metadata = playback_metadata_to_proto(result, public_id_codec)?;
 
     Ok(synctv_proto::client::Playback {
         media_id: result
@@ -1954,95 +2047,77 @@ fn validate_playback_result_shape(
 
 fn playback_metadata_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
-    signing: Option<&PlaybackHttpSigningContext<'_>>,
+    public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<Option<synctv_proto::client::PlaybackMetadata>, crate::impls::ApiError> {
     use synctv_core::models::media::PlaybackMetadata;
+    use synctv_proto::client::playback_metadata;
 
-    let PlaybackMetadata {
-        name,
-        size,
-        provider,
-        source_host,
-        thumbnail,
-        proxy_thumbnail,
-        external_subtitle_count,
-        video_preview_error,
-        transcoding_tasks,
-        video_preview,
-        duration,
-        width,
-        height,
-        format,
-        filename,
-        is_live,
-        media_id,
-        room_id,
-        content_type,
-        bilibili,
-        emby,
-    } = &result.metadata;
+    let Some(metadata) = result.metadata.as_ref() else {
+        return Ok(None);
+    };
 
-    let thumbnail_url = proxy_thumbnail
-        .as_ref()
-        .map(|resource| signed_alist_thumbnail_url(resource, signing))
-        .transpose()?;
-
-    let metadata = synctv_proto::client::PlaybackMetadata {
-        name: name.clone(),
-        size: *size,
-        provider: provider.clone(),
-        source_host: source_host.clone(),
-        thumbnail: thumbnail_url.or_else(|| thumbnail.clone()),
-        external_subtitle_count: external_subtitle_count
-            .map(|count| usize_to_i32(count, "external subtitle count"))
-            .transpose()?,
-        video_preview_error: video_preview_error.clone(),
-        transcoding_tasks: transcoding_tasks
-            .iter()
-            .map(|task| {
-                Ok(synctv_proto::client::AlistTranscodingTaskMetadata {
-                    mode_name: task.mode_name.clone(),
-                    template_id: task.template_id.clone(),
-                    template_name: task.template_name.clone(),
-                    template_width: task.template_width,
-                    template_height: task.template_height,
-                    stage: task.stage.clone(),
-                    status: task.status.clone(),
-                })
-            })
-            .collect::<Result<_, crate::impls::ApiError>>()?,
-        video_preview: video_preview
-            .as_ref()
-            .map(|preview| {
-                Ok::<_, crate::impls::ApiError>(synctv_proto::client::AlistVideoPreviewMetadata {
-                    drive_id: preview.drive_id.clone(),
-                    file_id: preview.file_id.clone(),
-                    provider: preview.provider.clone(),
-                    category: preview.category.clone(),
-                    transcoding_count: u64::try_from(preview.transcoding_count).map_err(|_| {
-                        crate::impls::ApiError::Internal(
-                            "video preview transcoding count exceeds u64::MAX".to_string(),
+    let metadata = match metadata {
+        PlaybackMetadata::Alist(metadata) => {
+            playback_metadata::Metadata::Alist(synctv_proto::client::AlistPlaybackMetadata {
+                name: metadata.name.clone(),
+                size: metadata.size,
+                provider: metadata.provider.clone(),
+                external_subtitle_count: metadata
+                    .external_subtitle_count
+                    .map(|count| usize_to_i32(count, "external subtitle count"))
+                    .transpose()?,
+                video_preview_error: metadata.video_preview_error.clone(),
+                transcoding_tasks: metadata
+                    .transcoding_tasks
+                    .iter()
+                    .map(|task| {
+                        Ok(synctv_proto::client::AlistTranscodingTaskMetadata {
+                            mode_name: task.mode_name.clone(),
+                            template_id: task.template_id.clone(),
+                            template_name: task.template_name.clone(),
+                            template_width: task.template_width,
+                            template_height: task.template_height,
+                            stage: task.stage.clone(),
+                            status: task.status.clone(),
+                        })
+                    })
+                    .collect::<Result<_, crate::impls::ApiError>>()?,
+                video_preview: metadata
+                    .video_preview
+                    .as_ref()
+                    .map(|preview| {
+                        Ok::<_, crate::impls::ApiError>(
+                            synctv_proto::client::AlistVideoPreviewMetadata {
+                                drive_id: preview.drive_id.clone(),
+                                file_id: preview.file_id.clone(),
+                                provider: preview.provider.clone(),
+                                category: preview.category.clone(),
+                                transcoding_count: u64::try_from(preview.transcoding_count)
+                                    .map_err(|_| {
+                                        crate::impls::ApiError::Internal(
+                                            "video preview transcoding count exceeds u64::MAX"
+                                                .to_string(),
+                                        )
+                                    })?,
+                                subtitle_count: u64::try_from(preview.subtitle_count).map_err(
+                                    |_| {
+                                        crate::impls::ApiError::Internal(
+                                            "video preview subtitle count exceeds u64::MAX"
+                                                .to_string(),
+                                        )
+                                    },
+                                )?,
+                            },
                         )
-                    })?,
-                    subtitle_count: u64::try_from(preview.subtitle_count).map_err(|_| {
-                        crate::impls::ApiError::Internal(
-                            "video preview subtitle count exceeds u64::MAX".to_string(),
-                        )
-                    })?,
-                })
+                    })
+                    .transpose()?,
+                width: metadata.width,
+                height: metadata.height,
             })
-            .transpose()?,
-        duration: *duration,
-        width: *width,
-        height: *height,
-        format: format.clone(),
-        filename: filename.clone(),
-        is_live: *is_live,
-        media_id: media_id.map(|id| id.to_string()),
-        room_id: room_id.map(|id| id.to_string()),
-        content_type: content_type.clone(),
-        bilibili: bilibili.as_ref().map(|metadata| {
-            synctv_proto::client::BilibiliPlaybackMetadata {
+        }
+        PlaybackMetadata::Bilibili(metadata) => {
+            playback_metadata::Metadata::Bilibili(synctv_proto::client::BilibiliPlaybackMetadata {
+                content_type: metadata.content_type.clone(),
                 bvid: metadata.bvid.clone(),
                 aid: metadata.aid,
                 epid: metadata.epid,
@@ -2051,60 +2126,96 @@ fn playback_metadata_to_proto(
                 fallback_format: metadata.fallback_format.clone(),
                 quality: metadata.quality,
                 room_id: metadata.room_id,
-            }
-        }),
-        emby: emby
-            .as_ref()
-            .map(|metadata| synctv_proto::client::EmbyPlaybackMetadata {
+            })
+        }
+        PlaybackMetadata::Emby(metadata) => {
+            playback_metadata::Metadata::Emby(synctv_proto::client::EmbyPlaybackMetadata {
                 item_type: metadata.item_type.clone(),
                 series_name: metadata.series_name.clone(),
                 season_name: metadata.season_name.clone(),
                 play_session_id: metadata.play_session_id.clone(),
-            }),
+            })
+        }
+        PlaybackMetadata::DirectUrl(metadata) => playback_metadata::Metadata::DirectUrl(
+            synctv_proto::client::DirectUrlPlaybackMetadata {
+                format: metadata.format.clone(),
+                filename: metadata.filename.clone(),
+            },
+        ),
+        PlaybackMetadata::LiveProxy(metadata) => playback_metadata::Metadata::LiveProxy(
+            synctv_proto::client::LiveProxyPlaybackMetadata {
+                media_id: encode_media_id_for_proto(metadata.media_id, public_id_codec)?,
+                room_id: encode_room_id_for_proto(metadata.room_id, public_id_codec)?,
+                source_host: metadata.source_host.clone(),
+            },
+        ),
+        PlaybackMetadata::Live(metadata) => {
+            playback_metadata::Metadata::Live(synctv_proto::client::LivePlaybackMetadata {
+                media_id: encode_media_id_for_proto(metadata.media_id, public_id_codec)?,
+                room_id: encode_room_id_for_proto(metadata.room_id, public_id_codec)?,
+            })
+        }
     };
 
-    let has_metadata = metadata.name.is_some()
-        || metadata.size.is_some()
-        || metadata.provider.is_some()
-        || metadata.source_host.is_some()
-        || metadata.thumbnail.is_some()
-        || metadata.external_subtitle_count.is_some()
-        || metadata.video_preview_error.is_some()
-        || !metadata.transcoding_tasks.is_empty()
-        || metadata.video_preview.is_some()
-        || metadata.duration.is_some()
-        || metadata.width.is_some()
-        || metadata.height.is_some()
-        || metadata.format.is_some()
-        || metadata.filename.is_some()
-        || metadata.is_live.is_some()
-        || metadata.media_id.is_some()
-        || metadata.room_id.is_some()
-        || metadata.content_type.is_some()
-        || metadata.bilibili.is_some()
-        || metadata.emby.is_some();
-    Ok(has_metadata.then_some(metadata))
+    Ok(Some(synctv_proto::client::PlaybackMetadata {
+        metadata: Some(metadata),
+    }))
 }
 
 fn signed_alist_thumbnail_url(
-    resource: &synctv_core::models::media::PlaybackProxyResourceMetadata,
+    version: &str,
+    expires_at: i64,
     signing: Option<&PlaybackHttpSigningContext<'_>>,
 ) -> Result<String, crate::impls::ApiError> {
-    let version = resource.version.trim();
-    let resource_name = resource.resource.as_str();
+    let version = version.trim();
 
     let signing = require_provider_signing(signing, "Alist thumbnail URL")?;
     let query = signed_provider_query(
         "alist",
         version,
-        resource.expires_at,
-        resource_name.to_string(),
+        expires_at,
+        "thumbnail".to_string(),
         signing,
     );
     let version = path_segment_encode(version);
     Ok(format!(
         "/api/playback-providers/alist/{version}/thumbnail?{query}"
     ))
+}
+
+fn playback_info_thumbnail_to_proto(
+    info: &synctv_core::models::media::PlaybackInfo,
+    signing: Option<&PlaybackHttpSigningContext<'_>>,
+) -> Result<Option<String>, crate::impls::ApiError> {
+    let Some(thumbnail) = info
+        .thumbnail
+        .as_deref()
+        .map(str::trim)
+        .filter(|thumbnail| !thumbnail.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let Some((version, expires_at)) = alist_proxy_resource_for_thumbnail(info) else {
+        return Ok(Some(thumbnail.to_string()));
+    };
+
+    signed_alist_thumbnail_url(version, expires_at, signing).map(Some)
+}
+
+fn alist_proxy_resource_for_thumbnail(
+    info: &synctv_core::models::media::PlaybackInfo,
+) -> Option<(&str, i64)> {
+    use synctv_core::models::media::{PlaybackAlistMedia, PlaybackMediaProvider};
+
+    info.medias.iter().find_map(|media| match &media.provider {
+        PlaybackMediaProvider::Alist(PlaybackAlistMedia::ProxyFile {
+            version,
+            expires_at,
+            ..
+        }) => Some((version.as_str(), *expires_at)),
+        _ => None,
+    })
 }
 
 /// Convert models `PlaybackInfo` to proto `PlaybackInfo`
@@ -2122,7 +2233,9 @@ fn playback_info_to_proto(
         .default_media_index
         .map(|index| checked_index_i32(index, info.medias.len(), "default playback media index"))
         .transpose()?;
+    let thumbnail = playback_info_thumbnail_to_proto(info, signing)?;
     Ok(synctv_proto::client::PlaybackInfo {
+        thumbnail,
         medias: info
             .medias
             .iter()
@@ -2657,7 +2770,7 @@ mod playback_conversion_tests {
             duration_seconds: None,
             is_live: false,
             target: None,
-            metadata: synctv_core::models::PlaybackMetadata::default(),
+            metadata: None,
         }
     }
 
@@ -2677,7 +2790,7 @@ mod playback_conversion_tests {
             duration_seconds: None,
             is_live: false,
             target: None,
-            metadata: synctv_core::models::PlaybackMetadata::default(),
+            metadata: None,
         }
     }
 
@@ -2772,6 +2885,7 @@ mod playback_conversion_tests {
     #[test]
     fn provider_playback_info_to_model_preserves_default_indices() {
         let provider_info = synctv_core::provider::PlaybackInfo {
+            thumbnail: None,
             medias: vec![
                 PlaybackMedia::simple(
                     "primary".to_string(),
@@ -2951,12 +3065,13 @@ mod playback_conversion_tests {
     }
 
     #[test]
-    fn alist_thumbnail_metadata_exposes_signed_proxy_url() {
+    fn alist_playback_info_thumbnail_exposes_signed_proxy_url() {
         let key = signing_key();
         let signing = signing_context(&key);
         let expires_at = Utc::now().timestamp() + 1800;
         let mut result = playback_result(
             PlaybackInfo::builder()
+                .thumbnail(Some("https://alist.example.com/thumb.jpg".to_string()))
                 .add_media(PlaybackMedia {
                     name: "proxied".to_string(),
                     format: "mp4".to_string(),
@@ -2974,21 +3089,15 @@ mod playback_conversion_tests {
                 .build(),
         );
         result.provider = "alist".to_string();
-        result.metadata.thumbnail = Some("https://alist.example.com/thumb.jpg".to_string());
-        result.metadata.proxy_thumbnail =
-            Some(synctv_core::models::media::PlaybackProxyResourceMetadata {
-                version: "v 1".to_string(),
-                expires_at,
-                resource: synctv_core::models::media::PlaybackProxyResource::Thumbnail,
-            });
 
         let proto = try_playback_to_proto(&result, &codec(), Some(&signing))
             .expect("playback should convert");
         let thumbnail = proto
-            .metadata
+            .playback_infos
+            .get("dash")
             .as_ref()
-            .and_then(|metadata| metadata.thumbnail.as_deref())
-            .expect("thumbnail metadata should exist");
+            .and_then(|info| info.thumbnail.as_deref())
+            .expect("playback info thumbnail should exist");
 
         assert!(
             thumbnail.starts_with("/api/playback-providers/alist/v%201/thumbnail?"),

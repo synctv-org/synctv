@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS user_media_provider_credentials (
         FOREIGN KEY (provider_instance_name) REFERENCES media_provider_instances(name) ON DELETE CASCADE,
     CONSTRAINT user_media_provider_credentials_user_provider_server_unique
         UNIQUE(user_id, provider, server_id),
+    CONSTRAINT user_media_provider_credentials_credential_data_object
+        CHECK (jsonb_typeof(credential_data) = 'object'),
     CONSTRAINT user_media_provider_credentials_server_id_not_empty
         CHECK (length(trim(server_id)) > 0)
 );

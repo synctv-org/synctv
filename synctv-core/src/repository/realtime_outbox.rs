@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
+use std::marker::PhantomData;
 
 use crate::{
     models::{RealtimeEvent, RoomPermissionSet},
@@ -16,6 +17,53 @@ pub const REALTIME_OUTBOX_CHANNEL: &str = "realtime_outbox_new";
 const DEFAULT_MAX_ATTEMPTS: i32 = 12;
 const INSERT_MANY_CHUNK_SIZE: usize = 1000;
 
+struct JsonbArray<T> {
+    values: Vec<serde_json::Value>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Serialize> JsonbArray<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+            _marker: PhantomData,
+        }
+    }
+
+    fn push(&mut self, value: &T) -> Result<()> {
+        self.values.push(serde_json::to_value(value)?);
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[serde_json::Value] {
+        &self.values
+    }
+}
+
+struct OptionalJsonbArray<T> {
+    values: Vec<Option<serde_json::Value>>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Serialize> OptionalJsonbArray<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+            _marker: PhantomData,
+        }
+    }
+
+    fn push(&mut self, value: Option<&T>) -> Result<()> {
+        self.values
+            .push(value.map(serde_json::to_value).transpose()?);
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[Option<serde_json::Value>] {
+        &self.values
+    }
+}
+
 struct RoomResourceEventBatch {
     event_ids: Vec<String>,
     scope_types: Vec<i16>,
@@ -29,8 +77,8 @@ struct RoomResourceEventBatch {
     event_versions: Vec<i64>,
     aggregate_versions: Vec<Option<i64>>,
     actor_user_ids: Vec<Option<i64>>,
-    payloads: Vec<Option<serde_json::Value>>,
-    summaries: Vec<serde_json::Value>,
+    payloads: OptionalJsonbArray<RoomResourceEventPayload>,
+    summaries: JsonbArray<RoomResourceEventSummary>,
     occurred_ats: Vec<DateTime<Utc>>,
 }
 
@@ -49,8 +97,8 @@ impl RoomResourceEventBatch {
             event_versions: Vec::with_capacity(capacity),
             aggregate_versions: Vec::with_capacity(capacity),
             actor_user_ids: Vec::with_capacity(capacity),
-            payloads: Vec::with_capacity(capacity),
-            summaries: Vec::with_capacity(capacity),
+            payloads: OptionalJsonbArray::with_capacity(capacity),
+            summaries: JsonbArray::with_capacity(capacity),
             occurred_ats: Vec::with_capacity(capacity),
         }
     }
@@ -69,14 +117,8 @@ impl RoomResourceEventBatch {
         self.event_versions.push(event.event_version);
         self.aggregate_versions.push(event.aggregate_version);
         self.actor_user_ids.push(event.actor_user_id);
-        self.payloads.push(
-            event
-                .payload
-                .as_ref()
-                .map(serde_json::to_value)
-                .transpose()?,
-        );
-        self.summaries.push(serde_json::to_value(&event.summary)?);
+        self.payloads.push(event.payload.as_ref())?;
+        self.summaries.push(&event.summary)?;
         self.occurred_ats.push(event.occurred_at);
         Ok(())
     }
@@ -89,7 +131,7 @@ struct RealtimeOutboxEventBatch {
     event_types: Vec<String>,
     event_versions: Vec<i64>,
     aggregate_versions: Vec<Option<i64>>,
-    payloads: Vec<serde_json::Value>,
+    payloads: JsonbArray<RealtimeEvent>,
     statuses: Vec<i16>,
 }
 
@@ -102,7 +144,7 @@ impl RealtimeOutboxEventBatch {
             event_types: Vec::with_capacity(capacity),
             event_versions: Vec::with_capacity(capacity),
             aggregate_versions: Vec::with_capacity(capacity),
-            payloads: Vec::with_capacity(capacity),
+            payloads: JsonbArray::with_capacity(capacity),
             statuses: Vec::with_capacity(capacity),
         }
     }
@@ -114,7 +156,7 @@ impl RealtimeOutboxEventBatch {
         self.event_types.push(event.event_type.clone());
         self.event_versions.push(event.event_version);
         self.aggregate_versions.push(event.aggregate_version);
-        self.payloads.push(serde_json::to_value(&event.payload)?);
+        self.payloads.push(&event.payload)?;
         self.statuses.push(RealtimeOutboxStatus::Pending.as_i16());
         Ok(())
     }
@@ -643,8 +685,8 @@ async fn insert_resource_event_chunk(
         &batch.event_versions,
         &batch.aggregate_versions as _,
         &batch.actor_user_ids as _,
-        &batch.payloads as _,
-        &batch.summaries,
+        batch.payloads.as_slice() as _,
+        batch.summaries.as_slice(),
         &batch.occurred_ats,
     )
     .execute(executor)
@@ -725,7 +767,7 @@ async fn insert_realtime_outbox_event_chunk(
         &batch.event_types,
         &batch.event_versions,
         &batch.aggregate_versions as _,
-        &batch.payloads,
+        batch.payloads.as_slice(),
         &batch.statuses,
         REALTIME_OUTBOX_CHANNEL,
     )

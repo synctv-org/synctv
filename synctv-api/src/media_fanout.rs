@@ -524,6 +524,7 @@ mod tests {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 1,

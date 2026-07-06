@@ -37,6 +37,7 @@ fn media_edit_requires_matching_creator() {
         updated_at: chrono::Utc::now(),
         version: 1,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
     };
 
     assert!(ensure_media_creator_can_edit(&media, &creator_id).is_ok());

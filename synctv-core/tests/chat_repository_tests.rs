@@ -7,8 +7,9 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        try_hash_playback_target, ChatMessage, ChatPlaybackMessagesQuery, MediaId, PlaylistId,
-        ProviderTarget, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
+        try_hash_playback_target, ChatMessage, ChatMetadata, ChatPlaybackMessagesQuery,
+        ChatPlaybackMetadata, ChatUserMetadata, MediaId, PlaylistId, ProviderTarget, Room, RoomId,
+        RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
@@ -189,18 +190,20 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
     ] {
         let mut msg = make_chat_message(&room.id, &user.id, content);
         msg.status = status;
-        msg.metadata = synctv_core::models::ChatMetadata {
-            playback: Some(synctv_core::models::ChatPlaybackMetadata {
-                media_id: Some(media_id),
-                playlist_id: Some(playlist_id),
-                target: Some(synctv_core::models::ProviderTarget::alist(
-                    "/playback-target-1".to_string(),
-                )),
-                target_hash: None,
-                position_seconds: Some(position_seconds),
-            }),
-            ..Default::default()
-        };
+        msg.metadata = Some(synctv_core::models::ChatMetadata::User(
+            synctv_core::models::ChatUserMetadata {
+                playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                    media_id: Some(media_id),
+                    playlist_id: Some(playlist_id),
+                    target: Some(synctv_core::models::ProviderTarget::alist(
+                        "/playback-target-1".to_string(),
+                    )),
+                    target_hash: None,
+                    position_seconds: Some(position_seconds),
+                }),
+                ..Default::default()
+            },
+        ));
         ok(
             chat_repo.create(&msg).await,
             "playback chat message should be created",
@@ -229,6 +232,100 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
         .map(|message| message.message.content)
         .collect::<Vec<_>>();
     assert_eq!(contents, vec!["inside-a", "inside-b"]);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_playback_messages_handles_nullable_metadata_and_missing_target() {
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (user, room) = setup_room(
+        &pool,
+        "chat_playback_target_user",
+        "chat_playback_target_room",
+    )
+    .await;
+    let media_id = MediaId::expect_positive(300_101);
+    let playlist_id = PlaylistId::expect_positive(300_102);
+    let target = ProviderTarget::alist("/targeted.mp4".to_string());
+    let other_target = ProviderTarget::alist("/other.mp4".to_string());
+
+    let null_metadata = make_chat_message(&room.id, &user.id, "null-metadata");
+    let created_null = ok(
+        chat_repo.create(&null_metadata).await,
+        "null metadata message should be created",
+    );
+    assert!(created_null.metadata.is_none());
+
+    for (content, target) in [
+        ("no-target", None),
+        ("matching-target", Some(target.clone())),
+        ("other-target", Some(other_target)),
+    ] {
+        let mut msg = make_chat_message(&room.id, &user.id, content);
+        msg.metadata = Some(ChatMetadata::User(ChatUserMetadata {
+            playback: Some(ChatPlaybackMetadata {
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target,
+                target_hash: None,
+                position_seconds: Some(42.0),
+            }),
+            ..Default::default()
+        }));
+        ok(
+            chat_repo.create(&msg).await,
+            "playback target test message should be created",
+        );
+    }
+
+    let without_target = ok(
+        chat_repo
+            .list_playback_messages(&ChatPlaybackMessagesQuery {
+                room_id: room.id,
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target: None,
+                position_seconds: 42.0,
+                before_seconds: 0.0,
+                after_seconds: 0.0,
+                limit: 100,
+                include_deleted: false,
+            })
+            .await,
+        "playback chat messages without target should list",
+    );
+    assert_eq!(
+        without_target
+            .iter()
+            .map(|message| message.message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["no-target", "matching-target", "other-target"]
+    );
+
+    let with_target = ok(
+        chat_repo
+            .list_playback_messages(&ChatPlaybackMessagesQuery {
+                room_id: room.id,
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target: Some(target),
+                position_seconds: 42.0,
+                before_seconds: 0.0,
+                after_seconds: 0.0,
+                limit: 100,
+                include_deleted: false,
+            })
+            .await,
+        "playback chat messages with target should list",
+    );
+    assert_eq!(
+        with_target
+            .iter()
+            .map(|message| message.message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["matching-target"]
+    );
 }
 
 // ─── get_by_id without time restriction ─────────────────────────────────────────

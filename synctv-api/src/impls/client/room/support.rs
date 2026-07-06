@@ -1,8 +1,8 @@
 use crate::impls::ApiError;
 use std::net::IpAddr;
 use synctv_core::models::{
-    ChatMessageEvent, ChatMessageWithAttachments, DeleteChatMessage, EditChatMessage, FileBlob,
-    FileUploadSession, NewStoredFile, UserId,
+    ChatMessageEvent, ChatMessageSelection, ChatMessageType, ChatMessageWithAttachments,
+    DeleteChatMessage, EditChatMessage, FileBlob, FileUploadSession, NewStoredFile, UserId,
 };
 
 use super::super::convert::chat_metadata_from_proto;
@@ -811,13 +811,43 @@ fn parse_chat_history_cursor(cursor: &str) -> Result<Option<ChatHistoryCursor>, 
 
 pub(super) fn build_get_chat_history_request(
     req: &synctv_proto::client::GetChatHistoryRequest,
-) -> Result<(i32, Option<ChatHistoryCursor>), ApiError> {
+) -> Result<(i32, Option<ChatHistoryCursor>, ChatMessageSelection), ApiError> {
     crate::impls::validate_proto_request(req)?;
 
     let limit = if req.limit > 0 { req.limit } else { 50 };
     let cursor = parse_chat_history_cursor(&req.cursor)?;
+    let selection = chat_message_selection_from_proto(&req.include_message_types)?;
 
-    Ok((limit, cursor))
+    Ok((limit, cursor, selection))
+}
+
+pub(crate) fn chat_message_selection_from_proto(
+    include_message_types: &[i32],
+) -> Result<ChatMessageSelection, ApiError> {
+    if include_message_types.is_empty() {
+        return Ok(ChatMessageSelection::user_default());
+    }
+    let include_message_types = include_message_types
+        .iter()
+        .map(|value| {
+            let message_type =
+                synctv_proto::client::ChatMessageType::try_from(*value).map_err(|_| {
+                    ApiError::InvalidInput(format!("Invalid chat message type: {value}"))
+                })?;
+            match message_type {
+                synctv_proto::client::ChatMessageType::Unspecified => Err(ApiError::InvalidInput(
+                    "Chat message type must be specified".to_string(),
+                )),
+                synctv_proto::client::ChatMessageType::User => Ok(ChatMessageType::User),
+                synctv_proto::client::ChatMessageType::SystemMemberJoined => {
+                    Ok(ChatMessageType::SystemMemberJoined)
+                }
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ChatMessageSelection {
+        include_message_types,
+    })
 }
 
 pub(super) fn build_search_chat_messages_query(

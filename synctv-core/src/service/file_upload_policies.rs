@@ -3,6 +3,7 @@ use crate::models::{FileObjectKind, FileUploadPolicy};
 pub const MAX_CHAT_ATTACHMENT_SIZE_BYTES: i64 = 50 * 1024 * 1024;
 pub const MAX_USER_AVATAR_SIZE_BYTES: i64 = 5 * 1024 * 1024;
 pub const MAX_MEDIA_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
+pub const MAX_MEDIA_THUMBNAIL_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_ROOM_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_PLAYLIST_COVER_SIZE_BYTES: i64 = 10 * 1024 * 1024;
 pub const MAX_CHAT_ATTACHMENT_IMAGE_WIDTH: i32 = 8192;
@@ -141,6 +142,18 @@ pub fn media_cover_upload_policy() -> FileUploadPolicy {
 }
 
 #[must_use]
+pub fn media_thumbnail_upload_policy() -> FileUploadPolicy {
+    typed_image_policy(
+        "media_thumbnail",
+        FileObjectKind::MediaThumbnail,
+        MAX_MEDIA_THUMBNAIL_SIZE_BYTES,
+        MAX_COVER_IMAGE_WIDTH,
+        MAX_COVER_IMAGE_HEIGHT,
+        "media/thumbnails",
+    )
+}
+
+#[must_use]
 pub fn room_cover_upload_policy() -> FileUploadPolicy {
     typed_image_policy(
         "room_cover",
@@ -212,17 +225,20 @@ mod tests {
         let chat = chat_attachment_upload_policy();
         let avatar = user_avatar_upload_policy();
         let cover = media_cover_upload_policy();
+        let thumbnail = media_thumbnail_upload_policy();
         let room_cover = room_cover_upload_policy();
         let playlist_cover = playlist_cover_upload_policy();
 
         assert_eq!(chat.kind, "chat_attachment");
         assert_eq!(avatar.kind, "user_avatar");
         assert_eq!(cover.kind, "media_cover");
+        assert_eq!(thumbnail.kind, "media_thumbnail");
         assert_eq!(room_cover.kind, "room_cover");
         assert_eq!(playlist_cover.kind, "playlist_cover");
         assert_ne!(chat.storage_namespace, avatar.storage_namespace);
         assert_ne!(avatar.storage_namespace, cover.storage_namespace);
         assert_ne!(chat.storage_namespace, cover.storage_namespace);
+        assert_ne!(thumbnail.storage_namespace, cover.storage_namespace);
         assert_ne!(room_cover.storage_namespace, cover.storage_namespace);
         assert_ne!(
             playlist_cover.storage_namespace,
@@ -247,6 +263,11 @@ mod tests {
                 media_cover_upload_policy(),
                 "image/avif",
                 MAX_MEDIA_COVER_SIZE_BYTES,
+            ),
+            (
+                media_thumbnail_upload_policy(),
+                "image/webp",
+                MAX_MEDIA_THUMBNAIL_SIZE_BYTES,
             ),
             (
                 room_cover_upload_policy(),

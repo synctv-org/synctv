@@ -179,6 +179,7 @@ async fn insert_media(
         )),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -205,6 +206,7 @@ async fn insert_root_media(pool: &PgPool, room_id: &RoomId, name: &str, position
         )),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -268,6 +270,7 @@ impl TestDynamicProvider {
         infos.insert(
             "direct".to_string(),
             PlaybackInfo {
+                thumbnail: None,
                 medias: vec![PlaybackMedia {
                     name: String::new(),
                     format: "mp4".to_string(),
@@ -292,7 +295,7 @@ impl TestDynamicProvider {
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             is_live: Some(false),
-            metadata: synctv_core::models::PlaybackMetadata::default(),
+            metadata: None,
         }
     }
 
@@ -1054,6 +1057,7 @@ async fn test_no_current_media_plays_first() {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1075,6 +1079,7 @@ async fn test_no_current_media_plays_first() {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1199,6 +1204,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         ),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
@@ -1217,6 +1223,7 @@ async fn test_play_next_stops_when_next_media_creator_becomes_inactive() {
         ),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

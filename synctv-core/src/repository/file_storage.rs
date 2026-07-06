@@ -614,7 +614,6 @@ impl FileStorageRepository {
                 "file variant dimensions must be positive".to_string(),
             ));
         }
-        let metadata = serde_json::to_value(variant.metadata)?;
         let row = sqlx::query_as!(
             FileObjectVariant,
             r#"
@@ -664,7 +663,7 @@ impl FileStorageRepository {
             variant.lossy,
             variant.quality,
             variant.sort_order,
-            metadata
+            variant.metadata as _
         )
         .fetch_one(&self.pool)
         .await?;

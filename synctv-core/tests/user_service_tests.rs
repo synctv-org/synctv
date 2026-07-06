@@ -384,9 +384,9 @@ async fn insert_test_passkey(pool: &PgPool, user_id: &UserId, credential_id: &[u
     sqlx::query!(
         r"
         INSERT INTO auth_webauthn_credentials (
-            user_id, credential_id, passkey, public_key, name
+            user_id, credential_id, passkey, name
         )
-        VALUES ($1, $2, '{}'::jsonb, '{}'::jsonb, 'test passkey')
+        VALUES ($1, $2, '{}'::jsonb, 'test passkey')
         ",
         user_id.as_i64(),
         credential_id
@@ -498,6 +498,7 @@ fn make_media(
         ),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: now,
         updated_at: now,
         version: 0,
@@ -835,13 +836,15 @@ async fn assert_delete_user_removes_owned_resources_and_resets_foreign_room_play
     .await
     .checked("create oauth2 mapping");
 
+    let notification_data = synctv_core::models::NotificationData::default();
     sqlx::query!(
-        "INSERT INTO notifications (user_id, title, content, type, is_read, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, FALSE, NOW(), NOW())",
+        "INSERT INTO notifications (user_id, title, content, type, data, is_read, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, FALSE, NOW(), NOW())",
         doomed_user.id.as_i64(),
         "title",
         "body",
-        i16::from(NotificationType::SystemAnnouncement)
+        i16::from(NotificationType::SystemAnnouncement),
+        &notification_data as &synctv_core::models::NotificationData
     )
     .execute(&pool)
     .await

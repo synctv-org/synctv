@@ -35,6 +35,26 @@ fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
     result.map_err(test_error)
 }
 
+#[test]
+fn source_url_cover_conversions_return_display_only_payloads() {
+    let playlist_cover = source_url_to_resource_cover("https://cdn.example.test/cover.jpg".into());
+    assert_eq!(playlist_cover.url, "https://cdn.example.test/cover.jpg");
+    assert!(playlist_cover.metadata.is_none());
+    assert!(playlist_cover.variants.is_empty());
+    assert!(playlist_cover.object_access.is_none());
+
+    let media_cover = source_url_to_media_cover("https://cdn.example.test/media.jpg".into());
+    assert_eq!(media_cover.url, "https://cdn.example.test/media.jpg");
+    assert_eq!(media_cover.id, "");
+    assert_eq!(media_cover.mime_type, "");
+    assert_eq!(media_cover.size_bytes, 0);
+    assert_eq!(media_cover.width, 0);
+    assert_eq!(media_cover.height, 0);
+    assert!(media_cover.metadata.is_none());
+    assert!(media_cover.variants.is_empty());
+    assert!(media_cover.object_access.is_none());
+}
+
 fn unused_store_error() -> StoreError {
     StoreError::Backend("constructor-only test store access".to_string())
 }
@@ -911,6 +931,7 @@ fn make_test_media() -> synctv_core::models::Media {
         source_config: synctv_core_testing::bilibili_video_media_source_config("BV1234", 1, false),
         provider_instance_name: Some("bili_main".to_string()),
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: now,
         updated_at: now,
         version: 0,
@@ -1016,6 +1037,8 @@ fn test_media_to_proto_with_cover_includes_cover_payload() -> TestResult {
         media.creator_id,
         Some(&cover),
         Some(&cover_access),
+        None,
+        None,
         &public_id_codec,
     ))?;
     let proto_cover = proto
@@ -1061,6 +1084,8 @@ fn test_media_to_proto_with_object_access_cover_includes_structured_access() -> 
         media.creator_id,
         Some(&cover),
         Some(&cover_access),
+        None,
+        None,
         &public_id_codec,
     ))?;
     let proto_cover = proto
@@ -1080,6 +1105,52 @@ fn test_media_to_proto_with_object_access_cover_includes_structured_access() -> 
     );
     assert_eq!(object_access.encoded_object_key, "encoded-cover");
     assert_eq!(object_access.read_token, "read-cover");
+    Ok(())
+}
+
+#[test]
+fn test_media_to_proto_with_thumbnail_includes_distinct_payload() -> TestResult {
+    let public_id_codec = test_public_id_codec();
+    let media = make_test_media();
+    let thumbnail = make_test_cover_reference();
+    let thumbnail_access = crate::impls::stored_files::StoredFileObjectAccess::object_access(
+        synctv_core::models::FileObjectAccess {
+            object_kind: synctv_core::models::FileObjectKind::MediaThumbnail,
+            encoded_object_key: "encoded-thumbnail".to_string(),
+            read_token: "read-thumbnail".to_string(),
+        },
+    );
+    let proto = api_ok(try_media_to_proto_for_viewer_with_cover(
+        &media,
+        true,
+        media.creator_id,
+        None,
+        None,
+        Some(&thumbnail),
+        Some(&thumbnail_access),
+        &public_id_codec,
+    ))?;
+    let proto_thumbnail = proto
+        .thumbnail
+        .ok_or_else(|| test_error("media thumbnail should be present"))?;
+    let object_access = proto_thumbnail
+        .object_access
+        .ok_or_else(|| test_error("thumbnail object access should be present"))?;
+
+    assert!(proto.cover.is_none());
+    assert_eq!(
+        proto_thumbnail.url,
+        "/api/media/thumbnail-objects/encoded-thumbnail?token=read-thumbnail"
+    );
+    assert_eq!(proto_thumbnail.mime_type, "image/jpeg");
+    assert_eq!(proto_thumbnail.width, 1280);
+    assert_eq!(proto_thumbnail.height, 720);
+    assert_eq!(
+        object_access.object_kind,
+        synctv_proto::client::FileObjectAccessKind::MediaThumbnail as i32
+    );
+    assert_eq!(object_access.encoded_object_key, "encoded-thumbnail");
+    assert_eq!(object_access.read_token, "read-thumbnail");
     Ok(())
 }
 

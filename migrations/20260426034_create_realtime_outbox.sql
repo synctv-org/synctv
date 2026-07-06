@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS realtime_outbox (
     locked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     dispatched_at TIMESTAMPTZ,
-    last_error TEXT
+    last_error TEXT,
+    CHECK (jsonb_typeof(payload) = 'object')
 );
 
 CREATE INDEX IF NOT EXISTS idx_realtime_outbox_pending

@@ -57,14 +57,16 @@ pub(crate) use members::get_room_members;
 #[cfg(feature = "openapi")]
 pub(crate) use objects::__path_create_chat_attachment_upload_session;
 pub(crate) use objects::{
-    clear_media_cover, clear_playlist_cover, clear_room_cover,
+    clear_media_cover, clear_media_thumbnail, clear_playlist_cover, clear_room_cover,
     complete_chat_attachment_upload_session, complete_media_cover_upload_session,
-    complete_playlist_cover_upload_session, complete_room_cover_upload_session,
-    create_chat_attachment_upload_session, create_media_cover_upload_session,
+    complete_media_thumbnail_upload_session, complete_playlist_cover_upload_session,
+    complete_room_cover_upload_session, create_chat_attachment_upload_session,
+    create_media_cover_upload_session, create_media_thumbnail_upload_session,
     create_playlist_cover_upload_session, create_room_cover_upload_session,
-    get_chat_attachment_object, get_media_cover_object, get_playlist_cover_object,
-    get_room_cover_object, update_media_cover, update_playlist_cover, update_room_cover,
-    upload_chat_attachment_object, upload_media_cover_object, upload_playlist_cover_object,
+    get_chat_attachment_object, get_media_cover_object, get_media_thumbnail_object,
+    get_playlist_cover_object, get_room_cover_object, update_media_cover, update_media_thumbnail,
+    update_playlist_cover, update_room_cover, upload_chat_attachment_object,
+    upload_media_cover_object, upload_media_thumbnail_object, upload_playlist_cover_object,
     upload_room_cover_object,
 };
 #[cfg(feature = "openapi")]
@@ -120,8 +122,8 @@ pub(crate) use streams::{
 pub(crate) use streams::{get_room_stream_info, kick_room_stream, list_room_streams};
 #[cfg(test)]
 pub(crate) use types::{
-    ChatAttachmentObjectQuery, MediaCoverObjectQuery, PlaylistCoverObjectQuery,
-    RoomCoverObjectQuery,
+    ChatAttachmentObjectQuery, MediaCoverObjectQuery, MediaThumbnailObjectQuery,
+    PlaylistCoverObjectQuery, RoomCoverObjectQuery,
 };
 #[cfg(feature = "openapi")]
 pub(crate) use watch::{__path_watch_chat_events, __path_watch_chat_pin_events};

@@ -671,6 +671,14 @@ fn register_media_routes() -> Router<AppState> {
             axum::routing::put(room::update_media_cover).delete(room::clear_media_cover),
         )
         .route(
+            "/api/rooms/{roomId}/media/{mediaId}/thumbnail/upload-session",
+            post(room::create_media_thumbnail_upload_session),
+        )
+        .route(
+            "/api/rooms/{roomId}/media/{mediaId}/thumbnail",
+            axum::routing::put(room::update_media_thumbnail).delete(room::clear_media_thumbnail),
+        )
+        .route(
             "/api/rooms/{roomId}/cover/upload-session",
             post(room::create_room_cover_upload_session),
         )
@@ -934,6 +942,20 @@ fn register_media_cover_object_routes() -> Router<AppState> {
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
 }
 
+fn register_media_thumbnail_object_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/media/thumbnail-objects/{encodedObjectKey}/complete",
+            post(room::complete_media_thumbnail_upload_session),
+        )
+        .route(
+            "/api/media/thumbnail-objects/{encodedObjectKey}",
+            axum::routing::put(room::upload_media_thumbnail_object)
+                .get(room::get_media_thumbnail_object),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(body_limits::COVER))
+}
+
 fn register_room_cover_object_routes() -> Router<AppState> {
     Router::new()
         .route(
@@ -1119,6 +1141,7 @@ fn register_all_routes() -> Router<AppState> {
         .merge(register_read_routes())
         .merge(register_chat_attachment_object_routes())
         .merge(register_media_cover_object_routes())
+        .merge(register_media_thumbnail_object_routes())
         .merge(register_room_cover_object_routes())
         .merge(register_playlist_cover_object_routes())
         // WebRTC configuration endpoints

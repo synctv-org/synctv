@@ -11,6 +11,10 @@ use std::pin::Pin;
 /// Playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
+    /// Thumbnail URL for this playback mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+
     /// Concrete media playback behaviors for this mode.
     pub medias: Vec<crate::models::media::PlaybackMedia>,
 
@@ -57,8 +61,8 @@ pub struct PlaybackResult {
     pub is_live: Option<bool>,
 
     /// Additional provider metadata for display-only fields.
-    #[serde(default)]
-    pub metadata: crate::models::PlaybackMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<crate::models::PlaybackMetadata>,
 }
 
 /// Bilibili-owned live danmaku event stream.
@@ -255,6 +259,20 @@ pub enum DirectoryItemThumbnail {
     },
 }
 
+/// Provider-owned cover candidate for a persisted media or dynamic playlist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum SourceCover {
+    Url {
+        url: String,
+    },
+    Emby {
+        server_id: String,
+        credential_owner_id: crate::models::UserId,
+        item_id: String,
+    },
+}
+
 /// Directory item (file or folder)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryItem {
@@ -411,6 +429,15 @@ pub trait MediaProvider: Send + Sync {
         _source_config: SourceConfig<'_>,
     ) -> Result<Vec<ProviderCredentialDependency>, ProviderError> {
         Ok(Vec::new())
+    }
+
+    /// Return a single cover URL candidate for persisted resource listings.
+    async fn source_cover(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        _source_config: SourceConfig<'_>,
+    ) -> Result<Option<SourceCover>, ProviderError> {
+        Ok(None)
     }
 
     /// Prepare `source_config` for storage after validation.

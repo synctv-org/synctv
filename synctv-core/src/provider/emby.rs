@@ -8,7 +8,7 @@ use super::{
     DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicFolder,
     DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo,
     PlaybackResult, PreparedSourceConfig, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig,
+    ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
@@ -1242,15 +1242,11 @@ impl EmbyProvider {
             .await
             .map(Self::emby_item_from_provider)?;
 
-        let mut metadata = PlaybackMetadata {
-            name: Some(item.name.clone()),
-            emby: Some(EmbyPlaybackMetadata {
-                item_type: Some(item.item_type.clone()),
-                series_name: (!item.series_name.is_empty()).then_some(item.series_name.clone()),
-                season_name: (!item.season_name.is_empty()).then_some(item.season_name.clone()),
-                play_session_id: None,
-            }),
-            ..Default::default()
+        let mut metadata = EmbyPlaybackMetadata {
+            item_type: Some(item.item_type.clone()),
+            series_name: (!item.series_name.is_empty()).then_some(item.series_name.clone()),
+            season_name: (!item.season_name.is_empty()).then_some(item.season_name.clone()),
+            play_session_id: None,
         };
 
         let playback_hints = emby_playback_request_hints(playback_client_profile);
@@ -1261,10 +1257,7 @@ impl EmbyProvider {
 
         let playback_info = client.playback_info(playback_request).await?;
 
-        metadata
-            .emby
-            .get_or_insert_with(EmbyPlaybackMetadata::default)
-            .play_session_id = Some(playback_info.play_session_id.clone());
+        metadata.play_session_id = Some(playback_info.play_session_id.clone());
 
         let mut playback_infos = HashMap::new();
 
@@ -1352,6 +1345,7 @@ impl EmbyProvider {
             playback_infos.insert(
                 mode_name.clone(),
                 PlaybackInfo {
+                    thumbnail: None,
                     medias: vec![playback_media(
                         source.name.clone(),
                         format,
@@ -1376,6 +1370,7 @@ impl EmbyProvider {
                 playback_infos.insert(
                     format!("{mode_name}_transcode"),
                     PlaybackInfo {
+                        thumbnail: None,
                         medias: vec![playback_media(
                             format!("{mode_name} Transcode"),
                             "hls".to_string(),
@@ -1417,7 +1412,7 @@ impl EmbyProvider {
                 .duration_seconds
                 .filter(|duration| duration.is_finite() && *duration > 0.0),
             is_live: Some(false),
-            metadata,
+            metadata: Some(PlaybackMetadata::Emby(metadata)),
         })
     }
 }
@@ -1559,6 +1554,24 @@ impl MediaProvider for EmbyProvider {
             credential_owner_id.to_string(),
             config.server_id,
         )])
+    }
+
+    async fn source_cover(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<SourceCover>, ProviderError> {
+        let config = EmbySourceConfig::from_source_config(source_config)?;
+        let credential_owner_id = ctx.credential_owner_id().ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_owner_id not available in ProviderContext".to_string(),
+            )
+        })?;
+        Ok(Some(SourceCover::Emby {
+            server_id: config.server_id,
+            credential_owner_id: *credential_owner_id,
+            item_id: config.item_id,
+        }))
     }
 
     async fn prepare_source_config(
@@ -1793,8 +1806,8 @@ impl MediaProvider for EmbyProvider {
     fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
         result
             .metadata
-            .emby
             .as_ref()
+            .and_then(PlaybackMetadata::as_emby)
             .and_then(|metadata| metadata.play_session_id.as_deref())
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -1803,7 +1816,7 @@ impl MediaProvider for EmbyProvider {
 }
 
 impl EmbyProvider {
-    pub fn thumbnail_proxy_action(
+    pub fn thumbnail_action(
         item_id: &str,
         host: &str,
         api_key: &str,

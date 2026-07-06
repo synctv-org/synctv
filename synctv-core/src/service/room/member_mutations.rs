@@ -298,6 +298,16 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            room_id,
+            target_user_id,
+            snapshot.target_username.clone(),
+            actor_id,
+            snapshot.changed_by_username.clone(),
+            created.role,
+        )
+        .await?;
         tx.commit().await?;
         self.permission_service
             .seed_added_member_cache(&room_id, &target_user_id, created.version)
@@ -387,6 +397,16 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            room_id,
+            target_user_id,
+            snapshot.target_username.clone(),
+            actor_id,
+            snapshot.changed_by_username.clone(),
+            updated.role,
+        )
+        .await?;
         tx.commit().await?;
 
         self.permission_service
@@ -581,6 +601,16 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            room_id,
+            target_user_id,
+            snapshot.target_username.clone(),
+            actor_id,
+            snapshot.changed_by_username.clone(),
+            created.role,
+        )
+        .await?;
         tx.commit().await?;
         self.permission_service
             .seed_added_member_cache(&room_id, &target_user_id, created.version)
@@ -661,6 +691,16 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            room_id,
+            target_user_id,
+            snapshot.target_username.clone(),
+            actor_id,
+            snapshot.changed_by_username.clone(),
+            updated.role,
+        )
+        .await?;
         tx.commit().await?;
 
         self.permission_service

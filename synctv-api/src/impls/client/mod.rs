@@ -310,6 +310,61 @@ impl ClientApiImpl {
         crate::impls::stored_files::stored_file_reference_access(storage.as_ref(), file, policy)
     }
 
+    pub(crate) fn source_cover_url(
+        &self,
+        room_id: synctv_core::models::RoomId,
+        viewer_id: Option<synctv_core::models::UserId>,
+        cover: synctv_core::provider::SourceCover,
+    ) -> Result<Option<String>, ApiError> {
+        match cover {
+            synctv_core::provider::SourceCover::Url { url } => {
+                Ok((!url.trim().is_empty()).then_some(url))
+            }
+            synctv_core::provider::SourceCover::Emby {
+                server_id,
+                credential_owner_id,
+                item_id,
+            } => {
+                let Some(viewer_id) = viewer_id else {
+                    return Ok(None);
+                };
+                let public_room_id =
+                    self.public_id_codec
+                        .encode_room_id(room_id)
+                        .map_err(|error| {
+                            ApiError::Internal(format!("Failed to encode room public id: {error}"))
+                        })?;
+                let public_user_id =
+                    self.public_id_codec
+                        .encode_user_id(viewer_id)
+                        .map_err(|error| {
+                            ApiError::Internal(format!("Failed to encode user public id: {error}"))
+                        })?;
+                let public_credential_owner_id = self
+                    .public_id_codec
+                    .encode_user_id(credential_owner_id)
+                    .map_err(|error| {
+                        ApiError::Internal(format!(
+                            "Failed to encode credential owner public id: {error}"
+                        ))
+                    })?;
+                let thumbnail = crate::emby_thumbnail_urls::emby_thumbnail_url(
+                    &server_id,
+                    &public_credential_owner_id,
+                    &item_id,
+                );
+                crate::emby_thumbnail_urls::sign_emby_thumbnail_url(
+                    &thumbnail,
+                    &public_room_id,
+                    &public_user_id,
+                    self.signing_key.as_ref(),
+                )
+                .map(Some)
+                .map_err(ApiError::Internal)
+            }
+        }
+    }
+
     pub(crate) async fn user_public_view_with_loaded_avatar(
         &self,
         user: &synctv_core::models::User,
@@ -491,14 +546,56 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        convert::try_media_to_proto_for_viewer_with_cover(
+        let source_cover_url = if cover.is_none() {
+            match self
+                .room_service
+                .media_service()
+                .media_source_cover(viewer_id, media)
+                .await
+            {
+                Ok(Some(source_cover)) => {
+                    self.source_cover_url(media.room_id, viewer_id, source_cover)?
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::debug!(
+                        media_id = %media.id,
+                        error = %error,
+                        "failed to resolve media source cover"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let thumbnail = self
+            .load_stored_file_reference(media.thumbnail_file_reference_id)
+            .await?;
+        let thumbnail_access = thumbnail
+            .as_ref()
+            .map(|file| {
+                self.stored_file_reference_access(
+                    file,
+                    &synctv_core::service::media_thumbnail_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
+        let mut proto = convert::try_media_to_proto_for_viewer_with_cover(
             media,
             is_available,
             viewer_id,
             cover.as_ref(),
             cover_access.as_ref(),
+            thumbnail.as_ref(),
+            thumbnail_access.as_ref(),
             &self.public_id_codec,
-        )
+        )?;
+        if proto.cover.is_none() {
+            proto.cover = source_cover_url.map(convert::source_url_to_media_cover);
+        }
+        Ok(proto)
     }
 
     pub(crate) async fn playlist_to_proto_for_viewer_with_loaded_cover(
@@ -521,7 +618,30 @@ impl ClientApiImpl {
             })
             .transpose()?
             .flatten();
-        convert::try_playlist_to_proto_for_viewer_with_cover(
+        let source_cover_url = if cover.is_none() {
+            match self
+                .room_service
+                .media_service()
+                .playlist_source_cover(viewer_id, playlist)
+                .await
+            {
+                Ok(Some(source_cover)) => {
+                    self.source_cover_url(playlist.room_id, viewer_id, source_cover)?
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::debug!(
+                        playlist_id = %playlist.id,
+                        error = %error,
+                        "failed to resolve playlist source cover"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut proto = convert::try_playlist_to_proto_for_viewer_with_cover(
             playlist,
             item_count,
             is_available,
@@ -529,7 +649,11 @@ impl ClientApiImpl {
             cover.as_ref(),
             cover_access.as_ref(),
             &self.public_id_codec,
-        )
+        )?;
+        if proto.cover.is_none() {
+            proto.cover = source_cover_url.map(convert::source_url_to_resource_cover);
+        }
+        Ok(proto)
     }
 
     fn parse_room_id(&self, room_id: &str) -> Result<RoomId, ApiError> {

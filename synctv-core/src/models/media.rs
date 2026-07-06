@@ -227,6 +227,7 @@ pub struct Media {
     /// `None` means use the default local instance for `source_provider`.
     pub provider_instance_name: Option<String>,
     pub cover_file_reference_id: Option<i64>,
+    pub thumbnail_file_reference_id: Option<i64>,
     pub added_at: DateTime<Utc>,
     /// Timestamp of last update (auto-maintained by database trigger)
     pub updated_at: DateTime<Utc>,
@@ -277,6 +278,7 @@ impl Media {
                 params.provider_instance_name,
             ),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -320,6 +322,7 @@ impl Media {
             source_config,
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: now,
             updated_at: now,
             version: 0,
@@ -356,6 +359,14 @@ impl Media {
         file: &crate::models::StoredFileReference,
     ) -> FileReferenceTarget {
         file.reference_target("media_cover", self.id.as_i64().to_string())
+    }
+
+    #[must_use]
+    pub fn thumbnail_file_reference_target(
+        &self,
+        file: &crate::models::StoredFileReference,
+    ) -> FileReferenceTarget {
+        file.reference_target("media_thumbnail", self.id.as_i64().to_string())
     }
 }
 
@@ -419,13 +430,17 @@ pub struct PlaybackResult {
     pub target: Option<ProviderTarget>,
 
     /// Media-level provider metadata for display-only, provider-specific fields.
-    #[serde(default)]
-    pub metadata: PlaybackMetadata,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PlaybackMetadata>,
 }
 
 /// Complete playback information for a single mode
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaybackInfo {
+    /// Thumbnail URL for this playback mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+
     /// Media resources (different qualities, codecs, or provider-owned resources).
     pub medias: Vec<PlaybackMedia>,
 
@@ -824,21 +839,64 @@ pub struct PlaybackMediaMetadata {
     pub fps: Option<i32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackMetadata {
+    Alist(AlistPlaybackMetadata),
+    Bilibili(BilibiliPlaybackMetadata),
+    Emby(EmbyPlaybackMetadata),
+    DirectUrl(DirectUrlPlaybackMetadata),
+    LiveProxy(LiveProxyPlaybackMetadata),
+    Live(LivePlaybackMetadata),
+}
+
+impl PlaybackMetadata {
+    #[must_use]
+    pub const fn as_bilibili(&self) -> Option<&BilibiliPlaybackMetadata> {
+        match self {
+            Self::Bilibili(metadata) => Some(metadata),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_bilibili_mut(&mut self) -> Option<&mut BilibiliPlaybackMetadata> {
+        match self {
+            Self::Bilibili(metadata) => Some(metadata),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_emby(&self) -> Option<&EmbyPlaybackMetadata> {
+        match self {
+            Self::Emby(metadata) => Some(metadata),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_live(&self) -> Option<&LivePlaybackMetadata> {
+        match self {
+            Self::Live(metadata) => Some(metadata),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PlaybackMetadata {
+pub struct AlistPlaybackMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_host: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thumbnail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proxy_thumbnail: Option<PlaybackProxyResourceMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_subtitle_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -848,50 +906,9 @@ pub struct PlaybackMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_preview: Option<AlistVideoPreviewMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub duration: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub is_live: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_id: Option<MediaId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub room_id: Option<RoomId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bilibili: Option<BilibiliPlaybackMetadata>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub emby: Option<EmbyPlaybackMetadata>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackProxyResourceMetadata {
-    pub version: String,
-    pub expires_at: i64,
-    pub resource: PlaybackProxyResource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PlaybackProxyResource {
-    Thumbnail,
-}
-
-impl PlaybackProxyResource {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Thumbnail => "thumbnail",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -924,6 +941,8 @@ pub struct AlistVideoPreviewMetadata {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BilibiliPlaybackMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bvid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1062,6 +1081,31 @@ pub struct EmbyPlaybackMetadata {
     pub play_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectUrlPlaybackMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProxyPlaybackMetadata {
+    pub media_id: MediaId,
+    pub room_id: RoomId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_host: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePlaybackMetadata {
+    pub media_id: MediaId,
+    pub room_id: RoomId,
+}
+
 // Helper implementations
 
 impl PlaybackResult {
@@ -1088,7 +1132,7 @@ impl PlaybackResult {
             duration_seconds: None,
             is_live: false,
             target: None,
-            metadata: PlaybackMetadata::default(),
+            metadata: None,
         }
     }
 
@@ -1113,14 +1157,14 @@ impl PlaybackResult {
             duration_seconds: None,
             is_live: false,
             target: None,
-            metadata: PlaybackMetadata::default(),
+            metadata: None,
         }
     }
 
     /// Replace metadata.
     #[must_use]
     pub fn with_metadata(mut self, metadata: PlaybackMetadata) -> Self {
-        self.metadata = metadata;
+        self.metadata = Some(metadata);
         self
     }
 
@@ -1148,7 +1192,7 @@ pub struct PlaybackResultBuilder {
     duration_seconds: Option<f64>,
     is_live: bool,
     target: Option<ProviderTarget>,
-    metadata: PlaybackMetadata,
+    metadata: Option<PlaybackMetadata>,
 }
 
 impl PlaybackResultBuilder {
@@ -1205,7 +1249,7 @@ impl PlaybackResultBuilder {
 
     /// Replace metadata.
     #[must_use]
-    pub fn metadata(mut self, metadata: PlaybackMetadata) -> Self {
+    pub fn metadata(mut self, metadata: Option<PlaybackMetadata>) -> Self {
         self.metadata = metadata;
         self
     }
@@ -1252,6 +1296,7 @@ impl PlaybackInfo {
     #[must_use]
     pub fn single_url(url: String, name: String) -> Self {
         Self {
+            thumbnail: None,
             medias: vec![PlaybackMedia {
                 name,
                 format: String::new(),
@@ -1280,6 +1325,7 @@ impl PlaybackInfo {
 /// Builder for `PlaybackInfo`
 #[derive(Default)]
 pub struct PlaybackInfoBuilder {
+    thumbnail: Option<String>,
     medias: Vec<PlaybackMedia>,
     default_media_index: Option<usize>,
     subtitles: Vec<PlaybackSubtitle>,
@@ -1293,6 +1339,12 @@ impl PlaybackInfoBuilder {
     #[must_use]
     pub fn add_media(mut self, media: PlaybackMedia) -> Self {
         self.medias.push(media);
+        self
+    }
+
+    #[must_use]
+    pub fn thumbnail(mut self, thumbnail: Option<String>) -> Self {
+        self.thumbnail = thumbnail;
         self
     }
 
@@ -1335,6 +1387,7 @@ impl PlaybackInfoBuilder {
     #[must_use]
     pub fn build(self) -> PlaybackInfo {
         PlaybackInfo {
+            thumbnail: self.thumbnail,
             medias: self.medias,
             default_media_index: self.default_media_index,
             subtitles: self.subtitles,

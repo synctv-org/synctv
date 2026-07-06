@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ip_address TEXT,
     user_agent TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (details IS NULL OR jsonb_typeof(details) = 'object'),
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 

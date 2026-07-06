@@ -147,6 +147,7 @@ fn make_media(
         provider_instance_name: None,
         creator_id: Some(creator_id),
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: now,
         updated_at: now,
         version: 0,

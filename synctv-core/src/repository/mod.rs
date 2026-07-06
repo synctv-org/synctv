@@ -53,11 +53,11 @@ pub use file_storage::{
     UpsertFileObjectGroup, UpsertFileObjectVariant, UpsertFileUploadSession,
     UpsertFileUploadSessionPart,
 };
-pub use media::MediaRepository;
+pub use media::{MediaListItem, MediaRepository};
 pub use notification::NotificationRepository;
 pub use playback::RoomPlaybackStateRepository;
 pub use playback_source_metadata::PlaybackSourceMetadataRepository;
-pub use playlist::PlaylistRepository;
+pub use playlist::{PlaylistListItem, PlaylistRepository};
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
 pub use review::{
     ReviewPage, ReviewRepository, RoomCreationReviewListQuery, RoomCreationReviewRecord,

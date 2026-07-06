@@ -87,10 +87,10 @@ pub use file_storage::{
     S3CompatibleFileStorageService, S3FileStorageConfig, FILE_UPLOAD_TOKEN_HEADER,
 };
 pub use file_upload_policies::{
-    chat_attachment_upload_policy, media_cover_upload_policy, playlist_cover_upload_policy,
-    room_cover_upload_policy, user_avatar_upload_policy, MAX_CHAT_ATTACHMENT_SIZE_BYTES,
-    MAX_MEDIA_COVER_SIZE_BYTES, MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES,
-    MAX_USER_AVATAR_SIZE_BYTES,
+    chat_attachment_upload_policy, media_cover_upload_policy, media_thumbnail_upload_policy,
+    playlist_cover_upload_policy, room_cover_upload_policy, user_avatar_upload_policy,
+    MAX_CHAT_ATTACHMENT_SIZE_BYTES, MAX_MEDIA_COVER_SIZE_BYTES, MAX_MEDIA_THUMBNAIL_SIZE_BYTES,
+    MAX_PLAYLIST_COVER_SIZE_BYTES, MAX_ROOM_COVER_SIZE_BYTES, MAX_USER_AVATAR_SIZE_BYTES,
 };
 pub use global_settings::{
     AdminDefaultPermissionsSetting, ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins,
@@ -113,9 +113,9 @@ pub use global_settings::{
     ServerIdentityIdSetting, TsDisguisedAsPngSetting, UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 pub use media::{
-    AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession, EditMediaRequest,
-    MediaService, MediaServiceRuntime, MoveMediaRequest, RealtimeOutboxMediaBatchEventFactory,
-    RealtimeOutboxMediaEventFactory,
+    AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession,
+    CreateMediaThumbnailUploadSession, EditMediaRequest, MediaService, MediaServiceRuntime,
+    MoveMediaRequest, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
 };
 pub use member::{AdminMemberUpdate, MemberService};
 pub use notification::{GuestKickReason, NotificationService, RoomEvent};

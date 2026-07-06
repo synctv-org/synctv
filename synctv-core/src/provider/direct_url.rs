@@ -8,9 +8,9 @@ use super::{
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SourceConfig,
 };
 use crate::models::media::{
-    PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia, PlaybackDirectUrlSubtitle,
-    PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
+    DirectUrlPlaybackMetadata, PlaybackDanmaku, PlaybackDanmakuProvider, PlaybackDirectUrlMedia,
+    PlaybackDirectUrlSubtitle, PlaybackExternalDanmaku, PlaybackExternalSubtitle, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{detect_direct_url_format, DirectUrlMediaSourceConfig};
 use async_trait::async_trait;
@@ -517,6 +517,7 @@ impl MediaProvider for DirectUrlProvider {
         playback_infos.insert(
             "direct".to_string(),
             PlaybackInfo {
+                thumbnail: None,
                 medias: config
                     .medias
                     .iter()
@@ -592,16 +593,15 @@ impl MediaProvider for DirectUrlProvider {
             },
         );
 
-        let metadata = PlaybackMetadata {
+        let metadata = PlaybackMetadata::DirectUrl(DirectUrlPlaybackMetadata {
             format: Some(format.clone()),
-            is_live: config.is_live,
             filename: first_media
                 .url
                 .split('/')
                 .next_back()
                 .map(ToString::to_string),
             ..Default::default()
-        };
+        });
         let is_live = config.inferred_live_status();
         let duration_seconds = if is_live == Some(true) {
             None
@@ -616,7 +616,7 @@ impl MediaProvider for DirectUrlProvider {
             provider_instance_name: _ctx.provider_instance_name().map(str::to_string),
             duration_seconds,
             is_live,
-            metadata,
+            metadata: Some(metadata),
         };
 
         super::cache_versioned_playback_and_build_response(

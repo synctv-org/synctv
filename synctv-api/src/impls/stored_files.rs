@@ -78,6 +78,7 @@ pub(crate) const fn file_object_route_prefix(kind: FileObjectKind) -> Option<&'s
         FileObjectKind::ChatAttachment => Some("/api/chat/attachment-objects"),
         FileObjectKind::UserAvatar => Some("/api/user/avatar-objects"),
         FileObjectKind::MediaCover => Some("/api/media/cover-objects"),
+        FileObjectKind::MediaThumbnail => Some("/api/media/thumbnail-objects"),
         FileObjectKind::RoomCover => Some("/api/room/cover-objects"),
         FileObjectKind::PlaylistCover => Some("/api/playlist/cover-objects"),
         FileObjectKind::Generic => None,
@@ -135,6 +136,9 @@ fn file_object_access_kind_to_proto(
         }
         FileObjectKind::UserAvatar => synctv_proto::client::FileObjectAccessKind::UserAvatar,
         FileObjectKind::MediaCover => synctv_proto::client::FileObjectAccessKind::MediaCover,
+        FileObjectKind::MediaThumbnail => {
+            synctv_proto::client::FileObjectAccessKind::MediaThumbnail
+        }
         FileObjectKind::RoomCover => synctv_proto::client::FileObjectAccessKind::RoomCover,
         FileObjectKind::PlaylistCover => synctv_proto::client::FileObjectAccessKind::PlaylistCover,
         FileObjectKind::Generic => synctv_proto::client::FileObjectAccessKind::Generic,

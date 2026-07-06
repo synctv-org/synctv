@@ -11,15 +11,15 @@ use crate::{
         ChatMention, ChatMentionInput, ChatMessage, ChatMessageContext, ChatMessageEvent,
         ChatMessageEventLog, ChatMessageOperationKind, ChatMessagePin,
         ChatMessageReadReceiptMember, ChatMessageReadReceiptUser, ChatMessageReadReceiptsPage,
-        ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments, ChatMetadata, ChatPinEvent,
-        ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage, ChatPlaybackMessagesQuery,
-        ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor, ChatReactionUsersPage,
-        ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery, EventCursor, NewStoredFile,
-        RoomId, SetChatReaction, User, UserId, CHAT_ATTACHMENT_FILENAME_MAX_CHARS,
-        CHAT_ATTACHMENT_ID_MAX_CHARS, CHAT_CLIENT_MESSAGE_ID_MAX_CHARS,
-        CHAT_CLIENT_OPERATION_ID_MAX_CHARS, CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS,
-        CHAT_PIN_NOTE_MAX_CHARS, CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-        FILE_STORAGE_BACKEND_MAX_CHARS,
+        ChatMessageSelection, ChatMessageStatus, ChatMessageType, ChatMessageWithAttachments,
+        ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPinEventLog, ChatPinnedMessage,
+        ChatPlaybackMessagesQuery, ChatReactionSummary, ChatReactionUser, ChatReactionUsersCursor,
+        ChatReactionUsersPage, ChatReadState, ChatSearchMessagesPage, ChatSearchMessagesQuery,
+        EventCursor, NewStoredFile, RoomId, SetChatReaction, User, UserId,
+        CHAT_ATTACHMENT_FILENAME_MAX_CHARS, CHAT_ATTACHMENT_ID_MAX_CHARS,
+        CHAT_CLIENT_MESSAGE_ID_MAX_CHARS, CHAT_CLIENT_OPERATION_ID_MAX_CHARS,
+        CHAT_EVENT_ID_MAX_CHARS, CHAT_EVENT_TYPE_MAX_CHARS, CHAT_PIN_NOTE_MAX_CHARS,
+        CHAT_REACTION_KEY_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     repository::{
         pools::RepoPools, room_resource_event::insert_room_resource_event_with_executor,
@@ -42,6 +42,7 @@ const CHAT_MESSAGE_EVENT_TYPES: [&str; 4] = [
 ];
 const CHAT_PINS_RESOURCE_TYPE: &str = "chat_pins";
 
+#[derive(sqlx::FromRow)]
 struct ChatMessageRow {
     id: i64,
     room_id: RoomId,
@@ -53,7 +54,7 @@ struct ChatMessageRow {
     version: i64,
     reply_to_message_id: Option<i64>,
     reply_to_message_created_at: Option<DateTime<Utc>>,
-    metadata: ChatMetadata,
+    metadata: Option<ChatMetadata>,
     edited_at: Option<DateTime<Utc>>,
     deleted_at: Option<DateTime<Utc>>,
     deleted_by: Option<UserId>,
@@ -149,6 +150,15 @@ fn validate_message_for_insert(message: &ChatMessage) -> Result<()> {
             "chat message version must be positive".to_string(),
         ));
     }
+    if message
+        .metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.message_type() != message.message_type)
+    {
+        return Err(Error::InvalidInput(
+            "chat metadata type must match chat message type".to_string(),
+        ));
+    }
     match (
         message.reply_to_message_id,
         message.reply_to_message_created_at,
@@ -235,7 +245,7 @@ impl ChatRepository {
 
     pub async fn create(&self, message: &ChatMessage) -> Result<ChatMessage> {
         validate_message_for_insert(message)?;
-        let metadata = message.metadata.normalized_for_storage()?;
+        let metadata = ChatMetadata::normalized_for_optional_storage(message.metadata.as_ref())?;
         let inserted = sqlx::query_as!(
             ChatMessageRow,
             r#"
@@ -255,7 +265,7 @@ impl ChatRepository {
                       version AS "version!",
                       reply_to_message_id,
                       reply_to_message_created_at,
-                      metadata AS "metadata!: ChatMetadata",
+                      metadata AS "metadata?: ChatMetadata",
                       edited_at,
                       deleted_at,
                       deleted_by AS "deleted_by?: UserId",
@@ -413,6 +423,69 @@ impl ChatRepository {
         let logged = self.insert_event_in_tx(&mut tx, event).await?;
         tx.commit().await?;
         Ok(logged)
+    }
+
+    pub async fn insert_message_event(
+        &self,
+        message: &ChatMessage,
+        attachments: &[NewStoredFile],
+        mentions: &[ChatMentionInput],
+        actor_user_id: UserId,
+        event_id: &str,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<ChatMessageEventLog> {
+        let mut tx = self.pool().begin().await?;
+        let logged = self
+            .insert_message_event_in_tx(
+                &mut tx,
+                message,
+                attachments,
+                mentions,
+                actor_user_id,
+                event_id,
+                occurred_at,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(logged)
+    }
+
+    pub async fn insert_message_event_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        message: &ChatMessage,
+        attachments: &[NewStoredFile],
+        mentions: &[ChatMentionInput],
+        actor_user_id: UserId,
+        event_id: &str,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<ChatMessageEventLog> {
+        validate_message_for_insert(message)?;
+        for attachment in attachments {
+            validate_chat_attachment_for_insert(attachment)?;
+        }
+
+        let inserted = self.insert_message_in_tx(tx, message).await?;
+        let inserted_attachments = self
+            .insert_attachments_in_tx(tx, &inserted, attachments)
+            .await?;
+        let inserted_mentions = self.insert_mentions_in_tx(tx, &inserted, mentions).await?;
+        let event = ChatMessageEvent {
+            event_id: event_id.to_string(),
+            sequence: 0,
+            room_id: message.room_id,
+            actor_user_id,
+            kind: ChatEventKind::Created,
+            message: ChatMessageWithAttachments {
+                message: inserted,
+                attachments: inserted_attachments,
+                reactions: Vec::new(),
+                mentions: inserted_mentions,
+                pin: None,
+            },
+            occurred_at,
+        };
+        self.insert_event_in_tx(tx, &event).await
     }
 
     pub async fn list_pinned_messages_for_viewer(
@@ -741,7 +814,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -1122,6 +1195,22 @@ impl ChatRepository {
         after_event_id: Option<&str>,
         limit: i32,
     ) -> Result<Vec<ChatMessageEventLog>> {
+        self.list_events_after_with_selection(
+            room_id,
+            after_event_id,
+            limit,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+    }
+
+    pub async fn list_events_after_with_selection(
+        &self,
+        room_id: &RoomId,
+        after_event_id: Option<&str>,
+        limit: i32,
+        selection: &ChatMessageSelection,
+    ) -> Result<Vec<ChatMessageEventLog>> {
         let limit = limit.clamp(1, 500);
         let after_sequence =
             if let Some(event_id) = after_event_id.filter(|id| !id.trim().is_empty()) {
@@ -1136,6 +1225,7 @@ impl ChatRepository {
             };
 
         let event_types = chat_message_event_types();
+        let included_message_type_strings = selection.message_type_strings();
         let rows = if let Some(sequence) = after_sequence {
             sqlx::query_as!(
                 ChatEventRow,
@@ -1150,13 +1240,15 @@ impl ChatRepository {
                 WHERE room_id = $1
                   AND sequence > $2
                   AND event_type = ANY($3::text[])
+                  AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
                 ORDER BY sequence ASC
                 LIMIT $4
                 "#,
                 room_id.as_i64(),
                 sequence,
                 &event_types,
-                i64::from(limit)
+                i64::from(limit),
+                &included_message_type_strings,
             )
             .fetch_all(self.pool())
             .await?
@@ -1173,12 +1265,14 @@ impl ChatRepository {
                 FROM chat_message_events
                 WHERE room_id = $1
                   AND event_type = ANY($2::text[])
+                  AND (payload #>> '{message,message,messageType}') = ANY($4::text[])
                 ORDER BY sequence ASC
                 LIMIT $3
                 "#,
                 room_id.as_i64(),
                 &event_types,
-                i64::from(limit)
+                i64::from(limit),
+                &included_message_type_strings,
             )
             .fetch_all(self.pool())
             .await?
@@ -1193,9 +1287,26 @@ impl ChatRepository {
         after_sequence: i64,
         limit: i32,
     ) -> Result<Vec<ChatMessageEventLog>> {
+        self.list_events_after_sequence_with_selection(
+            room_id,
+            after_sequence,
+            limit,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+    }
+
+    pub async fn list_events_after_sequence_with_selection(
+        &self,
+        room_id: &RoomId,
+        after_sequence: i64,
+        limit: i32,
+        selection: &ChatMessageSelection,
+    ) -> Result<Vec<ChatMessageEventLog>> {
         let limit = limit.clamp(1, 500);
         let after_sequence = after_sequence.max(0);
         let event_types = chat_message_event_types();
+        let included_message_type_strings = selection.message_type_strings();
         let rows = sqlx::query_as!(
             ChatEventRow,
             r#"
@@ -1209,13 +1320,15 @@ impl ChatRepository {
             WHERE room_id = $1
               AND sequence > $2
               AND event_type = ANY($3::text[])
+              AND (payload #>> '{message,message,messageType}') = ANY($5::text[])
             ORDER BY sequence ASC
             LIMIT $4
             "#,
             room_id.as_i64(),
             after_sequence,
             &event_types,
-            i64::from(limit)
+            i64::from(limit),
+            &included_message_type_strings,
         )
         .fetch_all(self.pool())
         .await?;
@@ -1224,18 +1337,34 @@ impl ChatRepository {
     }
 
     pub async fn latest_event_cursor_for_room(&self, room_id: &RoomId) -> Result<EventCursor> {
+        self.latest_event_cursor_for_room_with_selection(
+            room_id,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+    }
+
+    pub async fn latest_event_cursor_for_room_with_selection(
+        &self,
+        room_id: &RoomId,
+        selection: &ChatMessageSelection,
+    ) -> Result<EventCursor> {
         let event_types = chat_message_event_types();
-        let row = sqlx::query!(
-            r"
-            SELECT event_id, sequence
+        let included_message_type_strings = selection.message_type_strings();
+        let row = sqlx::query_as!(
+            EventCursor,
+            r#"
+            SELECT event_id AS "event_id?", sequence AS "sequence!"
             FROM chat_message_events
             WHERE room_id = $1
               AND event_type = ANY($2::text[])
+              AND (payload #>> '{message,message,messageType}') = ANY($3::text[])
             ORDER BY sequence DESC
             LIMIT 1
-            ",
+            "#,
             room_id.as_i64(),
-            &event_types
+            &event_types,
+            &included_message_type_strings,
         )
         .fetch_optional(self.pool())
         .await?;
@@ -1245,10 +1374,7 @@ impl ChatRepository {
                 event_id: None,
                 sequence: 0,
             },
-            |row| EventCursor {
-                event_id: Some(row.event_id),
-                sequence: row.sequence,
-            },
+            |row| row,
         ))
     }
 
@@ -1810,6 +1936,26 @@ impl ChatRepository {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
+        self.list_by_room_cursor_for_viewer_with_selection(
+            room_id,
+            cursor,
+            limit,
+            include_deleted,
+            viewer_user_id,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+    }
+
+    pub async fn list_by_room_cursor_for_viewer_with_selection(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+        selection: &ChatMessageSelection,
+    ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         self.list_by_room_cursor_for_viewer_from_pool(
             self.eventually_consistent_pool(),
             room_id,
@@ -1817,6 +1963,7 @@ impl ChatRepository {
             limit,
             include_deleted,
             viewer_user_id,
+            selection,
         )
         .await
     }
@@ -1829,8 +1976,10 @@ impl ChatRepository {
         limit: i32,
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
+        selection: &ChatMessageSelection,
     ) -> Result<(Vec<ChatMessageWithAttachments>, Option<ChatHistoryCursor>)> {
         let limit = limit.clamp(1, 100);
+        let included_message_type_codes = selection.message_type_codes();
         let messages = if let Some(cursor) = cursor {
             sqlx::query_as!(
                 ChatMessageRow,
@@ -1845,7 +1994,7 @@ impl ChatRepository {
                        version AS "version!",
                        reply_to_message_id,
                        reply_to_message_created_at,
-                       metadata AS "metadata!: ChatMetadata",
+                       metadata AS "metadata?: ChatMetadata",
                        edited_at,
                        deleted_at,
                        deleted_by AS "deleted_by?: UserId",
@@ -1855,6 +2004,7 @@ impl ChatRepository {
                 WHERE room_id = $1
                   AND ($2 OR status <> $3)
                   AND (created_at, id) < ($4, $5)
+                  AND message_type = ANY($7::smallint[])
                 ORDER BY created_at DESC, id DESC
                 LIMIT $6
                 "#,
@@ -1863,7 +2013,8 @@ impl ChatRepository {
                 i16::from(ChatMessageStatus::Deleted),
                 cursor.created_at,
                 cursor.id,
-                i64::from(limit)
+                i64::from(limit),
+                &included_message_type_codes,
             )
             .fetch_all(pool)
             .await?
@@ -1881,7 +2032,7 @@ impl ChatRepository {
                        version AS "version!",
                        reply_to_message_id,
                        reply_to_message_created_at,
-                       metadata AS "metadata!: ChatMetadata",
+                       metadata AS "metadata?: ChatMetadata",
                        edited_at,
                        deleted_at,
                        deleted_by AS "deleted_by?: UserId",
@@ -1891,13 +2042,15 @@ impl ChatRepository {
                 WHERE room_id = $1
                   AND ($2 OR status <> $3)
                   AND created_at >= NOW() - INTERVAL '90 days'
+                  AND message_type = ANY($5::smallint[])
                 ORDER BY created_at DESC, id DESC
                 LIMIT $4
                 "#,
                 room_id.as_i64(),
                 include_deleted,
                 i16::from(ChatMessageStatus::Deleted),
-                i64::from(limit)
+                i64::from(limit),
+                &included_message_type_codes,
             )
             .fetch_all(pool)
             .await?
@@ -1928,7 +2081,29 @@ impl ChatRepository {
         include_deleted: bool,
         viewer_user_id: Option<&UserId>,
     ) -> Result<ChatHistoryPage> {
-        let event_cursor = self.latest_event_cursor_for_room(room_id).await?;
+        self.list_history_page_for_viewer_with_selection(
+            room_id,
+            cursor,
+            limit,
+            include_deleted,
+            viewer_user_id,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+    }
+
+    pub async fn list_history_page_for_viewer_with_selection(
+        &self,
+        room_id: &RoomId,
+        cursor: Option<ChatHistoryCursor>,
+        limit: i32,
+        include_deleted: bool,
+        viewer_user_id: Option<&UserId>,
+        selection: &ChatMessageSelection,
+    ) -> Result<ChatHistoryPage> {
+        let event_cursor = self
+            .latest_event_cursor_for_room_with_selection(room_id, selection)
+            .await?;
         let (messages, next_cursor) = self
             .list_by_room_cursor_for_viewer_from_pool(
                 self.pool(),
@@ -1937,6 +2112,7 @@ impl ChatRepository {
                 limit,
                 include_deleted,
                 viewer_user_id,
+                selection,
             )
             .await?;
 
@@ -1976,7 +2152,7 @@ impl ChatRepository {
                        m.version AS "version!",
                        m.reply_to_message_id,
                        m.reply_to_message_created_at,
-                       m.metadata AS "metadata!: ChatMetadata",
+                       m.metadata AS "metadata?: ChatMetadata",
                        m.edited_at,
                        m.deleted_at,
                        m.deleted_by AS "deleted_by?: UserId",
@@ -2021,7 +2197,7 @@ impl ChatRepository {
                        m.version AS "version!",
                        m.reply_to_message_id,
                        m.reply_to_message_created_at,
-                       m.metadata AS "metadata!: ChatMetadata",
+                       m.metadata AS "metadata?: ChatMetadata",
                        m.edited_at,
                        m.deleted_at,
                        m.deleted_by AS "deleted_by?: UserId",
@@ -2217,7 +2393,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2254,7 +2430,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2311,7 +2487,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2365,7 +2541,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -2467,10 +2643,10 @@ impl ChatRepository {
         room_id: &RoomId,
         message_id: i64,
         content: &str,
-        metadata: &ChatMetadata,
+        metadata: &Option<ChatMetadata>,
         expected_version: Option<i64>,
     ) -> Result<Option<ChatMessageWithAttachments>> {
-        let metadata = metadata.normalized_for_storage()?;
+        let metadata = ChatMetadata::normalized_for_optional_storage(metadata.as_ref())?;
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -2549,7 +2725,7 @@ impl ChatRepository {
                 }));
             }
         }
-        let metadata = request.metadata.normalized_for_storage()?;
+        let metadata = ChatMetadata::normalized_for_optional_storage(request.metadata.as_ref())?;
         let mut builder = sqlx::QueryBuilder::<Postgres>::new(
             r"
             UPDATE chat_messages
@@ -2985,7 +3161,7 @@ impl ChatRepository {
         message: &ChatMessage,
     ) -> Result<ChatMessage> {
         validate_message_for_insert(message)?;
-        let metadata = message.metadata.normalized_for_storage()?;
+        let metadata = ChatMetadata::normalized_for_optional_storage(message.metadata.as_ref())?;
         let inserted = sqlx::query_as!(
             ChatMessageRow,
             r#"
@@ -3005,7 +3181,7 @@ impl ChatRepository {
                       version AS "version!",
                       reply_to_message_id,
                       reply_to_message_created_at,
-                      metadata AS "metadata!: ChatMetadata",
+                      metadata AS "metadata?: ChatMetadata",
                       edited_at,
                       deleted_at,
                       deleted_by AS "deleted_by?: UserId",
@@ -3516,7 +3692,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -3984,7 +4160,7 @@ impl ChatRepository {
                    m.version AS "version!",
                    m.reply_to_message_id,
                    m.reply_to_message_created_at,
-                   m.metadata AS "metadata!: ChatMetadata",
+                   m.metadata AS "metadata?: ChatMetadata",
                    m.edited_at,
                    m.deleted_at,
                    m.deleted_by AS "deleted_by?: UserId",
@@ -4080,7 +4256,7 @@ impl ChatRepository {
                    version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata AS "metadata!: ChatMetadata",
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
                    deleted_by AS "deleted_by?: UserId",
@@ -4421,7 +4597,7 @@ pub struct EditChatMessageEventRequest<'a> {
     pub message_id: i64,
     pub message_created_at: DateTime<Utc>,
     pub content: &'a str,
-    pub metadata: &'a ChatMetadata,
+    pub metadata: &'a Option<ChatMetadata>,
     pub expected_version: Option<i64>,
     pub event_id: &'a str,
     pub actor_user_id: &'a UserId,

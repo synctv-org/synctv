@@ -3,7 +3,6 @@ CREATE TABLE IF NOT EXISTS auth_webauthn_credentials (
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     credential_id BYTEA NOT NULL,
     passkey JSONB NOT NULL,
-    public_key JSONB NOT NULL,
     sign_count BIGINT NOT NULL DEFAULT 0,
     name VARCHAR(100),
     last_used_at TIMESTAMPTZ,
@@ -12,6 +11,8 @@ CREATE TABLE IF NOT EXISTS auth_webauthn_credentials (
 
     CONSTRAINT auth_webauthn_credentials_credential_id_unique
         UNIQUE (credential_id),
+    CONSTRAINT auth_webauthn_credentials_passkey_object
+        CHECK (jsonb_typeof(passkey) = 'object'),
     CONSTRAINT auth_webauthn_credentials_name_not_empty
         CHECK (name IS NULL OR length(trim(name)) > 0)
 );

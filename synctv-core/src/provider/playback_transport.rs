@@ -202,7 +202,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: crate::models::PlaybackMetadata::default(),
+                metadata: None,
             },
             expires_at: 0, // Already expired
         };
@@ -230,7 +230,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: crate::models::PlaybackMetadata::default(),
+                metadata: None,
             },
             expires_at: chrono::Utc::now().timestamp() + 3600,
         };
@@ -255,7 +255,7 @@ mod tests {
                 provider_instance_name: None,
                 duration_seconds: None,
                 is_live: Some(false),
-                metadata: crate::models::PlaybackMetadata::default(),
+                metadata: None,
             },
             expires_at: chrono::Utc::now().timestamp() + 60,
         };

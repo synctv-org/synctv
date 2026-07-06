@@ -124,6 +124,25 @@ fn build_playback_result_from_provider(
         .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))
 }
 
+fn apply_static_direct_url_thumbnail(
+    result: &mut synctv_core::models::media::PlaybackResult,
+    source_provider: SourceProvider,
+    thumbnail: Option<&str>,
+) {
+    if source_provider != SourceProvider::DirectUrl {
+        return;
+    }
+    let Some(thumbnail) = thumbnail
+        .map(str::trim)
+        .filter(|thumbnail| !thumbnail.is_empty())
+    else {
+        return;
+    };
+    for info in result.playback_infos.values_mut() {
+        info.thumbnail = Some(thumbnail.to_string());
+    }
+}
+
 pub(crate) fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
     public_id_codec: &crate::public_id::PublicIdCodec,
@@ -361,6 +380,28 @@ impl ClientApiImpl {
         ctx.with_store(self.provider_stores.load(provider.name()))
     }
 
+    async fn static_direct_url_thumbnail(
+        &self,
+        media: &synctv_core::models::Media,
+    ) -> Result<Option<String>, ApiError> {
+        if media.source_provider != SourceProvider::DirectUrl {
+            return Ok(None);
+        }
+        let thumbnail = self
+            .load_stored_file_reference(media.thumbnail_file_reference_id)
+            .await?;
+        let Some(thumbnail) = thumbnail.as_ref() else {
+            return Ok(None);
+        };
+        let thumbnail_access = self.stored_file_reference_access(
+            thumbnail,
+            &synctv_core::service::media_thumbnail_upload_policy(),
+        )?;
+        Ok(thumbnail_access
+            .as_ref()
+            .and_then(crate::impls::stored_files::stored_file_object_access_url))
+    }
+
     async fn build_static_media_playback_result(
         &self,
         user_id: &UserId,
@@ -420,7 +461,9 @@ impl ClientApiImpl {
         )
         .await?;
 
-        let full_result =
+        let thumbnail = self.static_direct_url_thumbnail(&media).await?;
+
+        let mut full_result =
             build_playback_result_from_provider(ProviderPlaybackResultBuildRequest {
                 provider_result,
                 playlist_id: media.playlist_id,
@@ -431,6 +474,11 @@ impl ClientApiImpl {
                 duration_seconds: source_metadata.duration_seconds,
                 is_live: source_metadata.is_live,
             })?;
+        apply_static_direct_url_thumbnail(
+            &mut full_result,
+            media.source_provider,
+            thumbnail.as_deref(),
+        );
 
         self.sign_and_finalize_playback(&full_result, &ctx)
     }

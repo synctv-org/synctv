@@ -293,4 +293,65 @@ impl RoomService {
         }
         Ok(())
     }
+
+    pub(super) async fn insert_member_joined_system_chat_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: RoomId,
+        target_user_id: UserId,
+        target_username: String,
+        actor_user_id: UserId,
+        actor_username: String,
+        role: RoomRole,
+    ) -> Result<()> {
+        let content = format!("{target_username} joined the room");
+        let mut message = crate::models::ChatMessage::new(room_id, target_user_id, content);
+        message.message_type = crate::models::ChatMessageType::SystemMemberJoined;
+        message.metadata = Some(crate::models::ChatMetadata::MemberJoined(
+            crate::models::ChatMemberJoinedMetadata {
+                user_id: target_user_id,
+                username: target_username,
+                actor_user_id: Some(actor_user_id),
+                actor_username: Some(actor_username),
+                role,
+            },
+        ));
+
+        let occurred_at = chrono::Utc::now();
+        let event_id = synctv_common::snanoid!(16);
+        let logged = self
+            .chat_repo
+            .insert_message_event_in_tx(
+                tx,
+                &message,
+                &[],
+                &[],
+                actor_user_id,
+                &event_id,
+                occurred_at,
+            )
+            .await?;
+
+        let event = crate::models::RealtimeEvent::ChatMessageEvent {
+            event_id: logged.event.event_id.clone(),
+            room_id,
+            actor_user_id,
+            event: logged.event,
+            timestamp: occurred_at,
+        };
+        self.insert_realtime_outbox_tx(
+            tx,
+            Some(&NewRealtimeOutboxEvent {
+                id: event.event_id().to_string(),
+                enqueue_outbox: true,
+                aggregate_type: "room".to_string(),
+                aggregate_id: room_id.to_string(),
+                event_type: event.event_type().to_string(),
+                event_version: 1,
+                aggregate_version: None,
+                payload: event,
+            }),
+        )
+        .await
+    }
 }

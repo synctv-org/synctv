@@ -2598,11 +2598,7 @@ impl StreamMessageHandler {
                     client_message_id: (!chat_msg.client_message_id.trim().is_empty())
                         .then(|| chat_msg.client_message_id.trim().to_string()),
                     content: chat_msg.content.clone(),
-                    message_type: if attachments.is_empty() {
-                        ChatMessageType::Text
-                    } else {
-                        ChatMessageType::Attachment
-                    },
+                    message_type: ChatMessageType::User,
                     reply_to_message_id,
                     metadata,
                     attachments,

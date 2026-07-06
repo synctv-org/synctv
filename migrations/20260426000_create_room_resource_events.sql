@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS room_resource_events (
     aggregate_version BIGINT,
     actor_user_id BIGINT,
     payload JSONB,
-    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    summary JSONB NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CHECK (event_version >= 1),

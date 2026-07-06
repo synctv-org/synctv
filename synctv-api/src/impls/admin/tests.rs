@@ -294,8 +294,8 @@ impl MediaProvider for AdminLifecycleTestProvider {
     ) -> Option<String> {
         result
             .metadata
-            .emby
             .as_ref()
+            .and_then(synctv_core::models::PlaybackMetadata::as_emby)
             .and_then(|metadata| metadata.play_session_id.clone())
     }
 }
@@ -314,18 +314,18 @@ fn admin_lifecycle_playback_result(session_id: &str) -> synctv_core::provider::P
         provider_instance_name: None,
         duration_seconds: None,
         is_live: Some(false),
-        metadata: synctv_core::models::PlaybackMetadata {
-            emby: Some(synctv_core::models::EmbyPlaybackMetadata {
+        metadata: Some(synctv_core::models::PlaybackMetadata::Emby(
+            synctv_core::models::EmbyPlaybackMetadata {
                 play_session_id: Some(session_id.to_string()),
                 ..Default::default()
-            }),
-            ..Default::default()
-        },
+            },
+        )),
     }
 }
 
 fn test_provider_playback_info(url: &str) -> synctv_core::provider::PlaybackInfo {
     synctv_core::provider::PlaybackInfo {
+        thumbnail: None,
         medias: vec![synctv_core::models::PlaybackMedia {
             name: String::new(),
             format: "mp4".to_string(),

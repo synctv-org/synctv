@@ -1,8 +1,9 @@
 use prost::Message;
 use synctv_core::models::{
-    ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageStatus, ChatMessageWithAttachments,
-    ChatMetadata, ChatPinEvent, ChatPinEventKind, ChatPlaybackMetadata as CoreChatPlaybackMetadata,
-    ChatPresentationMetadata, ProviderTarget, RoomPlaybackState,
+    ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageStatus, ChatMessageType,
+    ChatMessageWithAttachments, ChatMetadata, ChatPinEvent, ChatPinEventKind,
+    ChatPlaybackMetadata as CoreChatPlaybackMetadata, ChatPresentationMetadata, ProviderTarget,
+    RoomPlaybackState,
 };
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
@@ -364,6 +365,17 @@ pub(crate) fn chat_event_kind_to_proto(
     }
 }
 
+pub(crate) fn chat_message_type_to_proto(
+    message_type: ChatMessageType,
+) -> synctv_proto::client::ChatMessageType {
+    match message_type {
+        ChatMessageType::User => synctv_proto::client::ChatMessageType::User,
+        ChatMessageType::SystemMemberJoined => {
+            synctv_proto::client::ChatMessageType::SystemMemberJoined
+        }
+    }
+}
+
 pub(crate) fn chat_pin_event_kind_to_proto(
     kind: ChatPinEventKind,
 ) -> synctv_proto::client::ChatPinEventKind {
@@ -386,23 +398,27 @@ pub(crate) fn chat_status_to_proto(
 }
 
 pub(crate) fn chat_display_position_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
 ) -> Result<String, String> {
     chat_presentation_text_from_metadata(
         metadata
-            .presentation
             .as_ref()
+            .and_then(ChatMetadata::user)
+            .and_then(|metadata| metadata.presentation.as_ref())
             .and_then(|presentation| presentation.display_position.as_deref()),
         "display position",
         64,
     )
 }
 
-pub(crate) fn chat_display_color_from_metadata(metadata: &ChatMetadata) -> Result<String, String> {
+pub(crate) fn chat_display_color_from_metadata(
+    metadata: &Option<ChatMetadata>,
+) -> Result<String, String> {
     chat_presentation_text_from_metadata(
         metadata
-            .presentation
             .as_ref()
+            .and_then(ChatMetadata::user)
+            .and_then(|metadata| metadata.presentation.as_ref())
             .and_then(|presentation| presentation.display_color.as_deref()),
         "display color",
         64,
@@ -421,12 +437,13 @@ fn chat_presentation_text_from_metadata(
 }
 
 pub(crate) fn chat_playback_media_id_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = metadata
-        .playback
         .as_ref()
+        .and_then(ChatMetadata::user)
+        .and_then(|metadata| metadata.playback.as_ref())
         .and_then(|playback| playback.media_id)
     else {
         return Ok(String::new());
@@ -437,12 +454,13 @@ pub(crate) fn chat_playback_media_id_from_metadata(
 }
 
 pub(crate) fn chat_playback_playlist_id_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<String, String> {
     let Some(id) = metadata
-        .playback
         .as_ref()
+        .and_then(ChatMetadata::user)
+        .and_then(|metadata| metadata.playback.as_ref())
         .and_then(|playback| playback.playlist_id)
     else {
         return Ok(String::new());
@@ -461,7 +479,7 @@ pub(crate) struct ChatPlaybackMetadata {
 }
 
 pub(crate) fn chat_playback_metadata_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
     public_id_codec: &crate::public_id::PublicIdCodec,
 ) -> Result<ChatPlaybackMetadata, String> {
     let target = chat_playback_target_from_metadata(metadata)?;
@@ -483,20 +501,22 @@ pub(crate) fn chat_playback_metadata_from_metadata(
 }
 
 pub(crate) fn chat_playback_target_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
 ) -> Result<Option<ProviderTarget>, String> {
     Ok(metadata
-        .playback
         .as_ref()
+        .and_then(ChatMetadata::user)
+        .and_then(|metadata| metadata.playback.as_ref())
         .and_then(|playback| playback.target.clone()))
 }
 
 pub(crate) fn chat_playback_position_seconds_from_metadata(
-    metadata: &ChatMetadata,
+    metadata: &Option<ChatMetadata>,
 ) -> Result<Option<f64>, String> {
     let Some(seconds) = metadata
-        .playback
         .as_ref()
+        .and_then(ChatMetadata::user)
+        .and_then(|metadata| metadata.playback.as_ref())
         .and_then(|playback| playback.position_seconds)
     else {
         return Ok(None);
@@ -531,11 +551,18 @@ pub(crate) fn chat_playback_target_hash(target: &ProviderTarget) -> Result<Strin
 }
 
 pub(crate) fn chat_metadata_for_send(
-    mut metadata: ChatMetadata,
+    metadata: Option<ChatMetadata>,
     display_position: &str,
     display_color: &str,
     playback_state: Option<&RoomPlaybackState>,
-) -> Result<ChatMetadata, String> {
+) -> Result<Option<ChatMetadata>, String> {
+    let mut metadata = match metadata {
+        Some(ChatMetadata::User(metadata)) => metadata,
+        Some(ChatMetadata::MemberJoined(_)) => {
+            return Err("Client chat metadata must use user metadata".to_string());
+        }
+        None => synctv_core::models::ChatUserMetadata::default(),
+    };
     let display_position = validate_chat_metadata_text(display_position, "display position", 64)?;
     let display_color = validate_chat_metadata_text(display_color, "display color", 64)?;
     let presentation = ChatPresentationMetadata {
@@ -563,7 +590,8 @@ pub(crate) fn chat_metadata_for_send(
         metadata.playback = None;
     }
 
-    Ok(metadata)
+    let metadata = ChatMetadata::User(metadata);
+    Ok((!metadata.is_empty()).then_some(metadata))
 }
 
 pub(crate) fn chat_message_event_to_proto(
@@ -715,14 +743,18 @@ pub(crate) fn chat_message_receive_to_proto(
         playback_position_seconds: playback.position_seconds,
         reactions,
         reaction_count,
-        metadata: crate::impls::client::convert::chat_metadata_to_proto(&message.metadata)
-            .map_err(|error| error.to_string())?,
+        metadata: crate::impls::client::convert::chat_metadata_to_proto(
+            &message.metadata,
+            public_id_codec,
+        )
+        .map_err(|error| error.to_string())?,
         mentions,
         pin: value
             .pin
             .as_ref()
             .map(|pin| chat_message_pin_to_proto(pin, public_id_codec))
             .transpose()?,
+        message_type: chat_message_type_to_proto(message.message_type) as i32,
     })
 }
 

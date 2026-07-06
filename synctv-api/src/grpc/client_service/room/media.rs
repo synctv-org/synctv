@@ -93,6 +93,33 @@ pub(super) async fn create_media_cover_upload_session(
     Ok(Response::new(response))
 }
 
+pub(super) async fn create_media_thumbnail_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::CreateMediaThumbnailUploadSessionRequest>,
+) -> Result<Response<synctv_proto::client::CreateMediaThumbnailUploadSessionResponse>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .create_media_thumbnail_upload_session(
+                        &authenticated.user_id,
+                        room_id.as_str(),
+                        req,
+                    )
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
 pub(super) async fn create_room_cover_upload_session(
     service: &ClientServiceImpl,
     request: Request<synctv_proto::client::CreateRoomCoverUploadSessionRequest>,
@@ -312,6 +339,114 @@ pub(super) async fn clear_media_cover(
             move |authenticated| async move {
                 client_api
                     .clear_media_cover(&authenticated.user_id, room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn upload_media_thumbnail_object(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::UploadMediaThumbnailObjectRequest>,
+) -> Result<Response<synctv_proto::client::UploadMediaThumbnailObjectResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move { client_api.upload_media_thumbnail_object(req).await }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn complete_media_thumbnail_upload_session(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::CompleteMediaThumbnailUploadSessionRequest>,
+) -> Result<Response<synctv_proto::client::CompleteMediaThumbnailUploadSessionResponse>, Status> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let response = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Write, move || {
+            let client_api = service.client_api.clone();
+            async move {
+                client_api
+                    .complete_media_thumbnail_upload_session(req)
+                    .await
+            }
+        })
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn get_media_thumbnail_object(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::GetMediaThumbnailObjectRequest>,
+) -> Result<
+    Response<
+        <ClientServiceImpl as room_service_server::RoomService>::GetMediaThumbnailObjectStream,
+    >,
+    Status,
+> {
+    let metadata = service.request_metadata(&request)?;
+    let req = request.into_inner();
+    let download = service
+        .client_api
+        .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, move || {
+            let client_api = service.client_api.clone();
+            async move { client_api.get_media_thumbnail_object(req).await }
+        })
+        .await
+        .map_err(map_api_error)?;
+    let stream = crate::impls::client::file_download::media_thumbnail_chunk_stream(download)
+        .map(|result| result.map_err(map_api_error));
+    Ok(Response::new(Box::pin(stream)))
+}
+
+pub(super) async fn update_media_thumbnail(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::UpdateMediaThumbnailRequest>,
+) -> Result<Response<Media>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .update_media_thumbnail(&authenticated.user_id, room_id.as_str(), req)
+                    .await
+            },
+        )
+        .await
+        .map_err(map_api_error)?;
+    Ok(Response::new(response))
+}
+
+pub(super) async fn clear_media_thumbnail(
+    service: &ClientServiceImpl,
+    request: Request<synctv_proto::client::ClearMediaThumbnailRequest>,
+) -> Result<Response<Media>, Status> {
+    let (metadata, room_id) = service.room_request_context(&request)?;
+    let req = request.into_inner();
+    let executor = service.client_api.clone();
+    let client_api = service.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &metadata,
+            EndpointRateLimitCategory::Media,
+            move |authenticated| async move {
+                client_api
+                    .clear_media_thumbnail(&authenticated.user_id, room_id.as_str(), req)
                     .await
             },
         )

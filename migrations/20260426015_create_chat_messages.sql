@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     version BIGINT NOT NULL DEFAULT 1,
     reply_to_message_id BIGINT,
     reply_to_message_created_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata JSONB,
     edited_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
     deleted_by BIGINT,
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     content_search TSVECTOR GENERATED ALWAYS AS (to_tsvector('simple', content)) STORED,
     CHECK (version >= 1),
-    CHECK (jsonb_typeof(metadata) = 'object'),
+    CHECK (metadata IS NULL OR jsonb_typeof(metadata) = 'object'),
     CHECK (
         (reply_to_message_id IS NULL AND reply_to_message_created_at IS NULL)
         OR (reply_to_message_id IS NOT NULL AND reply_to_message_created_at IS NOT NULL)
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS chat_message_events (
     event_version BIGINT NOT NULL DEFAULT 1,
     message_version BIGINT NOT NULL,
     payload JSONB NOT NULL,
-    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    summary JSONB NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (event_version >= 1),
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS chat_message_attachments (
     size_bytes BIGINT,
     width INTEGER,
     height INTEGER,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (size_bytes IS NULL OR size_bytes > 0),
     CHECK (width IS NULL OR width > 0),

@@ -10,10 +10,11 @@ use super::{
     DeleteEntriesResult, EntryDeletionImpact, MemberResourceCleanupResult, RoomCleanupImpact,
 };
 
-struct MediaCoverFileReferenceRow {
+struct MediaFileReferenceRow {
     id: MediaId,
     storage_backend: String,
     object_key: String,
+    reference_kind: String,
 }
 
 fn required_playlist_depth(depth: Option<i32>) -> Result<i32> {
@@ -151,7 +152,7 @@ async fn collect_deleted_media_ids_in_tx(
     Ok(media_ids)
 }
 
-async fn collect_media_cover_file_references_in_tx(
+async fn collect_media_file_references_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     room_id: &RoomId,
     media_ids: &[MediaId],
@@ -162,14 +163,26 @@ async fn collect_media_cover_file_references_in_tx(
 
     let media_id_strs: Vec<i64> = media_ids.iter().map(MediaId::as_i64).collect();
     let rows = sqlx::query_as!(
-        MediaCoverFileReferenceRow,
+        MediaFileReferenceRow,
         r#"
-        SELECT m.id AS "id: MediaId",
-               fr.storage_backend,
-               fr.object_key
+        SELECT m.id AS "id!: MediaId",
+               fr.storage_backend AS "storage_backend!",
+               fr.object_key AS "object_key!",
+               'media_cover' AS "reference_kind!"
           FROM media m
           JOIN file_references fr
             ON fr.id = m.cover_file_reference_id
+           AND fr.released_at IS NULL
+         WHERE m.room_id = $1
+           AND m.id = ANY($2)
+        UNION ALL
+        SELECT m.id AS "id!: MediaId",
+               fr.storage_backend AS "storage_backend!",
+               fr.object_key AS "object_key!",
+               'media_thumbnail' AS "reference_kind!"
+          FROM media m
+          JOIN file_references fr
+            ON fr.id = m.thumbnail_file_reference_id
            AND fr.released_at IS NULL
          WHERE m.room_id = $1
            AND m.id = ANY($2)
@@ -185,7 +198,7 @@ async fn collect_media_cover_file_references_in_tx(
         .map(|row| crate::models::FileReferenceTarget {
             storage_backend: row.storage_backend,
             object_key: row.object_key,
-            reference_kind: "media_cover".to_string(),
+            reference_kind: row.reference_kind,
             reference_id: row.id.to_string(),
         })
         .collect())
@@ -391,7 +404,7 @@ pub(super) async fn plan_delete_entries_in_room_in_tx(
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, explicit_media_ids)
             .await?;
     let deleted_media_file_references =
-        collect_media_cover_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
+        collect_media_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
     let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
         tx,
         room_id,
@@ -486,7 +499,7 @@ pub(super) async fn plan_clear_playlist_scope_in_tx(
         collect_deleted_media_ids_in_tx(tx, room_id, &deleted_playlist_ids, &direct_media_ids)
             .await?;
     let deleted_media_file_references =
-        collect_media_cover_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
+        collect_media_file_references_in_tx(tx, room_id, &deleted_media_ids).await?;
     let playback_reset = plan_playback_reset_for_deleted_entries_in_tx(
         tx,
         room_id,

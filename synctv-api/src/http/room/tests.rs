@@ -1,8 +1,9 @@
 use super::{
     build_get_playback_request, sse_event_from_server_message, sse_event_id_from_resource_event,
     watch_after_event_sequence, CancelOnDropStream, ChatAttachmentObjectQuery, GetPlaybackQuery,
-    MediaCoverObjectQuery, PlaylistCoverObjectQuery, RoomCoverObjectQuery, WatchPlaybackQuery,
-    WatchPlaybackStateQuery, WatchPlaylistItemsQuery, WatchQuery,
+    MediaCoverObjectQuery, MediaThumbnailObjectQuery, PlaylistCoverObjectQuery,
+    RoomCoverObjectQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, WatchPlaylistItemsQuery,
+    WatchQuery,
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use synctv_proto::client::{
@@ -265,6 +266,10 @@ fn test_handwritten_room_queries_ignore_unknown_fields() {
     let media_cover = serde_urlencoded::from_str::<MediaCoverObjectQuery>("token=token&extra=true")
         .expect("media cover query should ignore unknown fields");
     assert_eq!(media_cover.token, "token");
+    let media_thumbnail =
+        serde_urlencoded::from_str::<MediaThumbnailObjectQuery>("token=token&extra=true")
+            .expect("media thumbnail query should ignore unknown fields");
+    assert_eq!(media_thumbnail.token, "token");
     let room_cover = serde_urlencoded::from_str::<RoomCoverObjectQuery>("token=token&extra=true")
         .expect("room cover query should ignore unknown fields");
     assert_eq!(room_cover.token, "token");
@@ -621,7 +626,6 @@ fn test_add_media_batch_body_deserializes_without_room_id_in_nested_items() -> T
         "items": [
             {
                 "playlistId": "playlist-1",
-                "sourceProvider": 1,
                 "providerInstanceName": "default",
                 "sourceConfig": {
                     "directUrl": {

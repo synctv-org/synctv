@@ -49,6 +49,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -64,6 +65,29 @@ const DEFAULT_BUFFER_CAPACITY: usize = 10_000;
 const FLUSH_BATCH_SIZE: usize = 100;
 /// Flush interval in seconds
 const FLUSH_INTERVAL_SECS: u64 = 5;
+
+struct JsonbArray<T> {
+    values: Vec<serde_json::Value>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Serialize> JsonbArray<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(capacity),
+            _marker: PhantomData,
+        }
+    }
+
+    fn push(&mut self, value: &T) -> Result<()> {
+        self.values.push(serde_json::to_value(value)?);
+        Ok(())
+    }
+
+    fn as_slice(&self) -> &[serde_json::Value] {
+        &self.values
+    }
+}
 
 /// Audit log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -607,28 +631,25 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
     let mut actions = Vec::with_capacity(batch_size);
     let mut target_types = Vec::with_capacity(batch_size);
     let mut target_ids: Vec<String> = Vec::with_capacity(batch_size);
-    let mut details_list: Vec<serde_json::Value> = Vec::with_capacity(batch_size);
+    let mut details_list = JsonbArray::<AuditDetails>::with_capacity(batch_size);
     let mut ip_addresses: Vec<String> = Vec::with_capacity(batch_size);
     let mut user_agents: Vec<String> = Vec::with_capacity(batch_size);
     let mut created_ats: Vec<DateTime<Utc>> = Vec::with_capacity(batch_size);
 
     for record in buffer.iter() {
+        if let Err(error) = details_list.push(&record.details) {
+            tracing::error!(
+                error = %error,
+                "Failed to serialize audit details for batch insert"
+            );
+            dropped_count.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         actor_ids.push(parse_actor_id_for_storage(&record.actor_id).unwrap_or(0));
         actor_usernames.push(record.actor_username.clone());
         actions.push(record.action.as_i16());
         target_types.push(record.target_type.as_i16());
         target_ids.push(record.target_id.clone().unwrap_or_default());
-        match serde_json::to_value(&record.details) {
-            Ok(details) => details_list.push(details),
-            Err(error) => {
-                tracing::error!(
-                    error = %error,
-                    "Failed to serialize audit details for batch insert"
-                );
-                dropped_count.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-        }
         ip_addresses.push(record.ip_address.clone().unwrap_or_default());
         user_agents.push(record.user_agent.clone().unwrap_or_default());
         created_ats.push(record.created_at);
@@ -676,7 +697,7 @@ async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count
         &actions,
         &target_types,
         &target_ids,
-        &details_list,
+        details_list.as_slice(),
         &ip_addresses,
         &user_agents,
         &created_ats,

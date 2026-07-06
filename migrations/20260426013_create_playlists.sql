@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     name VARCHAR(255) NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
 
-    cover_file_reference_id BIGINT NULL,
+    cover_file_reference_id BIGINT NULL REFERENCES file_references(id) ON DELETE SET NULL,
 
     parent_id BIGINT,
 
@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS playlists (
         (source_provider IS NOT NULL AND source_config IS NOT NULL)
         OR (source_provider IS NULL AND source_config IS NULL)
         ),
+    CONSTRAINT playlists_source_config_object
+        CHECK (source_config IS NULL OR jsonb_typeof(source_config) = 'object'),
     CONSTRAINT playlists_provider_instance_requires_source_provider
         CHECK (
         provider_instance_name IS NULL OR source_provider IS NOT NULL

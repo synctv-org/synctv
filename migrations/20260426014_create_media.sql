@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS media (
 
     provider_instance_name VARCHAR(64),
 
-    cover_file_reference_id BIGINT NULL,
+    cover_file_reference_id BIGINT NULL REFERENCES file_references(id) ON DELETE SET NULL,
+    thumbnail_file_reference_id BIGINT NULL REFERENCES file_references(id) ON DELETE SET NULL,
 
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -31,7 +32,9 @@ CREATE TABLE IF NOT EXISTS media (
     CONSTRAINT media_provider_instance_fk
         FOREIGN KEY (provider_instance_name)
         REFERENCES media_provider_instances(name)
-        ON DELETE RESTRICT
+        ON DELETE RESTRICT,
+    CONSTRAINT media_source_config_object
+        CHECK (jsonb_typeof(source_config) = 'object')
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_id_room_unique ON media(id, room_id);

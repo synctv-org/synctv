@@ -27,6 +27,7 @@ struct MediaRow {
     source_config: crate::models::MediaSourceConfig,
     provider_instance_name: Option<String>,
     cover_file_reference_id: Option<i64>,
+    thumbnail_file_reference_id: Option<i64>,
     added_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     version: i32,
@@ -47,6 +48,7 @@ impl From<MediaRow> for Media {
             source_config: row.source_config,
             provider_instance_name: row.provider_instance_name,
             cover_file_reference_id: row.cover_file_reference_id,
+            thumbnail_file_reference_id: row.thumbnail_file_reference_id,
             added_at: row.added_at,
             updated_at: row.updated_at,
             version: row.version,
@@ -67,6 +69,7 @@ struct MediaListRow {
     source_config: crate::models::MediaSourceConfig,
     provider_instance_name: Option<String>,
     cover_file_reference_id: Option<i64>,
+    thumbnail_file_reference_id: Option<i64>,
     added_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
     version: i32,
@@ -89,6 +92,7 @@ impl From<MediaListRow> for MediaListItem {
                 source_config: row.source_config,
                 provider_instance_name: row.provider_instance_name,
                 cover_file_reference_id: row.cover_file_reference_id,
+                thumbnail_file_reference_id: row.thumbnail_file_reference_id,
                 added_at: row.added_at,
                 updated_at: row.updated_at,
                 version: row.version,
@@ -277,6 +281,7 @@ impl MediaRepository {
             "SELECT m.id, m.playlist_id, m.room_id, m.creator_id, m.name, m.description, m.position,
                     m.source_provider, m.source_config, NULLIF(m.provider_instance_name, '') AS provider_instance_name,
                     m.cover_file_reference_id,
+                    m.thumbnail_file_reference_id,
                     m.added_at, m.updated_at, m.version,
                     CASE
                       WHEN m.creator_id IS NULL THEN TRUE
@@ -331,6 +336,7 @@ impl MediaRepository {
                        source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version
             "#,
             media.playlist_id.as_ref().map(PlaylistId::as_i64),
@@ -426,6 +432,7 @@ impl MediaRepository {
             " RETURNING id, playlist_id, room_id, creator_id, name, description, position,
                        source_provider, source_config, NULLIF(provider_instance_name, '') AS provider_instance_name,
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version",
         );
 
@@ -493,6 +500,7 @@ impl MediaRepository {
                        source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version
             "#,
             media.id as MediaId,
@@ -557,6 +565,7 @@ impl MediaRepository {
                        source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version
             "#,
             media.id as MediaId,
@@ -587,6 +596,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE id = $1
@@ -619,6 +629,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1 AND id = $2
@@ -655,6 +666,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1 AND id = $2
@@ -698,11 +710,55 @@ impl MediaRepository {
                        source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version
             "#,
             room_id as &RoomId,
             media_id as &MediaId,
             cover_file_reference_id,
+            expected_version,
+        )
+        .fetch_optional(executor)
+        .await?;
+
+        Ok(row.map(Into::into))
+    }
+
+    pub async fn update_thumbnail_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        thumbnail_file_reference_id: Option<i64>,
+        expected_version: i32,
+        executor: E,
+    ) -> Result<Option<Media>>
+    where
+        E: sqlx::PgExecutor<'e>,
+    {
+        let row = sqlx::query_as!(
+            MediaRow,
+            r#"
+            UPDATE media
+            SET thumbnail_file_reference_id = $3,
+                version = version + 1
+             WHERE room_id = $1 AND id = $2 AND version = $4
+             RETURNING id as "id: MediaId",
+                       playlist_id as "playlist_id: PlaylistId",
+                       room_id as "room_id: RoomId",
+                       creator_id as "creator_id: UserId",
+                       name,
+                       description,
+                       position,
+                       source_provider as "source_provider: ProviderTypeName",
+                       source_config as "source_config: crate::models::MediaSourceConfig",
+                       NULLIF(provider_instance_name, '') AS "provider_instance_name?",
+                       cover_file_reference_id,
+                       thumbnail_file_reference_id,
+                       added_at, updated_at, version
+            "#,
+            room_id as &RoomId,
+            media_id as &MediaId,
+            thumbnail_file_reference_id,
             expected_version,
         )
         .fetch_optional(executor)
@@ -744,6 +800,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE id = ANY($1)
@@ -785,6 +842,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1 AND id = ANY($2)
@@ -822,6 +880,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1
@@ -853,6 +912,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -883,6 +943,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -916,6 +977,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1 AND playlist_id = $2
@@ -963,6 +1025,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -1016,6 +1079,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -1059,6 +1123,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
@@ -1096,6 +1161,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
              FROM media
              WHERE room_id = $1
@@ -1330,6 +1396,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1 AND id = ANY($2)
@@ -1393,6 +1460,7 @@ impl MediaRepository {
                        source_config as "source_config: crate::models::MediaSourceConfig",
                        NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                        cover_file_reference_id,
+    thumbnail_file_reference_id,
                        added_at, updated_at, version
                 FROM media
                 WHERE room_id = $1 AND id = $2
@@ -1521,6 +1589,7 @@ impl MediaRepository {
                               source_config as "source_config: crate::models::MediaSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                               cover_file_reference_id,
+    thumbnail_file_reference_id,
                               added_at, updated_at, version
                     "#,
                     media.id as MediaId,
@@ -1722,6 +1791,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1 AND id = $2
@@ -1749,6 +1819,7 @@ impl MediaRepository {
                    source_config as "source_config: crate::models::MediaSourceConfig",
                    NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                    cover_file_reference_id,
+    thumbnail_file_reference_id,
                    added_at, updated_at, version
             FROM media
             WHERE room_id = $1 AND id = $2
@@ -1830,6 +1901,7 @@ impl MediaRepository {
                               source_config as "source_config: crate::models::MediaSourceConfig",
                               NULLIF(provider_instance_name, '') AS "provider_instance_name?",
                               cover_file_reference_id,
+    thumbnail_file_reference_id,
                               added_at, updated_at, version
                     "#,
                     moved.id as MediaId,

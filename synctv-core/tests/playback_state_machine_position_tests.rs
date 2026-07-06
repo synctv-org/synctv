@@ -94,6 +94,7 @@ async fn test_position_reset_on_media_switch() {
         ),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,

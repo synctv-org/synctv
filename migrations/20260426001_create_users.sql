@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(50) NOT NULL,
     signup_method SMALLINT NOT NULL,
     role SMALLINT NOT NULL,
-    avatar_file_reference_id BIGINT NULL,
+    avatar_file_reference_id BIGINT NULL REFERENCES file_references(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     version INTEGER NOT NULL DEFAULT 0,

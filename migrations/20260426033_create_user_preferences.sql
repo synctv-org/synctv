@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     notify_room_event_email BOOLEAN NOT NULL DEFAULT FALSE,
     notify_system_announcement_email BOOLEAN NOT NULL DEFAULT TRUE,
 
-    settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+    settings JSONB NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 

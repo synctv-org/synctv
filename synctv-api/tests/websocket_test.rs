@@ -1483,6 +1483,7 @@ mod websocket_e2e {
                         synctv_proto::client::observe_resource::Resource::ChatEvents(
                             synctv_proto::client::ObserveChatEvents {
                                 after_event_sequence: None,
+                                include_message_types: Vec::new(),
                             },
                         ),
                     ),

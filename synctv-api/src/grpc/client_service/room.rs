@@ -177,6 +177,8 @@ impl RoomService for ClientServiceImpl {
     type GetRoomCoverObjectStream =
         super::GrpcStatusStream<synctv_proto::client::RoomCoverObjectResponse>;
     type GetMediaCoverObjectStream = super::GrpcStatusStream<MediaCoverObjectResponse>;
+    type GetMediaThumbnailObjectStream =
+        super::GrpcStatusStream<synctv_proto::client::MediaThumbnailObjectResponse>;
     type GetPlaylistCoverObjectStream =
         super::GrpcStatusStream<synctv_proto::client::PlaylistCoverObjectResponse>;
 
@@ -515,6 +517,50 @@ impl RoomService for ClientServiceImpl {
         request: Request<synctv_proto::client::ClearMediaCoverRequest>,
     ) -> Result<Response<Media>, Status> {
         media::clear_media_cover(self, request).await
+    }
+
+    async fn create_media_thumbnail_upload_session(
+        &self,
+        request: Request<synctv_proto::client::CreateMediaThumbnailUploadSessionRequest>,
+    ) -> Result<Response<synctv_proto::client::CreateMediaThumbnailUploadSessionResponse>, Status>
+    {
+        media::create_media_thumbnail_upload_session(self, request).await
+    }
+
+    async fn upload_media_thumbnail_object(
+        &self,
+        request: Request<synctv_proto::client::UploadMediaThumbnailObjectRequest>,
+    ) -> Result<Response<synctv_proto::client::UploadMediaThumbnailObjectResponse>, Status> {
+        media::upload_media_thumbnail_object(self, request).await
+    }
+
+    async fn complete_media_thumbnail_upload_session(
+        &self,
+        request: Request<synctv_proto::client::CompleteMediaThumbnailUploadSessionRequest>,
+    ) -> Result<Response<synctv_proto::client::CompleteMediaThumbnailUploadSessionResponse>, Status>
+    {
+        media::complete_media_thumbnail_upload_session(self, request).await
+    }
+
+    async fn get_media_thumbnail_object(
+        &self,
+        request: Request<synctv_proto::client::GetMediaThumbnailObjectRequest>,
+    ) -> Result<Response<Self::GetMediaThumbnailObjectStream>, Status> {
+        media::get_media_thumbnail_object(self, request).await
+    }
+
+    async fn update_media_thumbnail(
+        &self,
+        request: Request<synctv_proto::client::UpdateMediaThumbnailRequest>,
+    ) -> Result<Response<Media>, Status> {
+        media::update_media_thumbnail(self, request).await
+    }
+
+    async fn clear_media_thumbnail(
+        &self,
+        request: Request<synctv_proto::client::ClearMediaThumbnailRequest>,
+    ) -> Result<Response<Media>, Status> {
+        media::clear_media_thumbnail(self, request).await
     }
 
     async fn create_playlist_cover_upload_session(

@@ -103,6 +103,25 @@ pub(crate) fn media_cover_chunk_stream(
     )
 }
 
+pub(crate) fn media_thumbnail_chunk_stream(
+    download: synctv_core::models::FileObjectDownload,
+) -> impl futures::Stream<Item = Result<synctv_proto::client::MediaThumbnailObjectResponse, ApiError>>
+       + Send
+       + 'static {
+    generic_chunk_stream(
+        download,
+        |mime_type, content_manifest_sha256, data, content_range, total_size_bytes| {
+            synctv_proto::client::MediaThumbnailObjectResponse {
+                mime_type,
+                content_manifest_sha256,
+                data,
+                content_range,
+                total_size_bytes,
+            }
+        },
+    )
+}
+
 pub(crate) fn room_cover_chunk_stream(
     download: synctv_core::models::FileObjectDownload,
 ) -> impl futures::Stream<Item = Result<synctv_proto::client::RoomCoverObjectResponse, ApiError>>

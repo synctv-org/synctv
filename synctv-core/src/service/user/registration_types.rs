@@ -119,6 +119,10 @@ pub(super) struct PendingRegistrationRequestRow {
 pub(crate) struct PendingRegistrationPasskey(Passkey);
 
 impl PendingRegistrationPasskey {
+    pub(crate) fn from_passkey(passkey: &Passkey) -> Self {
+        Self(passkey.clone())
+    }
+
     pub(crate) fn into_inner(self) -> Passkey {
         self.0
     }

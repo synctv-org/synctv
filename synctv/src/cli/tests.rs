@@ -5302,6 +5302,7 @@ fn render_human_output_includes_media_and_playlist_availability() {
         version: 12,
         cover: None,
         description: String::new(),
+        thumbnail: None,
     })
     .expect("media human output should render");
     let rendered_playlist = render_human_output(&synctv_proto::client::Playlist {
@@ -5375,6 +5376,7 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             version: 11,
             cover: None,
             description: String::new(),
+            thumbnail: None,
         }],
         total: 2,
         folder_count: 1,
@@ -5566,6 +5568,7 @@ fn build_get_playback_cli_output_omits_absolute_urls_for_explicit_endpoint_mode(
                 playback_infos: std::collections::HashMap::from([(
                     "direct".to_string(),
                     synctv_proto::client::PlaybackInfo {
+                        thumbnail: None,
                         medias: vec![synctv_proto::client::PlaybackMedia {
                             name: String::new(),
                             url: "/api/playback-providers/direct-url/abc/streams/direct/0".into(),

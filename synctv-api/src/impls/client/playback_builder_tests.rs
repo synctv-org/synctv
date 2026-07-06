@@ -1,9 +1,12 @@
 use super::{
-    build_playback_state_update, build_start_playback_request, static_media_source_provider,
-    PlaybackStateUpdateCommand,
+    apply_static_direct_url_thumbnail, build_playback_state_update, build_start_playback_request,
+    static_media_source_provider, PlaybackStateUpdateCommand,
 };
 use chrono::Utc;
-use synctv_core::models::{Media, MediaId, PlaylistId, ProviderTarget, RoomId, SourceProvider};
+use synctv_core::models::{
+    Media, MediaId, PlaybackExternalMedia, PlaybackInfo, PlaybackMedia, PlaybackMediaProvider,
+    PlaybackResult, PlaylistId, ProviderTarget, RoomId, SourceProvider,
+};
 
 const EMPTY_TARGET_HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -301,10 +304,68 @@ fn make_media(provider_instance_name: &str) -> Media {
         ),
         provider_instance_name: Some(provider_instance_name.to_string()),
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: Utc::now(),
         updated_at: Utc::now(),
         version: 0,
     }
+}
+
+fn test_media(url: &str) -> PlaybackMedia {
+    PlaybackMedia {
+        name: "media".to_string(),
+        format: "mp4".to_string(),
+        expire_at: None,
+        metadata: None,
+        provider: PlaybackMediaProvider::External(PlaybackExternalMedia {
+            url: url.to_string(),
+            headers: std::collections::HashMap::new(),
+        }),
+    }
+}
+
+#[test]
+fn test_direct_url_thumbnail_overrides_playback_modes() -> TestResult {
+    let mut result = PlaybackResult::builder(None, RoomId::new(), "media".to_string(), 0.0)
+        .provider("direct_url".to_string())
+        .default_mode("direct".to_string())
+        .add_mode(
+            "direct".to_string(),
+            PlaybackInfo::builder()
+                .add_media(test_media("https://example.com/direct.mp4"))
+                .build(),
+        )
+        .add_mode(
+            "provider".to_string(),
+            PlaybackInfo::builder()
+                .thumbnail(Some("https://provider.example.com/thumb.jpg".to_string()))
+                .add_media(test_media("https://example.com/provider.mp4"))
+                .build(),
+        )
+        .build()
+        .ok_or_else(|| test_error("playback result should build"))?;
+
+    apply_static_direct_url_thumbnail(
+        &mut result,
+        SourceProvider::DirectUrl,
+        Some("https://upload.example.com/thumbnail.jpg"),
+    );
+
+    assert_eq!(
+        result
+            .playback_infos
+            .get("direct")
+            .and_then(|info| info.thumbnail.as_deref()),
+        Some("https://upload.example.com/thumbnail.jpg")
+    );
+    assert_eq!(
+        result
+            .playback_infos
+            .get("provider")
+            .and_then(|info| info.thumbnail.as_deref()),
+        Some("https://upload.example.com/thumbnail.jpg")
+    );
+    Ok(())
 }
 
 #[test]

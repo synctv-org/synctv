@@ -61,7 +61,7 @@ pub use traits::{
     BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment,
     DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
     PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency, SourceConfig,
-    SourceConfigKind,
+    SourceConfigKind, SourceCover,
 };
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
@@ -332,6 +332,8 @@ impl From<ProviderPlaybackFillError> for ProviderError {
 static PLAYBACK_FILL_SINGLEFLIGHT: LazyLock<
     SingleFlight<String, VersionedPlayback, ProviderPlaybackFillError>,
 > = LazyLock::new(SingleFlight::new);
+static SOURCE_COVER_CACHE: LazyLock<ProviderSourceCoverCache> =
+    LazyLock::new(ProviderSourceCoverCache::new);
 
 #[must_use]
 pub fn provider_requires_credential_repo(provider_name: &str) -> bool {
@@ -349,6 +351,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
     playback_infos.insert(
         "hls".to_string(),
         PlaybackInfo {
+            thumbnail: None,
             medias: vec![PlaybackMedia {
                 name: "HLS".to_string(),
                 format: "m3u8".to_string(),
@@ -372,6 +375,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
     playback_infos.insert(
         "flv".to_string(),
         PlaybackInfo {
+            thumbnail: None,
             medias: vec![PlaybackMedia {
                 name: "FLV".to_string(),
                 format: "flv".to_string(),
@@ -392,12 +396,10 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         },
     );
 
-    let metadata = crate::models::PlaybackMetadata {
-        is_live: Some(true),
-        media_id: Some(media_id),
-        room_id: Some(room_id),
-        ..Default::default()
-    };
+    let metadata = crate::models::PlaybackMetadata::Live(crate::models::LivePlaybackMetadata {
+        media_id,
+        room_id,
+    });
 
     PlaybackResult {
         playback_infos,
@@ -406,7 +408,7 @@ pub fn build_live_playback(media_id: MediaId, room_id: RoomId) -> PlaybackResult
         provider_instance_name: None,
         duration_seconds: None,
         is_live: Some(true),
-        metadata,
+        metadata: Some(metadata),
     }
 }
 
@@ -555,6 +557,153 @@ async fn cache_versioned_playback(
 const PLAYBACK_CACHE_LOCK_TTL: Duration = Duration::from_secs(30);
 const PLAYBACK_CACHE_LOCK_WAIT_ATTEMPTS: usize = 5;
 const PLAYBACK_CACHE_LOCK_WAIT_DELAY: Duration = Duration::from_millis(50);
+const SOURCE_COVER_CACHE_LOCK_TTL: Duration = Duration::from_secs(10);
+const SOURCE_COVER_CACHE_LOCK_WAIT_ATTEMPTS: usize = 3;
+const SOURCE_COVER_CACHE_LOCK_WAIT_DELAY: Duration = Duration::from_millis(40);
+
+struct ProviderSourceCoverCache {
+    l1: moka::future::Cache<String, Option<SourceCover>>,
+    singleflight: SingleFlight<String, Option<SourceCover>, ProviderPlaybackFillError>,
+}
+
+impl ProviderSourceCoverCache {
+    fn new() -> Self {
+        Self {
+            l1: moka::future::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(Duration::from_secs(30))
+                .build(),
+            singleflight: SingleFlight::new(),
+        }
+    }
+
+    async fn get_l1(&self, key: &str) -> Option<Option<SourceCover>> {
+        self.l1.get(key).await
+    }
+
+    async fn put_l1(&self, key: &str, cover: Option<SourceCover>) {
+        self.l1.insert(key.to_string(), cover).await;
+    }
+
+    async fn get_l2(
+        &self,
+        store: &dyn ProviderStore,
+        l1_key: &str,
+        l2_key: &str,
+    ) -> Option<Option<SourceCover>> {
+        let cached = read_cached_source_cover(store, l2_key).await?;
+        self.put_l1(l1_key, cached.clone()).await;
+        Some(cached)
+    }
+
+    async fn wait_for_l2(
+        &self,
+        store: &dyn ProviderStore,
+        l1_key: &str,
+        l2_key: &str,
+    ) -> Option<Option<SourceCover>> {
+        for _ in 0..SOURCE_COVER_CACHE_LOCK_WAIT_ATTEMPTS {
+            tokio::time::sleep(SOURCE_COVER_CACHE_LOCK_WAIT_DELAY).await;
+            if let Some(cached) = self.get_l2(store, l1_key, l2_key).await {
+                return Some(cached);
+            }
+        }
+        None
+    }
+
+    async fn set_l2(
+        &self,
+        provider_name: &'static str,
+        store: &dyn ProviderStore,
+        l2_key: &str,
+        cover: &Option<SourceCover>,
+        ttl: Duration,
+    ) {
+        if let Err(error) = store.set(l2_key, cover, ttl).await {
+            tracing::debug!(
+                provider = provider_name,
+                cache_key = l2_key,
+                error = %error,
+                "Provider source cover L2 write failed"
+            );
+        }
+    }
+
+    async fn get_or_fill<F, Fut>(
+        &self,
+        provider_name: &'static str,
+        cache_key: &str,
+        cache_ttl: Duration,
+        ctx: &ProviderContext<'_>,
+        fill: F,
+    ) -> std::result::Result<Option<SourceCover>, ProviderError>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = std::result::Result<Option<SourceCover>, ProviderError>> + Send,
+    {
+        let l1_key = format!("{provider_name}:{cache_key}");
+        if let Some(cached) = self.get_l1(&l1_key).await {
+            return Ok(cached);
+        }
+
+        let Some(store) = ctx.store.as_ref() else {
+            let cover = fill().await?;
+            self.put_l1(&l1_key, cover.clone()).await;
+            return Ok(cover);
+        };
+
+        if let Some(cached) = self.get_l2(store.as_ref(), &l1_key, cache_key).await {
+            return Ok(cached);
+        }
+
+        let lock_key = format!("lock:{cache_key}");
+        let lock = match store.lock(&lock_key, SOURCE_COVER_CACHE_LOCK_TTL).await {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                tracing::debug!(
+                    provider = provider_name,
+                    cache_key = cache_key,
+                    error = %error,
+                    "Provider source cover L2 lock unavailable; waiting for peer fill"
+                );
+                if let Some(cached) = self.wait_for_l2(store.as_ref(), &l1_key, cache_key).await {
+                    return Ok(cached);
+                }
+                None
+            }
+        };
+
+        if lock.is_some() {
+            if let Some(cached) = self.get_l2(store.as_ref(), &l1_key, cache_key).await {
+                return Ok(cached);
+            }
+        }
+
+        let singleflight_key = format!("{provider_name}:{cache_key}");
+        let cover = self
+            .singleflight
+            .do_work(singleflight_key, async {
+                if let Some(cached) = read_cached_source_cover(store.as_ref(), cache_key).await {
+                    return Ok(cached);
+                }
+
+                let cover = fill().await.map_err(ProviderPlaybackFillError::from)?;
+                self.set_l2(provider_name, store.as_ref(), cache_key, &cover, cache_ttl)
+                    .await;
+                Ok(cover)
+            })
+            .await
+            .map_err(|error| match error {
+                SingleFlightError::Inner(error) => ProviderError::from(error),
+                SingleFlightError::WorkerFailed => ProviderError::Internal(format!(
+                    "Provider '{provider_name}' source cover singleflight worker failed"
+                )),
+            })?;
+
+        self.put_l1(&l1_key, cover.clone()).await;
+        Ok(cover)
+    }
+}
 
 async fn read_fresh_versioned_playback(
     store: &dyn ProviderStore,
@@ -665,4 +814,178 @@ where
 
     build_cached_versioned_playback_response(versioned, provider_name, ctx, mark_provider_resources)
         .await
+}
+
+async fn read_cached_source_cover(
+    store: &dyn ProviderStore,
+    cache_key: &str,
+) -> Option<Option<SourceCover>> {
+    match store.get::<Option<SourceCover>>(cache_key).await {
+        Ok(Some(cached)) => Some(cached),
+        _ => None,
+    }
+}
+
+pub(crate) async fn cached_source_cover_or_fill<F, Fut>(
+    provider_name: &'static str,
+    cache_key: &str,
+    cache_ttl: Duration,
+    ctx: &ProviderContext<'_>,
+    fill: F,
+) -> std::result::Result<Option<SourceCover>, ProviderError>
+where
+    F: FnOnce() -> Fut + Send,
+    Fut: Future<Output = std::result::Result<Option<SourceCover>, ProviderError>> + Send,
+{
+    SOURCE_COVER_CACHE
+        .get_or_fill(provider_name, cache_key, cache_ttl, ctx, fill)
+        .await
+}
+
+#[cfg(test)]
+mod source_cover_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn test_context(store: Arc<dyn ProviderStore>) -> ProviderContext<'static> {
+        ProviderContext::new("source-cover-cache-test").with_store(store)
+    }
+
+    #[tokio::test]
+    async fn source_cover_cache_l1_hit_skips_fill() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = test_context(store);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let key = format!("source-cover:test:l1:{}", synctv_common::snanoid!(8));
+
+        let first_calls = calls.clone();
+        let first = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(SourceCover::Url {
+                    url: "https://cdn.example.test/a.jpg".into(),
+                }))
+            },
+        )
+        .await
+        .expect("first fill should succeed");
+        assert!(matches!(first, Some(SourceCover::Url { url }) if url.ends_with("/a.jpg")));
+
+        let second_calls = calls.clone();
+        let second = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(SourceCover::Url {
+                    url: "https://cdn.example.test/b.jpg".into(),
+                }))
+            },
+        )
+        .await
+        .expect("second read should succeed");
+
+        assert!(matches!(second, Some(SourceCover::Url { url }) if url.ends_with("/a.jpg")));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn source_cover_cache_l2_hit_backfills_l1() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = test_context(store.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let key = format!("source-cover:test:l2:{}", synctv_common::snanoid!(8));
+        let cached = Some(SourceCover::Url {
+            url: "https://cdn.example.test/l2.jpg".into(),
+        });
+        store
+            .set(&key, &cached, Duration::from_secs(60))
+            .await
+            .expect("L2 seed should succeed");
+
+        let first_calls = calls.clone();
+        let first = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(SourceCover::Url {
+                    url: "https://cdn.example.test/fill.jpg".into(),
+                }))
+            },
+        )
+        .await
+        .expect("L2 read should succeed");
+        assert!(matches!(first, Some(SourceCover::Url { url }) if url.ends_with("/l2.jpg")));
+
+        store.delete(&key).await.expect("L2 delete should succeed");
+        let second_calls = calls.clone();
+        let second = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(SourceCover::Url {
+                    url: "https://cdn.example.test/fill.jpg".into(),
+                }))
+            },
+        )
+        .await
+        .expect("L1 backfill read should succeed");
+
+        assert!(matches!(second, Some(SourceCover::Url { url }) if url.ends_with("/l2.jpg")));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn source_cover_cache_keeps_negative_results() {
+        let store: Arc<dyn ProviderStore> = Arc::new(InMemoryProviderStore::new(16));
+        let ctx = test_context(store);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let key = format!("source-cover:test:none:{}", synctv_common::snanoid!(8));
+
+        let first_calls = calls.clone();
+        let first = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            },
+        )
+        .await
+        .expect("negative fill should succeed");
+        assert!(first.is_none());
+
+        let second_calls = calls.clone();
+        let second = cached_source_cover_or_fill(
+            "test",
+            &key,
+            Duration::from_secs(60),
+            &ctx,
+            || async move {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(SourceCover::Url {
+                    url: "https://cdn.example.test/fill.jpg".into(),
+                }))
+            },
+        )
+        .await
+        .expect("negative cache read should succeed");
+        assert!(second.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }

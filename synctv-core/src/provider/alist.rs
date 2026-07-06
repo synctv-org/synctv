@@ -13,13 +13,12 @@ use super::{
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
     PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
-    AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata, PlaybackAlistMedia,
-    PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia, PlaybackMediaProvider,
-    PlaybackMetadata, PlaybackProxyResource, PlaybackProxyResourceMetadata, PlaybackSubtitle,
-    PlaybackSubtitleProvider,
+    AlistPlaybackMetadata, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
+    PlaybackAlistMedia, PlaybackAlistSubtitle, PlaybackExternalSubtitle, PlaybackMedia,
+    PlaybackMediaProvider, PlaybackMetadata, PlaybackSubtitle, PlaybackSubtitleProvider,
 };
 use crate::models::{
     normalize_provider_instance_name, validate_provider_instance_name, AlistMediaSourceConfig,
@@ -323,19 +322,6 @@ fn mark_alist_playback_resources(result: &mut PlaybackResult, version: &str, exp
     // Alist returns upstream playback modes and SyncTV proxy siblings in the
     // same result. The proxy default keeps clients independent from upstream
     // auth headers and HLS segment rewriting details.
-    if result
-        .metadata
-        .thumbnail
-        .as_deref()
-        .is_some_and(|thumbnail| !thumbnail.trim().is_empty())
-    {
-        result.metadata.proxy_thumbnail = Some(PlaybackProxyResourceMetadata {
-            version: version.to_string(),
-            expires_at,
-            resource: PlaybackProxyResource::Thumbnail,
-        });
-    }
-
     let original_default_mode = result.default_mode.clone();
     let original_modes = result
         .playback_infos
@@ -1226,8 +1212,11 @@ struct ResolvedAlistBinding {
 struct ResolvedAlistConfig {
     host: String,
     token: String,
+    server_id: String,
     path: String,
     password: Option<String>,
+    credential_owner_id: String,
+    credential_revision: String,
     provider_instance_name: Option<String>,
 }
 
@@ -1362,6 +1351,35 @@ impl AlistProvider {
         format!("playback:{server_id}:{owner_hash}:{path_hash}")
     }
 
+    fn source_cover_cache_key(config: &ResolvedAlistConfig) -> String {
+        let mut owner_hasher = Sha256::new();
+        owner_hasher.update(config.credential_owner_id.as_bytes());
+        owner_hasher.update(b"\0");
+        owner_hasher.update(config.credential_revision.as_bytes());
+        owner_hasher.update(b"\0");
+        owner_hasher.update(
+            config
+                .provider_instance_name
+                .as_deref()
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        let owner_hash: String = hex::encode(owner_hasher.finalize())
+            .chars()
+            .take(16)
+            .collect();
+
+        let mut path_hasher = Sha256::new();
+        path_hasher.update(config.path.as_bytes());
+        path_hasher.update(b"\0");
+        path_hasher.update(config.password.as_deref().unwrap_or_default().as_bytes());
+        let path_hash: String = hex::encode(path_hasher.finalize())
+            .chars()
+            .take(16)
+            .collect();
+        format!("source-cover:{}:{owner_hash}:{path_hash}", config.server_id)
+    }
+
     /// Resolve AlistSourceConfig into a cached credential binding without logging in.
     async fn resolve_binding(
         &self,
@@ -1424,8 +1442,11 @@ impl AlistProvider {
         Ok(ResolvedAlistConfig {
             host: access.host,
             token: access.token,
+            server_id: access.server_id,
             path: config.path,
             password: config.password,
+            credential_owner_id: access.credential_owner_id,
+            credential_revision: access.credential_revision,
             provider_instance_name: access.provider_instance_name,
         })
     }
@@ -1526,13 +1547,13 @@ impl AlistProvider {
         provider_instance_name: Option<String>,
     ) -> PlaybackResult {
         let mut playback_infos = HashMap::new();
-        let mut metadata = PlaybackMetadata {
+        let mut metadata = AlistPlaybackMetadata {
             name: Some(file_info.name.clone()),
             size: Some(file_info.size),
             provider: Some(file_info.provider.clone()),
-            thumbnail: (!file_info.thumb.is_empty()).then(|| file_info.thumb.clone()),
             ..Default::default()
         };
+        let thumbnail = (!file_info.thumb.is_empty()).then(|| file_info.thumb.clone());
         let mut duration_seconds = None;
         let related_subtitles = subtitles_from_related_files(&file_info.related);
         if !related_subtitles.is_empty() {
@@ -1574,6 +1595,7 @@ impl AlistProvider {
                     playback_infos.insert(
                         mode_name.clone(),
                         PlaybackInfo {
+                            thumbnail: thumbnail.clone(),
                             medias: vec![playback_media(
                                 quality_name.clone(),
                                 "hls".to_string(),
@@ -1612,7 +1634,6 @@ impl AlistProvider {
                 transcoding_count: preview.transcoding_tasks.len(),
                 subtitle_count: preview.subtitle_tasks.len(),
             });
-            metadata.duration = Some(preview.duration);
             metadata.width = Some(preview.width);
             metadata.height = Some(preview.height);
             if preview.duration.is_finite() && preview.duration > 0.0 {
@@ -1630,6 +1651,7 @@ impl AlistProvider {
             playback_infos.insert(
                 "direct".to_string(),
                 PlaybackInfo {
+                    thumbnail: thumbnail.clone(),
                     medias: vec![playback_media(
                         file_info.name.clone(),
                         Self::detect_format(&file_info.name),
@@ -1661,7 +1683,7 @@ impl AlistProvider {
             provider_instance_name,
             duration_seconds,
             is_live: Some(false),
-            metadata,
+            metadata: Some(PlaybackMetadata::Alist(metadata)),
         }
     }
 
@@ -1800,6 +1822,40 @@ impl MediaProvider for AlistProvider {
             credential_owner_id.to_string(),
             config.server_id,
         )])
+    }
+
+    async fn source_cover(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: SourceConfig<'_>,
+    ) -> Result<Option<SourceCover>, ProviderError> {
+        let config = AlistSourceConfig::from_source_config(source_config)?;
+        let resolved = self.resolve_config(ctx, config).await?;
+        let cache_key = Self::source_cover_cache_key(&resolved);
+        super::cached_source_cover_or_fill(
+            Self::NAME,
+            &cache_key,
+            Duration::from_mins(5),
+            ctx,
+            || async {
+                let client = self
+                    .get_client_with_context(
+                        resolved.provider_instance_name.as_deref(),
+                        ctx.request_context(),
+                    )
+                    .await?;
+                let file_info: AlistFileInfo = client
+                    .fs_get(alist_fs_get_request(&resolved, resolved.path.clone()))
+                    .await?
+                    .into();
+                Ok(
+                    (!file_info.thumb.trim().is_empty()).then(|| SourceCover::Url {
+                        url: file_info.thumb,
+                    }),
+                )
+            },
+        )
+        .await
     }
 
     async fn prepare_source_config(
@@ -1988,10 +2044,13 @@ impl AlistProvider {
             super::playback_transport::lookup_versioned(store, version, request_context).await?;
         let url = versioned
             .result
-            .metadata
-            .thumbnail
-            .as_deref()
-            .filter(|url| !url.trim().is_empty())
+            .playback_infos
+            .values()
+            .find_map(|info| {
+                info.thumbnail
+                    .as_deref()
+                    .filter(|url| !url.trim().is_empty())
+            })
             .ok_or(ProviderError::NotFound)?
             .to_string();
         let headers = versioned

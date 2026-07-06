@@ -11,14 +11,14 @@ CREATE TABLE IF NOT EXISTS content_reports (
     target_chat_message_created_at TIMESTAMPTZ,
     reason_code TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata JSONB,
     status SMALLINT NOT NULL DEFAULT 1,
     reviewed_by BIGINT,
     reviewed_at TIMESTAMPTZ,
     resolution_note TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK (jsonb_typeof(metadata) = 'object'),
+    CHECK (metadata IS NULL OR jsonb_typeof(metadata) = 'object'),
     FOREIGN KEY (reporter_user_id) REFERENCES users(id) ON DELETE RESTRICT,
     FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
 );

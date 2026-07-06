@@ -334,6 +334,16 @@ impl RoomService {
             .await?;
         self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
             .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            room_id,
+            user_id,
+            snapshot.target_username.clone(),
+            user_id,
+            snapshot.changed_by_username.clone(),
+            created_member.role,
+        )
+        .await?;
         tx.commit().await?;
 
         self.permission_service

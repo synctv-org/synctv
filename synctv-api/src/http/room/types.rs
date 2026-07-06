@@ -37,6 +37,17 @@ pub struct MediaCoverObjectQuery {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaThumbnailObjectPath {
+    pub encoded_object_key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MediaThumbnailObjectQuery {
+    pub token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoomCoverObjectPath {
     pub encoded_object_key: String,
 }

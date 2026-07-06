@@ -13,12 +13,12 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
     models::{
-        room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind, ChatMessage,
-        ChatMessageStatus, ChatMessageType, DeleteChatMessage, EditChatMessage,
-        FileBlobCompression, FileReferenceTarget, FileUploadManifestPart,
-        FileUploadSessionCreateResult, NewStoredFile, RoomAdminPermissionBits,
-        RoomMemberPermissionBits, RoomSettings, SendChatMessage, SubmittedFileReference, User,
-        UserId, UserRole, UserStatus,
+        room_settings::ChatEnabled, AuditAction, AuditTargetType, ChatEventKind,
+        ChatMemberJoinedMetadata, ChatMessage, ChatMessageSelection, ChatMessageStatus,
+        ChatMessageType, ChatMetadata, DeleteChatMessage, EditChatMessage, FileBlobCompression,
+        FileReferenceTarget, FileUploadManifestPart, FileUploadSessionCreateResult, NewStoredFile,
+        RoomAdminPermissionBits, RoomMemberPermissionBits, RoomRole, RoomSettings, SendChatMessage,
+        SubmittedFileReference, User, UserId, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, FileStorageRepository, RoomMemberRepository, RoomRepository,
@@ -169,6 +169,52 @@ fn make_chat_service_with_options(
 
 fn make_chat_service(pool: &PgPool) -> (ChatService, UsernameCache) {
     make_chat_service_with_config(pool, RateLimitConfig::default())
+}
+
+fn send_user_chat_request(
+    room_id: synctv_core::models::RoomId,
+    user_id: UserId,
+    client_message_id: &str,
+    content: &str,
+) -> SendChatMessage {
+    SendChatMessage {
+        room_id,
+        user_id,
+        client_message_id: Some(client_message_id.to_string()),
+        content: content.to_string(),
+        message_type: ChatMessageType::User,
+        reply_to_message_id: None,
+        metadata: None,
+        attachments: Vec::new(),
+        mentions: Vec::new(),
+    }
+}
+
+async fn insert_member_joined_chat_event(
+    chat_repo: &ChatRepository,
+    room_id: synctv_core::models::RoomId,
+    target: &User,
+    actor: &User,
+    event_id: &str,
+) -> synctv_core::models::ChatMessageEventLog {
+    let mut message = ChatMessage::new(
+        room_id,
+        target.id,
+        format!("{} joined the room", target.username),
+    );
+    message.message_type = ChatMessageType::SystemMemberJoined;
+    message.metadata = Some(ChatMetadata::MemberJoined(ChatMemberJoinedMetadata {
+        user_id: target.id,
+        username: target.username.clone(),
+        actor_user_id: Some(actor.id),
+        actor_username: Some(actor.username.clone()),
+        role: RoomRole::Member,
+    }));
+
+    chat_repo
+        .insert_message_event(&message, &[], &[], actor.id, event_id, Utc::now())
+        .await
+        .checked("member joined chat event should be inserted")
 }
 
 fn make_chat_service_with_database_storage(pool: &PgPool) -> (ChatService, UsernameCache) {
@@ -1420,9 +1466,9 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
         user_id: creator.id,
         client_message_id: Some("client-msg-1".to_string()),
         content: "same payload".to_string(),
-        message_type: ChatMessageType::Text,
+        message_type: ChatMessageType::User,
         reply_to_message_id: None,
-        metadata: synctv_core::models::ChatMetadata::default(),
+        metadata: None,
         attachments: Vec::new(),
         mentions: Vec::new(),
     };
@@ -1448,7 +1494,12 @@ async fn test_send_message_event_idempotency_returns_existing_message() {
     );
 
     let replay = chat_service
-        .get_events_after(&room.id, Some(&first.event_id), 10)
+        .get_events_after(
+            &room.id,
+            Some(&first.event_id),
+            10,
+            &ChatMessageSelection::user_default(),
+        )
         .await
         .checked("test operation should succeed");
     assert!(replay.is_empty());
@@ -1482,7 +1533,14 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
         .checked("test operation should succeed");
 
     let empty_page = chat_service
-        .get_history_page_with_attachments_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .get_history_page_with_attachments_for_viewer(
+            &room.id,
+            None,
+            10,
+            true,
+            Some(&creator.id),
+            &ChatMessageSelection::user_default(),
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(empty_page.event_cursor.sequence, 0);
@@ -1494,9 +1552,9 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             user_id: creator.id,
             client_message_id: Some("history-cursor-1".to_string()),
             content: "cursor one".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -1508,9 +1566,9 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             user_id: creator.id,
             client_message_id: Some("history-cursor-2".to_string()),
             content: "cursor two".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -1518,7 +1576,14 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
         .checked("test operation should succeed");
 
     let page = chat_service
-        .get_history_page_with_attachments_for_viewer(&room.id, None, 10, true, Some(&creator.id))
+        .get_history_page_with_attachments_for_viewer(
+            &room.id,
+            None,
+            10,
+            true,
+            Some(&creator.id),
+            &ChatMessageSelection::user_default(),
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(page.messages.len(), 2);
@@ -1529,7 +1594,12 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
     );
 
     let replay_from_empty = chat_service
-        .get_events_after_sequence(&room.id, empty_page.event_cursor.sequence, 10)
+        .get_events_after_sequence(
+            &room.id,
+            empty_page.event_cursor.sequence,
+            10,
+            &ChatMessageSelection::user_default(),
+        )
         .await
         .checked("test operation should succeed");
     assert_eq!(
@@ -1538,6 +1608,164 @@ async fn test_chat_history_page_returns_event_cursor_for_gapless_observe() {
             .map(|event| event.event.event_id.as_str())
             .collect::<Vec<_>>(),
         vec![first.event_id.as_str(), second.event_id.as_str()]
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_chat_history_and_events_use_include_message_types_for_system_join() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(&pool);
+
+    let creator = user_repo
+        .create(&make_user("chat_include_cursor_creator"))
+        .await
+        .checked("test operation should succeed");
+    let joined = user_repo
+        .create(&make_user("chat_include_cursor_joined"))
+        .await
+        .checked("test operation should succeed");
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .checked("test operation should succeed");
+    username_cache
+        .set(&joined.id, &joined.username)
+        .await
+        .checked("test operation should succeed");
+    let (room, _) = room_service
+        .create_room(
+            "Chat Include Cursor Room".to_string(),
+            String::new(),
+            creator.id,
+            None,
+            None,
+        )
+        .await
+        .checked("test operation should succeed");
+
+    let first = chat_service
+        .send_message_event(send_user_chat_request(
+            room.id,
+            creator.id,
+            "include-cursor-user-1",
+            "visible one",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let second = chat_service
+        .send_message_event(send_user_chat_request(
+            room.id,
+            creator.id,
+            "include-cursor-user-2",
+            "visible two",
+        ))
+        .await
+        .checked("test operation should succeed");
+    let system_one =
+        insert_member_joined_chat_event(&chat_repo, room.id, &joined, &creator, "member-joined-1")
+            .await;
+    let system_two =
+        insert_member_joined_chat_event(&chat_repo, room.id, &joined, &creator, "member-joined-2")
+            .await;
+
+    let default_page = chat_service
+        .get_history_page_with_attachments_for_viewer(
+            &room.id,
+            None,
+            10,
+            true,
+            Some(&creator.id),
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(
+        default_page
+            .messages
+            .iter()
+            .map(|message| message.message.content.as_str())
+            .collect::<Vec<_>>(),
+        vec!["visible two", "visible one"]
+    );
+    assert_eq!(default_page.event_cursor.sequence, second.sequence);
+    assert_eq!(
+        default_page.event_cursor.event_id.as_deref(),
+        Some(second.event_id.as_str())
+    );
+
+    let include_system = ChatMessageSelection {
+        include_message_types: vec![ChatMessageType::User, ChatMessageType::SystemMemberJoined],
+    };
+    let system_page = chat_service
+        .get_history_page_with_attachments_for_viewer(
+            &room.id,
+            None,
+            10,
+            true,
+            Some(&creator.id),
+            &include_system,
+        )
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(
+        system_page
+            .messages
+            .iter()
+            .map(|message| message.message.message_type)
+            .collect::<Vec<_>>(),
+        vec![
+            ChatMessageType::SystemMemberJoined,
+            ChatMessageType::SystemMemberJoined,
+            ChatMessageType::User,
+            ChatMessageType::User,
+        ]
+    );
+    assert_eq!(system_page.event_cursor.sequence, system_two.sequence);
+    assert_eq!(
+        system_page.event_cursor.event_id.as_deref(),
+        Some(system_two.event.event_id.as_str())
+    );
+
+    let default_replay = chat_service
+        .get_events_after_sequence(
+            &room.id,
+            second.sequence,
+            10,
+            &ChatMessageSelection::user_default(),
+        )
+        .await
+        .checked("test operation should succeed");
+    assert!(default_replay.is_empty());
+
+    let system_replay = chat_service
+        .get_events_after_sequence(&room.id, second.sequence, 10, &include_system)
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(
+        system_replay
+            .iter()
+            .map(|event| event.event.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            system_one.event.event_id.as_str(),
+            system_two.event.event_id.as_str()
+        ]
+    );
+
+    let from_start_default = chat_service
+        .get_events_after(&room.id, Some(&first.event_id), 10, &Default::default())
+        .await
+        .checked("test operation should succeed");
+    assert_eq!(
+        from_start_default
+            .iter()
+            .map(|event| event.event.event_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![second.event_id.as_str()]
     );
 }
 
@@ -1569,7 +1797,12 @@ async fn test_get_events_after_unknown_event_id_returns_invalid_cursor() {
         .checked("test operation should succeed");
 
     let error = chat_service
-        .get_events_after(&room.id, Some("missing-chat-event"), 10)
+        .get_events_after(
+            &room.id,
+            Some("missing-chat-event"),
+            10,
+            &ChatMessageSelection::user_default(),
+        )
         .await
         .failed("unknown event cursor should be invalid input");
 
@@ -1610,9 +1843,9 @@ async fn test_send_message_event_idempotency_rejects_different_payload() {
         user_id: creator.id,
         client_message_id: Some("client-msg-conflict".to_string()),
         content: "original payload".to_string(),
-        message_type: ChatMessageType::Text,
+        message_type: ChatMessageType::User,
         reply_to_message_id: None,
-        metadata: synctv_core::models::ChatMetadata::default(),
+        metadata: None,
         attachments: Vec::new(),
         mentions: Vec::new(),
     };
@@ -1673,7 +1906,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "after edit".to_string(),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             expected_version: Some(created.version),
         })
         .await
@@ -1691,7 +1924,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "after edit".to_string(),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             expected_version: Some(created.version),
         })
         .await
@@ -1703,7 +1936,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
     );
 
     let replay = chat_service
-        .get_events_after(&room.id, None, 10)
+        .get_events_after(&room.id, None, 10, &ChatMessageSelection::user_default())
         .await
         .checked("test operation should succeed");
     assert_eq!(replay.len(), 2);
@@ -1718,7 +1951,7 @@ async fn test_edit_message_increments_version_and_checks_expected_version() {
             user_id: creator.id,
             client_operation_id: None,
             content: "stale edit".to_string(),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             expected_version: Some(created.version),
         })
         .await
@@ -1763,7 +1996,7 @@ async fn test_edit_message_client_operation_id_replays_without_expected_version(
         user_id: creator.id,
         client_operation_id: Some("edit-op-1".to_string()),
         content: "after edit".to_string(),
-        metadata: synctv_core::models::ChatMetadata::default(),
+        metadata: None,
         expected_version: None,
     };
 
@@ -1856,7 +2089,7 @@ async fn test_delete_message_event_soft_deletes_and_checks_expected_version() {
     assert_eq!(retry.kind, ChatEventKind::Deleted);
 
     let replay = chat_service
-        .get_events_after(&room.id, None, 10)
+        .get_events_after(&room.id, None, 10, &ChatMessageSelection::user_default())
         .await
         .checked("test operation should succeed");
     assert_eq!(replay.len(), 2);
@@ -2001,9 +2234,9 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
             user_id: creator.id,
             client_message_id: Some("image-msg-1".to_string()),
             content: String::new(),
-            message_type: ChatMessageType::Attachment,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
@@ -2015,10 +2248,7 @@ async fn test_attachment_message_history_returns_attachment_metadata() {
         .await
         .checked("test operation should succeed");
 
-    assert_eq!(
-        event.message.message.message_type,
-        ChatMessageType::Attachment
-    );
+    assert_eq!(event.message.message.message_type, ChatMessageType::User);
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].attachments.len(), 1);
     assert_eq!(history[0].attachments[0].id, session.file.id);
@@ -2105,7 +2335,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
 
     let mut first_message = ChatMessage::new(room.id, creator.id, String::new());
     first_message.client_message_id = Some("shared-attachment-msg-1".to_string());
-    first_message.message_type = ChatMessageType::Attachment;
+    first_message.message_type = ChatMessageType::User;
     let first = checked_idempotent_insert_event(
         chat_repo
             .insert_message_event_idempotent(
@@ -2120,7 +2350,7 @@ async fn test_reused_chat_attachment_object_keeps_storage_until_last_reference_i
     );
     let mut second_message = ChatMessage::new(room.id, creator.id, String::new());
     second_message.client_message_id = Some("shared-attachment-msg-2".to_string());
-    second_message.message_type = ChatMessageType::Attachment;
+    second_message.message_type = ChatMessageType::User;
     let second = checked_idempotent_insert_event(
         chat_repo
             .insert_message_event_idempotent(
@@ -2244,9 +2474,9 @@ async fn test_attachment_message_idempotency_replays_and_rejects_changed_attachm
         user_id: creator.id,
         client_message_id: Some("image-idempotent-msg".to_string()),
         content: String::new(),
-        message_type: ChatMessageType::Attachment,
+        message_type: ChatMessageType::User,
         reply_to_message_id: None,
-        metadata: synctv_core::models::ChatMetadata::default(),
+        metadata: None,
         attachments: vec![submitted_file_reference(&session.file)],
         mentions: Vec::new(),
     };
@@ -2345,9 +2575,9 @@ async fn test_chat_message_attachments_require_matching_room_id() {
             user_id: creator.id,
             client_message_id: Some("attachment-room-fk-message".to_string()),
             content: "message".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2438,9 +2668,9 @@ async fn test_deleted_attachment_message_history_hides_attachment_metadata() {
             user_id: creator.id,
             client_message_id: Some("deleted-attachment-msg-1".to_string()),
             content: String::new(),
-            message_type: ChatMessageType::Attachment,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: vec![submitted_file_reference(&session.file)],
             mentions: Vec::new(),
         })
@@ -2509,9 +2739,9 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             user_id: creator.id,
             client_message_id: Some("missing-reply".to_string()),
             content: "reply".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: Some(9_999_999),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2525,9 +2755,9 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             user_id: creator.id,
             client_message_id: Some("reply-target".to_string()),
             content: "target".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2539,9 +2769,9 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             user_id: creator.id,
             client_message_id: Some("valid-reply".to_string()),
             content: "valid reply".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: Some(target.message.message.id),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2574,9 +2804,9 @@ async fn test_send_message_rejects_missing_or_deleted_reply_target() {
             user_id: creator.id,
             client_message_id: Some("deleted-reply".to_string()),
             content: "reply".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: Some(target.message.message.id),
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2618,9 +2848,9 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
             user_id: creator.id,
             client_message_id: Some("reply-replay-target".to_string()),
             content: "target".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2631,9 +2861,9 @@ async fn test_idempotent_reply_send_replays_after_reply_target_is_deleted() {
         user_id: creator.id,
         client_message_id: Some("reply-replay".to_string()),
         content: "reply".to_string(),
-        message_type: ChatMessageType::Text,
+        message_type: ChatMessageType::User,
         reply_to_message_id: Some(target.message.message.id),
-        metadata: synctv_core::models::ChatMetadata::default(),
+        metadata: None,
         attachments: Vec::new(),
         mentions: Vec::new(),
     };

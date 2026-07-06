@@ -121,7 +121,7 @@ pub struct CreateContentReport {
     pub target: ContentReportTarget,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: ContentReportMetadata,
+    pub metadata: Option<ContentReportMetadata>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +178,7 @@ pub struct ContentReport {
     pub target_chat_message_created_at: Option<DateTime<Utc>>,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: ContentReportMetadata,
+    pub metadata: Option<ContentReportMetadata>,
     pub status: ContentReportStatus,
     pub reviewed_by: Option<UserId>,
     pub reviewed_at: Option<DateTime<Utc>>,
@@ -208,7 +208,7 @@ pub struct ContentReportAdminRow {
     pub target_chat_message_preview: String,
     pub reason_code: String,
     pub reason: String,
-    pub metadata: ContentReportMetadata,
+    pub metadata: Option<ContentReportMetadata>,
     pub status: ContentReportStatus,
     pub reviewed_by: Option<UserId>,
     pub reviewed_by_username: String,

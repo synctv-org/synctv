@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS user_registration_requests (
             webauthn_credential_name IS NULL
             OR length(trim(webauthn_credential_name)) > 0
         ),
+    CONSTRAINT user_registration_requests_webauthn_passkey_object
+        CHECK (
+            webauthn_passkey IS NULL
+            OR jsonb_typeof(webauthn_passkey) = 'object'
+        ),
     CONSTRAINT user_registration_requests_webauthn_material_group_complete
         CHECK (
             (

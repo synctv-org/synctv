@@ -11,7 +11,10 @@ use super::{
     playback_transport::PlaybackTransportAction, MediaProvider, PlaybackResult, ProviderContext,
     ProviderError, SourceConfig,
 };
-use crate::models::media::{PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
+use crate::models::media::{
+    LiveProxyPlaybackMetadata, PlaybackLiveProxyMedia, PlaybackMediaProvider, PlaybackMetadata,
+    PlaybackRtmpMedia,
+};
 use crate::models::{MediaId, RoomId};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -260,8 +263,11 @@ impl MediaProvider for LiveProxyProvider {
                 ProviderError::InvalidConfig("LiveProxy source URL is missing a host".to_string())
             })?
             .to_string();
-        result.metadata.source_host = Some(redacted_host);
-        result.metadata.provider = Some("live_proxy".to_string());
+        result.metadata = Some(PlaybackMetadata::LiveProxy(LiveProxyPlaybackMetadata {
+            media_id: *media_id,
+            room_id: *room_id,
+            source_host: Some(redacted_host),
+        }));
 
         let cache_key = format!("playback:{room_id}:{media_id}");
         let cache_ttl = Duration::from_mins(5);

@@ -3,23 +3,24 @@
 use super::error::ProviderError;
 use super::playback_transport::{LiveFlvAccess, PlaybackTransportAction};
 use super::store::VersionedPlayback;
-use crate::models::{MediaId, RoomId};
+use crate::models::{MediaId, PlaybackMetadata, RoomId};
 
 /// Extract room_id and media_id from versioned playback metadata.
 pub(super) fn live_ids_from_metadata(
     versioned: &VersionedPlayback,
 ) -> Result<(RoomId, MediaId), ProviderError> {
-    let room_id = versioned
+    let metadata = versioned
         .result
         .metadata
-        .room_id
-        .ok_or_else(|| ProviderError::ApiError("Live playback missing room_id".to_string()))?;
-    let media_id = versioned
-        .result
-        .metadata
-        .media_id
-        .ok_or_else(|| ProviderError::ApiError("Live playback missing media_id".to_string()))?;
-    Ok((room_id, media_id))
+        .as_ref()
+        .ok_or_else(|| ProviderError::ApiError("Live playback missing metadata".to_string()))?;
+    match metadata {
+        PlaybackMetadata::Live(metadata) => Ok((metadata.room_id, metadata.media_id)),
+        PlaybackMetadata::LiveProxy(metadata) => Ok((metadata.room_id, metadata.media_id)),
+        _ => Err(ProviderError::ApiError(
+            "Live playback missing live metadata".to_string(),
+        )),
+    }
 }
 
 /// Build a FLV stream playback transport action.

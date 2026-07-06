@@ -571,6 +571,7 @@ pub enum FileObjectKind {
     ChatAttachment,
     UserAvatar,
     MediaCover,
+    MediaThumbnail,
     RoomCover,
     PlaylistCover,
     #[default]
@@ -645,6 +646,7 @@ fn file_object_kind_for_upload_policy(kind: &str) -> Option<FileObjectKind> {
         "chat_attachment" => Some(FileObjectKind::ChatAttachment),
         "user_avatar" => Some(FileObjectKind::UserAvatar),
         "media_cover" => Some(FileObjectKind::MediaCover),
+        "media_thumbnail" => Some(FileObjectKind::MediaThumbnail),
         "room_cover" => Some(FileObjectKind::RoomCover),
         "playlist_cover" => Some(FileObjectKind::PlaylistCover),
         _ => None,

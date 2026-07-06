@@ -548,6 +548,7 @@ mod tests {
                 length: 6,
             }],
             pin: None,
+            message_type: crate::client::ChatMessageType::User as i32,
         };
         let bytes = msg.encode_to_vec();
         let decoded = crate::client::ChatMessageReceive::decode(bytes.as_slice()).unwrap();
@@ -2271,7 +2272,6 @@ mod tests {
     fn validate_add_media_request_allows_missing_provider_instance_for_default_provider() {
         crate::validate(&crate::client::AddMediaRequest {
             playlist_id: None,
-            source_provider: crate::source_config::SourceProvider::Alist as i32,
             provider_instance_name: String::new(),
             source_config: Some(alist_media_source_config("/tv")),
             name: String::new(),
@@ -2285,7 +2285,6 @@ mod tests {
         let error = validation_error_text(
             &crate::validate(&crate::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: crate::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
                 source_config: Some(direct_url_media_source_config(
                     "https://example.com/video.mp4",
@@ -2303,7 +2302,6 @@ mod tests {
     fn validate_add_media_batch_request_rejects_too_many_items() {
         let template = crate::client::AddMediaRequest {
             playlist_id: None,
-            source_provider: crate::source_config::SourceProvider::Unspecified as i32,
             provider_instance_name: String::new(),
             source_config: Some(direct_url_media_source_config(
                 "https://example.com/video.mp4",

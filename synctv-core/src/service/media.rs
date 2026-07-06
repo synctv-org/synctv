@@ -15,7 +15,7 @@ use crate::{
     },
     provider::{
         provider_requires_credential_repo, PlaybackResult, ProviderAccessService, ProviderContext,
-        ProviderStoreResolver, SourceConfig,
+        ProviderStoreResolver, SourceConfig, SourceCover,
     },
     repository::{realtime_outbox::NewRealtimeOutboxEvent, UserProviderCredentialRepository},
     repository::{MediaRepository, PlaylistRepository, UserRepository},
@@ -34,7 +34,7 @@ use std::sync::Arc;
 mod cover;
 mod dynamic;
 mod helpers;
-pub use cover::CreateMediaCoverUploadSession;
+pub use cover::{CreateMediaCoverUploadSession, CreateMediaThumbnailUploadSession};
 use helpers::{
     batch_media_position, dedup_media_ids, ensure_media_creator_can_edit,
     media_source_config_error, media_source_prepare_error, validate_media_name, MAX_BATCH_SIZE,
@@ -411,6 +411,57 @@ impl MediaService {
     #[must_use]
     pub const fn providers_manager(&self) -> &Arc<ProvidersManager> {
         &self.providers_manager
+    }
+
+    pub async fn media_source_cover(
+        &self,
+        viewer_id: Option<UserId>,
+        media: &Media,
+    ) -> Result<Option<SourceCover>> {
+        let provider = self
+            .resolve_media_provider(
+                media.source_provider,
+                media.provider_instance_name.as_deref(),
+            )
+            .await?;
+        let ctx = self.build_provider_context(
+            provider.name(),
+            viewer_id.as_ref(),
+            &media.room_id,
+            media.creator_id.as_ref(),
+            media.provider_instance_name.as_deref(),
+        );
+        provider
+            .source_cover(&ctx, SourceConfig::media(&media.source_config))
+            .await
+            .map_err(|error| Error::Internal(error.to_string()))
+    }
+
+    pub async fn playlist_source_cover(
+        &self,
+        viewer_id: Option<UserId>,
+        playlist: &crate::models::Playlist,
+    ) -> Result<Option<SourceCover>> {
+        let Some(source_provider) = playlist.source_provider else {
+            return Ok(None);
+        };
+        let Some(source_config) = playlist.source_config.as_ref() else {
+            return Ok(None);
+        };
+        let provider = self
+            .resolve_media_provider(source_provider, playlist.provider_instance_name.as_deref())
+            .await?;
+        let ctx = self.build_provider_context(
+            provider.name(),
+            viewer_id.as_ref(),
+            &playlist.room_id,
+            playlist.creator_id.as_ref(),
+            playlist.provider_instance_name.as_deref(),
+        );
+        provider
+            .source_cover(&ctx, SourceConfig::dynamic_playlist(source_config))
+            .await
+            .map_err(|error| Error::Internal(error.to_string()))
     }
 
     /// Get the credential encryption used for provider source resolution, if configured.

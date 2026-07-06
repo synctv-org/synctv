@@ -4,10 +4,11 @@ CREATE TABLE IF NOT EXISTS notifications (
     type SMALLINT NOT NULL,
     title VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,
-    data JSONB DEFAULT '{}',
+    data JSONB NOT NULL,
     is_read BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CHECK (jsonb_typeof(data) = 'object'),
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 

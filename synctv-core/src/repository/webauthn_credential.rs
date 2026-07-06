@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use webauthn_rs::prelude::Passkey;
 
 use crate::repository::required_count;
-use crate::{models::UserId, Error, InternalExt, Result};
+use crate::{models::UserId, Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct WebAuthnCredential {
@@ -65,17 +65,13 @@ impl WebAuthnCredentialRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let credential_id = AsRef::<[u8]>::as_ref(passkey.cred_id()).to_vec();
-        let passkey_json = serde_json::to_value(passkey)
-            .internal_with_err("Failed to serialize WebAuthn passkey")?;
-        let public_key_json = serde_json::to_value(passkey.get_public_key())
-            .internal_with_err("Failed to serialize WebAuthn public key")?;
         let row = sqlx::query_as!(
             WebAuthnCredentialRow,
             r#"
             INSERT INTO auth_webauthn_credentials (
-                user_id, credential_id, passkey, public_key, name
+                user_id, credential_id, passkey, name
             )
-            VALUES ($1, $2, $3, $4, $5)
+            VALUES ($1, $2, $3, $4)
             RETURNING id,
                       user_id as "user_id: UserId",
                       credential_id,
@@ -88,8 +84,7 @@ impl WebAuthnCredentialRepository {
             "#,
             user_id as &UserId,
             credential_id,
-            passkey_json,
-            public_key_json,
+            StoredPasskey(passkey.clone()) as StoredPasskey,
             name,
         )
         .fetch_one(executor)
@@ -162,22 +157,16 @@ impl WebAuthnCredentialRepository {
         passkey: &Passkey,
         sign_count: i64,
     ) -> Result<()> {
-        let passkey_json = serde_json::to_value(passkey)
-            .internal_with_err("Failed to serialize updated WebAuthn passkey")?;
-        let public_key_json = serde_json::to_value(passkey.get_public_key())
-            .internal_with_err("Failed to serialize updated WebAuthn public key")?;
         let result = sqlx::query!(
             r"
             UPDATE auth_webauthn_credentials
             SET passkey = $2,
-                public_key = $3,
-                sign_count = $4,
+                sign_count = $3,
                 last_used_at = NOW()
             WHERE credential_id = $1
             ",
             credential_id,
-            passkey_json,
-            public_key_json,
+            StoredPasskey(passkey.clone()) as StoredPasskey,
             sign_count,
         )
         .execute(&self.pool)

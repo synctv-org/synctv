@@ -166,7 +166,7 @@ async fn chat_history_page_uses_primary_snapshot_with_primary_event_cursor() {
     let creator = create_user(&primary_pool, "primary_chat_owner").await;
     let room = create_room(&primary_pool, "Primary Chat History Room", creator.id).await;
     let mut message = ChatMessage::new(room.id, creator.id, "primary message".to_string());
-    message.message_type = ChatMessageType::Text;
+    message.message_type = ChatMessageType::User;
     message.client_message_id = Some("primary-chat-message".to_string());
 
     let primary_repo = ChatRepository::new_with_read_pool(primary_pool, read_pool);
@@ -314,7 +314,7 @@ async fn content_report_list_reads_from_read_pool_while_detail_uses_primary() {
                     },
                     reason_code: "spam".to_string(),
                     reason: "primary report".to_string(),
-                    metadata: synctv_core::models::ContentReportMetadata::default(),
+                    metadata: None,
                 },
                 None,
             )
@@ -331,7 +331,7 @@ async fn content_report_list_reads_from_read_pool_while_detail_uses_primary() {
                     },
                     reason_code: "spam".to_string(),
                     reason: "read report".to_string(),
-                    metadata: synctv_core::models::ContentReportMetadata::default(),
+                    metadata: None,
                 },
                 None,
             )

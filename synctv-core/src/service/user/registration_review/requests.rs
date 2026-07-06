@@ -1,9 +1,10 @@
 use webauthn_rs::prelude::Passkey;
 
+use super::super::registration_types::PendingRegistrationPasskey;
 use crate::{
     models::{OpaquePasswordRecord, ReviewStatus, SignupMethod, User, UserId, UserStatus},
     service::UserService,
-    Error, InternalExt, Result,
+    Error, Result,
 };
 
 mod identity;
@@ -154,8 +155,7 @@ impl UserService {
         credential_name: Option<&str>,
     ) -> Result<User> {
         let credential_id = AsRef::<[u8]>::as_ref(passkey.cred_id()).to_vec();
-        let passkey_json = serde_json::to_value(passkey)
-            .internal_with_err("Failed to serialize WebAuthn passkey")?;
+        let stored_passkey = PendingRegistrationPasskey::from_passkey(passkey);
 
         let mut tx = self.repository.pool().begin().await?;
         Self::lock_pending_registration_identity(&mut tx, username, email).await?;
@@ -196,7 +196,7 @@ impl UserService {
             i16::from(SignupMethod::WebAuthn),
             i16::from(ReviewStatus::Pending),
             credential_id,
-            passkey_json,
+            stored_passkey as PendingRegistrationPasskey,
             credential_name
         )
         .fetch_one(&mut *tx)

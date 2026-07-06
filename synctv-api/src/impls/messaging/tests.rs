@@ -341,13 +341,15 @@ fn core_chat_attachment_to_proto_requires_storage_metadata_and_allows_optional_d
 
 #[test]
 fn chat_display_metadata_reads_valid_presentation() {
-    let metadata = synctv_core::models::ChatMetadata {
-        presentation: Some(synctv_core::models::ChatPresentationMetadata {
-            display_position: Some(" top ".to_string()),
-            display_color: Some(" #ff0000 ".to_string()),
-        }),
-        ..Default::default()
-    };
+    let metadata = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            presentation: Some(synctv_core::models::ChatPresentationMetadata {
+                display_position: Some(" top ".to_string()),
+                display_color: Some(" #ff0000 ".to_string()),
+            }),
+            ..Default::default()
+        },
+    ));
 
     assert_eq!(
         chat_display_position_from_metadata(&metadata).checked("display position should parse"),
@@ -361,13 +363,15 @@ fn chat_display_metadata_reads_valid_presentation() {
 
 #[test]
 fn chat_display_metadata_rejects_invalid_presentation_fields() {
-    let control_character = synctv_core::models::ChatMetadata {
-        presentation: Some(synctv_core::models::ChatPresentationMetadata {
-            display_color: Some("red\nblue".to_string()),
+    let control_character = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            presentation: Some(synctv_core::models::ChatPresentationMetadata {
+                display_color: Some("red\nblue".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
-        ..Default::default()
-    };
+        },
+    ));
 
     assert!(matches!(
         chat_display_color_from_metadata(&control_character),
@@ -377,16 +381,18 @@ fn chat_display_metadata_rejects_invalid_presentation_fields() {
 
 #[test]
 fn chat_playback_metadata_encodes_public_ids() {
-    let metadata = synctv_core::models::ChatMetadata {
-        playback: Some(synctv_core::models::ChatPlaybackMetadata {
-            media_id: Some(media_id()),
-            playlist_id: Some(playlist().id),
-            target: None,
-            target_hash: None,
-            position_seconds: None,
-        }),
-        ..Default::default()
-    };
+    let metadata = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                media_id: Some(media_id()),
+                playlist_id: Some(playlist().id),
+                target: None,
+                target_hash: None,
+                position_seconds: None,
+            }),
+            ..Default::default()
+        },
+    ));
     let codec = public_id_codec();
 
     assert_eq!(
@@ -401,7 +407,7 @@ fn chat_playback_metadata_encodes_public_ids() {
 
 #[test]
 fn chat_playback_metadata_without_source_returns_empty_ids() {
-    let metadata = synctv_core::models::ChatMetadata::default();
+    let metadata = None;
     let codec = public_id_codec();
 
     assert_eq!(
@@ -417,7 +423,7 @@ fn chat_playback_metadata_without_source_returns_empty_ids() {
 #[test]
 fn chat_playback_metadata_rejects_invalid_source_ids() {
     let codec = public_id_codec();
-    let metadata = synctv_core::models::ChatMetadata::default();
+    let metadata = None;
 
     assert_eq!(
         chat_playback_media_id_from_metadata(&metadata, &codec),
@@ -431,18 +437,20 @@ fn chat_playback_metadata_rejects_invalid_source_ids() {
 
 #[test]
 fn chat_playback_metadata_decodes_structured_target() {
-    let metadata = synctv_core::models::ChatMetadata {
-        playback: Some(synctv_core::models::ChatPlaybackMetadata {
-            media_id: None,
-            playlist_id: None,
-            target: Some(synctv_core::models::ProviderTarget::alist(
-                "/episode-1.mp4".to_string(),
-            )),
-            target_hash: None,
-            position_seconds: None,
-        }),
-        ..Default::default()
-    };
+    let metadata = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                media_id: None,
+                playlist_id: None,
+                target: Some(synctv_core::models::ProviderTarget::alist(
+                    "/episode-1.mp4".to_string(),
+                )),
+                target_hash: None,
+                position_seconds: None,
+            }),
+            ..Default::default()
+        },
+    ));
 
     assert_eq!(
         chat_playback_target_from_metadata(&metadata),
@@ -454,18 +462,20 @@ fn chat_playback_metadata_decodes_structured_target() {
 
 #[test]
 fn chat_playback_metadata_derives_target_hash_from_target() {
-    let metadata = synctv_core::models::ChatMetadata {
-        playback: Some(synctv_core::models::ChatPlaybackMetadata {
-            media_id: None,
-            playlist_id: None,
-            target: Some(synctv_core::models::ProviderTarget::alist(
-                "/episode-1.mp4".to_string(),
-            )),
-            target_hash: None,
-            position_seconds: None,
-        }),
-        ..Default::default()
-    };
+    let metadata = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                media_id: None,
+                playlist_id: None,
+                target: Some(synctv_core::models::ProviderTarget::alist(
+                    "/episode-1.mp4".to_string(),
+                )),
+                target_hash: None,
+                position_seconds: None,
+            }),
+            ..Default::default()
+        },
+    ));
     let playback = chat_playback_metadata_from_metadata(&metadata, &public_id_codec())
         .checked("playback metadata should parse");
 
@@ -484,16 +494,18 @@ fn chat_playback_metadata_derives_target_hash_from_target() {
 
 #[test]
 fn chat_playback_metadata_rejects_invalid_position_seconds() {
-    let metadata = synctv_core::models::ChatMetadata {
-        playback: Some(synctv_core::models::ChatPlaybackMetadata {
-            media_id: None,
-            playlist_id: None,
-            target: None,
-            target_hash: None,
-            position_seconds: Some(-1.0),
-        }),
-        ..Default::default()
-    };
+    let metadata = Some(synctv_core::models::ChatMetadata::User(
+        synctv_core::models::ChatUserMetadata {
+            playback: Some(synctv_core::models::ChatPlaybackMetadata {
+                media_id: None,
+                playlist_id: None,
+                target: None,
+                target_hash: None,
+                position_seconds: Some(-1.0),
+            }),
+            ..Default::default()
+        },
+    ));
 
     assert!(matches!(
         chat_playback_metadata_from_metadata(&metadata, &public_id_codec()),
@@ -503,7 +515,7 @@ fn chat_playback_metadata_rejects_invalid_position_seconds() {
 
 #[test]
 fn chat_playback_metadata_rejects_invalid_target() {
-    let metadata = synctv_core::models::ChatMetadata::default();
+    let metadata = None;
 
     assert_eq!(chat_playback_target_from_metadata(&metadata), Ok(None));
 }
@@ -597,12 +609,12 @@ fn chat_event_with_content(
                 user_id: Some(user_id),
                 client_message_id: None,
                 content: content.into(),
-                message_type: ChatMessageType::Text,
+                message_type: ChatMessageType::User,
                 status: ChatMessageStatus::Active,
                 version: 1,
                 reply_to_message_id: None,
                 reply_to_message_created_at: None,
-                metadata: synctv_core::models::ChatMetadata::default(),
+                metadata: None,
                 edited_at: None,
                 deleted_at: None,
                 deleted_by: None,
@@ -986,6 +998,7 @@ fn observe_chat_events_message_with_sequence(
                 synctv_proto::client::observe_resource::Resource::ChatEvents(
                     synctv_proto::client::ObserveChatEvents {
                         after_event_sequence,
+                        include_message_types: Vec::new(),
                     },
                 ),
             ),
@@ -1031,6 +1044,26 @@ fn resource_playback_state(
 fn resource_playback(message: &ServerMessage) -> Option<&synctv_proto::client::Playback> {
     match resource_event_payload(message) {
         Some(synctv_proto::client::resource_event::Payload::Playback(snapshot)) => Some(snapshot),
+        _ => None,
+    }
+}
+
+fn playback_metadata_with_name(name: &str) -> synctv_proto::client::PlaybackMetadata {
+    synctv_proto::client::PlaybackMetadata {
+        metadata: Some(synctv_proto::client::playback_metadata::Metadata::Alist(
+            synctv_proto::client::AlistPlaybackMetadata {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+        )),
+    }
+}
+
+fn playback_metadata_name(metadata: &synctv_proto::client::PlaybackMetadata) -> Option<&str> {
+    match metadata.metadata.as_ref()? {
+        synctv_proto::client::playback_metadata::Metadata::Alist(metadata) => {
+            metadata.name.as_deref()
+        }
         _ => None,
     }
 }
@@ -2786,9 +2819,9 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             user_id: owner.id,
             client_message_id: Some("replay-1".to_string()),
             content: "first replay".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2800,9 +2833,9 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             user_id: owner.id,
             client_message_id: Some("replay-2".to_string()),
             content: "second replay".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2814,9 +2847,9 @@ async fn test_observe_chat_events_replays_single_event_after_sequence() {
             user_id: owner.id,
             client_message_id: Some("replay-3".to_string()),
             content: "third replay".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2898,9 +2931,9 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             user_id: owner.id,
             client_message_id: Some("replay-seq-1".to_string()),
             content: "first sequence replay".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -2912,9 +2945,9 @@ async fn test_observe_chat_events_replays_events_after_sequence() {
             user_id: owner.id,
             client_message_id: Some("replay-seq-2".to_string()),
             content: "second sequence replay".to_string(),
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             reply_to_message_id: None,
-            metadata: synctv_core::models::ChatMetadata::default(),
+            metadata: None,
             attachments: Vec::new(),
             mentions: Vec::new(),
         })
@@ -3815,6 +3848,7 @@ async fn test_provider_credential_change_refreshes_dependent_playback() {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -3952,6 +3986,7 @@ async fn test_provider_credential_change_does_not_refresh_unrelated_playback() {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -4228,6 +4263,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
             ),
             provider_instance_name: None,
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: now(),
             updated_at: now(),
             version: 0,
@@ -4319,10 +4355,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: Some(synctv_proto::client::PlaybackMetadata {
-            name: Some("media-updated".to_string()),
-            ..Default::default()
-        }),
+        metadata: Some(playback_metadata_with_name("media-updated")),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
         is_live: false,
@@ -4348,7 +4381,7 @@ async fn test_observed_playback_refreshes_when_current_media_is_updated() {
                     playback
                         .metadata
                         .as_ref()
-                        .and_then(|metadata| metadata.name.as_deref())
+                        .and_then(playback_metadata_name)
                         .is_some_and(|name| name == "media-updated")
                 })
             }) {
@@ -4487,10 +4520,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
         playlist_position: 0.0,
         playback_infos: std::collections::HashMap::new(),
         default_mode: String::new(),
-        metadata: Some(synctv_proto::client::PlaybackMetadata {
-            name: Some("playlist-updated".to_string()),
-            ..Default::default()
-        }),
+        metadata: Some(playback_metadata_with_name("playlist-updated")),
         expires_at: Some(4_102_444_860),
         duration_seconds: None,
         is_live: false,
@@ -4515,7 +4545,7 @@ async fn test_observed_playback_refreshes_when_current_playlist_is_updated() {
                     playback
                         .metadata
                         .as_ref()
-                        .and_then(|metadata| metadata.name.as_deref())
+                        .and_then(playback_metadata_name)
                         .is_some_and(|name| name == "playlist-updated")
                 })
             }) {
@@ -4578,10 +4608,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: Some(synctv_proto::client::PlaybackMetadata {
-                name: Some("refreshed".to_string()),
-                ..Default::default()
-            }),
+            metadata: Some(playback_metadata_with_name("refreshed")),
             expires_at: Some(4_102_444_860),
             duration_seconds: None,
             is_live: false,
@@ -4648,7 +4675,7 @@ async fn test_observed_playback_refreshes_when_target_changes_at_same_version() 
                     playback
                         .metadata
                         .as_ref()
-                        .and_then(|metadata| metadata.name.as_deref())
+                        .and_then(playback_metadata_name)
                         .is_some_and(|name| name == "refreshed")
                 })
             }) {
@@ -4814,10 +4841,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
             playlist_position: 0.0,
             playback_infos: std::collections::HashMap::new(),
             default_mode: String::new(),
-            metadata: Some(synctv_proto::client::PlaybackMetadata {
-                name: Some("refreshed".to_string()),
-                ..Default::default()
-            }),
+            metadata: Some(playback_metadata_with_name("refreshed")),
             expires_at: Some(refresh_at + 60),
             duration_seconds: None,
             is_live: false,
@@ -4863,7 +4887,7 @@ async fn test_playback_observation_refreshes_when_playback_expires_without_state
                 playback
                     .metadata
                     .as_ref()
-                    .and_then(|metadata| metadata.name.as_deref())
+                    .and_then(playback_metadata_name)
                     .is_some_and(|name| name == "refreshed")
             }),
         "expired playback refresh should send the refreshed playback"
@@ -4979,6 +5003,7 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                     availability: synctv_proto::client::ResourceAvailability::Available as i32,
                     version: 3,
                     cover: None,
+                    thumbnail: None,
                 }],
                 total: 1,
                 folder_count: 0,
@@ -6429,6 +6454,7 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             availability: synctv_proto::client::ResourceAvailability::Available as i32,
             version: 4,
             cover: None,
+            thumbnail: None,
         }],
         total: 1,
         folder_count: 0,
@@ -6753,12 +6779,12 @@ fn test_durable_chat_message_event_conversion() {
                     user_id: Some(user_id()),
                     client_message_id: Some("client-42".to_string()),
                     content: String::new(),
-                    message_type: ChatMessageType::Text,
+                    message_type: ChatMessageType::User,
                     status: ChatMessageStatus::Deleted,
                     version: 2,
                     reply_to_message_id: None,
                     reply_to_message_created_at: None,
-                    metadata: synctv_core::models::ChatMetadata::default(),
+                    metadata: None,
                     edited_at: Some(created_at),
                     deleted_at: Some(created_at),
                     deleted_by: Some(user_id()),
@@ -8859,6 +8885,7 @@ async fn test_resource_watch_chat_events_requires_view_chat_history_permission()
         delivery_mode: synctv_proto::client::ResourceDeliveryMode::NotifyOnly as i32,
         chat_events: Some(synctv_proto::client::ObserveChatEvents {
             after_event_sequence: None,
+            include_message_types: Vec::new(),
         }),
     })
     .checked("chat events watch request should build");

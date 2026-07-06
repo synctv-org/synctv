@@ -494,7 +494,7 @@ pub(crate) async fn thumbnail(
                     .provider_access_service
                     .emby_access(credential_lookup_user_id, server_id, None, None)
                     .await?;
-                let action = EmbyProvider::thumbnail_proxy_action(
+                let action = EmbyProvider::thumbnail_action(
                     &item_id,
                     &access.host,
                     &access.api_key,
@@ -770,8 +770,8 @@ mod tests {
     }
 
     #[test]
-    fn test_thumbnail_proxy_action_uses_server_side_token() -> TestResult {
-        let action = provider_ok(EmbyProvider::thumbnail_proxy_action(
+    fn test_thumbnail_action_uses_server_side_token() -> TestResult {
+        let action = provider_ok(EmbyProvider::thumbnail_action(
             "item-123",
             "https://emby.example.com/base",
             "secret-token",
@@ -800,8 +800,8 @@ mod tests {
     }
 
     #[test]
-    fn test_thumbnail_proxy_action_encodes_item_id_path_segment() -> TestResult {
-        let action = provider_ok(EmbyProvider::thumbnail_proxy_action(
+    fn test_thumbnail_action_encodes_item_id_path_segment() -> TestResult {
+        let action = provider_ok(EmbyProvider::thumbnail_action(
             "folder/item?x#y",
             "https://emby.example.com/base?ignored=true#fragment",
             "secret-token",

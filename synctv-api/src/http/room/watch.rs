@@ -31,6 +31,28 @@ struct HttpWatchMessageSender {
     sender: tokio::sync::mpsc::Sender<synctv_proto::client::ServerMessage>,
 }
 
+fn parse_include_message_types(value: Option<&str>) -> AppResult<Vec<i32>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let raw = part.parse::<i32>().map_err(|_| {
+                super::super::AppError::bad_request("Invalid includeMessageTypes entry")
+            })?;
+            match synctv_proto::client::ChatMessageType::try_from(raw) {
+                Ok(synctv_proto::client::ChatMessageType::Unspecified) | Err(_) => Err(
+                    super::super::AppError::bad_request("Invalid includeMessageTypes entry"),
+                ),
+                Ok(_) => Ok(raw),
+            }
+        })
+        .collect()
+}
+
 impl MessageSender for HttpWatchMessageSender {
     fn send(&self, message: synctv_proto::client::ServerMessage) -> Result<(), String> {
         self.sender.try_send(message).map_err(|error| match error {
@@ -342,6 +364,7 @@ pub async fn watch_room_members(
             ("roomId" = String, Path, description = "Room ID"),
             ("format" = Option<String>, Query, description = "SSE payload format: json or protobuf"),
             ("afterEventSequence" = Option<i64>, Query, description = "Replay chat events strictly after this durable event sequence"),
+            ("includeMessageTypes" = Option<String>, Query, description = "Comma-separated ChatMessageType enum integers to include. Empty uses default user-visible message types."),
             ("deliveryMode" = Option<i32>, Query, description = "Resource delivery mode enum integer")
         ),
         responses(
@@ -370,6 +393,9 @@ pub async fn watch_chat_events(
         delivery_mode: parse_watch_delivery_mode(query.delivery_mode)?,
         chat_events: Some(synctv_proto::client::ObserveChatEvents {
             after_event_sequence,
+            include_message_types: parse_include_message_types(
+                query.include_message_types.as_deref(),
+            )?,
         }),
     };
     let observe = crate::impls::messaging::watch_chat_events_observe(request)

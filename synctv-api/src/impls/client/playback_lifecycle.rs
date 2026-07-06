@@ -729,8 +729,8 @@ mod tests {
         fn playback_lifecycle_session_id(&self, result: &PlaybackResult) -> Option<String> {
             result
                 .metadata
-                .emby
                 .as_ref()
+                .and_then(synctv_core::models::PlaybackMetadata::as_emby)
                 .and_then(|metadata| metadata.play_session_id.clone())
         }
     }
@@ -749,18 +749,18 @@ mod tests {
             provider_instance_name: None,
             duration_seconds: None,
             is_live: Some(false),
-            metadata: synctv_core::models::PlaybackMetadata {
-                emby: Some(synctv_core::models::EmbyPlaybackMetadata {
+            metadata: Some(synctv_core::models::PlaybackMetadata::Emby(
+                synctv_core::models::EmbyPlaybackMetadata {
                     play_session_id: Some(session_id.to_string()),
                     ..Default::default()
-                }),
-                ..Default::default()
-            },
+                },
+            )),
         }
     }
 
     fn test_provider_playback_info(url: &str) -> PlaybackInfo {
         PlaybackInfo {
+            thumbnail: None,
             medias: vec![synctv_core::models::PlaybackMedia {
                 name: String::new(),
                 format: "mp4".to_string(),

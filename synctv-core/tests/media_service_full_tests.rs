@@ -463,10 +463,15 @@ async fn test_backend_playback_for_static_live_proxy_binds_media_id() {
 
     assert_eq!(playback.default_mode, "hls");
     assert!(playback.playback_infos.contains_key("flv"));
-    assert_eq!(playback.metadata.media_id, Some(media.id));
-    assert_eq!(playback.metadata.room_id, Some(room.id));
-    assert_eq!(playback.metadata.provider.as_deref(), Some("live_proxy"));
-    assert!(playback.metadata.source_host.is_some());
+    let metadata = playback
+        .metadata
+        .expect("live proxy playback should include metadata");
+    let synctv_core::models::PlaybackMetadata::LiveProxy(metadata) = metadata else {
+        panic!("live proxy playback should include live proxy metadata");
+    };
+    assert_eq!(metadata.media_id, media.id);
+    assert_eq!(metadata.room_id, room.id);
+    assert!(metadata.source_host.is_some());
 }
 
 #[tokio::test]
@@ -987,6 +992,7 @@ async fn test_move_media_rejects_conflicting_anchor_flags() {
         provider_instance_name: None,
         creator_id: Some(owner.id),
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 0,
@@ -1056,6 +1062,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1077,6 +1084,7 @@ async fn test_move_media_reorders_using_anchor_positions() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             version: 0,
@@ -1156,6 +1164,7 @@ async fn test_move_media_batch_preserves_request_order() {
         provider_instance_name: None,
         creator_id: Some(owner.id),
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         version: 0,
@@ -1272,6 +1281,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1293,6 +1303,7 @@ async fn test_move_media_to_another_playlist_appends_by_default() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1388,6 +1399,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,
@@ -1409,6 +1421,7 @@ async fn test_move_all_media_from_scope_to_playlist_preserves_source_order() {
             provider_instance_name: None,
             creator_id: Some(owner.id),
             cover_file_reference_id: None,
+            thumbnail_file_reference_id: None,
             added_at: Utc::now(),
             updated_at: Utc::now(),
             version: 0,

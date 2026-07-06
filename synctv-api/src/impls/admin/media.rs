@@ -40,12 +40,27 @@ impl AdminApiImpl {
             })
             .transpose()?
             .flatten();
+        let thumbnail = self
+            .load_admin_file_reference(media.thumbnail_file_reference_id)
+            .await?;
+        let thumbnail_access = thumbnail
+            .as_ref()
+            .map(|file| {
+                self.admin_stored_file_reference_access(
+                    file,
+                    &synctv_core::service::media_thumbnail_upload_policy(),
+                )
+            })
+            .transpose()?
+            .flatten();
         try_media_to_proto_for_viewer_with_cover(
             media,
             is_available,
             media.creator_id,
             cover.as_ref(),
             cover_access.as_ref(),
+            thumbnail.as_ref(),
+            thumbnail_access.as_ref(),
             &self.public_id_codec,
         )
     }

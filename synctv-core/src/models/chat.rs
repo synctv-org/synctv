@@ -8,7 +8,7 @@ use std::str::FromStr;
 use super::{
     file_storage::FileUploadManifestPart,
     id::{MediaId, PlaylistId, RoomId, UserId},
-    ProviderTarget,
+    ProviderTarget, RoomRole,
 };
 
 pub const CHAT_CLIENT_MESSAGE_ID_MAX_CHARS: usize = 128;
@@ -24,21 +24,27 @@ pub const CHAT_PIN_NOTE_MAX_CHARS: usize = 500;
 #[serde(rename_all = "snake_case")]
 #[repr(i16)]
 pub enum ChatMessageType {
-    Text = 1,
-    System = 2,
-    Action = 3,
-    Attachment = 4,
+    User = 1,
+    SystemMemberJoined = 1001,
 }
 
 impl ChatMessageType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Text => "text",
-            Self::System => "system",
-            Self::Action => "action",
-            Self::Attachment => "attachment",
+            Self::User => "user",
+            Self::SystemMemberJoined => "system_member_joined",
         }
+    }
+
+    #[must_use]
+    pub const fn is_system(self) -> bool {
+        matches!(self, Self::SystemMemberJoined)
+    }
+
+    #[must_use]
+    pub fn default_visible_types() -> Vec<Self> {
+        vec![Self::User]
     }
 }
 
@@ -53,21 +59,50 @@ impl FromStr for ChatMessageType {
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "text" => Ok(Self::Text),
-            "system" => Ok(Self::System),
-            "action" => Ok(Self::Action),
-            "attachment" => Ok(Self::Attachment),
+            "user" => Ok(Self::User),
+            "system_member_joined" => Ok(Self::SystemMemberJoined),
             other => Err(format!("Unknown chat message type: {other}")),
         }
     }
 }
 
 sqlx_i16_enum!(ChatMessageType, "Invalid chat message type", {
-    Text = 1,
-    System = 2,
-    Action = 3,
-    Attachment = 4,
+    User = 1,
+    SystemMemberJoined = 1001,
 });
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatUserMetadata {
+    pub presentation: Option<ChatPresentationMetadata>,
+    pub playback: Option<ChatPlaybackMetadata>,
+}
+
+impl ChatUserMetadata {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.presentation.is_none() && self.playback.is_none()
+    }
+
+    #[must_use]
+    pub fn normalized_for_storage(&self) -> crate::Result<Self> {
+        let mut metadata = self.clone();
+        if let Some(playback) = metadata.playback.as_mut() {
+            playback.normalize_target_hash()?;
+        }
+        Ok(metadata)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatMemberJoinedMetadata {
+    pub user_id: UserId,
+    pub username: String,
+    pub actor_user_id: Option<UserId>,
+    pub actor_username: Option<String>,
+    pub role: RoomRole,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,26 +193,62 @@ sqlx_i16_enum!(ChatMessageStatus, "Invalid chat message status", {
     Deleted = 3,
 });
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub struct ChatMetadata {
-    pub presentation: Option<ChatPresentationMetadata>,
-    pub playback: Option<ChatPlaybackMetadata>,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ChatMetadata {
+    User(ChatUserMetadata),
+    MemberJoined(ChatMemberJoinedMetadata),
 }
 
 impl ChatMetadata {
     #[must_use]
+    pub fn normalized_for_optional_storage(metadata: Option<&Self>) -> crate::Result<Option<Self>> {
+        metadata
+            .filter(|metadata| !metadata.is_empty())
+            .map(Self::normalized_for_storage)
+            .transpose()
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.presentation.is_none() && self.playback.is_none()
+        matches!(self, Self::User(metadata) if metadata.is_empty())
     }
 
     #[must_use]
     pub fn normalized_for_storage(&self) -> crate::Result<Self> {
-        let mut metadata = self.clone();
-        if let Some(playback) = metadata.playback.as_mut() {
-            playback.normalize_target_hash()?;
+        match self {
+            Self::User(metadata) => Ok(Self::User(metadata.normalized_for_storage()?)),
+            Self::MemberJoined(metadata) => Ok(Self::MemberJoined(metadata.clone())),
         }
-        Ok(metadata)
+    }
+
+    #[must_use]
+    pub const fn message_type(&self) -> ChatMessageType {
+        match self {
+            Self::User(_) => ChatMessageType::User,
+            Self::MemberJoined(_) => ChatMessageType::SystemMemberJoined,
+        }
+    }
+
+    #[must_use]
+    pub const fn user(&self) -> Option<&ChatUserMetadata> {
+        match self {
+            Self::User(metadata) => Some(metadata),
+            Self::MemberJoined(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn user_mut(&mut self) -> Option<&mut ChatUserMetadata> {
+        match self {
+            Self::User(metadata) => Some(metadata),
+            Self::MemberJoined(_) => None,
+        }
     }
 }
 
@@ -262,7 +333,7 @@ pub struct ChatMessage {
     pub version: i64,
     pub reply_to_message_id: Option<i64>,
     pub reply_to_message_created_at: Option<DateTime<Utc>>,
-    pub metadata: ChatMetadata,
+    pub metadata: Option<ChatMetadata>,
     pub edited_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub deleted_by: Option<UserId>,
@@ -279,17 +350,68 @@ impl ChatMessage {
             user_id: Some(user_id),
             client_message_id: None,
             content,
-            message_type: ChatMessageType::Text,
+            message_type: ChatMessageType::User,
             status: ChatMessageStatus::Active,
             version: 1,
             reply_to_message_id: None,
             reply_to_message_created_at: None,
-            metadata: ChatMetadata::default(),
+            metadata: None,
             edited_at: None,
             deleted_at: None,
             deleted_by: None,
             delete_reason: None,
             created_at: Utc::now(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_system(&self) -> bool {
+        self.message_type.is_system()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageSelection {
+    pub include_message_types: Vec<ChatMessageType>,
+}
+
+impl ChatMessageSelection {
+    #[must_use]
+    pub fn user_default() -> Self {
+        Self {
+            include_message_types: ChatMessageType::default_visible_types(),
+        }
+    }
+
+    #[must_use]
+    pub fn message_type_codes(&self) -> Vec<i16> {
+        self.effective_message_types()
+            .iter()
+            .copied()
+            .map(i16::from)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn message_type_strings(&self) -> Vec<String> {
+        self.effective_message_types()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn includes(&self, message_type: ChatMessageType) -> bool {
+        self.effective_message_types().contains(&message_type)
+    }
+
+    #[must_use]
+    fn effective_message_types(&self) -> Vec<ChatMessageType> {
+        if self.include_message_types.is_empty() {
+            ChatMessageType::default_visible_types()
+        } else {
+            self.include_message_types.clone()
         }
     }
 }
@@ -437,7 +559,7 @@ pub struct SendChatMessage {
     pub content: String,
     pub message_type: ChatMessageType,
     pub reply_to_message_id: Option<i64>,
-    pub metadata: ChatMetadata,
+    pub metadata: Option<ChatMetadata>,
     pub attachments: Vec<super::file_storage::SubmittedFileReference>,
     pub mentions: Vec<ChatMentionInput>,
 }
@@ -470,7 +592,7 @@ pub struct EditChatMessage {
     pub user_id: UserId,
     pub client_operation_id: Option<String>,
     pub content: String,
-    pub metadata: ChatMetadata,
+    pub metadata: Option<ChatMetadata>,
     pub expected_version: Option<i64>,
 }
 
@@ -631,7 +753,7 @@ pub struct ChatPinEventLog {
     pub event: ChatPinEvent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct EventCursor {
     pub event_id: Option<String>,
@@ -744,21 +866,21 @@ mod tests {
 
     #[test]
     fn chat_message_type_display_parse_and_code_roundtrip() {
-        assert_eq!(ChatMessageType::Text.to_string(), "text");
+        assert_eq!(ChatMessageType::User.to_string(), "user");
         assert_eq!(
             ok(
-                " SYSTEM ".parse::<ChatMessageType>(),
-                "system type should parse"
+                " SYSTEM_MEMBER_JOINED ".parse::<ChatMessageType>(),
+                "system member joined type should parse"
             ),
-            ChatMessageType::System
+            ChatMessageType::SystemMemberJoined
         );
-        assert_eq!(i16::from(ChatMessageType::Action), 3);
+        assert_eq!(i16::from(ChatMessageType::User), 1);
         assert_eq!(
             ok(
                 ChatMessageType::try_from(1),
                 "chat message type code should parse"
             ),
-            ChatMessageType::Text
+            ChatMessageType::User
         );
         assert!(ChatMessageType::try_from(99).is_err());
         assert!("notice".parse::<ChatMessageType>().is_err());
@@ -767,7 +889,7 @@ mod tests {
     #[test]
     fn chat_metadata_normalized_for_storage_derives_target_hash() {
         let target = ProviderTarget::alist("/media/episode-1.mp4".to_string());
-        let metadata = ChatMetadata {
+        let metadata = ChatMetadata::User(ChatUserMetadata {
             playback: Some(ChatPlaybackMetadata {
                 media_id: None,
                 playlist_id: None,
@@ -776,11 +898,14 @@ mod tests {
                 position_seconds: Some(12.5),
             }),
             ..Default::default()
-        };
+        });
 
         let normalized = metadata
             .normalized_for_storage()
             .expect("target hash should compute");
+        let ChatMetadata::User(normalized) = normalized else {
+            panic!("normalized metadata should remain user metadata");
+        };
         assert_eq!(
             normalized
                 .playback

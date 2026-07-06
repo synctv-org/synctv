@@ -29,7 +29,7 @@ struct ChatSendRequestHashPayload<'a> {
     content: &'a str,
     message_type: crate::models::ChatMessageType,
     reply_to_message_id: Option<i64>,
-    metadata: &'a crate::models::ChatMetadata,
+    metadata: &'a Option<crate::models::ChatMetadata>,
     mentions: &'a [crate::models::ChatMentionInput],
     attachments: &'a [SubmittedFileReference],
 }
@@ -38,7 +38,7 @@ struct ChatSendRequestHashPayload<'a> {
 struct ChatEditRequestHashPayload<'a> {
     message_id: i64,
     content: &'a str,
-    metadata: &'a crate::models::ChatMetadata,
+    metadata: &'a Option<crate::models::ChatMetadata>,
     expected_version: Option<i64>,
 }
 
@@ -273,7 +273,9 @@ pub(super) fn chat_file_storage_scope(room_id: RoomId, user_id: UserId) -> Strin
     format!("rooms/{}/users/{}", room_id.as_i64(), user_id.as_i64())
 }
 
-pub(super) fn validate_chat_metadata(_metadata: &crate::models::ChatMetadata) -> Result<()> {
+pub(super) fn validate_chat_metadata(
+    _metadata: &Option<crate::models::ChatMetadata>,
+) -> Result<()> {
     Ok(())
 }
 

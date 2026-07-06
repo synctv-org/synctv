@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS room_creation_requests (
             opaque_password_server_setup_version IS NULL
             OR opaque_password_server_setup_version > 0
         ),
+    CONSTRAINT room_creation_requests_settings_payload_object
+        CHECK (
+            settings_payload IS NULL
+            OR jsonb_typeof(settings_payload) = 'object'
+        ),
     CONSTRAINT room_creation_requests_rejection_reason_not_empty
         CHECK (
             rejection_reason IS NULL

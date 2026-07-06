@@ -1,6 +1,7 @@
 //! Media operations: add, remove, edit, swap, clear, batch operations, playlist items
 
 use crate::impls::ApiError;
+use futures::StreamExt;
 use hex::encode as hex_encode;
 use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
@@ -15,10 +16,11 @@ use synctv_core::models::{
 };
 use synctv_core::provider::DynamicListQuery;
 use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
+use synctv_core::repository::{MediaListItem, PlaylistListItem};
 use synctv_core::service::MediaService;
 use synctv_core::service::{
     AddMediaRequest as CoreAddMediaRequest, CreateMediaCoverUploadSession,
-    MoveMediaRequest as CoreMoveMediaRequest,
+    CreateMediaThumbnailUploadSession, MoveMediaRequest as CoreMoveMediaRequest,
 };
 use synctv_core::service::{
     DeleteEntriesPlan, DeleteEntriesRequest as CoreDeleteEntriesRequest,
@@ -30,7 +32,7 @@ use super::convert::try_playlist_path_node_to_proto;
 use super::convert::{
     file_metadata_from_proto, optional_proto_source_provider_to_core,
     optional_provider_target_to_proto, proto_media_source_config_to_core,
-    proto_source_provider_to_core, provider_target_from_proto,
+    provider_target_from_proto,
 };
 use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 use crate::media_fanout::{MediaFanoutService, PreparedMediaRemovedFanout};
@@ -468,6 +470,46 @@ pub(crate) fn media_cover_upload_session_to_proto(
     })
 }
 
+pub(crate) fn media_thumbnail_upload_session_to_proto(
+    session: FileUploadSession,
+) -> Result<synctv_proto::client::MediaThumbnailUploadSession, ApiError> {
+    let fields = upload_session_fields(&session)?;
+    Ok(synctv_proto::client::MediaThumbnailUploadSession {
+        thumbnail_reference: Some(upload_session_media_cover_proto(&session.file)?),
+        upload_required: session.upload_required,
+        upload_url: fields.upload_url,
+        upload_object_access: fields.upload_object_access,
+        upload_method: fields.upload_method,
+        upload_headers: session.upload_headers.into_iter().collect(),
+        expires_at: fields.expires_at,
+        max_size_bytes: session.max_size_bytes,
+        ownership_proof_required: session.ownership_proof_required,
+        ownership_proof_nonce: fields.ownership_proof_nonce,
+        ownership_proof_ranges: session
+            .ownership_proof_ranges
+            .into_iter()
+            .map(
+                |range| synctv_proto::client::MediaCoverOwnershipProofRange {
+                    offset: range.offset,
+                    length: range.length,
+                },
+            )
+            .collect(),
+        resumable: session.resumable,
+        part_size_bytes: session.part_size_bytes,
+        uploaded_size_bytes: session.uploaded_size_bytes,
+        uploaded_parts: session.uploaded_parts,
+        upload_id: session.upload_id,
+        part_urls: session
+            .part_urls
+            .into_iter()
+            .map(file_upload_part_url_to_proto)
+            .collect(),
+        upload_token: fields.upload_token,
+        encoded_object_key: session.encoded_object_key,
+    })
+}
+
 pub(crate) fn media_cover_upload_create_result_to_proto(
     result: FileUploadSessionCreateResult,
 ) -> Result<synctv_proto::client::CreateMediaCoverUploadSessionResponse, ApiError> {
@@ -480,6 +522,24 @@ pub(crate) fn media_cover_upload_create_result_to_proto(
                 }
                 FileUploadSessionCreateResult::Session(session) => {
                     ProtoResult::Session(media_cover_upload_session_to_proto(session)?)
+                }
+            }),
+        },
+    )
+}
+
+pub(crate) fn media_thumbnail_upload_create_result_to_proto(
+    result: FileUploadSessionCreateResult,
+) -> Result<synctv_proto::client::CreateMediaThumbnailUploadSessionResponse, ApiError> {
+    use synctv_proto::client::create_media_thumbnail_upload_session_response::Result as ProtoResult;
+    Ok(
+        synctv_proto::client::CreateMediaThumbnailUploadSessionResponse {
+            result: Some(match result {
+                FileUploadSessionCreateResult::Plan(plan) => {
+                    ProtoResult::Plan(file_upload_plan_to_proto(plan))
+                }
+                FileUploadSessionCreateResult::Session(session) => {
+                    ProtoResult::Session(media_thumbnail_upload_session_to_proto(session)?)
                 }
             }),
         },
@@ -600,6 +660,18 @@ pub(crate) fn media_cover_object_to_proto(
     blob: &FileBlob,
 ) -> synctv_proto::client::MediaCoverObjectResponse {
     synctv_proto::client::MediaCoverObjectResponse {
+        mime_type: blob.mime_type.clone(),
+        content_manifest_sha256: blob.content_manifest_sha256.clone(),
+        data: blob.data.clone(),
+        content_range: blob.range.map(file_byte_range_to_proto),
+        total_size_bytes: blob.total_size_bytes,
+    }
+}
+
+pub(crate) fn media_thumbnail_object_to_proto(
+    blob: &FileBlob,
+) -> synctv_proto::client::MediaThumbnailObjectResponse {
+    synctv_proto::client::MediaThumbnailObjectResponse {
         mime_type: blob.mime_type.clone(),
         content_manifest_sha256: blob.content_manifest_sha256.clone(),
         data: blob.data.clone(),
@@ -1024,6 +1096,69 @@ fn map_availability_filter(filter: i32) -> Result<Option<bool>, ApiError> {
     }
 }
 
+async fn playlist_list_items_to_proto(
+    api: &ClientApiImpl,
+    entries: &[PlaylistListItem],
+    counts: &std::collections::HashMap<synctv_core::models::PlaylistId, i64>,
+    viewer_id: Option<UserId>,
+) -> Result<Vec<synctv_proto::client::Playlist>, ApiError> {
+    let mut indexed =
+        futures::stream::iter(entries.iter().cloned().enumerate().map(|(index, entry)| {
+            let api = api.clone();
+            let item_count = i64_to_i32_api(
+                crate::impls::playlist_media_count_or_zero(counts, &entry.playlist.id),
+                "playlist item count",
+            );
+            async move {
+                let item_count = item_count?;
+                let proto = api
+                    .playlist_to_proto_for_viewer_with_loaded_cover(
+                        &entry.playlist,
+                        item_count,
+                        entry.is_available,
+                        viewer_id,
+                    )
+                    .await?;
+                Ok::<_, ApiError>((index, proto))
+            }
+        }))
+        .buffer_unordered(16)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, proto)| proto).collect())
+}
+
+async fn media_list_items_to_proto(
+    api: &ClientApiImpl,
+    entries: &[MediaListItem],
+    viewer_id: Option<UserId>,
+) -> Result<Vec<synctv_proto::client::Media>, ApiError> {
+    let mut indexed =
+        futures::stream::iter(entries.iter().cloned().enumerate().map(|(index, entry)| {
+            let api = api.clone();
+            async move {
+                let proto = api
+                    .media_to_proto_for_viewer_with_loaded_cover(
+                        &entry.media,
+                        entry.is_available,
+                        viewer_id,
+                    )
+                    .await?;
+                Ok::<_, ApiError>((index, proto))
+            }
+        }))
+        .buffer_unordered(16)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    indexed.sort_by_key(|(index, _)| *index);
+    Ok(indexed.into_iter().map(|(_, proto)| proto).collect())
+}
+
 pub(crate) fn require_dynamic_playlist_creator(
     playlist: &Playlist,
     viewer_id: UserId,
@@ -1112,7 +1247,6 @@ pub(crate) fn build_add_media_request(
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::AddMediaRequest {
         playlist_id,
-        source_provider,
         provider_instance_name,
         source_config,
         name,
@@ -1123,15 +1257,7 @@ pub(crate) fn build_add_media_request(
         .map(|id| crate::impls::proto_validated_playlist_id(id, public_id_codec))
         .transpose()?;
 
-    let (config_provider, source_config) = proto_media_source_config_to_core(source_config)?;
-    let source_provider = proto_source_provider_to_core(source_provider)?;
-    if source_provider != config_provider {
-        return Err(ApiError::InvalidInput(format!(
-            "source_provider '{}' does not match source_config provider '{}'",
-            source_provider.as_str(),
-            config_provider.as_str()
-        )));
-    }
+    let (source_provider, source_config) = proto_media_source_config_to_core(source_config)?;
 
     let name = if name.is_empty() {
         DEFAULT_MEDIA_TITLE.to_string()
@@ -1580,6 +1706,158 @@ impl ClientApiImpl {
             .await
     }
 
+    pub async fn create_media_thumbnail_upload_session(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::CreateMediaThumbnailUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CreateMediaThumbnailUploadSessionResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let session = self
+            .room_service
+            .media_service()
+            .create_media_thumbnail_upload_session(
+                rid,
+                media_id,
+                *user_id,
+                CreateMediaThumbnailUploadSession {
+                    client_thumbnail_id: optional_trimmed_string(&req.client_thumbnail_id),
+                    mime_type: req.mime_type,
+                    size_bytes: req.size_bytes,
+                    width: (req.width > 0).then_some(req.width),
+                    height: (req.height > 0).then_some(req.height),
+                    duration_seconds: (req.duration_seconds > 0).then_some(req.duration_seconds),
+                    bitrate_bps: (req.bitrate_bps > 0).then_some(req.bitrate_bps),
+                    parts: proto_upload_manifest_parts(req.parts),
+                    metadata: file_metadata_from_proto(req.metadata.as_ref())?,
+                },
+            )
+            .await
+            .map_err(ApiError::from)?;
+        media_thumbnail_upload_create_result_to_proto(session)
+    }
+
+    pub async fn upload_media_thumbnail_object(
+        &self,
+        req: synctv_proto::client::UploadMediaThumbnailObjectRequest,
+    ) -> Result<synctv_proto::client::UploadMediaThumbnailObjectResponse, ApiError> {
+        let blob = self
+            .room_service
+            .media_service()
+            .store_media_thumbnail_upload_object(
+                &req.encoded_object_key,
+                &req.token,
+                req.content_type.as_deref(),
+                proto_file_upload_range(req.content_range),
+                req.data,
+            )
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) = uploaded_parts_response_fields(&blob);
+        Ok(synctv_proto::client::UploadMediaThumbnailObjectResponse {
+            object: match blob {
+                StoreFileUploadResult::Complete(blob) => {
+                    Some(media_thumbnail_object_to_proto(&blob))
+                }
+                StoreFileUploadResult::PartAccepted { .. } => None,
+            },
+            complete,
+            uploaded_size_bytes,
+            uploaded_parts,
+        })
+    }
+
+    pub async fn complete_media_thumbnail_upload_session(
+        &self,
+        req: synctv_proto::client::CompleteMediaThumbnailUploadSessionRequest,
+    ) -> Result<synctv_proto::client::CompleteMediaThumbnailUploadSessionResponse, ApiError> {
+        let result = self
+            .room_service
+            .media_service()
+            .complete_media_thumbnail_upload_session(complete_upload_session_request(
+                &req.file_id,
+                req.encoded_object_key,
+                req.token,
+                req.upload_id,
+                &req.ownership_proof,
+                req.parts,
+            ))
+            .await
+            .map_err(ApiError::from)?;
+        let (complete, uploaded_size_bytes, uploaded_parts) =
+            complete_upload_response_fields(&result);
+        Ok(
+            synctv_proto::client::CompleteMediaThumbnailUploadSessionResponse {
+                object: result.object.as_ref().map(media_thumbnail_object_to_proto),
+                complete,
+                uploaded_size_bytes,
+                uploaded_parts,
+            },
+        )
+    }
+
+    pub async fn get_media_thumbnail_object(
+        &self,
+        req: synctv_proto::client::GetMediaThumbnailObjectRequest,
+    ) -> Result<synctv_core::models::FileObjectDownload, ApiError> {
+        self.room_service
+            .media_service()
+            .get_media_thumbnail_object_stream(
+                &req.encoded_object_key,
+                &req.token,
+                proto_file_range_request(req.range),
+            )
+            .await
+            .map_err(ApiError::from)
+    }
+
+    pub async fn update_media_thumbnail(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::UpdateMediaThumbnailRequest,
+    ) -> Result<synctv_proto::client::Media, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let thumbnail =
+            required_file_upload_reference(req.thumbnail_reference, "thumbnail_reference")?;
+        let media = self
+            .room_service
+            .media_service()
+            .update_media_thumbnail(rid, media_id, *user_id, thumbnail)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+            .await
+    }
+
+    pub async fn clear_media_thumbnail(
+        &self,
+        user_id: &UserId,
+        room_id: &str,
+        req: synctv_proto::client::ClearMediaThumbnailRequest,
+    ) -> Result<synctv_proto::client::Media, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let rid = self.parse_room_id(room_id)?;
+        let media_id =
+            crate::impls::parse_media_id_param(&req.media_id, "media_id", &self.public_id_codec)?;
+        let media = self
+            .room_service
+            .media_service()
+            .clear_media_thumbnail(rid, media_id, *user_id)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_cache_fanout.publish_invalidation(&rid);
+        self.media_to_proto_for_viewer_with_loaded_cover(&media, true, Some(*user_id))
+            .await
+    }
+
     /// Clear all media directly under the room root
     pub async fn clear_playlist(
         &self,
@@ -1925,33 +2203,9 @@ impl ClientApiImpl {
                 .count_playlist_media_batch(&folder_ids)
                 .await
                 .map_err(ApiError::from)?;
-            let mut proto_playlists = Vec::with_capacity(playlists.len());
-            for entry in &playlists {
-                let item_count = i64_to_i32_api(
-                    crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
-                    "playlist item count",
-                )?;
-                proto_playlists.push(
-                    self.playlist_to_proto_for_viewer_with_loaded_cover(
-                        &entry.playlist,
-                        item_count,
-                        entry.is_available,
-                        viewer_id,
-                    )
-                    .await?,
-                );
-            }
-            let mut proto_media = Vec::with_capacity(media.len());
-            for entry in &media {
-                proto_media.push(
-                    self.media_to_proto_for_viewer_with_loaded_cover(
-                        &entry.media,
-                        entry.is_available,
-                        viewer_id,
-                    )
-                    .await?,
-                );
-            }
+            let proto_playlists =
+                playlist_list_items_to_proto(self, &playlists, &counts, viewer_id).await?;
+            let proto_media = media_list_items_to_proto(self, &media, viewer_id).await?;
 
             return finalize_playlist_items_response_version(
                 synctv_proto::client::ListPlaylistItemsResponse {
@@ -2236,33 +2490,9 @@ impl ClientApiImpl {
             .count_playlist_media_batch(&folder_ids)
             .await
             .map_err(ApiError::from)?;
-        let mut proto_playlists = Vec::with_capacity(playlists.len());
-        for entry in &playlists {
-            let item_count = i64_to_i32_api(
-                crate::impls::playlist_media_count_or_zero(&counts, &entry.playlist.id),
-                "playlist item count",
-            )?;
-            proto_playlists.push(
-                self.playlist_to_proto_for_viewer_with_loaded_cover(
-                    &entry.playlist,
-                    item_count,
-                    entry.is_available,
-                    viewer_id,
-                )
-                .await?,
-            );
-        }
-        let mut proto_media = Vec::with_capacity(media.len());
-        for entry in &media {
-            proto_media.push(
-                self.media_to_proto_for_viewer_with_loaded_cover(
-                    &entry.media,
-                    entry.is_available,
-                    viewer_id,
-                )
-                .await?,
-            );
-        }
+        let proto_playlists =
+            playlist_list_items_to_proto(self, &playlists, &counts, viewer_id).await?;
+        let proto_media = media_list_items_to_proto(self, &media, viewer_id).await?;
 
         finalize_playlist_items_response_version(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
@@ -2508,21 +2738,20 @@ mod tests {
     }
 
     #[test]
-    fn test_build_add_media_request_requires_source_provider() {
+    fn test_build_add_media_request_requires_source_config() {
         let codec = crate::public_id::PublicIdCodec::plain();
         let err = require_error(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
                 provider_instance_name: String::new(),
-                source_config: alist_media_source_config("/tv"),
+                source_config: None,
                 name: String::new(),
                 description: String::new(),
             },
             &codec,
         ));
 
-        assert!(err.to_string().contains("source_provider"));
+        assert!(err.to_string().contains("source_config"));
     }
 
     #[test]
@@ -2532,7 +2761,6 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: Some(codec_ok(codec.encode_playlist_id(playlist_id))?),
-                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                 provider_instance_name: "alist-main".into(),
                 source_config: alist_media_source_config("/tv"),
                 name: "Episode 1".into(),
@@ -2564,7 +2792,6 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
                 provider_instance_name: String::new(),
                 source_config: direct_url_media_source_config("https://example.com/video.mp4"),
                 name: "Example".into(),
@@ -2587,7 +2814,6 @@ mod tests {
         let request = api_ok(build_add_media_request(
             synctv_proto::client::AddMediaRequest {
                 playlist_id: None,
-                source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                 provider_instance_name: "alist-main".into(),
                 source_config: alist_media_source_config("/tv"),
                 name: String::new(),
@@ -2607,7 +2833,6 @@ mod tests {
             synctv_proto::client::AddMediaBatchRequest {
                 items: vec![synctv_proto::client::AddMediaRequest {
                     playlist_id: Some("bad-playlist".into()),
-                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                     provider_instance_name: "alist-main".into(),
                     source_config: alist_media_source_config("/tv"),
                     name: "Episode 1".into(),
@@ -2628,7 +2853,6 @@ mod tests {
             synctv_proto::client::AddMediaBatchRequest {
                 items: vec![synctv_proto::client::AddMediaRequest {
                     playlist_id: Some(codec_ok(codec.encode_playlist_id(playlist_id))?),
-                    source_provider: synctv_proto::source_config::SourceProvider::Alist as i32,
                     provider_instance_name: "alist-main".into(),
                     source_config: alist_media_source_config("/tv"),
                     name: String::new(),

@@ -96,6 +96,7 @@ fn make_media(room_id: &RoomId, creator_id: &UserId, name: &str, position: i32) 
         )),
         provider_instance_name: None,
         cover_file_reference_id: None,
+        thumbnail_file_reference_id: None,
         added_at: now,
         updated_at: now,
         version: 0,

@@ -1586,7 +1586,7 @@ impl ClientApiImpl {
         viewer_user_id: Option<UserId>,
         req: synctv_proto::client::GetChatHistoryRequest,
     ) -> Result<synctv_proto::client::GetChatHistoryResponse, ApiError> {
-        let (limit, cursor) = build_get_chat_history_request(&req)?;
+        let (limit, cursor, selection) = build_get_chat_history_request(&req)?;
         let cursor = cursor
             .map(|(created_at, id)| synctv_core::models::ChatHistoryCursor { created_at, id });
         let chat_service = self
@@ -1600,6 +1600,7 @@ impl ClientApiImpl {
                 limit,
                 true,
                 viewer_user_id.as_ref(),
+                &selection,
             )
             .await
             .map_err(ApiError::from)?;
@@ -1691,11 +1692,7 @@ impl ClientApiImpl {
                 user_id,
                 client_message_id: optional_trimmed_string(&req.client_message_id),
                 content: req.content,
-                message_type: if attachments.is_empty() {
-                    ChatMessageType::Text
-                } else {
-                    ChatMessageType::Attachment
-                },
+                message_type: ChatMessageType::User,
                 reply_to_message_id: if req.reply_to_message_id.trim().is_empty() {
                     None
                 } else {
@@ -2756,6 +2753,7 @@ mod tests {
             &synctv_proto::client::GetChatHistoryRequest {
                 limit: 101,
                 cursor: String::new(),
+                include_message_types: Vec::new(),
             },
         ))?;
 
@@ -2817,6 +2815,7 @@ mod tests {
             &synctv_proto::client::GetChatHistoryRequest {
                 limit: 50,
                 cursor: "not-a-cursor".to_string(),
+                include_message_types: Vec::new(),
             },
         ))?;
 

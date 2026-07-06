@@ -182,6 +182,12 @@ service RoomService {
   rpc GetMediaCoverObject(GetMediaCoverObjectRequest) returns (stream MediaCoverObjectResponse);
   rpc UpdateMediaCover(UpdateMediaCoverRequest) returns (Media);
   rpc ClearMediaCover(ClearMediaCoverRequest) returns (Media);
+  rpc CreateMediaThumbnailUploadSession(CreateMediaThumbnailUploadSessionRequest) returns (CreateMediaThumbnailUploadSessionResponse);
+  rpc UploadMediaThumbnailObject(UploadMediaThumbnailObjectRequest) returns (UploadMediaThumbnailObjectResponse);
+  rpc CompleteMediaThumbnailUploadSession(CompleteMediaThumbnailUploadSessionRequest) returns (CompleteMediaThumbnailUploadSessionResponse);
+  rpc GetMediaThumbnailObject(GetMediaThumbnailObjectRequest) returns (stream MediaThumbnailObjectResponse);
+  rpc UpdateMediaThumbnail(UpdateMediaThumbnailRequest) returns (Media);
+  rpc ClearMediaThumbnail(ClearMediaThumbnailRequest) returns (Media);
   rpc DeleteMedia(DeleteMediaRequest) returns (DeleteMediaResponse);
   rpc DeleteEntries(DeleteEntriesRequest) returns (DeleteEntriesResponse);
   rpc EditMedia(EditMediaRequest) returns (Media);
@@ -339,9 +345,24 @@ message ChatPlaybackMetadata {
   optional double position_seconds = 4;
 }
 
-message ChatMetadata {
+message ChatUserMetadata {
   ChatPresentationMetadata presentation = 1;
   ChatPlaybackMetadata playback = 2;
+}
+
+message ChatMemberJoinedMetadata {
+  string user_id = 1;
+  string username = 2;
+  string actor_user_id = 3;
+  string actor_username = 4;
+  common.RoomMemberRole role = 5;
+}
+
+message ChatMetadata {
+  oneof metadata {
+    ChatUserMetadata user = 1;
+    ChatMemberJoinedMetadata member_joined = 2;
+  }
 }
 
 message ContentReportMetadata {
@@ -415,6 +436,7 @@ message Media {
   int64 version = 13; // Resource version from database
   MediaCover cover = 14;
   string description = 15;
+  MediaThumbnail thumbnail = 16;
 }
 
 message Playlist {
@@ -1787,30 +1809,21 @@ message UpdatePlaybackRequest {
 // Note: room_id extracted from x-room-id metadata
 
 message AddMediaRequest {
-  option (buf.validate.message).cel = {
-    id: "add_media.source_provider"
-    message: "source_provider is required"
-    expression: "this.source_provider != 0"
-  };
   optional string playlist_id = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 64
     pattern: "^pl_[A-Za-z0-9]+$"
   }]; // Target playlist ID. Omit for room-root media
-  synctv.source_config.SourceProvider source_provider = 2 [(buf.validate.field).enum = {
-    defined_only: true
-    not_in: [0]
-  }]; // Required source provider type, e.g. direct_url, bilibili, alist
-  string provider_instance_name = 3 [
+  string provider_instance_name = 2 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
       pattern: "^[A-Za-z0-9_-]+$"
       max_len: 64
     }
-  ]; // Optional provider instance name; empty means use the default provider instance for source_provider
-  synctv.source_config.MediaSourceConfig source_config = 4;
-  string name = 5 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
-  string description = 6 [(buf.validate.field).string.max_len = 5000];
+  ]; // Optional provider instance name; empty means use the default provider instance for the source_config provider
+  synctv.source_config.MediaSourceConfig source_config = 3 [(buf.validate.field).required = true];
+  string name = 4 [(buf.validate.field).string.max_len = 500]; // Optional media display name. Validation: max 500 chars, no HTML tags
+  string description = 5 [(buf.validate.field).string.max_len = 5000];
 }
 
 message GetMediaRequest {
@@ -2160,26 +2173,26 @@ message Playback {
 }
 
 message PlaybackMetadata {
+  oneof metadata {
+    AlistPlaybackMetadata alist = 1;
+    BilibiliPlaybackMetadata bilibili = 2;
+    EmbyPlaybackMetadata emby = 3;
+    DirectUrlPlaybackMetadata direct_url = 4;
+    LiveProxyPlaybackMetadata live_proxy = 5;
+    LivePlaybackMetadata live = 6;
+  }
+}
+
+message AlistPlaybackMetadata {
   optional string name = 1;
   optional uint64 size = 2;
   optional string provider = 3;
-  optional string source_host = 4;
-  optional string thumbnail = 5;
-  optional int32 external_subtitle_count = 6;
-  optional string video_preview_error = 7;
-  repeated AlistTranscodingTaskMetadata transcoding_tasks = 8;
-  optional AlistVideoPreviewMetadata video_preview = 9;
-  optional double duration = 10;
-  optional uint64 width = 11;
-  optional uint64 height = 12;
-  optional string format = 13;
-  optional string filename = 14;
-  optional bool is_live = 15;
-  optional string media_id = 16;
-  optional string room_id = 17;
-  optional string content_type = 18;
-  optional BilibiliPlaybackMetadata bilibili = 19;
-  optional EmbyPlaybackMetadata emby = 20;
+  optional int32 external_subtitle_count = 4;
+  optional string video_preview_error = 5;
+  repeated AlistTranscodingTaskMetadata transcoding_tasks = 6;
+  optional AlistVideoPreviewMetadata video_preview = 7;
+  optional uint64 width = 8;
+  optional uint64 height = 9;
 }
 
 message AlistTranscodingTaskMetadata {
@@ -2202,14 +2215,15 @@ message AlistVideoPreviewMetadata {
 }
 
 message BilibiliPlaybackMetadata {
-  optional string bvid = 1;
-  optional uint64 aid = 2;
-  optional uint64 epid = 3;
-  optional uint64 cid = 4;
-  optional double min_buffer_time = 5;
-  optional string fallback_format = 6;
-  optional uint64 quality = 7;
-  optional uint64 room_id = 8;
+  optional string content_type = 1;
+  optional string bvid = 2;
+  optional uint64 aid = 3;
+  optional uint64 epid = 4;
+  optional uint64 cid = 5;
+  optional double min_buffer_time = 6;
+  optional string fallback_format = 7;
+  optional uint64 quality = 8;
+  optional uint64 room_id = 9;
 }
 
 message EmbyPlaybackMetadata {
@@ -2219,8 +2233,27 @@ message EmbyPlaybackMetadata {
   optional string play_session_id = 4;
 }
 
+message DirectUrlPlaybackMetadata {
+  optional string format = 1;
+  optional string filename = 2;
+}
+
+message LiveProxyPlaybackMetadata {
+  string media_id = 1;
+  string room_id = 2;
+  optional string source_host = 3;
+}
+
+message LivePlaybackMetadata {
+  string media_id = 1;
+  string room_id = 2;
+}
+
 // Playback information for a single mode
 message PlaybackInfo {
+  // Thumbnail URL for this playback mode.
+  optional string thumbnail = 7;
+
   // List of playback media resources (different qualities, codecs, or provider-backed resources)
   repeated PlaybackMedia medias = 1;
 
@@ -2429,6 +2462,9 @@ message ObserveChatEvents {
   // Unset starts from live chat events; 0 replays retained chat events from the empty watermark.
   // Use GetChatHistory for message backfill.
   optional int64 after_event_sequence = 1;
+  // Empty uses the default user-visible set: USER.
+  // System message types, such as SYSTEM_MEMBER_JOINED, are included explicitly.
+  repeated ChatMessageType include_message_types = 2 [(buf.validate.field).repeated.items.enum.defined_only = true];
 }
 
 message ObserveChatPinEvents {
@@ -2629,6 +2665,7 @@ message ChatMessageReceive {
   ChatMetadata metadata = 25;
   repeated ChatMention mentions = 26;
   optional ChatMessagePin pin = 27;
+  ChatMessageType message_type = 28;
 }
 
 message ChatMessagePin {
@@ -2655,6 +2692,12 @@ enum ChatMessageStatus {
   CHAT_MESSAGE_STATUS_ACTIVE = 1;
   CHAT_MESSAGE_STATUS_EDITED = 2;
   CHAT_MESSAGE_STATUS_DELETED = 3;
+}
+
+enum ChatMessageType {
+  CHAT_MESSAGE_TYPE_UNSPECIFIED = 0;
+  CHAT_MESSAGE_TYPE_USER = 1;
+  CHAT_MESSAGE_TYPE_SYSTEM_MEMBER_JOINED = 1001;
 }
 
 enum ChatMessageEventKind {
@@ -2702,6 +2745,7 @@ enum FileObjectAccessKind {
   FILE_OBJECT_ACCESS_KIND_ROOM_COVER = 4;
   FILE_OBJECT_ACCESS_KIND_PLAYLIST_COVER = 5;
   FILE_OBJECT_ACCESS_KIND_GENERIC = 6;
+  FILE_OBJECT_ACCESS_KIND_MEDIA_THUMBNAIL = 7;
 }
 
 message FileObjectAccess {
@@ -3034,6 +3078,18 @@ message MediaCover {
   FileObjectAccess object_access = 9;
 }
 
+message MediaThumbnail {
+  string id = 1;
+  string url = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  int32 width = 5;
+  int32 height = 6;
+  FileMetadata metadata = 7;
+  repeated FileObjectVariant variants = 8;
+  FileObjectAccess object_access = 9;
+}
+
 message CreateMediaCoverUploadSessionRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
@@ -3134,6 +3190,105 @@ message UpdateMediaCoverRequest {
 }
 
 message ClearMediaCoverRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+}
+
+message CreateMediaThumbnailUploadSessionRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  string client_thumbnail_id = 3;
+  string mime_type = 4;
+  int64 size_bytes = 5;
+  int32 width = 6;
+  int32 height = 7;
+  repeated FileUploadManifestPart parts = 8;
+  FileMetadata metadata = 9;
+  int32 duration_seconds = 10;
+  int32 bitrate_bps = 11;
+}
+
+message MediaThumbnailUploadSession {
+  FileUploadReference thumbnail_reference = 1;
+  bool upload_required = 2;
+  optional string upload_url = 3;
+  optional string upload_method = 4;
+  map<string, string> upload_headers = 5;
+  optional int64 expires_at = 6;
+  int64 max_size_bytes = 7;
+  bool ownership_proof_required = 8;
+  optional string ownership_proof_nonce = 9;
+  repeated MediaCoverOwnershipProofRange ownership_proof_ranges = 10;
+  bool resumable = 12;
+  int64 part_size_bytes = 13;
+  int64 uploaded_size_bytes = 14;
+  repeated int32 uploaded_parts = 15;
+  optional string upload_id = 16;
+  repeated FileUploadPartUrl part_urls = 17;
+  string upload_token = 18;
+  string encoded_object_key = 19;
+  FileObjectAccess upload_object_access = 20;
+}
+
+message CreateMediaThumbnailUploadSessionResponse {
+  oneof result {
+    FileUploadPlan plan = 1;
+    MediaThumbnailUploadSession session = 2;
+  }
+}
+
+message UploadMediaThumbnailObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string content_type = 3;
+  bytes data = 4;
+  optional FileUploadRange content_range = 5;
+}
+
+message GetMediaThumbnailObjectRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional FileRangeRequest range = 3;
+}
+
+message MediaThumbnailObjectResponse {
+  string mime_type = 1;
+  string content_manifest_sha256 = 2;
+  bytes data = 3;
+  optional FileByteRange content_range = 4;
+  int64 total_size_bytes = 5;
+}
+
+message UploadMediaThumbnailObjectResponse {
+  MediaThumbnailObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message CompleteMediaThumbnailUploadSessionRequest {
+  string encoded_object_key = 1;
+  string token = 2;
+  optional string upload_id = 3;
+  repeated CompleteFileUploadPart parts = 4;
+  string file_id = 5;
+  string ownership_proof = 6;
+}
+
+message CompleteMediaThumbnailUploadSessionResponse {
+  MediaThumbnailObjectResponse object = 1;
+  bool complete = 2;
+  int64 uploaded_size_bytes = 3;
+  repeated int32 uploaded_parts = 4;
+}
+
+message UpdateMediaThumbnailRequest {
+  string room_id = 1;
+  string media_id = 2 [(buf.validate.field).string.min_len = 1];
+  FileUploadReference thumbnail_reference = 3;
+}
+
+message ClearMediaThumbnailRequest {
   string room_id = 1;
   string media_id = 2 [(buf.validate.field).string.min_len = 1];
 }
@@ -3674,6 +3829,9 @@ message GetChatHistoryRequest {
   };
   int32 limit = 1; // Max page size (clamped to 100 server-side). Default: 50.
   string cursor = 2; // Opaque keyset cursor returned by the server as "<rfc3339_created_at>|<message_id>".
+  // Empty uses the default user-visible set: USER.
+  // Include system message types explicitly when they should appear in history and cursors.
+  repeated ChatMessageType include_message_types = 3 [(buf.validate.field).repeated.items.enum.defined_only = true];
 }
 
 message GetChatHistoryResponse {

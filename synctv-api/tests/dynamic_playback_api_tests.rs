@@ -260,7 +260,7 @@ impl MediaProvider for StubDynamicProvider {
             provider_instance_name: Some(self.instance_id.clone()),
             duration_seconds: None,
             is_live: Some(false),
-            metadata: synctv_core::models::PlaybackMetadata::default(),
+            metadata: None,
         })
     }
 
@@ -271,6 +271,7 @@ impl MediaProvider for StubDynamicProvider {
 
 fn provider_playback_info(url: &str) -> PlaybackInfo {
     PlaybackInfo {
+        thumbnail: None,
         medias: vec![synctv_core::models::PlaybackMedia {
             name: String::new(),
             format: "mp4".to_string(),
@@ -1368,6 +1369,7 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
         "Root Media".to_string(),
         "direct",
         synctv_core::models::PlaybackInfo {
+            thumbnail: None,
             medias: vec![synctv_core::models::PlaybackMedia {
                 name: String::new(),
                 format: "mp4".to_string(),

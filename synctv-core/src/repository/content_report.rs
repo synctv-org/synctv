@@ -152,6 +152,7 @@ impl ContentReportRepository {
             ContentReportTarget::ChatMessage { message_id, .. } => Some(message_id),
             _ => None,
         };
+        let metadata = request.metadata.filter(|metadata| !metadata.is_empty());
 
         let report = sqlx::query_as!(
             ContentReport,
@@ -185,7 +186,7 @@ impl ContentReportRepository {
                 target_chat_message_created_at,
                 reason_code,
                 reason,
-                metadata AS "metadata!: ContentReportMetadata",
+                metadata AS "metadata?: ContentReportMetadata",
                 status AS "status!: ContentReportStatus",
                 reviewed_by AS "reviewed_by?: UserId",
                 reviewed_at,
@@ -204,7 +205,7 @@ impl ContentReportRepository {
             chat_message_created_at,
             request.reason_code,
             request.reason,
-            &request.metadata as _,
+            &metadata as _,
             i16::from(ContentReportStatus::Open),
         )
         .fetch_one(self.pools.primary())
@@ -312,7 +313,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code AS "reason_code!",
                 cr.reason AS "reason!",
-                cr.metadata AS "metadata!: ContentReportMetadata",
+                cr.metadata AS "metadata?: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
@@ -413,7 +414,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code AS "reason_code!",
                 cr.reason AS "reason!",
-                cr.metadata AS "metadata!: ContentReportMetadata",
+                cr.metadata AS "metadata?: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",
@@ -482,7 +483,7 @@ impl ContentReportRepository {
                 COALESCE(left(chat.content, 240), '') AS "target_chat_message_preview!",
                 cr.reason_code AS "reason_code!",
                 cr.reason AS "reason!",
-                cr.metadata AS "metadata!: ContentReportMetadata",
+                cr.metadata AS "metadata?: ContentReportMetadata",
                 cr.status AS "status!: ContentReportStatus",
                 cr.reviewed_by AS "reviewed_by?: UserId",
                 COALESCE(reviewer.username, '') AS "reviewed_by_username!",

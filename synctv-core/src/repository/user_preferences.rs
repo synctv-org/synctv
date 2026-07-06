@@ -112,6 +112,7 @@ impl UserPreferencesRepository {
                 "No valid user preference fields provided".to_string(),
             ));
         }
+        let default_settings = RoomSettings::default();
 
         let row = sqlx::query_as!(
             UserPreferencesRow,
@@ -136,7 +137,7 @@ impl UserPreferencesRepository {
                 COALESCE($6, FALSE),
                 COALESCE($7, FALSE),
                 COALESCE($8, TRUE),
-                '{}'::jsonb
+                $9
             )
             ON CONFLICT (user_id) DO UPDATE
             SET two_factor_enabled = COALESCE($2, user_preferences.two_factor_enabled),
@@ -182,7 +183,8 @@ impl UserPreferencesRepository {
             update
                 .notifications
                 .as_ref()
-                .map(|value| value.system_announcement_email)
+                .map(|value| value.system_announcement_email),
+            &default_settings as &RoomSettings
         )
         .fetch_one(executor)
         .await

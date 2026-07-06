@@ -2214,6 +2214,7 @@ fn observe_chat_events_message(observe_id: &str) -> synctv_proto::client::Client
             delivery_mode: ResourceDeliveryMode::NotifyOnly as i32,
             resource: Some(observe_resource::Resource::ChatEvents(ObserveChatEvents {
                 after_event_sequence: None,
+                include_message_types: Vec::new(),
             })),
         })),
     }

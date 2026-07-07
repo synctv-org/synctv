@@ -1148,6 +1148,7 @@ mod websocket_e2e {
             chat_service: Some(chat_service.clone()),
             audit_service,
             live_streaming_infrastructure: None,
+            cluster_client: None,
             rate_limiter,
             ws_ticket_service: ws_ticket_service.clone(),
             redis_runtime: None,

@@ -214,7 +214,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
 }
 
 /// Check database connectivity with timeout
-async fn check_database_health(state: &AppState) -> Result<(), String> {
+pub(crate) async fn check_database_health(state: &AppState) -> Result<(), String> {
     match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, state.user_service.health_check()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => {
@@ -272,7 +272,7 @@ fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
 /// Redis readiness reflects the health of the configured Redis connection.
 ///
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum RedisHealthStatus {
+pub(crate) enum RedisHealthStatus {
     Healthy,
     NotConfigured,
     Unhealthy(String),
@@ -281,12 +281,12 @@ enum RedisHealthStatus {
 /// Whether Redis must exist is a configuration-layer invariant enforced during
 /// startup validation. At runtime, a missing Redis handle is treated as
 /// "not configured" rather than re-enforcing realtime configuration rules.
-async fn check_redis_health(state: &AppState) -> RedisHealthStatus {
+pub(crate) async fn check_redis_health(state: &AppState) -> RedisHealthStatus {
     let redis_conn = state.resolve_redis_conn().await;
     check_redis_health_from_conn(redis_conn).await
 }
 
-async fn check_redis_health_from_conn(
+pub(crate) async fn check_redis_health_from_conn(
     redis_conn: Option<redis::aio::ConnectionManager>,
 ) -> RedisHealthStatus {
     let Some(mut conn) = redis_conn else {
@@ -321,19 +321,17 @@ async fn check_redis_health_from_conn(
 /// Check WebSocket ticket service health
 ///
 /// Reports whether the service supports cross-node ticket validation.
-fn check_ws_ticket_health(svc: &dyn synctv_core::service::WebSocketTicketService) -> String {
-    if svc.supports_cluster_runtime() {
-        "healthy (cross-node capable ticket storage)".to_string()
-    } else {
-        "healthy (single-node ticket storage)".to_string()
-    }
+pub(crate) fn check_ws_ticket_health(
+    svc: &dyn synctv_core::service::WebSocketTicketService,
+) -> String {
+    synctv_core::service::ws_ticket_health(svc)
 }
 
-fn ws_ticket_backend_is_safe_for_mode(
+pub(crate) fn ws_ticket_backend_is_safe_for_mode(
     svc: &dyn synctv_core::service::WebSocketTicketService,
     cluster_mode: bool,
 ) -> bool {
-    !cluster_mode || svc.supports_cluster_runtime()
+    synctv_core::service::ws_ticket_backend_is_safe_for_mode(svc, cluster_mode)
 }
 
 /// Check email service health
@@ -341,12 +339,8 @@ fn ws_ticket_backend_is_safe_for_mode(
 /// Validates that the email service has SMTP configuration. The service is
 /// considered healthy if it is configured with valid SMTP settings; if no
 /// config is provided the service is present but unconfigured (informational).
-fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
-    if svc.is_configured() {
-        "configured".to_string()
-    } else {
-        "not configured".to_string()
-    }
+pub(crate) fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
+    synctv_core::service::email_health(svc)
 }
 
 /// Memory usage threshold percentage for marking the node as unhealthy.
@@ -372,7 +366,7 @@ fn memory_usage_percent(used_bytes: u64, total_bytes: u64) -> Option<f64> {
 /// Returns memory usage information and health status.
 /// When memory usage exceeds 90%, the status is "unhealthy".
 /// Returns None if memory information cannot be obtained.
-fn check_memory_health() -> Option<MemoryHealth> {
+pub(crate) fn check_memory_health() -> Option<MemoryHealth> {
     // Use the `sysinfo` crate to get memory info
     // Note: We use a minimal approach here to avoid heavy dependencies
     #[cfg(target_os = "linux")]

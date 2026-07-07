@@ -8,8 +8,8 @@ pub struct SystemCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SystemSubcommand {
-    /// Show system statistics
-    Stats(SystemStatsArgs),
+    /// Show service-level business state
+    Stats(ServiceStateArgs),
     /// Active stream inspection and control
     Stream(SystemStreamCommand),
 }
@@ -29,7 +29,7 @@ pub enum SystemStreamSubcommand {
 }
 
 #[derive(Debug, Args)]
-pub struct SystemStatsArgs {
+pub struct ServiceStateArgs {
     #[command(flatten)]
     pub remote: RemoteAccessArgs,
 }

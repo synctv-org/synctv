@@ -39,6 +39,8 @@ pub(crate) mod remote_provider_manager;
 pub(crate) mod review;
 pub(crate) mod room;
 pub(crate) mod room_settings;
+pub(crate) mod server_state;
+pub(crate) mod service_state;
 mod session_store;
 pub(crate) mod settings;
 pub(crate) mod settings_vars;
@@ -193,6 +195,26 @@ pub use room::{
     ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 pub use room_settings::{CacheStats, RoomSettingsService};
+pub use server_state::{
+    check_memory_health, email_health, livestream_snapshot_from_publishers,
+    response_for_server_state_nodes, summarize_server_state, validate_server_state_selection,
+    ws_ticket_backend_is_safe_for_mode, ws_ticket_health, ServerStateCluster,
+    ServerStateClusterNode, ServerStateClusterRuntime, ServerStateClusterStatus,
+    ServerStateClusterTarget, ServerStateCpu, ServerStateCpuStatus, ServerStateDatabase,
+    ServerStateDatabasePool, ServerStateDatabaseStatus, ServerStateEmail, ServerStateEmailStatus,
+    ServerStateError, ServerStateFailure, ServerStateLivestream, ServerStateLivestreamRuntime,
+    ServerStateLivestreamSnapshot, ServerStateLivestreamStatus, ServerStateMemory,
+    ServerStateMemoryHealth, ServerStateMemoryStatus, ServerStateNode, ServerStateNodeStatus,
+    ServerStateRealtime, ServerStateRealtimeMetrics, ServerStateRealtimeRuntime, ServerStateRedis,
+    ServerStateRedisStatus, ServerStateRemoteClient, ServerStateResponse, ServerStateResult,
+    ServerStateScope, ServerStateSelection, ServerStateService, ServerStateServiceDependencies,
+    ServerStateSliceCache, ServerStateSliceCacheRuntime, ServerStateSliceCacheStatus,
+    ServerStateSummary, ServerStateWebRtc, ServerStateWebRtcStatus, ServerStateWsTicket,
+    ServerStateWsTicketStatus,
+};
+pub use service_state::{
+    ServiceAdditionalState, ServiceState, ServiceStateService, ServiceStateServiceDependencies,
+};
 pub use settings::SettingsService;
 pub use settings_vars::{Setting, SettingsStorage};
 pub use stun_server::{

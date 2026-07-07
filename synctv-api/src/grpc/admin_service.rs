@@ -19,8 +19,8 @@ use synctv_proto::admin::{
     DeleteRoomCategoryRequest, DeleteRoomCategoryResponse, DeleteRoomLabelRequest,
     DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
     DeleteUserResponse, GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse,
-    GetRoomRequest, GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsRequest,
-    GetSystemStatsRequest, GetSystemStatsResponse, GetUserPreferencesRequest,
+    GetRoomRequest, GetRoomSettingsRequest, GetRoomSettingsResponse, GetServiceStateRequest,
+    GetServiceStateResponse, GetSettingsRequest, GetUserPreferencesRequest,
     GetUserPreferencesResponse, GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse,
     KickMemberRequest, KickMemberResponse, KickStreamRequest, KickStreamResponse,
     ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse,
@@ -628,14 +628,14 @@ impl AdminService for AdminServiceImpl {
         .await
     }
 
-    // System Statistics
+    // Service State
 
-    async fn get_system_stats(
+    async fn get_service_state(
         &self,
-        request: Request<GetSystemStatsRequest>,
-    ) -> Result<Response<GetSystemStatsResponse>, Status> {
+        request: Request<GetServiceStateRequest>,
+    ) -> Result<Response<GetServiceStateResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
-            api.get_system_stats(req).await
+            api.get_service_state(req).await
         })
         .await
     }

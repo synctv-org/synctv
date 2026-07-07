@@ -51,6 +51,7 @@ mod room_playback;
 mod serve;
 mod settings;
 mod slice_cache;
+mod status;
 mod stop;
 mod system;
 mod user;
@@ -73,6 +74,7 @@ use room_playback::execute_room_playback_state_update;
 use serve::{execute_serve, local_api_probe_address};
 use settings::execute_settings;
 use slice_cache::execute_slice_cache;
+use status::execute_status;
 use stop::execute_stop;
 use system::execute_system;
 use user::execute_user;
@@ -106,6 +108,7 @@ pub async fn execute(cli: Cli) -> Result<()> {
         Commands::Settings(settings) => execute_settings(settings).await,
         Commands::System(system) => execute_system(system).await,
         Commands::SliceCache(slice_cache) => execute_slice_cache(slice_cache).await,
+        Commands::Status(args) => execute_status(args).await,
         Commands::Completion(args) => execute_completion(&args),
         Commands::Version => {
             println!("{}", version_string());
@@ -137,6 +140,7 @@ pub(in crate::cli) fn apply_root_global_overrides(mut cli: Cli) -> Cli {
         Commands::Settings(command) => merge_settings_command_globals(command, &root),
         Commands::System(command) => merge_system_command_globals(command, &root),
         Commands::SliceCache(command) => merge_slice_cache_command_globals(command, &root),
+        Commands::Status(args) => merge_remote_access_args(&mut args.remote, &root),
         Commands::Completion(_) | Commands::Version => {}
     }
     cli

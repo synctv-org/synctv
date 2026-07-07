@@ -500,6 +500,216 @@ pub(in crate::cli) struct HumanEvictExpiredSliceCacheResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateSummary {
+    status: String,
+    healthy_nodes: i64,
+    degraded_nodes: i64,
+    unhealthy_nodes: i64,
+    failed_nodes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateDatabasePool {
+    size: u32,
+    idle_connections: u32,
+    active_connections: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateDatabase {
+    status: String,
+    host: String,
+    port: u32,
+    database: String,
+    max_connections: u32,
+    min_connections: u32,
+    connect_timeout: String,
+    idle_timeout: String,
+    max_lifetime: String,
+    primary_pool: Option<HumanServerStateDatabasePool>,
+    read_pool_enabled: bool,
+    read_host: String,
+    read_port: u32,
+    read_pool: Option<HumanServerStateDatabasePool>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateRedis {
+    status: String,
+    configured: bool,
+    deployment_mode: String,
+    database: i64,
+    key_prefix: String,
+    connect_timeout: String,
+    response_timeout: String,
+    pipeline_buffer_size: u64,
+    sentinel_master_name: String,
+    sentinel_node_count: u32,
+    ping_latency: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateClusterNode {
+    node_id: String,
+    api_address: String,
+    last_heartbeat: String,
+    epoch: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateCluster {
+    status: String,
+    enabled: bool,
+    discovery_mode: String,
+    distributed_realtime_enabled: bool,
+    node_id_empty: bool,
+    routable_node_count: u32,
+    nodes: Vec<HumanServerStateClusterNode>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateWsTicket {
+    status: String,
+    cross_node_capable: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateEmail {
+    status: String,
+    configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateLivestream {
+    status: String,
+    configured: bool,
+    active_publisher_count: u64,
+    active_room_count: u64,
+    rtmp_port: u32,
+    public_rtmp_host: String,
+    gop_cache_size: u32,
+    gop_cache_max_memory: String,
+    stream_timeout: String,
+    hls_storage_backend: String,
+    hls_storage_path: String,
+    hls_memory_max: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateMemory {
+    status: String,
+    used: Option<String>,
+    total: Option<String>,
+    available: Option<String>,
+    usage: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateRealtime {
+    distributed_enabled: bool,
+    connection_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateWebRtc {
+    status: String,
+    mode: String,
+    builtin_stun_configured: bool,
+    builtin_stun_state: String,
+    reason: String,
+    local_addr: String,
+    external_addr: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateSliceCache {
+    status: String,
+    engine_enabled: bool,
+    backend: String,
+    file_cache_dir: String,
+    slice_size: String,
+    max_cache_size: String,
+    segment_ttl: String,
+    stale_max_age: String,
+    stale_while_revalidate: bool,
+    eviction_interval: String,
+    watermark: String,
+    current_size: String,
+    entry_count: u64,
+    metadata_entries: u64,
+    updating_entries: u64,
+    lock_count: u64,
+    usage: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateCpu {
+    status: String,
+    available_parallelism: u32,
+    current_load_1m: Option<String>,
+    load_ratio_1m: Option<String>,
+    load_average_1m: Option<String>,
+    load_average_5m: Option<String>,
+    load_average_15m: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateNode {
+    node_id: String,
+    status: String,
+    updated_at: String,
+    version: String,
+    api_address: String,
+    realtime: Option<HumanServerStateRealtime>,
+    database: Option<HumanServerStateDatabase>,
+    redis: Option<HumanServerStateRedis>,
+    cluster: Option<HumanServerStateCluster>,
+    ws_ticket: Option<HumanServerStateWsTicket>,
+    email: Option<HumanServerStateEmail>,
+    livestream: Option<HumanServerStateLivestream>,
+    memory: Option<HumanServerStateMemory>,
+    webrtc: Option<HumanServerStateWebRtc>,
+    cpu: Option<HumanServerStateCpu>,
+    slice_cache: Option<HumanServerStateSliceCache>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanServerStateNodeFailure {
+    node_id: String,
+    error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanGetServerStateResponse {
+    scope: String,
+    summary: Option<HumanServerStateSummary>,
+    nodes: Vec<HumanServerStateNode>,
+    failures: Vec<HumanServerStateNodeFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanUserAuthFactors {
     password: bool,
     webauthn: bool,
@@ -744,6 +954,64 @@ fn humanize_timestamp(raw: i64) -> String {
     }
 
     app_time::format_timestamp_secs_display(raw).unwrap_or_else(|| raw.to_string())
+}
+
+fn humanize_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut divisor = 1u128;
+    let mut unit_index = 0usize;
+    let bytes_u128 = u128::from(bytes);
+    while unit_index + 1 < UNITS.len() {
+        let next_divisor = divisor.saturating_mul(1024);
+        if bytes_u128 < next_divisor {
+            break;
+        }
+        divisor = next_divisor;
+        unit_index += 1;
+    }
+    let unit = UNITS[unit_index];
+    if unit_index == 0 {
+        format!("{bytes} {unit}")
+    } else {
+        let scaled = (bytes_u128.saturating_mul(100) + divisor / 2) / divisor;
+        format!("{}.{:02} {unit}", scaled / 100, scaled % 100)
+    }
+}
+
+fn humanize_mebibytes(mib: u64) -> String {
+    humanize_bytes(mib.saturating_mul(1024).saturating_mul(1024))
+}
+
+fn humanize_seconds(seconds: u64) -> String {
+    humantime::format_duration(std::time::Duration::from_secs(seconds)).to_string()
+}
+
+fn humanize_percent_value(percent: f64) -> String {
+    format!("{percent:.2}%")
+}
+
+fn humanize_ratio_percent(ratio: f64) -> String {
+    humanize_percent_value(ratio * 100.0)
+}
+
+fn humanize_optional_percent(value: Option<f64>) -> Option<String> {
+    value.map(humanize_percent_value)
+}
+
+fn humanize_optional_ratio(value: Option<f64>) -> Option<String> {
+    value.map(humanize_ratio_percent)
+}
+
+fn humanize_optional_bytes(value: Option<u64>) -> Option<String> {
+    value.map(humanize_bytes)
+}
+
+fn humanize_optional_load(value: Option<f64>) -> Option<String> {
+    value.map(|load| format!("{load:.2}"))
+}
+
+fn humanize_optional_millis(value: Option<f64>) -> Option<String> {
+    value.map(|millis| format!("{millis:.2} ms"))
 }
 
 impl ToHuman for synctv_proto::admin::AdminUser {
@@ -1793,6 +2061,284 @@ impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheResponse {
     }
 }
 
+impl ToHuman for synctv_management::proto::ServerStateSummary {
+    type Human = HumanServerStateSummary;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateSummary {
+            status: humanize_server_state_node_status(self.status),
+            healthy_nodes: self.healthy_nodes,
+            degraded_nodes: self.degraded_nodes,
+            unhealthy_nodes: self.unhealthy_nodes,
+            failed_nodes: self.failed_nodes,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateDatabasePool {
+    type Human = HumanServerStateDatabasePool;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateDatabasePool {
+            size: self.size,
+            idle_connections: self.idle_connections,
+            active_connections: self.active_connections,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateDatabase {
+    type Human = HumanServerStateDatabase;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateDatabase {
+            status: humanize_server_state_database_status(self.status),
+            host: self.host.clone(),
+            port: self.port,
+            database: self.database.clone(),
+            max_connections: self.max_connections,
+            min_connections: self.min_connections,
+            connect_timeout: humanize_seconds(self.connect_timeout_seconds),
+            idle_timeout: humanize_seconds(self.idle_timeout_seconds),
+            max_lifetime: humanize_seconds(self.max_lifetime_seconds),
+            primary_pool: self.primary_pool.to_human(),
+            read_pool_enabled: self.read_pool_enabled,
+            read_host: self.read_host.clone(),
+            read_port: self.read_port,
+            read_pool: self.read_pool.to_human(),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateRedis {
+    type Human = HumanServerStateRedis;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateRedis {
+            status: humanize_server_state_redis_status(self.status),
+            configured: self.configured,
+            deployment_mode: self.deployment_mode.clone(),
+            database: self.database,
+            key_prefix: self.key_prefix.clone(),
+            connect_timeout: humanize_seconds(self.connect_timeout_seconds),
+            response_timeout: humanize_seconds(self.response_timeout_seconds),
+            pipeline_buffer_size: self.pipeline_buffer_size,
+            sentinel_master_name: self.sentinel_master_name.clone(),
+            sentinel_node_count: self.sentinel_node_count,
+            ping_latency: humanize_optional_millis(self.ping_latency_ms),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateClusterNode {
+    type Human = HumanServerStateClusterNode;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateClusterNode {
+            node_id: self.node_id.clone(),
+            api_address: self.api_address.clone(),
+            last_heartbeat: humanize_timestamp(self.last_heartbeat),
+            epoch: self.epoch,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateCluster {
+    type Human = HumanServerStateCluster;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateCluster {
+            status: humanize_server_state_cluster_status(self.status),
+            enabled: self.enabled,
+            discovery_mode: self.discovery_mode.clone(),
+            distributed_realtime_enabled: self.distributed_realtime_enabled,
+            node_id_empty: self.node_id_empty,
+            routable_node_count: self.routable_node_count,
+            nodes: self.nodes.to_human(),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateWsTicket {
+    type Human = HumanServerStateWsTicket;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateWsTicket {
+            status: humanize_server_state_ws_ticket_status(self.status),
+            cross_node_capable: self.cross_node_capable,
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateEmail {
+    type Human = HumanServerStateEmail;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateEmail {
+            status: humanize_server_state_email_status(self.status),
+            configured: self.configured,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateLivestream {
+    type Human = HumanServerStateLivestream;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateLivestream {
+            status: humanize_server_state_livestream_status(self.status),
+            configured: self.configured,
+            active_publisher_count: self.active_publisher_count,
+            active_room_count: self.active_room_count,
+            rtmp_port: self.rtmp_port,
+            public_rtmp_host: self.public_rtmp_host.clone(),
+            gop_cache_size: self.gop_cache_size,
+            gop_cache_max_memory: humanize_mebibytes(self.gop_cache_max_memory_mb),
+            stream_timeout: humanize_seconds(self.stream_timeout_seconds),
+            hls_storage_backend: self.hls_storage_backend.clone(),
+            hls_storage_path: self.hls_storage_path.clone(),
+            hls_memory_max: humanize_mebibytes(self.hls_memory_max_mb),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateMemory {
+    type Human = HumanServerStateMemory;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateMemory {
+            status: humanize_server_state_memory_status(self.status),
+            used: humanize_optional_bytes(self.used_bytes),
+            total: humanize_optional_bytes(self.total_bytes),
+            available: humanize_optional_bytes(self.available_bytes),
+            usage: humanize_optional_percent(self.usage_percent),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateRealtime {
+    type Human = HumanServerStateRealtime;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateRealtime {
+            distributed_enabled: self.distributed_enabled,
+            connection_count: self.connection_count,
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateWebRtc {
+    type Human = HumanServerStateWebRtc;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateWebRtc {
+            status: humanize_server_state_webrtc_status(self.status),
+            mode: self.mode.clone(),
+            builtin_stun_configured: self.builtin_stun_configured,
+            builtin_stun_state: self.builtin_stun_state.clone(),
+            reason: self.reason.clone(),
+            local_addr: self.local_addr.clone(),
+            external_addr: self.external_addr.clone(),
+            message: self.message.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateSliceCache {
+    type Human = HumanServerStateSliceCache;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateSliceCache {
+            status: humanize_server_state_slice_cache_status(self.status),
+            engine_enabled: self.engine_enabled,
+            backend: self.backend.clone(),
+            file_cache_dir: self.file_cache_dir.clone(),
+            slice_size: humanize_bytes(self.slice_size),
+            max_cache_size: humanize_bytes(self.max_cache_size),
+            segment_ttl: humanize_seconds(self.segment_ttl_secs),
+            stale_max_age: humanize_seconds(self.stale_max_age_secs),
+            stale_while_revalidate: self.stale_while_revalidate,
+            eviction_interval: humanize_seconds(self.eviction_interval_secs),
+            watermark: humanize_ratio_percent(self.watermark_ratio),
+            current_size: humanize_bytes(self.current_size_bytes),
+            entry_count: self.entry_count,
+            metadata_entries: self.metadata_entries,
+            updating_entries: self.updating_entries,
+            lock_count: self.lock_count,
+            usage: humanize_ratio_percent(self.usage_ratio),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateCpu {
+    type Human = HumanServerStateCpu;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateCpu {
+            status: humanize_server_state_cpu_status(self.status),
+            available_parallelism: self.available_parallelism,
+            current_load_1m: humanize_optional_load(self.current_load_1m),
+            load_ratio_1m: humanize_optional_ratio(self.load_ratio_1m),
+            load_average_1m: humanize_optional_load(self.load_average_1m),
+            load_average_5m: humanize_optional_load(self.load_average_5m),
+            load_average_15m: humanize_optional_load(self.load_average_15m),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateNode {
+    type Human = HumanServerStateNode;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateNode {
+            node_id: self.node_id.clone(),
+            status: humanize_server_state_node_status(self.status),
+            updated_at: humanize_timestamp(self.updated_at),
+            version: self.version.clone(),
+            api_address: self.api_address.clone(),
+            realtime: self.realtime.to_human(),
+            database: self.database.to_human(),
+            redis: self.redis.to_human(),
+            cluster: self.cluster.to_human(),
+            ws_ticket: self.ws_ticket.to_human(),
+            email: self.email.to_human(),
+            livestream: self.livestream.to_human(),
+            memory: self.memory.to_human(),
+            webrtc: self.webrtc.to_human(),
+            cpu: self.cpu.to_human(),
+            slice_cache: self.slice_cache.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::ServerStateNodeFailure {
+    type Human = HumanServerStateNodeFailure;
+
+    fn to_human(&self) -> Self::Human {
+        HumanServerStateNodeFailure {
+            node_id: self.node_id.clone(),
+            error: self.error.clone(),
+        }
+    }
+}
+
+impl ToHuman for synctv_management::proto::GetServerStateResponse {
+    type Human = HumanGetServerStateResponse;
+
+    fn to_human(&self) -> Self::Human {
+        HumanGetServerStateResponse {
+            scope: self.scope.clone(),
+            summary: self.summary.to_human(),
+            nodes: self.nodes.to_human(),
+            failures: self.failures.to_human(),
+        }
+    }
+}
+
 impl_identity_to_human!(
     synctv_proto::admin::DeleteUserResponse,
     synctv_proto::admin::SetUserPasswordResponse,
@@ -1800,7 +2346,7 @@ impl_identity_to_human!(
     synctv_proto::admin::UpdateRoomPasswordResponse,
     synctv_proto::admin::DeleteRoomResponse,
     synctv_proto::admin::RemoveAdminResponse,
-    synctv_proto::admin::GetSystemStatsResponse,
+    synctv_proto::admin::GetServiceStateResponse,
     synctv_proto::admin::ListActiveStreamsResponse,
     synctv_proto::admin::KickStreamResponse,
     synctv_proto::client::KickRoomStreamResponse,
@@ -1858,6 +2404,138 @@ where
 
 fn i64_to_i32(raw: i64) -> Option<i32> {
     i32::try_from(raw).ok()
+}
+
+fn humanize_server_state_node_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateNodeStatus;
+
+    match ServerStateNodeStatus::try_from(raw).unwrap_or(ServerStateNodeStatus::Unhealthy) {
+        ServerStateNodeStatus::Unspecified => "unspecified",
+        ServerStateNodeStatus::Healthy => "healthy",
+        ServerStateNodeStatus::Degraded => "degraded",
+        ServerStateNodeStatus::Unhealthy => "unhealthy",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_database_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateDatabaseStatus;
+
+    match ServerStateDatabaseStatus::try_from(raw).unwrap_or(ServerStateDatabaseStatus::Unhealthy) {
+        ServerStateDatabaseStatus::Unspecified => "unspecified",
+        ServerStateDatabaseStatus::Healthy => "healthy",
+        ServerStateDatabaseStatus::Unhealthy => "unhealthy",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_redis_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateRedisStatus;
+
+    match ServerStateRedisStatus::try_from(raw).unwrap_or(ServerStateRedisStatus::Unhealthy) {
+        ServerStateRedisStatus::Unspecified => "unspecified",
+        ServerStateRedisStatus::Healthy => "healthy",
+        ServerStateRedisStatus::NotConfigured => "not_configured",
+        ServerStateRedisStatus::Unhealthy => "unhealthy",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_cluster_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateClusterStatus;
+
+    match ServerStateClusterStatus::try_from(raw).unwrap_or(ServerStateClusterStatus::Unhealthy) {
+        ServerStateClusterStatus::Unspecified => "unspecified",
+        ServerStateClusterStatus::Healthy => "healthy",
+        ServerStateClusterStatus::Unhealthy => "unhealthy",
+        ServerStateClusterStatus::Disabled => "disabled",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_ws_ticket_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateWsTicketStatus;
+
+    match ServerStateWsTicketStatus::try_from(raw).unwrap_or(ServerStateWsTicketStatus::Unhealthy) {
+        ServerStateWsTicketStatus::Unspecified => "unspecified",
+        ServerStateWsTicketStatus::Healthy => "healthy",
+        ServerStateWsTicketStatus::Unhealthy => "unhealthy",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_email_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateEmailStatus;
+
+    match ServerStateEmailStatus::try_from(raw).unwrap_or(ServerStateEmailStatus::NotConfigured) {
+        ServerStateEmailStatus::Unspecified => "unspecified",
+        ServerStateEmailStatus::Configured => "configured",
+        ServerStateEmailStatus::NotConfigured => "not_configured",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_livestream_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateLivestreamStatus;
+
+    match ServerStateLivestreamStatus::try_from(raw)
+        .unwrap_or(ServerStateLivestreamStatus::NotConfigured)
+    {
+        ServerStateLivestreamStatus::Unspecified => "unspecified",
+        ServerStateLivestreamStatus::Configured => "configured",
+        ServerStateLivestreamStatus::NotConfigured => "not_configured",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_memory_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateMemoryStatus;
+
+    match ServerStateMemoryStatus::try_from(raw).unwrap_or(ServerStateMemoryStatus::Unknown) {
+        ServerStateMemoryStatus::Unspecified => "unspecified",
+        ServerStateMemoryStatus::Healthy => "healthy",
+        ServerStateMemoryStatus::Unhealthy => "unhealthy",
+        ServerStateMemoryStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_webrtc_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateWebRtcStatus;
+
+    match ServerStateWebRtcStatus::try_from(raw).unwrap_or(ServerStateWebRtcStatus::Degraded) {
+        ServerStateWebRtcStatus::Unspecified => "unspecified",
+        ServerStateWebRtcStatus::Healthy => "healthy",
+        ServerStateWebRtcStatus::Degraded => "degraded",
+        ServerStateWebRtcStatus::Disabled => "disabled",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_cpu_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateCpuStatus;
+
+    match ServerStateCpuStatus::try_from(raw).unwrap_or(ServerStateCpuStatus::Unknown) {
+        ServerStateCpuStatus::Unspecified => "unspecified",
+        ServerStateCpuStatus::Healthy => "healthy",
+        ServerStateCpuStatus::Degraded => "degraded",
+        ServerStateCpuStatus::Unhealthy => "unhealthy",
+        ServerStateCpuStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
+
+fn humanize_server_state_slice_cache_status(raw: i32) -> String {
+    use synctv_management::proto::ServerStateSliceCacheStatus;
+
+    match ServerStateSliceCacheStatus::try_from(raw)
+        .unwrap_or(ServerStateSliceCacheStatus::Disabled)
+    {
+        ServerStateSliceCacheStatus::Unspecified => "unspecified",
+        ServerStateSliceCacheStatus::Healthy => "healthy",
+        ServerStateSliceCacheStatus::Disabled => "disabled",
+    }
+    .to_string()
 }
 
 fn humanize_user_role(raw: i64) -> Option<String> {

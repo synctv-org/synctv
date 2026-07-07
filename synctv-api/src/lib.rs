@@ -33,6 +33,7 @@ pub(crate) mod resource_change;
 pub(crate) mod room_cache_fanout;
 pub(crate) mod room_lifecycle_fanout;
 pub(crate) mod runtime;
+pub mod status;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod webrtc_status;

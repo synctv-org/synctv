@@ -4793,6 +4793,46 @@ fn cli_parses_system_stats() {
 }
 
 #[test]
+fn cli_parses_status_defaults_to_connected_node() {
+    let cli = Cli::parse_from(["synctv", "status"]);
+    match cli.command {
+        Commands::Status(args) => {
+            assert!(args.node_id.is_none());
+            assert!(!args.all_nodes);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_parses_status_cluster_target_flags() {
+    let cli = Cli::parse_from(["synctv", "status", "--node-id", "node-a"]);
+    match cli.command {
+        Commands::Status(args) => {
+            assert_eq!(args.node_id.as_deref(), Some("node-a"));
+            assert!(!args.all_nodes);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let cli = Cli::parse_from(["synctv", "status", "--all-nodes"]);
+    match cli.command {
+        Commands::Status(args) => {
+            assert!(args.node_id.is_none());
+            assert!(args.all_nodes);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn cli_rejects_status_conflicting_cluster_target_flags() {
+    let error = Cli::try_parse_from(["synctv", "status", "--node-id", "node-a", "--all-nodes"])
+        .expect_err("conflicting status target flags should be rejected");
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
 fn cli_parses_slice_cache_stats() {
     let cli = Cli::parse_from(["synctv", "slice-cache", "stats"]);
     match cli.command {

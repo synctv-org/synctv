@@ -7,9 +7,9 @@ pub(super) async fn execute_system(system_command: SystemCommand) -> Result<()> 
             let session = connect_remote_access(&args.remote).await?;
             let response = management_unary_call!(
                 session,
-                "get system stats",
-                get_system_stats,
-                management_proto::GetSystemStatsRequest {}
+                "get service state",
+                get_service_state,
+                management_proto::GetServiceStateRequest {}
             )?;
             args.remote.print_output(&response)
         }

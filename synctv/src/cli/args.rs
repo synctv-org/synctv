@@ -119,6 +119,8 @@ pub enum Commands {
     System(SystemCommand),
     /// Proxy slice cache management through the management endpoint
     SliceCache(SliceCacheCommand),
+    /// Runtime status for this instance or cluster nodes
+    Status(StatusArgs),
     /// Generate shell completions
     Completion(CompletionArgs),
     /// Print version information

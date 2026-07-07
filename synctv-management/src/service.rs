@@ -32,17 +32,28 @@ use crate::proto::{
     EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
     EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
     EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
-    GetRoomRequest, GetRoomSettingsRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
-    GetSliceCacheStatsResponse, GetStreamInfoRequest, GetSystemStatsRequest,
-    GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
-    KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-    ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
-    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
-    PurgeSliceCacheNodeResult, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
-    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse,
+    GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+    GetSliceCacheStatsResponse, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
+    GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
+    ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest,
+    ListPlaylistsRequest, ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest,
+    ListRoomStreamsRequest, ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest,
+    MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
+    PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
     RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-    SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
+    SearchChatMessagesRequest, SendTestEmailRequest, ServerStateCluster, ServerStateClusterNode,
+    ServerStateClusterStatus as ProtoClusterStatus, ServerStateCpu,
+    ServerStateCpuStatus as ProtoCpuStatus, ServerStateDatabase, ServerStateDatabasePool,
+    ServerStateDatabaseStatus as ProtoDatabaseStatus, ServerStateEmail,
+    ServerStateEmailStatus as ProtoEmailStatus, ServerStateLivestream,
+    ServerStateLivestreamStatus as ProtoLivestreamStatus, ServerStateMemory,
+    ServerStateMemoryStatus as ProtoMemoryStatus, ServerStateNode, ServerStateNodeFailure,
+    ServerStateNodeStatus as ProtoNodeStatus, ServerStateRealtime, ServerStateRedis,
+    ServerStateRedisStatus as ProtoRedisStatus, ServerStateSliceCache,
+    ServerStateSliceCacheStatus as ProtoSliceCacheStatus, ServerStateSummary, ServerStateWebRtc,
+    ServerStateWebRtcStatus as ProtoWebRtcStatus, ServerStateWsTicket,
+    ServerStateWsTicketStatus as ProtoWsTicketStatus, SetUserPasswordRequest,
     ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo, SliceCacheNodeFailure,
     SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
     StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
@@ -110,6 +121,7 @@ pub struct ManagementServiceImpl {
     slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
     cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     node_id: String,
+    server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
     public_id_codec: Arc<PublicIdCodec>,
@@ -127,6 +139,7 @@ pub struct ManagementServiceDependencies {
     pub slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
     pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     pub node_id: String,
+    pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub management_auth_token: String,
 }
@@ -146,6 +159,7 @@ impl ManagementServiceImpl {
             slice_cache_runtime,
             cluster_client,
             node_id,
+            server_state_runtime,
             lifecycle_controller,
             management_auth_token,
         } = deps;
@@ -164,6 +178,7 @@ impl ManagementServiceImpl {
             slice_cache_runtime,
             cluster_client,
             node_id,
+            server_state_runtime,
             lifecycle_controller,
             access_controller: ManagementAccessController::new(&management_auth_token),
             public_id_codec,
@@ -520,6 +535,336 @@ impl ManagementServiceImpl {
         } else {
             Some(trimmed.to_string())
         }
+    }
+
+    async fn collect_server_state_response(
+        &self,
+        target_node_id: Option<String>,
+        all_nodes: bool,
+    ) -> Result<GetServerStateResponse, Status> {
+        let response = self
+            .server_state_runtime
+            .collect_server_state(synctv_api::status::ServerStateSelection {
+                node_id: target_node_id,
+                all_nodes,
+            })
+            .await
+            .map_err(|error| Self::map_server_state_error(&error))?;
+        Ok(Self::server_state_to_management(response))
+    }
+
+    fn map_server_state_error(error: &synctv_api::status::ServerStateError) -> Status {
+        match error {
+            synctv_api::status::ServerStateError::InvalidSelection => {
+                Status::invalid_argument(error.to_string())
+            }
+            synctv_api::status::ServerStateError::ClusterUnavailable(_)
+            | synctv_api::status::ServerStateError::MissingClusterSecret
+            | synctv_api::status::ServerStateError::InvalidClusterSecret => {
+                Status::failed_precondition(error.to_string())
+            }
+            synctv_api::status::ServerStateError::Cluster(_)
+            | synctv_api::status::ServerStateError::RemoteRequest { .. }
+            | synctv_api::status::ServerStateError::RemoteDecode { .. } => {
+                Status::unavailable(error.to_string())
+            }
+        }
+    }
+
+    fn server_state_to_management(
+        response: synctv_api::status::ServerStateResponse,
+    ) -> GetServerStateResponse {
+        GetServerStateResponse {
+            scope: response.scope.as_str().to_string(),
+            summary: Some(ServerStateSummary {
+                status: Self::node_status_to_management(response.summary.status),
+                healthy_nodes: response.summary.healthy_nodes,
+                degraded_nodes: response.summary.degraded_nodes,
+                unhealthy_nodes: response.summary.unhealthy_nodes,
+                failed_nodes: response.summary.failed_nodes,
+            }),
+            nodes: response
+                .nodes
+                .into_iter()
+                .map(Self::server_state_node_to_management)
+                .collect(),
+            failures: response
+                .failures
+                .into_iter()
+                .map(|failure| ServerStateNodeFailure {
+                    node_id: failure.node_id,
+                    error: failure.error,
+                })
+                .collect(),
+        }
+    }
+
+    fn server_state_node_to_management(
+        node: synctv_api::status::ServerStateNode,
+    ) -> ServerStateNode {
+        ServerStateNode {
+            node_id: node.node_id,
+            status: Self::node_status_to_management(node.status),
+            updated_at: node.updated_at,
+            version: node.version,
+            api_address: node.api_address,
+            realtime: Some(ServerStateRealtime {
+                distributed_enabled: node.realtime.distributed_enabled,
+                connection_count: node.realtime.connection_count,
+            }),
+            database: Some(ServerStateDatabase {
+                status: Self::database_status_to_management(node.database.status),
+                host: node.database.host,
+                port: node.database.port,
+                database: node.database.database,
+                max_connections: node.database.max_connections,
+                min_connections: node.database.min_connections,
+                connect_timeout_seconds: node.database.connect_timeout_seconds,
+                idle_timeout_seconds: node.database.idle_timeout_seconds,
+                max_lifetime_seconds: node.database.max_lifetime_seconds,
+                primary_pool: Some(Self::server_state_database_pool_to_management(
+                    &node.database.primary_pool,
+                )),
+                read_pool_enabled: node.database.read_pool_enabled,
+                read_host: node.database.read_host,
+                read_port: node.database.read_port,
+                read_pool: Some(Self::server_state_database_pool_to_management(
+                    &node.database.read_pool,
+                )),
+                message: node.database.message.unwrap_or_default(),
+            }),
+            redis: Some(ServerStateRedis {
+                status: Self::redis_status_to_management(node.redis.status),
+                configured: node.redis.configured,
+                deployment_mode: node.redis.deployment_mode,
+                database: node.redis.database,
+                key_prefix: node.redis.key_prefix,
+                connect_timeout_seconds: node.redis.connect_timeout_seconds,
+                response_timeout_seconds: node.redis.response_timeout_seconds,
+                pipeline_buffer_size: node.redis.pipeline_buffer_size,
+                sentinel_master_name: node.redis.sentinel_master_name,
+                sentinel_node_count: node.redis.sentinel_node_count,
+                ping_latency_ms: node.redis.ping_latency_ms,
+                message: node.redis.message.unwrap_or_default(),
+            }),
+            cluster: Some(ServerStateCluster {
+                status: Self::cluster_status_to_management(node.cluster.status),
+                enabled: node.cluster.enabled,
+                discovery_mode: node.cluster.discovery_mode,
+                distributed_realtime_enabled: node.cluster.distributed_realtime_enabled,
+                node_id_empty: node.cluster.node_id_empty,
+                routable_node_count: node.cluster.routable_node_count,
+                nodes: node
+                    .cluster
+                    .nodes
+                    .into_iter()
+                    .map(|cluster_node| ServerStateClusterNode {
+                        node_id: cluster_node.node_id,
+                        api_address: cluster_node.api_address,
+                        last_heartbeat: cluster_node.last_heartbeat,
+                        epoch: cluster_node.epoch,
+                    })
+                    .collect(),
+                message: node.cluster.message.unwrap_or_default(),
+            }),
+            ws_ticket: Some(ServerStateWsTicket {
+                status: Self::ws_ticket_status_to_management(node.ws_ticket.status),
+                cross_node_capable: node.ws_ticket.cross_node_capable,
+                message: node.ws_ticket.message.unwrap_or_default(),
+            }),
+            email: Some(ServerStateEmail {
+                status: Self::email_status_to_management(node.email.status),
+                configured: node.email.configured,
+            }),
+            livestream: Some(ServerStateLivestream {
+                status: Self::livestream_status_to_management(node.livestream.status),
+                configured: node.livestream.configured,
+                active_publisher_count: node.livestream.active_publisher_count,
+                active_room_count: node.livestream.active_room_count,
+                rtmp_port: node.livestream.rtmp_port,
+                public_rtmp_host: node.livestream.public_rtmp_host,
+                gop_cache_size: node.livestream.gop_cache_size,
+                gop_cache_max_memory_mb: node.livestream.gop_cache_max_memory_mb,
+                stream_timeout_seconds: node.livestream.stream_timeout_seconds,
+                hls_storage_backend: node.livestream.hls_storage_backend,
+                hls_storage_path: node.livestream.hls_storage_path,
+                hls_memory_max_mb: node.livestream.hls_memory_max_mb,
+            }),
+            memory: Some(ServerStateMemory {
+                status: Self::memory_status_to_management(node.memory.status),
+                used_bytes: node.memory.used_bytes,
+                total_bytes: node.memory.total_bytes,
+                available_bytes: node.memory.available_bytes,
+                usage_percent: node.memory.usage_percent,
+            }),
+            webrtc: Some(ServerStateWebRtc {
+                status: Self::webrtc_status_to_management(node.webrtc.status),
+                mode: node.webrtc.mode,
+                builtin_stun_configured: node.webrtc.builtin_stun_configured,
+                builtin_stun_state: node.webrtc.builtin_stun_state,
+                reason: node.webrtc.reason,
+                local_addr: node.webrtc.local_addr,
+                external_addr: node.webrtc.external_addr,
+                message: node.webrtc.message.unwrap_or_default(),
+            }),
+            cpu: Some(ServerStateCpu {
+                status: Self::cpu_status_to_management(node.cpu.status),
+                available_parallelism: node.cpu.available_parallelism,
+                current_load_1m: node.cpu.current_load_1m,
+                load_ratio_1m: node.cpu.load_ratio_1m,
+                load_average_1m: node.cpu.load_average_1m,
+                load_average_5m: node.cpu.load_average_5m,
+                load_average_15m: node.cpu.load_average_15m,
+            }),
+            slice_cache: Some(ServerStateSliceCache {
+                status: Self::slice_cache_status_to_management(node.slice_cache.status),
+                engine_enabled: node.slice_cache.engine_enabled,
+                backend: node.slice_cache.backend,
+                file_cache_dir: node.slice_cache.file_cache_dir,
+                slice_size: node.slice_cache.slice_size,
+                max_cache_size: node.slice_cache.max_cache_size,
+                segment_ttl_secs: node.slice_cache.segment_ttl_secs,
+                stale_max_age_secs: node.slice_cache.stale_max_age_secs,
+                stale_while_revalidate: node.slice_cache.stale_while_revalidate,
+                eviction_interval_secs: node.slice_cache.eviction_interval_secs,
+                watermark_ratio: node.slice_cache.watermark_ratio,
+                current_size_bytes: node.slice_cache.current_size_bytes,
+                entry_count: node.slice_cache.entry_count,
+                metadata_entries: node.slice_cache.metadata_entries,
+                updating_entries: node.slice_cache.updating_entries,
+                lock_count: node.slice_cache.lock_count,
+                usage_ratio: node.slice_cache.usage_ratio,
+            }),
+        }
+    }
+
+    fn server_state_database_pool_to_management(
+        pool: &synctv_api::status::DatabasePoolStatus,
+    ) -> ServerStateDatabasePool {
+        ServerStateDatabasePool {
+            size: pool.size,
+            idle_connections: pool.idle_connections,
+            active_connections: pool.active_connections,
+        }
+    }
+
+    fn node_status_to_management(status: synctv_api::status::ServerStateNodeStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateNodeStatus::Healthy => ProtoNodeStatus::Healthy,
+            synctv_api::status::ServerStateNodeStatus::Degraded => ProtoNodeStatus::Degraded,
+            synctv_api::status::ServerStateNodeStatus::Unhealthy => ProtoNodeStatus::Unhealthy,
+        }
+        .into()
+    }
+
+    fn database_status_to_management(status: synctv_api::status::ServerStateDatabaseStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateDatabaseStatus::Healthy => ProtoDatabaseStatus::Healthy,
+            synctv_api::status::ServerStateDatabaseStatus::Unhealthy => {
+                ProtoDatabaseStatus::Unhealthy
+            }
+        }
+        .into()
+    }
+
+    fn redis_status_to_management(status: synctv_api::status::ServerStateRedisStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateRedisStatus::Healthy => ProtoRedisStatus::Healthy,
+            synctv_api::status::ServerStateRedisStatus::NotConfigured => {
+                ProtoRedisStatus::NotConfigured
+            }
+            synctv_api::status::ServerStateRedisStatus::Unhealthy => ProtoRedisStatus::Unhealthy,
+        }
+        .into()
+    }
+
+    fn cluster_status_to_management(status: synctv_api::status::ServerStateClusterStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateClusterStatus::Healthy => ProtoClusterStatus::Healthy,
+            synctv_api::status::ServerStateClusterStatus::Unhealthy => {
+                ProtoClusterStatus::Unhealthy
+            }
+            synctv_api::status::ServerStateClusterStatus::Disabled => ProtoClusterStatus::Disabled,
+        }
+        .into()
+    }
+
+    fn ws_ticket_status_to_management(
+        status: synctv_api::status::ServerStateWsTicketStatus,
+    ) -> i32 {
+        match status {
+            synctv_api::status::ServerStateWsTicketStatus::Healthy => ProtoWsTicketStatus::Healthy,
+            synctv_api::status::ServerStateWsTicketStatus::Unhealthy => {
+                ProtoWsTicketStatus::Unhealthy
+            }
+        }
+        .into()
+    }
+
+    fn email_status_to_management(status: synctv_api::status::ServerStateEmailStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateEmailStatus::Configured => ProtoEmailStatus::Configured,
+            synctv_api::status::ServerStateEmailStatus::NotConfigured => {
+                ProtoEmailStatus::NotConfigured
+            }
+        }
+        .into()
+    }
+
+    fn livestream_status_to_management(
+        status: synctv_api::status::ServerStateLivestreamStatus,
+    ) -> i32 {
+        match status {
+            synctv_api::status::ServerStateLivestreamStatus::Configured => {
+                ProtoLivestreamStatus::Configured
+            }
+            synctv_api::status::ServerStateLivestreamStatus::NotConfigured => {
+                ProtoLivestreamStatus::NotConfigured
+            }
+        }
+        .into()
+    }
+
+    fn memory_status_to_management(status: synctv_api::status::ServerStateMemoryStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateMemoryStatus::Healthy => ProtoMemoryStatus::Healthy,
+            synctv_api::status::ServerStateMemoryStatus::Unhealthy => ProtoMemoryStatus::Unhealthy,
+            synctv_api::status::ServerStateMemoryStatus::Unknown => ProtoMemoryStatus::Unknown,
+        }
+        .into()
+    }
+
+    fn webrtc_status_to_management(status: synctv_api::status::ServerStateWebRtcStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateWebRtcStatus::Healthy => ProtoWebRtcStatus::Healthy,
+            synctv_api::status::ServerStateWebRtcStatus::Degraded => ProtoWebRtcStatus::Degraded,
+            synctv_api::status::ServerStateWebRtcStatus::Disabled => ProtoWebRtcStatus::Disabled,
+        }
+        .into()
+    }
+
+    fn cpu_status_to_management(status: synctv_api::status::ServerStateCpuStatus) -> i32 {
+        match status {
+            synctv_api::status::ServerStateCpuStatus::Healthy => ProtoCpuStatus::Healthy,
+            synctv_api::status::ServerStateCpuStatus::Degraded => ProtoCpuStatus::Degraded,
+            synctv_api::status::ServerStateCpuStatus::Unhealthy => ProtoCpuStatus::Unhealthy,
+            synctv_api::status::ServerStateCpuStatus::Unknown => ProtoCpuStatus::Unknown,
+        }
+        .into()
+    }
+
+    fn slice_cache_status_to_management(
+        status: synctv_api::status::ServerStateSliceCacheStatus,
+    ) -> i32 {
+        match status {
+            synctv_api::status::ServerStateSliceCacheStatus::Healthy => {
+                ProtoSliceCacheStatus::Healthy
+            }
+            synctv_api::status::ServerStateSliceCacheStatus::Disabled => {
+                ProtoSliceCacheStatus::Disabled
+            }
+        }
+        .into()
     }
 
     fn slice_cache_stats_response(&self) -> SliceCacheStatsResponse {
@@ -3381,17 +3726,32 @@ impl ManagementService for ManagementServiceImpl {
         Ok(Response::new(response))
     }
 
-    async fn get_system_stats(
+    async fn get_service_state(
         &self,
-        request: Request<GetSystemStatsRequest>,
-    ) -> Result<Response<admin_proto::GetSystemStatsResponse>, Status> {
+        request: Request<GetServiceStateRequest>,
+    ) -> Result<Response<admin_proto::GetServiceStateResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let response = self
             .admin_api
-            .get_system_stats(admin_proto::GetSystemStatsRequest {})
+            .get_service_state(admin_proto::GetServiceStateRequest {})
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))
+    }
+
+    async fn get_server_state(
+        &self,
+        request: Request<GetServerStateRequest>,
+    ) -> Result<Response<GetServerStateResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let target_node_id =
+            synctv_api::status::validate_server_state_selection(Some(&req.node_id), req.all_nodes)
+                .map_err(|error| Self::map_server_state_error(&error))?;
+        Ok(Response::new(
+            self.collect_server_state_response(target_node_id, req.all_nodes)
+                .await?,
+        ))
     }
 
     async fn get_slice_cache_stats(

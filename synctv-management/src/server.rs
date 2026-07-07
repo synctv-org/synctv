@@ -36,6 +36,7 @@ pub struct ManagementServerConfig {
     pub slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
     pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     pub node_id: String,
+    pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub shutdown_rx: watch::Receiver<bool>,
 }
@@ -135,6 +136,7 @@ where
             slice_cache_runtime: config.slice_cache_runtime,
             cluster_client: config.cluster_client,
             node_id: config.node_id,
+            server_state_runtime: config.server_state_runtime,
             lifecycle_controller: config.lifecycle_controller,
             management_auth_token: config.config.management.auth_token.clone(),
         }))

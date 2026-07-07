@@ -127,6 +127,7 @@ impl_grpc_service_ext!(<T> synctv_proto::playback_provider::rtmp::rtmp_playback_
 impl_grpc_service_ext!(<T> synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_service_server::LiveProxyPlaybackProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_livestream::StreamRelayServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_cluster::grpc::ClusterServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_cluster::grpc::ServerStateServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_realtime::grpc::RealtimePresenceServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proxy::grpc::ProxySliceCacheServiceServer<T>);
 
@@ -150,6 +151,10 @@ const fn should_register_proxy_slice_cache_service(config: &synctv_core::Config)
     config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
 }
 
+const fn should_register_server_state_service(config: &synctv_core::Config) -> bool {
+    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
+}
+
 const fn should_register_realtime_presence_service(config: &synctv_core::Config) -> bool {
     config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
 }
@@ -170,6 +175,7 @@ struct GrpcHealthRegistrationState {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    server_state_registered: bool,
     realtime_presence_registered: bool,
     proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
@@ -188,6 +194,7 @@ struct GrpcOptionalRegistrations {
     oauth2_registered: bool,
     provider_services_registered: bool,
     cluster_service_registered: bool,
+    server_state_registered: bool,
     realtime_presence_registered: bool,
     proxy_slice_cache_registered: bool,
     livestream_relay_registered: bool,
@@ -210,6 +217,7 @@ const fn grpc_service_registration_plan(
             oauth2_registered: optional.oauth2_registered,
             provider_services_registered: optional.provider_services_registered,
             cluster_service_registered: optional.cluster_service_registered,
+            server_state_registered: optional.server_state_registered,
             realtime_presence_registered: optional.realtime_presence_registered,
             proxy_slice_cache_registered: optional.proxy_slice_cache_registered,
             livestream_relay_registered: optional.livestream_relay_registered,
@@ -392,6 +400,11 @@ async fn set_registered_grpc_services_with_status(
         health_reporter,
         state.cluster_service_registered,
         synctv_cluster::grpc::ClusterServiceServer<synctv_cluster::grpc::ClusterServer>
+    );
+    set_service_status!(
+        health_reporter,
+        state.server_state_registered,
+        synctv_cluster::grpc::ServerStateServiceServer<crate::status::ServerStateGrpcService>
     );
     set_service_status!(
         health_reporter,
@@ -691,6 +704,7 @@ fn build_fallback_http_app_state(
             proxy_slice_cache: deps.proxy_slice_cache,
             ssrf_guard: deps.ssrf_guard,
             proxy_http_client: deps.proxy_http_client,
+            cluster_client: None,
             messaging_rate_limit_config: deps.messaging_rate_limit_config,
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
             providers_manager: deps.providers_manager,
@@ -927,6 +941,7 @@ async fn build_axum_router_with_health(
             oauth2_registered: oauth2_service_registered,
             provider_services_registered,
             cluster_service_registered,
+            server_state_registered: should_register_server_state_service(config),
             realtime_presence_registered: should_register_realtime_presence_service(config),
             proxy_slice_cache_registered: should_register_proxy_slice_cache_service(config),
             livestream_relay_registered: should_register_livestream_relay_service(
@@ -1251,6 +1266,21 @@ async fn build_axum_router_with_health(
         tracing::info!("Cluster node-discovery gRPC service registered with shared-secret auth");
     } else {
         anyhow::bail!("cluster gRPC registration requirements were not satisfied");
+    }
+
+    if grpc_registration_plan.health_state.server_state_registered {
+        let service = crate::status::ServerStateGrpcService::new(
+            shared_http_app_state
+                .shared_api_runtime
+                .server_state_runtime
+                .clone(),
+            config.cluster.secret.clone(),
+        );
+        routes.add_service(
+            synctv_cluster::grpc::ServerStateServiceServer::new(service)
+                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+        );
+        tracing::info!("Server-state gRPC service registered with shared-secret auth");
     }
 
     if grpc_registration_plan
@@ -2675,6 +2705,7 @@ mod tests {
                 oauth2_registered: true,
                 provider_services_registered: false,
                 cluster_service_registered: true,
+                server_state_registered: true,
                 realtime_presence_registered: true,
                 proxy_slice_cache_registered: true,
                 livestream_relay_registered: false,
@@ -2691,6 +2722,7 @@ mod tests {
         assert!(plan.health_state.oauth2_registered);
         assert!(!plan.health_state.provider_services_registered);
         assert!(plan.health_state.cluster_service_registered);
+        assert!(plan.health_state.server_state_registered);
         assert!(plan.health_state.realtime_presence_registered);
         assert!(plan.health_state.proxy_slice_cache_registered);
         assert!(!plan.health_state.livestream_relay_registered);
@@ -2746,6 +2778,7 @@ mod tests {
             oauth2_registered: false,
             provider_services_registered: false,
             cluster_service_registered: false,
+            server_state_registered: false,
             realtime_presence_registered: false,
             proxy_slice_cache_registered: false,
             livestream_relay_registered: false,
@@ -2841,6 +2874,7 @@ mod tests {
             oauth2_registered: false,
             provider_services_registered: false,
             cluster_service_registered: false,
+            server_state_registered: false,
             realtime_presence_registered: false,
             proxy_slice_cache_registered: false,
             livestream_relay_registered: false,

@@ -297,6 +297,7 @@ pub struct RouterConfig {
     pub chat_service: Option<Arc<synctv_core::service::ChatService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
+    pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
     pub rate_limiter: Arc<dyn synctv_core::service::RequestRateLimiterService>,
     /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
     pub ws_ticket_service: Arc<dyn synctv_core::service::WebSocketTicketService>,
@@ -512,6 +513,9 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         live_proxy_playback_provider_service: config.live_proxy_playback_provider_service.clone(),
         proxy_signing_key,
         webrtc_status: config.webrtc_status.clone(),
+        server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_config(
+            config,
+        )),
     })
 }
 

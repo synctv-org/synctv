@@ -1,40 +1,34 @@
-use super::{i64_to_i32_api, usize_to_i32_api, AdminApiImpl, ApiError};
+use super::{AdminApiImpl, ApiError};
 
 impl AdminApiImpl {
-    pub async fn get_system_stats(
+    pub async fn get_service_state(
         &self,
-        _req: synctv_proto::admin::GetSystemStatsRequest,
-    ) -> Result<synctv_proto::admin::GetSystemStatsResponse, ApiError> {
-        // Fetch all stats in parallel: one optimized database query + other services
-        let (stats_res, provider_count_res, total_media_res, presence_res) = tokio::join!(
-            self.system_stats_service.get_system_stats(),
-            self.provider_instance_manager.get_all_instances(),
-            self.room_service.media_service().count_all_media(),
-            self.presence_service.overview(),
+        _req: synctv_proto::admin::GetServiceStateRequest,
+    ) -> Result<synctv_proto::admin::GetServiceStateResponse, ApiError> {
+        let service = synctv_core::service::ServiceStateService::new(
+            synctv_core::service::ServiceStateServiceDependencies {
+                system_stats_service: self.system_stats_service.clone(),
+                provider_instance_manager: self.provider_instance_manager.clone(),
+                room_service: self.room_service.clone(),
+                presence_service: self.presence_service.clone(),
+            },
         );
+        let state = service.get_service_state().await.map_err(ApiError::from)?;
 
-        let stats = stats_res.map_err(ApiError::from)?;
-        let provider_count = usize_to_i32_api(
-            provider_count_res.map_err(ApiError::from)?.len(),
-            "provider instance count",
-        )?;
-        let total_media = i64_to_i32_api(total_media_res.map_err(ApiError::from)?, "media total")?;
-        let presence = crate::impls::client::convert::presence_overview_to_proto(
-            &presence_res.map_err(ApiError::from)?,
-        )?;
+        let presence = crate::impls::client::convert::presence_overview_to_proto(&state.presence)?;
 
-        Ok(synctv_proto::admin::GetSystemStatsResponse {
-            total_users: i64_to_i32_api(stats.total_users, "user total")?,
-            active_users: i64_to_i32_api(stats.active_users, "active user total")?,
-            banned_users: i64_to_i32_api(stats.banned_users, "banned user total")?,
-            total_rooms: i64_to_i32_api(stats.total_rooms, "room total")?,
-            active_rooms: i64_to_i32_api(stats.active_rooms, "active room total")?,
-            banned_rooms: i64_to_i32_api(stats.banned_rooms, "banned room total")?,
-            total_media,
-            provider_instances: provider_count,
-            additional_stats: Some(synctv_proto::admin::SystemAdditionalStats {
-                active_streams: 0,
-                open_reports: 0,
+        Ok(synctv_proto::admin::GetServiceStateResponse {
+            total_users: state.total_users,
+            active_users: state.active_users,
+            banned_users: state.banned_users,
+            total_rooms: state.total_rooms,
+            active_rooms: state.active_rooms,
+            banned_rooms: state.banned_rooms,
+            total_media: state.total_media,
+            provider_instances: state.provider_instances,
+            additional_state: Some(synctv_proto::admin::ServiceAdditionalState {
+                active_streams: state.additional_state.active_streams,
+                open_reports: state.additional_state.open_reports,
             }),
             presence: Some(presence),
         })

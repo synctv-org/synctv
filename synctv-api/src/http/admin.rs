@@ -106,8 +106,9 @@ impl AdminGetRoomMembersQuery {
 
 pub(crate) fn create_admin_router() -> Router<AppState> {
     Router::new()
-        // System stats
-        .route("/stats", get(get_system_stats))
+        // Service state
+        .route("/service-state", get(get_service_state))
+        .route("/server-state", get(get_server_state))
         // Review workflow
         .route(
             "/reviews/user-registrations",
@@ -218,6 +219,41 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         // Admin management (root only)
         .route("/admins", get(list_admins))
         .route("/admins/{userId}", post(add_admin).delete(remove_admin))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub(crate) struct AdminServerStateQuery {
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    all_nodes: bool,
+}
+
+async fn get_server_state(
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    ProtoQuery(query): ProtoQuery<AdminServerStateQuery>,
+) -> AppResult<Json<crate::status::ServerStateResponse>> {
+    execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        |_api, _validated, _ctx| async { Ok(()) },
+    )
+    .await?;
+
+    let response = state
+        .shared_api_runtime
+        .server_state_runtime
+        .collect_server_state(crate::status::ServerStateSelection {
+            node_id: (!query.node_id.trim().is_empty()).then_some(query.node_id),
+            all_nodes: query.all_nodes,
+        })
+        .await?;
+    Ok(Json(response))
 }
 
 #[cfg_attr(
@@ -632,30 +668,33 @@ pub(crate) async fn update_content_report_status(
     Ok(Json(resp))
 }
 
-// System Stats
+// Service state
 
 #[cfg_attr(
     feature = "openapi",
     utoipa::path(
         get,
-        path = "/api/admin/stats",
+        path = "/api/admin/service-state",
         tag = "Admin",
         responses(
-            (status = 200, description = "System stats", body = admin::GetSystemStatsResponse),
+            (status = 200, description = "Service state", body = admin::GetServiceStateResponse),
             (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema)
         ),
         security(("bearer_auth" = []))
     )
 )]
-pub(crate) async fn get_system_stats(
+pub(crate) async fn get_service_state(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
-) -> AppResult<Json<admin::GetSystemStatsResponse>> {
+) -> AppResult<Json<admin::GetServiceStateResponse>> {
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_system_stats(admin::GetSystemStatsRequest {}).await },
+        move |api, _, _| async move {
+            api.get_service_state(admin::GetServiceStateRequest {})
+                .await
+        },
     )
     .await?;
     Ok(Json(resp))

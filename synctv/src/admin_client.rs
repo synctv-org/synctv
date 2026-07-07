@@ -356,13 +356,14 @@ mod tests {
         EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
         EmbyLogoutRequest, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
         GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-        GetRoomSettingsRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
-        GetSliceCacheStatsResponse, GetStreamInfoRequest, GetSystemStatsRequest,
-        GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest, KickMemberRequest,
-        KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest,
-        ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
-        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
-        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+        GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse,
+        GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+        GetSliceCacheStatsResponse, GetStreamInfoRequest, GetUserPreferencesRequest,
+        GetUserRequest, GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest,
+        KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
+        ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+        ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
+        ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
         MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
@@ -463,10 +464,10 @@ mod tests {
         type StopServerStream =
             Pin<Box<dyn tokio_stream::Stream<Item = Result<StopServerEvent, Status>> + Send>>;
 
-        async fn get_system_stats(
+        async fn get_service_state(
             &self,
-            request: Request<GetSystemStatsRequest>,
-        ) -> std::result::Result<Response<admin_proto::GetSystemStatsResponse>, Status> {
+            request: Request<GetServiceStateRequest>,
+        ) -> std::result::Result<Response<admin_proto::GetServiceStateResponse>, Status> {
             if let Some(seen_authorization) = &self.seen_authorization {
                 seen_authorization
                     .lock()
@@ -479,7 +480,16 @@ mod tests {
                             .map(str::to_string),
                     );
             }
-            Ok(Response::new(admin_proto::GetSystemStatsResponse::default()))
+            Ok(Response::new(
+                admin_proto::GetServiceStateResponse::default(),
+            ))
+        }
+
+        async fn get_server_state(
+            &self,
+            _: Request<GetServerStateRequest>,
+        ) -> std::result::Result<Response<GetServerStateResponse>, Status> {
+            unavailable_test_management_response()
         }
 
         async fn get_slice_cache_stats(
@@ -1485,9 +1495,9 @@ management:
         assert_eq!(session.endpoint(), endpoint);
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
-            .expect("management client should call get_system_stats over unix socket");
+            .expect("management client should call get_service_state over unix socket");
 
         serve_handle.abort();
         let _ = serve_handle.await;
@@ -1546,9 +1556,9 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
-            .expect("management client should send get_system_stats");
+            .expect("management client should send get_service_state");
 
         assert_eq!(
             seen_authorization
@@ -1617,9 +1627,9 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
-            .expect("management client should send get_system_stats");
+            .expect("management client should send get_service_state");
 
         assert_eq!(
             seen_authorization
@@ -1688,9 +1698,9 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
-            .expect("management client should send get_system_stats");
+            .expect("management client should send get_service_state");
 
         assert_eq!(
             seen_authorization
@@ -1745,9 +1755,9 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
-            .expect("management client should send get_system_stats");
+            .expect("management client should send get_service_state");
 
         assert_eq!(
             seen_authorization
@@ -1798,7 +1808,7 @@ management:
         assert_eq!(session.endpoint(), endpoint);
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
             .expect("management client should work with explicit endpoint even when config file is missing");
 
@@ -1846,7 +1856,7 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
             .expect("management call should succeed via explicit endpoint");
 
@@ -1903,7 +1913,7 @@ management:
 
         session
             .management_client()
-            .get_system_stats(GetSystemStatsRequest {})
+            .get_service_state(GetServiceStateRequest {})
             .await
             .expect("management call should succeed via explicit endpoint");
 

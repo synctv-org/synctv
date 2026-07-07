@@ -78,9 +78,9 @@ service AdminService {
   rpc ListAdmins(ListAdminsRequest) returns (ListAdminsResponse);
 
   // =========================
-  // System Statistics
+  // Service State
   // =========================
-  rpc GetSystemStats(GetSystemStatsRequest) returns (GetSystemStatsResponse);
+  rpc GetServiceState(GetServiceStateRequest) returns (GetServiceStateResponse);
 
   // =========================
   // Livestream Management
@@ -1329,27 +1329,27 @@ message ListAdminsResponse {
 }
 
 // =========================
-// System Statistics
+// Service State
 // =========================
 
-message GetSystemStatsRequest {}
+message GetServiceStateRequest {}
 
-message GetSystemStatsResponse {
-  int32 total_users = 1;
-  int32 active_users = 2;
-  int32 banned_users = 3;
-  int32 total_rooms = 4;
-  int32 active_rooms = 5;
-  int32 banned_rooms = 6;
-  int32 total_media = 7;
-  int32 provider_instances = 8; // Total media provider instances
-  SystemAdditionalStats additional_stats = 9;
+message GetServiceStateResponse {
+  int64 total_users = 1;
+  int64 active_users = 2;
+  int64 banned_users = 3;
+  int64 total_rooms = 4;
+  int64 active_rooms = 5;
+  int64 banned_rooms = 6;
+  int64 total_media = 7;
+  int64 provider_instances = 8; // Total media provider instances
+  ServiceAdditionalState additional_state = 9;
   synctv.common.PresenceOverview presence = 10;
 }
 
-message SystemAdditionalStats {
-  int32 active_streams = 1;
-  int32 open_reports = 2;
+message ServiceAdditionalState {
+  int64 active_streams = 1;
+  int64 open_reports = 2;
 }
 
 // =========================

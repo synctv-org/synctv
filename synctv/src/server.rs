@@ -1391,7 +1391,7 @@ impl SyncTvServer {
     /// process in-process and stop it deterministically without sending OS signals.
     pub async fn start_with_coordinator_and_shutdown_signal<F>(
         mut self,
-        coordinator: ShutdownCoordinator,
+        mut coordinator: ShutdownCoordinator,
         shutdown_signal: F,
     ) -> anyhow::Result<()>
     where
@@ -1445,6 +1445,24 @@ impl SyncTvServer {
                 return Err(err);
             }
         };
+        shared_http_app_state
+            .shared_api_runtime
+            .server_state_runtime
+            .refresh_local_server_state()
+            .await;
+        let server_state_refresh_cancel = coordinator.register_token("server_state_refresh");
+        coordinator.register_task(
+            "server_state_refresh",
+            shared_http_app_state
+                .shared_api_runtime
+                .server_state_runtime
+                .clone()
+                .spawn_refresh_task(server_state_refresh_cancel),
+        );
+        info!(
+            "Server state refresh task spawned (interval: {}s)",
+            synctv_api::status::ServerStateRuntime::refresh_interval().as_secs()
+        );
 
         // Start unified API server (single listener for REST + gRPC)
         let api_handle = match self
@@ -2117,6 +2135,22 @@ impl SyncTvServer {
             self.services.oauth2_service.clone(),
         )?;
 
+        let node_id = self.services.realtime_event_service.node_id().to_string();
+        let cluster_client = self
+            .services
+            .node_registry
+            .as_ref()
+            .filter(|_| self.config.cluster_runtime_enabled())
+            .filter(|_| !self.config.cluster.secret.is_empty())
+            .map(|node_registry| {
+                Arc::new(synctv_cluster::grpc::ClusterClient::from_runtime(
+                    node_registry.clone(),
+                    synctv_cluster::grpc::ClusterClientConfig {
+                        self_node_id: node_id.clone(),
+                    },
+                ))
+            });
+
         let (http_router, http_state) =
             synctv_api::create_router_with_state_from_config(synctv_api::RouterConfig {
                 config,
@@ -2158,6 +2192,7 @@ impl SyncTvServer {
                 chat_service: Some(self.services.chat_service.clone()),
                 audit_service: self.services.audit_service.clone(),
                 live_streaming_infrastructure: self.services.live_streaming_infrastructure.clone(),
+                cluster_client,
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service: self.services.ws_ticket_service.clone(),
                 redis_runtime: self.services.redis_runtime.clone(),
@@ -2366,20 +2401,11 @@ impl SyncTvServer {
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let management_apis = management_apis_from_http_state(shared_http_app_state.as_ref())?;
         let node_id = self.services.realtime_event_service.node_id().to_string();
-        let cluster_client = self
-            .services
-            .node_registry
-            .as_ref()
-            .filter(|_| self.config.cluster_runtime_enabled())
-            .filter(|_| !self.config.cluster.secret.is_empty())
-            .map(|node_registry| {
-                Arc::new(synctv_cluster::grpc::ClusterClient::from_runtime(
-                    node_registry.clone(),
-                    synctv_cluster::grpc::ClusterClientConfig {
-                        self_node_id: node_id.clone(),
-                    },
-                ))
-            });
+        let cluster_client = shared_http_app_state.cluster_client.clone();
+        let server_state_runtime = shared_http_app_state
+            .shared_api_runtime
+            .server_state_runtime
+            .clone();
 
         spawn_management_server(ManagementServerConfig {
             config: Arc::new(self.config.clone()),
@@ -2395,6 +2421,7 @@ impl SyncTvServer {
             )),
             cluster_client,
             node_id,
+            server_state_runtime,
             lifecycle_controller: self.lifecycle_controller.clone(),
             shutdown_rx,
         })
@@ -2713,6 +2740,7 @@ mod tests {
             chat_service: None,
             audit_service,
             live_streaming_infrastructure: None,
+            cluster_client: None,
             rate_limiter,
             ws_ticket_service: Arc::new(synctv_core::service::WsTicketService::local_only(None)),
             redis_runtime: None,

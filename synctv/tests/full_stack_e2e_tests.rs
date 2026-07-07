@@ -5080,10 +5080,7 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI system stats output should be JSON");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
 }
@@ -5114,10 +5111,7 @@ async fn full_stack_cli_system_stats_uses_explicit_management_endpoint_flag_with
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI explicit endpoint system stats output should be JSON");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
 }
@@ -5137,10 +5131,7 @@ async fn full_stack_cli_system_stats_works_when_bootstrap_root_username_differs(
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI system stats output should be JSON when bootstrap root username differs");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats should report at least the bootstrap root user: {system_stats_body}"
     );
 }
@@ -5381,10 +5372,7 @@ async fn full_stack_cli_system_stats_uses_management_unix_socket_via_env_without
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats over unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
 
@@ -5474,10 +5462,7 @@ async fn full_stack_cli_system_stats_uses_default_management_unix_socket_without
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI default unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats over default unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
 
@@ -5573,10 +5558,7 @@ async fn full_stack_cli_system_stats_reads_management_unix_socket_auth_token_fro
     let system_stats_body: Value = serde_json::from_slice(&system_stats.stdout)
         .expect("CLI unix socket system stats output should be JSON");
     assert!(
-        system_stats_body["totalUsers"]
-            .as_i64()
-            .expect("totalUsers should be an integer")
-            >= 1,
+        json_i64(&system_stats_body["totalUsers"]).expect("totalUsers should be numeric") >= 1,
         "system stats over authenticated unix socket should report at least the bootstrap root user: {system_stats_body}"
     );
 
@@ -6270,7 +6252,7 @@ async fn full_stack_cli_server_binary_starts_and_handles_management_commands() {
         run_synctv_cli_with_env_async(&["system", "stats", "--output", "json"], &envs).await;
     let system_stats_body = cli_json_output(&system_stats, "system stats against server binary");
     assert!(
-        system_stats_body["totalUsers"].as_i64().unwrap_or_default() >= 1,
+        json_i64(&system_stats_body["totalUsers"]).unwrap_or_default() >= 1,
         "system stats should report the bootstrap root user: {system_stats_body}"
     );
 

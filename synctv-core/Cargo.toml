@@ -88,7 +88,6 @@ hyper-util.workspace = true
 
 # Resilience
 tower.workspace = true
-tower-http.workspace = true
 governor.workspace = true
 nonzero_ext.workspace = true
 backon.workspace = true

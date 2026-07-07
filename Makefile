@@ -66,7 +66,7 @@ export SYNCTV_MANAGEMENT_TRANSPORT=unix; \
 export SYNCTV_MANAGEMENT_UNIX_SOCKET_PATH="$(DEV_SOCKET)"
 endef
 
-.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check sqlx-prepare nextest clippy
+.PHONY: help dev-check dev-env dev-up dev-stack dev-build dev-serve dev-start dev-stop dev-down dev-clean dev-reset dev-data-reset dev-logs dev-ps dev-status dev-wait dev-shell dev-migrate dev-dropdb dev-db dev-redis dev-open dev-smoke fmt check check-all-targets sqlx-prepare nextest clippy
 
 help: ## Show development targets.
 	@awk 'BEGIN {FS = ":.*##"; printf "SyncTV development targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  %-18s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -100,12 +100,12 @@ dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after c
 	@$(MAKE) dev-env
 
 dev-build: ## Build the local SyncTV binary used by background dev commands.
-	cargo build -p synctv --bin synctv
+	SQLX_OFFLINE=true cargo build -p synctv --bin synctv
 
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"
 	$(DEV_ENV_EXPORTS); \
-	cargo run -p synctv --bin synctv -- serve
+	SQLX_OFFLINE=true cargo run -p synctv --bin synctv -- serve
 
 dev-start: dev-up dev-build ## Start SyncTV in the background with development defaults.
 	@mkdir -p "$(DEV_DATA_DIR)/run"
@@ -247,14 +247,17 @@ sqlx-prepare: dev-migrate ## Refresh SQLx offline metadata in .sqlx.
 fmt: ## Format all Rust code.
 	cargo fmt --all
 
-check: ## Check all workspace targets.
-	cargo check -j "$(DEV_JOBS)" --workspace --all-targets
+check: ## Check workspace library and binary targets.
+	SQLX_OFFLINE=true cargo check -j "$(DEV_JOBS)" --workspace
+
+check-all-targets: ## Check all workspace targets, including tests, benches, and examples.
+	SQLX_OFFLINE=true cargo check -j "$(DEV_JOBS)" --workspace --all-targets
 
 nextest: ## Run the full workspace nextest suite, including ignored tests.
-	cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
+	SQLX_OFFLINE=true cargo nextest run --workspace --run-ignored all -j "$(DEV_JOBS)" --nff --status-level fail
 
 clippy: ## Run Clippy fixes across all workspace targets.
-	cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
+	SQLX_OFFLINE=true cargo clippy -j "$(DEV_JOBS)" --workspace --all-targets --fix --allow-dirty
 
 dev-db: dev-up ## Open psql inside the PostgreSQL container.
 	$(COMPOSE_DEV) exec postgres psql -U synctv -d synctv

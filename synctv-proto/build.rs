@@ -146,6 +146,16 @@ fn collect_openapi_schema_aliases_for(
         .map(|aliases| aliases.into_iter().flatten().collect())
 }
 
+fn collect_openapi_schema_aliases_when_enabled(
+    proto_files: &[&str],
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    if feature_enabled("openapi") {
+        collect_openapi_schema_aliases_for(proto_files)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 fn add_openapi_attrs(
     mut builder: tonic_prost_build::Builder,
     aliases: &[(String, String)],
@@ -476,7 +486,7 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
         .configure(&mut prost_config, &MAIN_PROTO_FILES, &MAIN_PROTO_INCLUDES)?;
 
-    let aliases = collect_openapi_schema_aliases_for(&MAIN_PROTO_FILES)?;
+    let aliases = collect_openapi_schema_aliases_when_enabled(&MAIN_PROTO_FILES)?;
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
@@ -559,7 +569,7 @@ fn build_provider_protos(
             &PROVIDER_PROTO_INCLUDES,
         )?;
 
-    let aliases = collect_openapi_schema_aliases_for(&[
+    let aliases = collect_openapi_schema_aliases_when_enabled(&[
         "proto/providers/bilibili.proto",
         "proto/providers/alist.proto",
         "proto/providers/emby.proto",
@@ -611,7 +621,7 @@ fn build_playback_provider_protos(
             &PLAYBACK_PROVIDER_PROTO_INCLUDES,
         )?;
 
-    let aliases = collect_openapi_schema_aliases_for(&PLAYBACK_PROVIDER_PROTO_FILES)?;
+    let aliases = collect_openapi_schema_aliases_when_enabled(&PLAYBACK_PROVIDER_PROTO_FILES)?;
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)

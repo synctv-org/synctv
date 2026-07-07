@@ -1,10 +1,11 @@
-use super::{parse_shutdown_mode, stop_server_event_stream, ManagementServiceImpl};
+use super::{parse_shutdown_mode, stop_server_event_stream};
 use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
-use crate::proto::{
-    EvictExpiredSliceCacheNodeResult, PurgeSliceCacheNodeResult, ShutdownMode as ProtoShutdownMode,
-    SliceCacheNodeFailure, SliceCacheStatsResponse,
-};
+use crate::proto::ShutdownMode as ProtoShutdownMode;
 use futures::TryStreamExt;
+use synctv_core::service::{
+    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
+    SliceCacheEvictExpiredNodeResult, SliceCacheNodeFailure, SliceCachePurgeNodeResult,
+};
 use tonic::Code;
 
 #[test]
@@ -30,19 +31,18 @@ fn map_api_error_hides_internal_details() {
 
 #[test]
 fn slice_cache_target_validation_rejects_conflicting_node_selection() {
-    let error = ManagementServiceImpl::validate_slice_cache_target("node-a", true)
+    let error = validate_slice_cache_selection(Some("node-a"), true)
         .expect_err("node_id and all_nodes must be mutually exclusive");
 
-    assert_eq!(error.code(), Code::InvalidArgument);
     assert_eq!(
-        error.message(),
-        "node_id and all_nodes are mutually exclusive"
+        error.to_string(),
+        "nodeId and allNodes are mutually exclusive"
     );
 }
 
 #[test]
-fn slice_cache_target_validation_trims_node_id() -> Result<(), tonic::Status> {
-    let target = ManagementServiceImpl::validate_slice_cache_target("  node-a  ", false)?;
+fn slice_cache_target_validation_trims_node_id() -> Result<(), Box<dyn std::error::Error>> {
+    let target = validate_slice_cache_selection(Some("  node-a  "), false)?;
 
     assert_eq!(target.as_deref(), Some("node-a"));
     Ok(())
@@ -50,21 +50,21 @@ fn slice_cache_target_validation_trims_node_id() -> Result<(), tonic::Status> {
 
 #[test]
 fn purge_slice_cache_response_aggregates_nodes_and_failures() {
-    let response = ManagementServiceImpl::purge_response_from_nodes(
+    let response = purge_response_from_nodes(
         vec![
-            PurgeSliceCacheNodeResult {
+            SliceCachePurgeNodeResult {
                 node_id: "node-a".to_string(),
                 success: true,
                 removed_entries: 2,
                 freed_bytes: 128,
-                stats: Some(SliceCacheStatsResponse::default()),
+                stats: None,
             },
-            PurgeSliceCacheNodeResult {
+            SliceCachePurgeNodeResult {
                 node_id: "node-b".to_string(),
                 success: true,
                 removed_entries: 3,
                 freed_bytes: 256,
-                stats: Some(SliceCacheStatsResponse::default()),
+                stats: None,
             },
         ],
         vec![SliceCacheNodeFailure {
@@ -83,19 +83,19 @@ fn purge_slice_cache_response_aggregates_nodes_and_failures() {
 
 #[test]
 fn evict_expired_slice_cache_response_aggregates_nodes_and_failures() {
-    let response = ManagementServiceImpl::evict_expired_response_from_nodes(
+    let response = evict_expired_response_from_nodes(
         vec![
-            EvictExpiredSliceCacheNodeResult {
+            SliceCacheEvictExpiredNodeResult {
                 node_id: "node-a".to_string(),
                 success: true,
                 removed_expired_entries: 4,
-                stats: Some(SliceCacheStatsResponse::default()),
+                stats: None,
             },
-            EvictExpiredSliceCacheNodeResult {
+            SliceCacheEvictExpiredNodeResult {
                 node_id: "node-b".to_string(),
                 success: false,
                 removed_expired_entries: 1,
-                stats: Some(SliceCacheStatsResponse::default()),
+                stats: None,
             },
         ],
         Vec::new(),

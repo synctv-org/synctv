@@ -354,17 +354,15 @@ mod tests {
         CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
         DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
         EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
-        GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest,
-        GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse,
-        GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
-        GetSliceCacheStatsResponse, GetStreamInfoRequest, GetUserPreferencesRequest,
-        GetUserRequest, GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest,
-        KickStreamRequest, ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
-        ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
-        ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
-        ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
-        MovePlaylistRequest, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
+        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, GetPlaybackRequest, GetPlaylistRequest,
+        GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest,
+        GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
+        GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
+        GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
+        ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest,
+        ListPlaylistsRequest, ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest,
+        ListRoomStreamsRequest, ListRoomsRequest, ListUserRegistrationReviewsRequest,
+        ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheRequest,
         RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
         RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
         SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
@@ -495,21 +493,23 @@ mod tests {
         async fn get_slice_cache_stats(
             &self,
             _: Request<GetSliceCacheStatsRequest>,
-        ) -> std::result::Result<Response<GetSliceCacheStatsResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::GetSliceCacheStatsResponse>, Status>
+        {
             unavailable_test_management_response()
         }
 
         async fn purge_slice_cache(
             &self,
             _: Request<PurgeSliceCacheRequest>,
-        ) -> std::result::Result<Response<PurgeSliceCacheResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::PurgeSliceCacheResponse>, Status> {
             unavailable_test_management_response()
         }
 
         async fn evict_expired_slice_cache(
             &self,
             _: Request<EvictExpiredSliceCacheRequest>,
-        ) -> std::result::Result<Response<EvictExpiredSliceCacheResponse>, Status> {
+        ) -> std::result::Result<Response<admin_proto::EvictExpiredSliceCacheResponse>, Status>
+        {
             unavailable_test_management_response()
         }
 

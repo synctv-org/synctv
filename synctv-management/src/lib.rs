@@ -8,7 +8,7 @@ pub mod server;
 mod service;
 mod source_config;
 
-pub use service::{ManagementServiceImpl, ManagementSliceCacheRuntime};
+pub use service::ManagementServiceImpl;
 
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 

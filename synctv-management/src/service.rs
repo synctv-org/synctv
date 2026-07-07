@@ -1,10 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
-use futures::{Stream, StreamExt};
-use tonic::codec::CompressionEncoding;
-use tonic::transport::{Channel, Endpoint};
+use futures::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::access::ManagementAccessController;
@@ -30,20 +27,18 @@ use crate::proto::{
     CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
     DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
     EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-    EmbyLogoutRequest, EvictExpiredSliceCacheNodeResult, EvictExpiredSliceCacheRequest,
-    EvictExpiredSliceCacheResponse, GetPlaybackRequest, GetPlaylistRequest, GetRoomMembersRequest,
-    GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest, GetServerStateResponse,
-    GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
-    GetSliceCacheStatsResponse, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
-    GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
-    ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest,
-    ListPlaylistsRequest, ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest,
-    ListRoomStreamsRequest, ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest,
-    MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheNodeResult, PurgeSliceCacheRequest,
-    PurgeSliceCacheResponse, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
-    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-    SearchChatMessagesRequest, SendTestEmailRequest, ServerStateCluster, ServerStateClusterNode,
-    ServerStateClusterStatus as ProtoClusterStatus, ServerStateCpu,
+    EmbyLogoutRequest, EvictExpiredSliceCacheRequest, GetPlaybackRequest, GetPlaylistRequest,
+    GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest,
+    GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
+    GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
+    KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
+    ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
+    ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+    ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+    MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
+    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
+    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest, ServerStateCluster,
+    ServerStateClusterNode, ServerStateClusterStatus as ProtoClusterStatus, ServerStateCpu,
     ServerStateCpuStatus as ProtoCpuStatus, ServerStateDatabase, ServerStateDatabasePool,
     ServerStateDatabaseStatus as ProtoDatabaseStatus, ServerStateEmail,
     ServerStateEmailStatus as ProtoEmailStatus, ServerStateLivestream,
@@ -54,8 +49,7 @@ use crate::proto::{
     ServerStateSliceCacheStatus as ProtoSliceCacheStatus, ServerStateSummary, ServerStateWebRtc,
     ServerStateWebRtcStatus as ProtoWebRtcStatus, ServerStateWsTicket,
     ServerStateWsTicketStatus as ProtoWsTicketStatus, SetUserPasswordRequest,
-    ShutdownMode as ProtoShutdownMode, SliceCacheConfigInfo, SliceCacheNodeFailure,
-    SliceCacheStatsResponse, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
     StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
     UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
     UpdatePlaybackStateRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
@@ -83,12 +77,6 @@ use synctv_proto::{
     },
 };
 
-type ProxySliceCacheClient =
-    synctv_proxy::grpc::ProxySliceCacheServiceClient<tonic::transport::Channel>;
-
-const SLICE_CACHE_REMOTE_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const SLICE_CACHE_REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
-
 struct ValidatedManagementUser {
     user_id: UserId,
     role: CoreUserRole,
@@ -97,15 +85,6 @@ struct ValidatedManagementUser {
 struct BatchUserResolution {
     user_ids: Vec<String>,
     failures: Vec<admin_proto::BatchResultItem>,
-}
-
-#[tonic::async_trait]
-pub trait ManagementSliceCacheRuntime: Send + Sync {
-    fn stats(&self) -> synctv_proxy::slice_cache::SliceCacheStats;
-
-    async fn purge_all(&self) -> synctv_proxy::slice_cache::SliceCachePurgeResult;
-
-    async fn evict_expired_entries(&self) -> u64;
 }
 
 #[derive(Clone)]
@@ -118,9 +97,7 @@ pub struct ManagementServiceImpl {
     alist_api: Arc<AlistApiImpl>,
     bilibili_api: Arc<BilibiliApiImpl>,
     emby_api: Arc<EmbyApiImpl>,
-    slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
-    cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
-    node_id: String,
+    slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
     server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
@@ -136,9 +113,7 @@ pub struct ManagementServiceDependencies {
     pub alist_api: Arc<AlistApiImpl>,
     pub bilibili_api: Arc<BilibiliApiImpl>,
     pub emby_api: Arc<EmbyApiImpl>,
-    pub slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
-    pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
-    pub node_id: String,
+    pub slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
     pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub management_auth_token: String,
@@ -157,8 +132,6 @@ impl ManagementServiceImpl {
             bilibili_api,
             emby_api,
             slice_cache_runtime,
-            cluster_client,
-            node_id,
             server_state_runtime,
             lifecycle_controller,
             management_auth_token,
@@ -176,8 +149,6 @@ impl ManagementServiceImpl {
             bilibili_api,
             emby_api,
             slice_cache_runtime,
-            cluster_client,
-            node_id,
             server_state_runtime,
             lifecycle_controller,
             access_controller: ManagementAccessController::new(&management_auth_token),
@@ -867,408 +838,161 @@ impl ManagementServiceImpl {
         .into()
     }
 
-    fn slice_cache_stats_response(&self) -> SliceCacheStatsResponse {
-        let stats = self.slice_cache_runtime.stats();
-        SliceCacheStatsResponse {
-            config: Some(SliceCacheConfigInfo {
-                engine_enabled: stats.engine_enabled,
-                backend: stats.backend,
-                file_cache_dir: stats.file_cache_dir.unwrap_or_default(),
-                slice_size: stats.slice_size,
-                max_cache_size: stats.max_cache_size,
-                segment_ttl_secs: stats.segment_ttl_secs,
-                stale_max_age_secs: stats.stale_max_age_secs,
-                stale_while_revalidate: stats.stale_while_revalidate,
-                eviction_interval_secs: stats.eviction_interval_secs,
-                watermark_ratio: stats.watermark_ratio,
-            }),
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
-            node_id: self.node_id.clone(),
+    fn map_slice_cache_error(error: &synctv_api::status::SliceCacheManagementError) -> Status {
+        match error {
+            synctv_api::status::SliceCacheManagementError::InvalidSelection => {
+                Status::invalid_argument(error.to_string())
+            }
+            synctv_api::status::SliceCacheManagementError::ClusterUnavailable(_)
+            | synctv_api::status::SliceCacheManagementError::MissingClusterSecret
+            | synctv_api::status::SliceCacheManagementError::InvalidClusterSecret => {
+                Status::failed_precondition(error.to_string())
+            }
+            synctv_api::status::SliceCacheManagementError::Cluster(_)
+            | synctv_api::status::SliceCacheManagementError::RemoteRequest { .. } => {
+                Status::unavailable(error.to_string())
+            }
         }
     }
 
-    fn validate_slice_cache_target(
-        node_id: &str,
+    fn slice_cache_selection(
+        node_id: String,
         all_nodes: bool,
-    ) -> Result<Option<String>, Status> {
-        let node_id = node_id.trim();
-        if all_nodes && !node_id.is_empty() {
-            return Err(Status::invalid_argument(
-                "node_id and all_nodes are mutually exclusive",
-            ));
+    ) -> synctv_api::status::SliceCacheSelection {
+        synctv_api::status::SliceCacheSelection {
+            node_id: (!node_id.trim().is_empty()).then_some(node_id),
+            all_nodes,
         }
-        Ok((!node_id.is_empty()).then(|| node_id.to_string()))
     }
 
-    fn require_cluster_client(
-        &self,
-        target_node_id: &str,
-    ) -> Result<&Arc<synctv_cluster::grpc::ClusterClient>, Status> {
-        self.cluster_client.as_ref().ok_or_else(|| {
-            Status::failed_precondition(format!(
-                "Cluster client is unavailable; cannot query slice cache for node '{target_node_id}'"
-            ))
-        })
-    }
-
-    fn cluster_failure(node_id: String, error: String) -> SliceCacheNodeFailure {
-        SliceCacheNodeFailure { node_id, error }
-    }
-
-    async fn cluster_fan_out_all<T, F, Fut>(
-        &self,
-        local_result: T,
-        remote_call: F,
-    ) -> Result<(Vec<T>, Vec<SliceCacheNodeFailure>), Status>
-    where
-        F: Fn(Arc<Self>, synctv_cluster::discovery::NodeInfo) -> Fut + Clone,
-        Fut: std::future::Future<Output = Result<T, Status>>,
-    {
-        let mut results = vec![local_result];
-        let mut failures = Vec::new();
-
-        if let Some(cluster_client) = &self.cluster_client {
-            let remote_nodes = cluster_client
-                .remote_routable_nodes()
-                .await
-                .map_err(|error| Status::unavailable(error.to_string()))?;
-            let mut futures = futures::stream::FuturesUnordered::new();
-            let service = Arc::new(self.clone());
-            for node in remote_nodes {
-                let service = service.clone();
-                let call = remote_call.clone();
-                futures.push(async move {
-                    let node_id = node.node_id.clone();
-                    call(service, node)
-                        .await
-                        .map_err(|error| (node_id, error.to_string()))
-                });
-            }
-            while let Some(result) = futures.next().await {
-                match result {
-                    Ok(response) => results.push(response),
-                    Err((node_id, error)) => {
-                        failures.push(Self::cluster_failure(node_id, error));
-                    }
-                }
-            }
+    fn slice_cache_config_to_management(
+        config: synctv_api::status::SliceCacheConfigInfo,
+    ) -> admin_proto::SliceCacheConfigInfo {
+        admin_proto::SliceCacheConfigInfo {
+            engine_enabled: config.engine_enabled,
+            backend: config.backend,
+            file_cache_dir: config.file_cache_dir,
+            slice_size: config.slice_size,
+            max_cache_size: config.max_cache_size,
+            segment_ttl_secs: config.segment_ttl_secs,
+            stale_max_age_secs: config.stale_max_age_secs,
+            stale_while_revalidate: config.stale_while_revalidate,
+            eviction_interval_secs: config.eviction_interval_secs,
+            watermark_ratio: config.watermark_ratio,
         }
-
-        Ok((results, failures))
     }
 
-    fn proxy_slice_cache_stats_to_management(
-        stats: synctv_proxy::grpc::SliceCacheStatsResponse,
-    ) -> SliceCacheStatsResponse {
-        SliceCacheStatsResponse {
-            config: stats.config.map(|config| SliceCacheConfigInfo {
-                engine_enabled: config.engine_enabled,
-                backend: config.backend,
-                file_cache_dir: config.file_cache_dir,
-                slice_size: config.slice_size,
-                max_cache_size: config.max_cache_size,
-                segment_ttl_secs: config.segment_ttl_secs,
-                stale_max_age_secs: config.stale_max_age_secs,
-                stale_while_revalidate: config.stale_while_revalidate,
-                eviction_interval_secs: config.eviction_interval_secs,
-                watermark_ratio: config.watermark_ratio,
-            }),
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
+    fn slice_cache_stats_node_to_management(
+        stats: synctv_api::status::SliceCacheStatsNode,
+    ) -> admin_proto::SliceCacheStatsNode {
+        admin_proto::SliceCacheStatsNode {
             node_id: stats.node_id,
+            config: Some(Self::slice_cache_config_to_management(stats.config)),
+            current_size_bytes: stats.current_size_bytes,
+            entry_count: stats.entry_count,
+            metadata_entries: stats.metadata_entries,
+            updating_entries: stats.updating_entries,
+            lock_count: stats.lock_count,
+            usage_ratio: stats.usage_ratio,
         }
     }
 
-    fn proxy_slice_cache_uri(address: &str) -> String {
-        if address.starts_with("http://") || address.starts_with("https://") {
-            address.to_string()
-        } else {
-            format!("http://{address}")
+    fn slice_cache_failure_to_management(
+        failure: synctv_api::status::SliceCacheNodeFailure,
+    ) -> admin_proto::SliceCacheNodeFailure {
+        admin_proto::SliceCacheNodeFailure {
+            node_id: failure.node_id,
+            error: failure.error,
         }
     }
 
-    async fn proxy_slice_cache_client(
-        &self,
-        address: &str,
-    ) -> Result<ProxySliceCacheClient, Status> {
-        let endpoint = Endpoint::from_shared(Self::proxy_slice_cache_uri(address))
-            .map_err(|error| Status::unavailable(format!("invalid node address: {error}")))?
-            .connect_timeout(SLICE_CACHE_REMOTE_CONNECT_TIMEOUT)
-            .timeout(SLICE_CACHE_REMOTE_REQUEST_TIMEOUT);
-        let channel: Channel = endpoint.connect().await.map_err(|error| {
-            Status::unavailable(format!("failed to connect to {address}: {error}"))
-        })?;
-        let client = synctv_proxy::grpc::ProxySliceCacheServiceClient::new(channel)
-            .max_decoding_message_size(self.config.server.grpc_max_message_size_bytes)
-            .max_encoding_message_size(self.config.server.grpc_max_message_size_bytes);
-        let client = if self.config.server.grpc_compression_enabled {
-            client
-                .accept_compressed(CompressionEncoding::Gzip)
-                .send_compressed(CompressionEncoding::Gzip)
-        } else {
-            client
-        };
-        Ok(client)
-    }
-
-    fn attach_cluster_secret<T>(&self, request: &mut Request<T>) -> Result<(), Status> {
-        if self.config.cluster.secret.is_empty() {
-            return Err(Status::failed_precondition(
-                "cluster secret is required for remote slice cache operations",
-            ));
+    fn get_slice_cache_stats_to_management(
+        response: synctv_api::status::SliceCacheStatsResponse,
+    ) -> admin_proto::GetSliceCacheStatsResponse {
+        admin_proto::GetSliceCacheStatsResponse {
+            nodes: response
+                .nodes
+                .into_iter()
+                .map(Self::slice_cache_stats_node_to_management)
+                .collect(),
+            failures: response
+                .failures
+                .into_iter()
+                .map(Self::slice_cache_failure_to_management)
+                .collect(),
         }
-        synctv_cluster::grpc::attach_cluster_secret(request, &self.config.cluster.secret)
-            .map_err(|_| Status::failed_precondition("invalid cluster secret configuration"))?;
-        Ok(())
     }
 
-    async fn remote_slice_cache_stats(
-        &self,
-        node: &synctv_cluster::discovery::NodeInfo,
-    ) -> Result<SliceCacheStatsResponse, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::GetSliceCacheStatsRequest {});
-        self.attach_cluster_secret(&mut request)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
-        client
-            .get_slice_cache_stats(request)
-            .await
-            .map(|response| Self::proxy_slice_cache_stats_to_management(response.into_inner()))
-            .map_err(|error| {
-                Status::unavailable(format!(
-                    "slice cache stats RPC failed for node '{}': {error}",
-                    node.node_id
-                ))
-            })
-    }
-
-    async fn slice_cache_stats_for_target(
-        &self,
-        target_node_id: &str,
-    ) -> Result<SliceCacheStatsResponse, Status> {
-        if target_node_id == self.node_id {
-            return Ok(self.slice_cache_stats_response());
-        }
-        let cluster_client = self.require_cluster_client(target_node_id)?;
-        let node = cluster_client
-            .resolve_routable_node(target_node_id)
-            .await
-            .map_err(|error| Status::unavailable(error.to_string()))?;
-        self.remote_slice_cache_stats(&node).await
-    }
-
-    async fn collect_slice_cache_stats(
-        &self,
-        target_node_id: Option<String>,
-        all_nodes: bool,
-    ) -> Result<GetSliceCacheStatsResponse, Status> {
-        if all_nodes {
-            let local = self.slice_cache_stats_response();
-            let (nodes, failures) = self
-                .cluster_fan_out_all(local, |service, node| async move {
-                    service.remote_slice_cache_stats(&node).await
-                })
-                .await?;
-            return Ok(GetSliceCacheStatsResponse { nodes, failures });
-        }
-
-        let node = match target_node_id {
-            Some(node_id) => self.slice_cache_stats_for_target(&node_id).await?,
-            None => self.slice_cache_stats_response(),
-        };
-        Ok(GetSliceCacheStatsResponse {
-            nodes: vec![node],
-            failures: Vec::new(),
-        })
-    }
-
-    async fn purge_local_slice_cache(&self) -> Result<PurgeSliceCacheNodeResult, Status> {
-        let result = self.slice_cache_runtime.purge_all().await;
-        Ok(PurgeSliceCacheNodeResult {
-            node_id: self.node_id.clone(),
-            success: true,
-            removed_entries: result.removed_entries,
-            freed_bytes: result.freed_bytes,
-            stats: Some(self.slice_cache_stats_response()),
-        })
-    }
-
-    fn proxy_purge_to_management(
-        response: synctv_proxy::grpc::PurgeSliceCacheResponse,
-    ) -> PurgeSliceCacheNodeResult {
-        PurgeSliceCacheNodeResult {
+    fn purge_slice_cache_node_to_management(
+        response: synctv_api::status::SliceCachePurgeNodeResult,
+    ) -> admin_proto::PurgeSliceCacheNodeResult {
+        admin_proto::PurgeSliceCacheNodeResult {
             node_id: response.node_id,
             success: response.success,
             removed_entries: response.removed_entries,
             freed_bytes: response.freed_bytes,
             stats: response
                 .stats
-                .map(Self::proxy_slice_cache_stats_to_management),
+                .map(Self::slice_cache_stats_node_to_management),
         }
     }
 
-    async fn remote_purge_slice_cache(
-        &self,
-        node: &synctv_cluster::discovery::NodeInfo,
-    ) -> Result<PurgeSliceCacheNodeResult, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::PurgeSliceCacheRequest {});
-        self.attach_cluster_secret(&mut request)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
-        client
-            .purge_slice_cache(request)
-            .await
-            .map(|response| Self::proxy_purge_to_management(response.into_inner()))
-            .map_err(|error| {
-                Status::unavailable(format!(
-                    "slice cache purge RPC failed for node '{}': {error}",
-                    node.node_id
-                ))
-            })
-    }
-
-    fn purge_response_from_nodes(
-        nodes: Vec<PurgeSliceCacheNodeResult>,
-        failures: Vec<SliceCacheNodeFailure>,
-    ) -> PurgeSliceCacheResponse {
-        let removed_entries = nodes.iter().map(|node| node.removed_entries).sum();
-        let freed_bytes = nodes.iter().map(|node| node.freed_bytes).sum();
-        let stats = (nodes.len() == 1).then(|| nodes[0].stats.clone()).flatten();
-        PurgeSliceCacheResponse {
-            success: failures.is_empty() && nodes.iter().all(|node| node.success),
-            removed_entries,
-            freed_bytes,
-            stats,
-            nodes,
-            failures,
+    fn purge_slice_cache_to_management(
+        response: synctv_api::status::SliceCachePurgeResponse,
+    ) -> admin_proto::PurgeSliceCacheResponse {
+        admin_proto::PurgeSliceCacheResponse {
+            success: response.success,
+            removed_entries: response.removed_entries,
+            freed_bytes: response.freed_bytes,
+            stats: response
+                .stats
+                .map(Self::slice_cache_stats_node_to_management),
+            nodes: response
+                .nodes
+                .into_iter()
+                .map(Self::purge_slice_cache_node_to_management)
+                .collect(),
+            failures: response
+                .failures
+                .into_iter()
+                .map(Self::slice_cache_failure_to_management)
+                .collect(),
         }
     }
 
-    async fn purge_slice_cache_for_selection(
-        &self,
-        target_node_id: Option<String>,
-        all_nodes: bool,
-    ) -> Result<PurgeSliceCacheResponse, Status> {
-        if all_nodes {
-            let local = self.purge_local_slice_cache().await?;
-            let (nodes, failures) = self
-                .cluster_fan_out_all(local, |service, node| async move {
-                    service.remote_purge_slice_cache(&node).await
-                })
-                .await?;
-            return Ok(Self::purge_response_from_nodes(nodes, failures));
-        }
-
-        let node = match target_node_id {
-            Some(node_id) if node_id != self.node_id => {
-                let cluster_client = self.require_cluster_client(&node_id)?;
-                let node = cluster_client
-                    .resolve_routable_node(&node_id)
-                    .await
-                    .map_err(|error| Status::unavailable(error.to_string()))?;
-                self.remote_purge_slice_cache(&node).await?
-            }
-            Some(_) | None => self.purge_local_slice_cache().await?,
-        };
-        Ok(Self::purge_response_from_nodes(vec![node], Vec::new()))
-    }
-
-    async fn evict_expired_local_slice_cache(
-        &self,
-    ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
-        let removed_expired_entries = self.slice_cache_runtime.evict_expired_entries().await;
-        Ok(EvictExpiredSliceCacheNodeResult {
-            node_id: self.node_id.clone(),
-            success: true,
-            removed_expired_entries,
-            stats: Some(self.slice_cache_stats_response()),
-        })
-    }
-
-    fn proxy_evict_expired_to_management(
-        response: synctv_proxy::grpc::EvictExpiredSliceCacheResponse,
-    ) -> EvictExpiredSliceCacheNodeResult {
-        EvictExpiredSliceCacheNodeResult {
+    fn evict_expired_slice_cache_node_to_management(
+        response: synctv_api::status::SliceCacheEvictExpiredNodeResult,
+    ) -> admin_proto::EvictExpiredSliceCacheNodeResult {
+        admin_proto::EvictExpiredSliceCacheNodeResult {
             node_id: response.node_id,
             success: response.success,
             removed_expired_entries: response.removed_expired_entries,
             stats: response
                 .stats
-                .map(Self::proxy_slice_cache_stats_to_management),
+                .map(Self::slice_cache_stats_node_to_management),
         }
     }
 
-    async fn remote_evict_expired_slice_cache(
-        &self,
-        node: &synctv_cluster::discovery::NodeInfo,
-    ) -> Result<EvictExpiredSliceCacheNodeResult, Status> {
-        let mut request = Request::new(synctv_proxy::grpc::EvictExpiredSliceCacheRequest {});
-        self.attach_cluster_secret(&mut request)?;
-        let mut client = self.proxy_slice_cache_client(&node.api_address).await?;
-        client
-            .evict_expired_slice_cache(request)
-            .await
-            .map(|response| Self::proxy_evict_expired_to_management(response.into_inner()))
-            .map_err(|error| {
-                Status::unavailable(format!(
-                    "slice cache evict-expired RPC failed for node '{}': {error}",
-                    node.node_id
-                ))
-            })
-    }
-
-    fn evict_expired_response_from_nodes(
-        nodes: Vec<EvictExpiredSliceCacheNodeResult>,
-        failures: Vec<SliceCacheNodeFailure>,
-    ) -> EvictExpiredSliceCacheResponse {
-        let removed_expired_entries = nodes.iter().map(|node| node.removed_expired_entries).sum();
-        let stats = (nodes.len() == 1).then(|| nodes[0].stats.clone()).flatten();
-        EvictExpiredSliceCacheResponse {
-            success: failures.is_empty() && nodes.iter().all(|node| node.success),
-            removed_expired_entries,
-            stats,
-            nodes,
-            failures,
+    fn evict_expired_slice_cache_to_management(
+        response: synctv_api::status::SliceCacheEvictExpiredResponse,
+    ) -> admin_proto::EvictExpiredSliceCacheResponse {
+        admin_proto::EvictExpiredSliceCacheResponse {
+            success: response.success,
+            removed_expired_entries: response.removed_expired_entries,
+            stats: response
+                .stats
+                .map(Self::slice_cache_stats_node_to_management),
+            nodes: response
+                .nodes
+                .into_iter()
+                .map(Self::evict_expired_slice_cache_node_to_management)
+                .collect(),
+            failures: response
+                .failures
+                .into_iter()
+                .map(Self::slice_cache_failure_to_management)
+                .collect(),
         }
-    }
-
-    async fn evict_expired_slice_cache_for_selection(
-        &self,
-        target_node_id: Option<String>,
-        all_nodes: bool,
-    ) -> Result<EvictExpiredSliceCacheResponse, Status> {
-        if all_nodes {
-            let local = self.evict_expired_local_slice_cache().await?;
-            let (nodes, failures) = self
-                .cluster_fan_out_all(local, |service, node| async move {
-                    service.remote_evict_expired_slice_cache(&node).await
-                })
-                .await?;
-            return Ok(Self::evict_expired_response_from_nodes(nodes, failures));
-        }
-
-        let node = match target_node_id {
-            Some(node_id) if node_id != self.node_id => {
-                let cluster_client = self.require_cluster_client(&node_id)?;
-                let node = cluster_client
-                    .resolve_routable_node(&node_id)
-                    .await
-                    .map_err(|error| Status::unavailable(error.to_string()))?;
-                self.remote_evict_expired_slice_cache(&node).await?
-            }
-            Some(_) | None => self.evict_expired_local_slice_cache().await?,
-        };
-        Ok(Self::evict_expired_response_from_nodes(
-            vec![node],
-            Vec::new(),
-        ))
     }
 
     fn map_api_result<T>(result: Result<T, ApiError>) -> Result<T, Status> {
@@ -3757,39 +3481,48 @@ impl ManagementService for ManagementServiceImpl {
     async fn get_slice_cache_stats(
         &self,
         request: Request<GetSliceCacheStatsRequest>,
-    ) -> Result<Response<GetSliceCacheStatsResponse>, Status> {
+    ) -> Result<Response<admin_proto::GetSliceCacheStatsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
-        Ok(Response::new(
-            self.collect_slice_cache_stats(target_node_id, req.all_nodes)
-                .await?,
-        ))
+        let response = self
+            .slice_cache_runtime
+            .get_stats(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .await
+            .map_err(|error| Self::map_slice_cache_error(&error))?;
+        Ok(Response::new(Self::get_slice_cache_stats_to_management(
+            response,
+        )))
     }
 
     async fn purge_slice_cache(
         &self,
         request: Request<PurgeSliceCacheRequest>,
-    ) -> Result<Response<PurgeSliceCacheResponse>, Status> {
+    ) -> Result<Response<admin_proto::PurgeSliceCacheResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
-        Ok(Response::new(
-            self.purge_slice_cache_for_selection(target_node_id, req.all_nodes)
-                .await?,
-        ))
+        let response = self
+            .slice_cache_runtime
+            .purge(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .await
+            .map_err(|error| Self::map_slice_cache_error(&error))?;
+        Ok(Response::new(Self::purge_slice_cache_to_management(
+            response,
+        )))
     }
 
     async fn evict_expired_slice_cache(
         &self,
         request: Request<EvictExpiredSliceCacheRequest>,
-    ) -> Result<Response<EvictExpiredSliceCacheResponse>, Status> {
+    ) -> Result<Response<admin_proto::EvictExpiredSliceCacheResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let target_node_id = Self::validate_slice_cache_target(&req.node_id, req.all_nodes)?;
+        let response = self
+            .slice_cache_runtime
+            .evict_expired(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .await
+            .map_err(|error| Self::map_slice_cache_error(&error))?;
         Ok(Response::new(
-            self.evict_expired_slice_cache_for_selection(target_node_id, req.all_nodes)
-                .await?,
+            Self::evict_expired_slice_cache_to_management(response),
         ))
     }
 

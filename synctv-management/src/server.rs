@@ -19,9 +19,7 @@ use synctv_core::{
 
 use crate::lifecycle::ManagementLifecycleController;
 use crate::proto::management_service_server::ManagementServiceServer;
-use crate::service::{
-    ManagementServiceDependencies, ManagementServiceImpl, ManagementSliceCacheRuntime,
-};
+use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
 use crate::FILE_DESCRIPTOR_SET;
 
 pub struct ManagementServerConfig {
@@ -33,9 +31,7 @@ pub struct ManagementServerConfig {
     pub alist_api: Arc<AlistApiImpl>,
     pub bilibili_api: Arc<BilibiliApiImpl>,
     pub emby_api: Arc<EmbyApiImpl>,
-    pub slice_cache_runtime: Arc<dyn ManagementSliceCacheRuntime>,
-    pub cluster_client: Option<Arc<synctv_cluster::grpc::ClusterClient>>,
-    pub node_id: String,
+    pub slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
     pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub shutdown_rx: watch::Receiver<bool>,
@@ -134,8 +130,6 @@ where
             bilibili_api: config.bilibili_api,
             emby_api: config.emby_api,
             slice_cache_runtime: config.slice_cache_runtime,
-            cluster_client: config.cluster_client,
-            node_id: config.node_id,
             server_state_runtime: config.server_state_runtime,
             lifecycle_controller: config.lifecycle_controller,
             management_auth_token: config.config.management.auth_token.clone(),

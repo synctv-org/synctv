@@ -906,7 +906,11 @@ async fn build_axum_router_with_health(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("gRPC API runtime is missing admin API wiring"))?;
 
-    let admin_service = AdminServiceImpl::new(admin_api.clone(), Arc::new(config.clone()));
+    let admin_service = AdminServiceImpl::new(
+        admin_api.clone(),
+        Arc::new(config.clone()),
+        shared_api_runtime.slice_cache_management_runtime.clone(),
+    );
 
     let grpc_unary_request_timeout = grpc_unary_request_timeout();
     tracing::info!(

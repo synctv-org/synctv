@@ -530,31 +530,6 @@ async fn build_proxy_slice_cache(
     Ok(Arc::new(cache))
 }
 
-struct ManagementProxySliceCacheRuntime {
-    cache: Arc<synctv_proxy::slice_cache::SliceCache>,
-}
-
-impl ManagementProxySliceCacheRuntime {
-    fn new(cache: Arc<synctv_proxy::slice_cache::SliceCache>) -> Self {
-        Self { cache }
-    }
-}
-
-#[async_trait]
-impl synctv_management::ManagementSliceCacheRuntime for ManagementProxySliceCacheRuntime {
-    fn stats(&self) -> synctv_proxy::slice_cache::SliceCacheStats {
-        self.cache.stats()
-    }
-
-    async fn purge_all(&self) -> synctv_proxy::slice_cache::SliceCachePurgeResult {
-        self.cache.purge_all().await
-    }
-
-    async fn evict_expired_entries(&self) -> u64 {
-        self.cache.evict_expired_entries().await
-    }
-}
-
 struct ManagementApiHandles {
     client: Arc<ClientApiImpl>,
     admin: Arc<AdminApiImpl>,
@@ -2400,8 +2375,6 @@ impl SyncTvServer {
         shared_http_app_state: Arc<synctv_api::AppState>,
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let management_apis = management_apis_from_http_state(shared_http_app_state.as_ref())?;
-        let node_id = self.services.realtime_event_service.node_id().to_string();
-        let cluster_client = shared_http_app_state.cluster_client.clone();
         let server_state_runtime = shared_http_app_state
             .shared_api_runtime
             .server_state_runtime
@@ -2416,11 +2389,10 @@ impl SyncTvServer {
             alist_api: management_apis.alist,
             bilibili_api: management_apis.bilibili,
             emby_api: management_apis.emby,
-            slice_cache_runtime: Arc::new(ManagementProxySliceCacheRuntime::new(
-                shared_http_app_state.proxy_slice_cache.clone(),
-            )),
-            cluster_client,
-            node_id,
+            slice_cache_runtime: shared_http_app_state
+                .shared_api_runtime
+                .slice_cache_management_runtime
+                .clone(),
             server_state_runtime,
             lifecycle_controller: self.lifecycle_controller.clone(),
             shutdown_rx,

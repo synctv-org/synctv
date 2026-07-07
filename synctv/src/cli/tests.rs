@@ -8,6 +8,7 @@ use std::time::Duration;
 use synctv_core::config::default_management_unix_socket_path;
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_management::proto as management_proto;
+use synctv_proto::admin as admin_proto;
 
 fn acquire_time_test_lock() -> MutexGuard<'static, ()> {
     static TIME_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -5466,8 +5467,9 @@ fn render_human_output_includes_room_members_snapshot_version() {
 
 #[test]
 fn render_human_output_uses_camel_case_for_slice_cache_responses() {
-    let stats = management_proto::SliceCacheStatsResponse {
-        config: Some(management_proto::SliceCacheConfigInfo {
+    let stats = admin_proto::SliceCacheStatsNode {
+        node_id: "node-a".into(),
+        config: Some(admin_proto::SliceCacheConfigInfo {
             engine_enabled: true,
             backend: "file".into(),
             file_cache_dir: "/tmp/synctv-slices".into(),
@@ -5485,22 +5487,21 @@ fn render_human_output_uses_camel_case_for_slice_cache_responses() {
         updating_entries: 5,
         lock_count: 6,
         usage_ratio: 0.5,
-        node_id: "node-a".into(),
     };
-    let rendered_stats = render_human_output(&management_proto::GetSliceCacheStatsResponse {
+    let rendered_stats = render_human_output(&admin_proto::GetSliceCacheStatsResponse {
         nodes: vec![stats.clone()],
-        failures: vec![management_proto::SliceCacheNodeFailure {
+        failures: vec![admin_proto::SliceCacheNodeFailure {
             node_id: "node-b".into(),
             error: "offline".into(),
         }],
     })
     .expect("slice cache stats output should render");
-    let rendered_purge = render_human_output(&management_proto::PurgeSliceCacheResponse {
+    let rendered_purge = render_human_output(&admin_proto::PurgeSliceCacheResponse {
         success: true,
         removed_entries: 7,
         freed_bytes: 8192,
         stats: Some(stats.clone()),
-        nodes: vec![management_proto::PurgeSliceCacheNodeResult {
+        nodes: vec![admin_proto::PurgeSliceCacheNodeResult {
             node_id: "node-a".into(),
             success: true,
             removed_entries: 7,
@@ -5510,11 +5511,11 @@ fn render_human_output_uses_camel_case_for_slice_cache_responses() {
         failures: Vec::new(),
     })
     .expect("slice cache purge output should render");
-    let rendered_evict = render_human_output(&management_proto::EvictExpiredSliceCacheResponse {
+    let rendered_evict = render_human_output(&admin_proto::EvictExpiredSliceCacheResponse {
         success: true,
         removed_expired_entries: 2,
         stats: Some(stats),
-        nodes: vec![management_proto::EvictExpiredSliceCacheNodeResult {
+        nodes: vec![admin_proto::EvictExpiredSliceCacheNodeResult {
             node_id: "node-a".into(),
             success: true,
             removed_expired_entries: 2,

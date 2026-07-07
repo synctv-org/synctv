@@ -48,4 +48,5 @@ pub struct SharedApiRuntime {
     pub proxy_signing_key: Arc<ProxySigningKey>,
     pub webrtc_status: synctv_core::service::WebRtcRuntimeStatus,
     pub server_state_runtime: Arc<crate::status::ServerStateRuntime>,
+    pub slice_cache_management_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
 }

@@ -1947,7 +1947,7 @@ impl ToHuman for synctv_proto::client::ListRoomStreamsResponse {
     }
 }
 
-impl ToHuman for synctv_management::proto::SliceCacheConfigInfo {
+impl ToHuman for synctv_proto::admin::SliceCacheConfigInfo {
     type Human = HumanSliceCacheConfigInfo;
 
     fn to_human(&self) -> Self::Human {
@@ -1966,7 +1966,7 @@ impl ToHuman for synctv_management::proto::SliceCacheConfigInfo {
     }
 }
 
-impl ToHuman for synctv_management::proto::SliceCacheStatsResponse {
+impl ToHuman for synctv_proto::admin::SliceCacheStatsNode {
     type Human = HumanSliceCacheStatsResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -1983,7 +1983,7 @@ impl ToHuman for synctv_management::proto::SliceCacheStatsResponse {
     }
 }
 
-impl ToHuman for synctv_management::proto::SliceCacheNodeFailure {
+impl ToHuman for synctv_proto::admin::SliceCacheNodeFailure {
     type Human = HumanSliceCacheNodeFailure;
 
     fn to_human(&self) -> Self::Human {
@@ -1994,7 +1994,7 @@ impl ToHuman for synctv_management::proto::SliceCacheNodeFailure {
     }
 }
 
-impl ToHuman for synctv_management::proto::GetSliceCacheStatsResponse {
+impl ToHuman for synctv_proto::admin::GetSliceCacheStatsResponse {
     type Human = HumanGetSliceCacheStatsResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -2005,7 +2005,7 @@ impl ToHuman for synctv_management::proto::GetSliceCacheStatsResponse {
     }
 }
 
-impl ToHuman for synctv_management::proto::PurgeSliceCacheNodeResult {
+impl ToHuman for synctv_proto::admin::PurgeSliceCacheNodeResult {
     type Human = HumanPurgeSliceCacheNodeResult;
 
     fn to_human(&self) -> Self::Human {
@@ -2019,7 +2019,7 @@ impl ToHuman for synctv_management::proto::PurgeSliceCacheNodeResult {
     }
 }
 
-impl ToHuman for synctv_management::proto::PurgeSliceCacheResponse {
+impl ToHuman for synctv_proto::admin::PurgeSliceCacheResponse {
     type Human = HumanPurgeSliceCacheResponse;
 
     fn to_human(&self) -> Self::Human {
@@ -2034,7 +2034,7 @@ impl ToHuman for synctv_management::proto::PurgeSliceCacheResponse {
     }
 }
 
-impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheNodeResult {
+impl ToHuman for synctv_proto::admin::EvictExpiredSliceCacheNodeResult {
     type Human = HumanEvictExpiredSliceCacheNodeResult;
 
     fn to_human(&self) -> Self::Human {
@@ -2047,7 +2047,7 @@ impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheNodeResult {
     }
 }
 
-impl ToHuman for synctv_management::proto::EvictExpiredSliceCacheResponse {
+impl ToHuman for synctv_proto::admin::EvictExpiredSliceCacheResponse {
     type Human = HumanEvictExpiredSliceCacheResponse;
 
     fn to_human(&self) -> Self::Human {

@@ -128,9 +128,9 @@ service ManagementService {
     rpc GetServerState(GetServerStateRequest) returns (GetServerStateResponse);
     rpc ListActiveStreams(ListActiveStreamsRequest) returns (synctv.admin.ListActiveStreamsResponse);
     rpc KickStream(KickStreamRequest) returns (synctv.admin.KickStreamResponse);
-    rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (GetSliceCacheStatsResponse);
-    rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (PurgeSliceCacheResponse);
-    rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (EvictExpiredSliceCacheResponse);
+    rpc GetSliceCacheStats(GetSliceCacheStatsRequest) returns (synctv.admin.GetSliceCacheStatsResponse);
+    rpc PurgeSliceCache(PurgeSliceCacheRequest) returns (synctv.admin.PurgeSliceCacheResponse);
+    rpc EvictExpiredSliceCache(EvictExpiredSliceCacheRequest) returns (synctv.admin.EvictExpiredSliceCacheResponse);
     rpc ListUserRegistrationReviews(ListUserRegistrationReviewsRequest) returns (synctv.admin.ListUserRegistrationReviewsResponse);
     rpc ApproveUserRegistrationReview(ApproveUserRegistrationReviewRequest) returns (synctv.admin.ApproveUserRegistrationReviewResponse);
     rpc RejectUserRegistrationReview(RejectUserRegistrationReviewRequest) returns (synctv.admin.UserRegistrationReview);
@@ -1157,72 +1157,6 @@ message PurgeSliceCacheRequest {
 message EvictExpiredSliceCacheRequest {
     string node_id = 1;
     bool all_nodes = 2;
-}
-
-message SliceCacheConfigInfo {
-    bool engine_enabled = 1;
-    string backend = 3;
-    string file_cache_dir = 4;
-    uint64 slice_size = 5;
-    uint64 max_cache_size = 6;
-    uint64 segment_ttl_secs = 9;
-    uint64 stale_max_age_secs = 10;
-    bool stale_while_revalidate = 11;
-    uint64 eviction_interval_secs = 12;
-    double watermark_ratio = 13;
-}
-
-message SliceCacheStatsResponse {
-    SliceCacheConfigInfo config = 1;
-    uint64 current_size_bytes = 2;
-    uint64 entry_count = 3;
-    uint64 metadata_entries = 4;
-    uint64 updating_entries = 5;
-    uint64 lock_count = 6;
-    double usage_ratio = 7;
-    string node_id = 8;
-}
-
-message SliceCacheNodeFailure {
-    string node_id = 1;
-    string error = 2;
-}
-
-message GetSliceCacheStatsResponse {
-    repeated SliceCacheStatsResponse nodes = 1;
-    repeated SliceCacheNodeFailure failures = 2;
-}
-
-message PurgeSliceCacheNodeResult {
-    string node_id = 1;
-    bool success = 2;
-    uint64 removed_entries = 3;
-    uint64 freed_bytes = 4;
-    SliceCacheStatsResponse stats = 5;
-}
-
-message PurgeSliceCacheResponse {
-    bool success = 1;
-    uint64 removed_entries = 2;
-    uint64 freed_bytes = 3;
-    SliceCacheStatsResponse stats = 4;
-    repeated PurgeSliceCacheNodeResult nodes = 5;
-    repeated SliceCacheNodeFailure failures = 6;
-}
-
-message EvictExpiredSliceCacheNodeResult {
-    string node_id = 1;
-    bool success = 2;
-    uint64 removed_expired_entries = 3;
-    SliceCacheStatsResponse stats = 4;
-}
-
-message EvictExpiredSliceCacheResponse {
-    bool success = 1;
-    uint64 removed_expired_entries = 2;
-    SliceCacheStatsResponse stats = 3;
-    repeated EvictExpiredSliceCacheNodeResult nodes = 4;
-    repeated SliceCacheNodeFailure failures = 5;
 }
 
 message ListActiveStreamsRequest {

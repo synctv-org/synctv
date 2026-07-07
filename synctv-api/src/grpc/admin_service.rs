@@ -18,28 +18,30 @@ use synctv_proto::admin::{
     BatchDeleteUsersRequest, BatchDeleteUsersResponse, ContentReport, CreateUserRequest,
     DeleteRoomCategoryRequest, DeleteRoomCategoryResponse, DeleteRoomLabelRequest,
     DeleteRoomLabelResponse, DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest,
-    DeleteUserResponse, GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse,
-    GetRoomRequest, GetRoomSettingsRequest, GetRoomSettingsResponse, GetServiceStateRequest,
-    GetServiceStateResponse, GetSettingsRequest, GetUserPreferencesRequest,
-    GetUserPreferencesResponse, GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse,
-    KickMemberRequest, KickMemberResponse, KickStreamRequest, KickStreamResponse,
-    ListActiveStreamsRequest, ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse,
-    ListBanRecordsRequest, ListBanRecordsResponse, ListContentReportsRequest,
-    ListContentReportsResponse, ListRoomCategoriesRequest, ListRoomCategoriesResponse,
-    ListRoomCreationReviewsRequest, ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest,
-    ListRoomJoinReviewsResponse, ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest,
-    ListRoomsResponse, ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse,
-    ListUsersRequest, ListUsersResponse, RejectRoomCreationReviewRequest,
-    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
-    RemoveAdminResponse, ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview,
-    SendTestEmailRequest, SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse,
-    UnbanRoomRequest, UnbanUserRequest, UpdateContentReportStatusRequest,
-    UpdateContentReportStatusResponse, UpdateMemberDisplayTagRequest,
-    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdateRoomPasswordRequest,
-    UpdateRoomPasswordResponse, UpdateRoomSettingsRequest, UpdateRoomTaxonomyRequest,
-    UpdateSettingsRequest, UpdateUserPreferencesRequest, UpdateUserPreferencesResponse,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UpsertRoomCategoryRequest,
-    UpsertRoomLabelRequest, UserRegistrationReview,
+    DeleteUserResponse, EvictExpiredSliceCacheRequest, EvictExpiredSliceCacheResponse,
+    GetContentReportRequest, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
+    GetRoomSettingsRequest, GetRoomSettingsResponse, GetServiceStateRequest,
+    GetServiceStateResponse, GetSettingsRequest, GetSliceCacheStatsRequest,
+    GetSliceCacheStatsResponse, GetUserPreferencesRequest, GetUserPreferencesResponse,
+    GetUserRequest, GetUserRoomsRequest, GetUserRoomsResponse, KickMemberRequest,
+    KickMemberResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListBanRecordsRequest,
+    ListBanRecordsResponse, ListContentReportsRequest, ListContentReportsResponse,
+    ListRoomCategoriesRequest, ListRoomCategoriesResponse, ListRoomCreationReviewsRequest,
+    ListRoomCreationReviewsResponse, ListRoomJoinReviewsRequest, ListRoomJoinReviewsResponse,
+    ListRoomLabelsRequest, ListRoomLabelsResponse, ListRoomsRequest, ListRoomsResponse,
+    ListUserRegistrationReviewsRequest, ListUserRegistrationReviewsResponse, ListUsersRequest,
+    ListUsersResponse, PurgeSliceCacheRequest, PurgeSliceCacheResponse,
+    RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    RejectUserRegistrationReviewRequest, RemoveAdminRequest, RemoveAdminResponse,
+    ResetRoomSettingsRequest, Room, RoomCreationReview, RoomJoinReview, SendTestEmailRequest,
+    SendTestEmailResponse, SetUserPasswordRequest, SetUserPasswordResponse, UnbanRoomRequest,
+    UnbanUserRequest, UpdateContentReportStatusRequest, UpdateContentReportStatusResponse,
+    UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
+    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, UpdateRoomSettingsRequest,
+    UpdateRoomTaxonomyRequest, UpdateSettingsRequest, UpdateUserPreferencesRequest,
+    UpdateUserPreferencesResponse, UpdateUserRoleRequest, UpdateUserUsernameRequest,
+    UpsertRoomCategoryRequest, UpsertRoomLabelRequest, UserRegistrationReview,
 };
 use synctv_proto::client::{RoomCategory, RoomLabel};
 use synctv_proto::common::RoomMember;
@@ -61,6 +63,23 @@ fn grpc_request_context<T: std::fmt::Debug>(
     })
 }
 
+fn map_slice_cache_error(
+    error: &crate::status::SliceCacheManagementError,
+) -> crate::impls::ApiError {
+    match error {
+        crate::status::SliceCacheManagementError::InvalidSelection => {
+            crate::impls::ApiError::InvalidInput(error.to_string())
+        }
+        crate::status::SliceCacheManagementError::ClusterUnavailable(_)
+        | crate::status::SliceCacheManagementError::Cluster(_)
+        | crate::status::SliceCacheManagementError::MissingClusterSecret
+        | crate::status::SliceCacheManagementError::InvalidClusterSecret
+        | crate::status::SliceCacheManagementError::RemoteRequest { .. } => {
+            crate::impls::ApiError::ServiceUnavailable(error.to_string())
+        }
+    }
+}
+
 /// `AdminService` gRPC implementation.
 ///
 /// Thin wrapper that delegates all business logic to [`AdminApiImpl`],
@@ -69,12 +88,21 @@ fn grpc_request_context<T: std::fmt::Debug>(
 pub struct AdminServiceImpl {
     admin_api: Arc<AdminApiImpl>,
     config: Arc<Config>,
+    slice_cache_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
 }
 
 impl AdminServiceImpl {
     #[must_use]
-    pub const fn new(admin_api: Arc<AdminApiImpl>, config: Arc<Config>) -> Self {
-        Self { admin_api, config }
+    pub const fn new(
+        admin_api: Arc<AdminApiImpl>,
+        config: Arc<Config>,
+        slice_cache_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
+    ) -> Self {
+        Self {
+            admin_api,
+            config,
+            slice_cache_runtime,
+        }
     }
 
     fn request_metadata(
@@ -638,6 +666,83 @@ impl AdminService for AdminServiceImpl {
             api.get_service_state(req).await
         })
         .await
+    }
+
+    // Slice Cache Management
+
+    async fn get_slice_cache_stats(
+        &self,
+        request: Request<GetSliceCacheStatsRequest>,
+    ) -> Result<Response<GetSliceCacheStatsResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        crate::impls::validate_proto_request(&req).map_err(map_api_error)?;
+        let runtime = self.slice_cache_runtime.clone();
+        let executor = self.admin_api.clone();
+        let response = executor
+            .execute_admin_endpoint(&metadata, move |_| async move {
+                runtime
+                    .get_stats(crate::status::SliceCacheSelection {
+                        node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+                        all_nodes: req.all_nodes,
+                    })
+                    .await
+                    .map(crate::status::slice_cache_stats_to_admin_proto)
+                    .map_err(|error| map_slice_cache_error(&error))
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn purge_slice_cache(
+        &self,
+        request: Request<PurgeSliceCacheRequest>,
+    ) -> Result<Response<PurgeSliceCacheResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        crate::impls::validate_proto_request(&req).map_err(map_api_error)?;
+        let runtime = self.slice_cache_runtime.clone();
+        let executor = self.admin_api.clone();
+        let response = executor
+            .execute_admin_endpoint(&metadata, move |_| async move {
+                runtime
+                    .purge(crate::status::SliceCacheSelection {
+                        node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+                        all_nodes: req.all_nodes,
+                    })
+                    .await
+                    .map(crate::status::slice_cache_purge_to_admin_proto)
+                    .map_err(|error| map_slice_cache_error(&error))
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn evict_expired_slice_cache(
+        &self,
+        request: Request<EvictExpiredSliceCacheRequest>,
+    ) -> Result<Response<EvictExpiredSliceCacheResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        crate::impls::validate_proto_request(&req).map_err(map_api_error)?;
+        let runtime = self.slice_cache_runtime.clone();
+        let executor = self.admin_api.clone();
+        let response = executor
+            .execute_admin_endpoint(&metadata, move |_| async move {
+                runtime
+                    .evict_expired(crate::status::SliceCacheSelection {
+                        node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+                        all_nodes: req.all_nodes,
+                    })
+                    .await
+                    .map(crate::status::slice_cache_evict_expired_to_admin_proto)
+                    .map_err(|error| map_slice_cache_error(&error))
+            })
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
     }
 
     // Room Settings Management

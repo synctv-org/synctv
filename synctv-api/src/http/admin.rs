@@ -109,6 +109,12 @@ pub(crate) fn create_admin_router() -> Router<AppState> {
         // Service state
         .route("/service-state", get(get_service_state))
         .route("/server-state", get(get_server_state))
+        .route("/slice-cache", get(get_slice_cache_stats))
+        .route("/slice-cache/purge", post(purge_slice_cache))
+        .route(
+            "/slice-cache/evict-expired",
+            post(evict_expired_slice_cache),
+        )
         // Review workflow
         .route(
             "/reviews/user-registrations",
@@ -232,6 +238,17 @@ pub(crate) struct AdminServerStateQuery {
     all_nodes: bool,
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub(crate) struct AdminSliceCacheQuery {
+    #[serde(default)]
+    node_id: String,
+    #[serde(default)]
+    all_nodes: bool,
+}
+
 async fn get_server_state(
     State(state): State<AppState>,
     request_meta: RequestMetadata,
@@ -254,6 +271,139 @@ async fn get_server_state(
         })
         .await?;
     Ok(Json(response))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        get,
+        path = "/api/admin/slice-cache",
+        tag = "Admin",
+        params(AdminSliceCacheQuery),
+        responses(
+            (status = 200, description = "Slice cache stats", body = admin::GetSliceCacheStatsResponse),
+            (status = 400, description = "Invalid target selection", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Slice cache management unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+async fn get_slice_cache_stats(
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    ProtoQuery(query): ProtoQuery<AdminSliceCacheQuery>,
+) -> AppResult<Json<admin::GetSliceCacheStatsResponse>> {
+    let req = admin::GetSliceCacheStatsRequest {
+        node_id: query.node_id,
+        all_nodes: query.all_nodes,
+    };
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
+    execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        |_api, _validated, _ctx| async { Ok(()) },
+    )
+    .await?;
+
+    let response = state
+        .shared_api_runtime
+        .slice_cache_management_runtime
+        .get_stats(crate::status::SliceCacheSelection {
+            node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+            all_nodes: req.all_nodes,
+        })
+        .await?;
+    Ok(Json(crate::status::slice_cache_stats_to_admin_proto(
+        response,
+    )))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/slice-cache/purge",
+        tag = "Admin",
+        request_body = admin::PurgeSliceCacheRequest,
+        responses(
+            (status = 200, description = "Slice cache purged", body = admin::PurgeSliceCacheResponse),
+            (status = 400, description = "Invalid target selection", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Slice cache management unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+async fn purge_slice_cache(
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    Json(req): Json<admin::PurgeSliceCacheRequest>,
+) -> AppResult<Json<admin::PurgeSliceCacheResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
+    execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        |_api, _validated, _ctx| async { Ok(()) },
+    )
+    .await?;
+
+    let response = state
+        .shared_api_runtime
+        .slice_cache_management_runtime
+        .purge(crate::status::SliceCacheSelection {
+            node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+            all_nodes: req.all_nodes,
+        })
+        .await?;
+    Ok(Json(crate::status::slice_cache_purge_to_admin_proto(
+        response,
+    )))
+}
+
+#[cfg_attr(
+    feature = "openapi",
+    utoipa::path(
+        post,
+        path = "/api/admin/slice-cache/evict-expired",
+        tag = "Admin",
+        request_body = admin::EvictExpiredSliceCacheRequest,
+        responses(
+            (status = 200, description = "Expired slice cache entries evicted", body = admin::EvictExpiredSliceCacheResponse),
+            (status = 400, description = "Invalid target selection", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 401, description = "Admin authentication required", body = crate::openapi::GoogleRpcStatusSchema),
+            (status = 503, description = "Slice cache management unavailable", body = crate::openapi::GoogleRpcStatusSchema)
+        ),
+        security(("bearer_auth" = []))
+    )
+)]
+async fn evict_expired_slice_cache(
+    State(state): State<AppState>,
+    request_meta: RequestMetadata,
+    Json(req): Json<admin::EvictExpiredSliceCacheRequest>,
+) -> AppResult<Json<admin::EvictExpiredSliceCacheResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
+    execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        |_api, _validated, _ctx| async { Ok(()) },
+    )
+    .await?;
+
+    let response = state
+        .shared_api_runtime
+        .slice_cache_management_runtime
+        .evict_expired(crate::status::SliceCacheSelection {
+            node_id: (!req.node_id.trim().is_empty()).then_some(req.node_id),
+            all_nodes: req.all_nodes,
+        })
+        .await?;
+    Ok(Json(
+        crate::status::slice_cache_evict_expired_to_admin_proto(response),
+    ))
 }
 
 #[cfg_attr(

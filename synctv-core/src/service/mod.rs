@@ -44,6 +44,7 @@ pub(crate) mod service_state;
 mod session_store;
 pub(crate) mod settings;
 pub(crate) mod settings_vars;
+pub(crate) mod slice_cache_management;
 mod source_config;
 pub(crate) mod stun_server;
 pub(crate) mod system_stats;
@@ -217,6 +218,15 @@ pub use service_state::{
 };
 pub use settings::SettingsService;
 pub use settings_vars::{Setting, SettingsStorage};
+pub use slice_cache_management::{
+    evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
+    SliceCacheConfigInfo, SliceCacheEvictExpiredNodeResult, SliceCacheEvictExpiredResponse,
+    SliceCacheManagementClusterRuntime, SliceCacheManagementError,
+    SliceCacheManagementLocalRuntime, SliceCacheManagementRemoteClient, SliceCacheManagementResult,
+    SliceCacheManagementService, SliceCacheManagementServiceDependencies, SliceCacheNodeFailure,
+    SliceCachePurgeNodeResult, SliceCachePurgeResponse, SliceCachePurgeResult, SliceCacheSelection,
+    SliceCacheStats, SliceCacheStatsNode, SliceCacheStatsResponse,
+};
 pub use stun_server::{
     resolve_external_ip, validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState,
     StunServer, StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,

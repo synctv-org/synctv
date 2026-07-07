@@ -516,6 +516,9 @@ pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<
         server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_config(
             config,
         )),
+        slice_cache_management_runtime: Arc::new(
+            crate::status::slice_cache_management_runtime_from_router_config(config),
+        ),
     })
 }
 

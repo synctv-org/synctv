@@ -6,7 +6,7 @@ use axum::{
 use super::execute::execute_room_actor_endpoint;
 use super::types::{ChatMessagePath, ChatReactionPath};
 use crate::http::validation::ProtoQuery;
-use crate::http::{middleware::RequestMetadata, AppResult, AppState};
+use crate::http::{middleware::RequestMetadata, AppError, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
 use synctv_proto::client::{
     ChatMessageEvent, ChatMessageEventResponse, ChatMessageReceive, ChatPinEventResponse,
@@ -19,6 +19,57 @@ use synctv_proto::client::{
     SearchChatMessagesRequest, SearchChatMessagesResponse, SendChatMessageRequest,
     SetChatReactionRequest, UnpinChatMessageRequest,
 };
+
+fn parse_include_message_types(value: &str) -> AppResult<Vec<i32>> {
+    let normalized = value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    normalized
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let raw = part
+                .parse::<i32>()
+                .map_err(|_| AppError::bad_request("Invalid includeMessageTypes entry"))?;
+            match synctv_proto::client::ChatMessageType::try_from(raw) {
+                Ok(synctv_proto::client::ChatMessageType::Unspecified) | Err(_) => {
+                    Err(AppError::bad_request("Invalid includeMessageTypes entry"))
+                }
+                Ok(_) => Ok(raw),
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
+pub struct GetChatHistoryQuery {
+    #[serde(default)]
+    limit: i32,
+    #[serde(default)]
+    cursor: String,
+    #[serde(default)]
+    include_message_types: String,
+}
+
+impl GetChatHistoryQuery {
+    pub(super) fn into_request(self) -> AppResult<GetChatHistoryRequest> {
+        Ok(GetChatHistoryRequest {
+            limit: self.limit,
+            cursor: self.cursor,
+            include_message_types: parse_include_message_types(&self.include_message_types)?,
+        })
+    }
+}
 
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +134,8 @@ pub struct GetChatPlaybackMessagesQuery {
     limit: i32,
     #[serde(default)]
     include_deleted: bool,
+    #[serde(default)]
+    include_message_types: String,
 }
 
 impl GetChatPlaybackMessagesQuery {
@@ -109,6 +162,7 @@ impl GetChatPlaybackMessagesQuery {
             after_seconds: self.after_seconds,
             limit: self.limit,
             include_deleted: self.include_deleted,
+            include_message_types: parse_include_message_types(&self.include_message_types)?,
         })
     }
 }
@@ -202,9 +256,10 @@ pub async fn get_chat_history(
     request_meta: RequestMetadata,
     State(state): State<AppState>,
     Path(path): Path<synctv_proto::client::RoomPathRequest>,
-    ProtoQuery(req): ProtoQuery<GetChatHistoryRequest>,
+    ProtoQuery(query): ProtoQuery<GetChatHistoryQuery>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
     let room_id = path.room_id;
+    let req = query.into_request()?;
     let response =
         execute_room_actor_endpoint(
             &state,

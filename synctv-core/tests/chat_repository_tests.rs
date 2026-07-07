@@ -7,9 +7,9 @@ use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use synctv_core::{
     models::{
-        try_hash_playback_target, ChatMessage, ChatMetadata, ChatPlaybackMessagesQuery,
-        ChatPlaybackMetadata, ChatUserMetadata, MediaId, PlaylistId, ProviderTarget, Room, RoomId,
-        RoomStatus, User, UserId, UserRole, UserStatus,
+        try_hash_playback_target, ChatMessage, ChatMessageSelection, ChatMessageType, ChatMetadata,
+        ChatPlaybackMessagesQuery, ChatPlaybackMetadata, ChatUserMetadata, MediaId, PlaylistId,
+        ProviderTarget, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus,
     },
     repository::{ChatRepository, RoomRepository, UserRepository},
 };
@@ -156,7 +156,7 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
     let media_id = MediaId::expect_positive(300_001);
     let playlist_id = PlaylistId::expect_positive(300_002);
     let target = ProviderTarget::alist("/playback-target-1".to_string());
-    let _target_hash = ok(
+    let target_hash = ok(
         try_hash_playback_target(Some(&target)),
         "target hash should compute",
     );
@@ -210,13 +210,46 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
         );
     }
 
+    let system_metadata = serde_json::json!({
+        "type": "user",
+        "playback": {
+            "mediaId": media_id,
+            "playlistId": playlist_id,
+            "targetHash": target_hash,
+            "positionSeconds": 11.0
+        }
+    });
+    ok(
+        sqlx::query!(
+            r"
+            INSERT INTO chat_messages (
+                room_id, user_id, client_message_id, content, message_type,
+                status, version, reply_to_message_id, reply_to_message_created_at,
+                metadata, created_at
+            )
+            VALUES ($1, $2, NULL, $3, $4, $5, 1, NULL, NULL, $6, $7)
+            ",
+            room.id.as_i64(),
+            user.id.as_i64(),
+            "system-inside",
+            i16::from(ChatMessageType::SystemMemberJoined),
+            i16::from(synctv_core::models::ChatMessageStatus::Active),
+            system_metadata,
+            Utc::now(),
+        )
+        .execute(&pool)
+        .await,
+        "playback system chat message should be inserted",
+    );
+
     let messages = ok(
         chat_repo
             .list_playback_messages(&ChatPlaybackMessagesQuery {
                 room_id: room.id,
                 media_id: Some(media_id),
                 playlist_id: Some(playlist_id),
-                target: Some(target),
+                target: Some(target.clone()),
+                selection: ChatMessageSelection::user_default(),
                 position_seconds: 11.0,
                 before_seconds: 1.0,
                 after_seconds: 1.0,
@@ -232,6 +265,36 @@ async fn test_list_playback_messages_filters_by_context_and_time_window() {
         .map(|message| message.message.content)
         .collect::<Vec<_>>();
     assert_eq!(contents, vec!["inside-a", "inside-b"]);
+
+    let messages_with_system = ok(
+        chat_repo
+            .list_playback_messages(&ChatPlaybackMessagesQuery {
+                room_id: room.id,
+                media_id: Some(media_id),
+                playlist_id: Some(playlist_id),
+                target: Some(target),
+                selection: ChatMessageSelection {
+                    include_message_types: vec![
+                        ChatMessageType::User,
+                        ChatMessageType::SystemMemberJoined,
+                    ],
+                },
+                position_seconds: 11.0,
+                before_seconds: 1.0,
+                after_seconds: 1.0,
+                limit: 100,
+                include_deleted: false,
+            })
+            .await,
+        "playback chat messages with system type should list",
+    );
+    assert_eq!(
+        messages_with_system
+            .into_iter()
+            .map(|message| message.message.content)
+            .collect::<Vec<_>>(),
+        vec!["inside-a", "system-inside", "inside-b"]
+    );
 }
 
 #[tokio::test]
@@ -286,6 +349,7 @@ async fn test_list_playback_messages_handles_nullable_metadata_and_missing_targe
                 media_id: Some(media_id),
                 playlist_id: Some(playlist_id),
                 target: None,
+                selection: ChatMessageSelection::user_default(),
                 position_seconds: 42.0,
                 before_seconds: 0.0,
                 after_seconds: 0.0,
@@ -310,6 +374,7 @@ async fn test_list_playback_messages_handles_nullable_metadata_and_missing_targe
                 media_id: Some(media_id),
                 playlist_id: Some(playlist_id),
                 target: Some(target),
+                selection: ChatMessageSelection::user_default(),
                 position_seconds: 42.0,
                 before_seconds: 0.0,
                 after_seconds: 0.0,

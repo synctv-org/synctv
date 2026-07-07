@@ -2289,9 +2289,11 @@ impl ChatRepository {
             .as_ref()
             .map(|target| crate::models::try_hash_playback_target(Some(target)))
             .transpose()?;
+        let included_message_type_codes = query.selection.message_type_codes();
         let pool = self.eventually_consistent_pool();
-        let messages = sqlx::query_as::<_, ChatMessage>(
-            r"
+        let rows = sqlx::query_as!(
+            ChatMessageRow,
+            r#"
             WITH candidates AS (
                 SELECT id,
                        room_id,
@@ -2320,40 +2322,43 @@ impl ChatRepository {
                   AND ($4::text IS NULL OR metadata #>> '{playback,mediaId}' = $4)
                   AND ($5::text IS NULL OR metadata #>> '{playback,playlistId}' = $5)
                   AND ($6::text IS NULL OR metadata #>> '{playback,targetHash}' = $6)
+                  AND message_type = ANY($7::smallint[])
             )
-            SELECT id,
-                   room_id,
-                   user_id,
+            SELECT id AS "id!",
+                   room_id AS "room_id!: RoomId",
+                   user_id AS "user_id?: UserId",
                    client_message_id,
-                   content,
-                   message_type,
-                   status,
-                   version,
+                   content AS "content!",
+                   message_type AS "message_type!: ChatMessageType",
+                   status AS "status!: ChatMessageStatus",
+                   version AS "version!",
                    reply_to_message_id,
                    reply_to_message_created_at,
-                   metadata,
+                   metadata AS "metadata?: ChatMetadata",
                    edited_at,
                    deleted_at,
-                   deleted_by,
+                   deleted_by AS "deleted_by?: UserId",
                    delete_reason,
-                   created_at
+                   created_at AS "created_at!"
             FROM candidates
-            WHERE playback_position BETWEEN $7 AND $8
+            WHERE playback_position BETWEEN $8 AND $9
             ORDER BY playback_position ASC, created_at ASC, id ASC
-            LIMIT $9
-            ",
+            LIMIT $10
+            "#,
+            query.room_id.as_i64(),
+            query.include_deleted,
+            i16::from(ChatMessageStatus::Deleted),
+            media_id,
+            playlist_id,
+            target_hash.as_deref(),
+            &included_message_type_codes,
+            start_seconds,
+            end_seconds,
+            i64::from(limit),
         )
-        .bind(query.room_id)
-        .bind(query.include_deleted)
-        .bind(i16::from(ChatMessageStatus::Deleted))
-        .bind(media_id)
-        .bind(playlist_id)
-        .bind(target_hash.as_deref())
-        .bind(start_seconds)
-        .bind(end_seconds)
-        .bind(i64::from(limit))
         .fetch_all(pool)
         .await?;
+        let messages = chat_messages_from_rows(rows)?;
 
         self.attach_attachments_and_reactions_to_messages(messages, viewer_user_id)
             .await

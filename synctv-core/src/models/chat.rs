@@ -839,6 +839,7 @@ pub struct ChatPlaybackMessagesQuery {
     pub media_id: Option<MediaId>,
     pub playlist_id: Option<PlaylistId>,
     pub target: Option<super::ProviderTarget>,
+    pub selection: ChatMessageSelection,
     pub position_seconds: f64,
     pub before_seconds: f64,
     pub after_seconds: f64,

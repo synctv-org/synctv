@@ -12,9 +12,10 @@ use synctv_core::provider::ExecutionControl;
 use synctv_core::service::ClientResourceAvailability;
 
 use super::convert::{
-    apply_room_settings_patch_from_proto, chat_metadata_from_proto, file_metadata_from_proto,
-    member_status_to_proto, provider_target_from_proto, resource_availability_enum_to_proto,
-    room_role_to_proto, room_settings_from_proto, room_settings_to_proto, try_members_to_proto,
+    apply_room_settings_patch_from_proto, chat_message_selection_from_proto_values,
+    chat_metadata_from_proto, file_metadata_from_proto, member_status_to_proto,
+    provider_target_from_proto, resource_availability_enum_to_proto, room_role_to_proto,
+    room_settings_from_proto, room_settings_to_proto, try_members_to_proto,
     try_playback_state_to_proto,
 };
 use super::media::{
@@ -2327,6 +2328,7 @@ impl ClientApiImpl {
         let after_seconds =
             optional_positive_window_seconds(req.after_seconds, 30.0, "after_seconds")?;
         let limit = optional_positive_limit(req.limit, 200, 500, "limit")?;
+        let selection = chat_message_selection_from_proto_values(&req.include_message_types)?;
         let messages = chat_service
             .get_playback_messages_with_attachments_for_viewer(
                 ChatPlaybackMessagesQuery {
@@ -2334,6 +2336,7 @@ impl ClientApiImpl {
                     media_id,
                     playlist_id,
                     target,
+                    selection,
                     position_seconds,
                     before_seconds,
                     after_seconds,

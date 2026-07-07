@@ -3900,6 +3900,7 @@ message GetChatPlaybackMessagesRequest {
   double after_seconds = 6;
   int32 limit = 7;
   bool include_deleted = 8;
+  repeated ChatMessageType include_message_types = 9 [(buf.validate.field).repeated.items.enum.defined_only = true];
 }
 
 message GetChatPlaybackMessagesResponse {

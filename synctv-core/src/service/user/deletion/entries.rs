@@ -121,9 +121,9 @@ impl UserService {
                 let reserved_version = reservation
                     .as_ref()
                     .map_or(playback_version + 1, |reservation| reservation.version);
-                let reset_result: Result<RoomPlaybackState> =
-                    match sqlx::query_as::<_, RoomPlaybackState>(
-                        r#"WITH current_state AS (
+                let reset_result: Result<RoomPlaybackState> = match sqlx::query_as!(
+                    RoomPlaybackState,
+                    r#"WITH current_state AS (
                             SELECT room_id, current_progress_id
                             FROM room_playback_state
                             WHERE room_id = $1 AND version = $3
@@ -159,28 +159,28 @@ impl UserService {
                                       state.updated_at,
                                       state.version
                         )
-                        SELECT room_id,
-                               playing_media_id,
-                               playing_playlist_id,
-                               target,
+                        SELECT room_id AS "room_id!: RoomId",
+                               playing_media_id AS "playing_media_id?: MediaId",
+                               playing_playlist_id AS "playing_playlist_id?: PlaylistId",
+                               target AS "target?: crate::models::ProviderTarget",
                                current_progress_id,
-                               0.0::DOUBLE PRECISION AS position,
-                               speed,
-                               is_playing,
-                               updated_at,
-                               version
+                               0.0::DOUBLE PRECISION AS "position!",
+                               speed AS "speed!",
+                               is_playing AS "is_playing!",
+                               updated_at AS "updated_at!",
+                               version AS "version!"
                         FROM updated"#,
-                    )
-                    .bind(room_id)
-                    .bind(reserved_version)
-                    .bind(playback_version)
-                    .fetch_optional(&mut **tx)
-                    .await
-                    {
-                        Ok(Some(state)) => Ok(state),
-                        Ok(None) => Err(Error::OptimisticLockConflict),
-                        Err(error) => Err(error.into()),
-                    };
+                    room_id.as_i64(),
+                    reserved_version,
+                    playback_version,
+                )
+                .fetch_optional(&mut **tx)
+                .await
+                {
+                    Ok(Some(state)) => Ok(state),
+                    Ok(None) => Err(Error::OptimisticLockConflict),
+                    Err(error) => Err(error.into()),
+                };
                 playback_state = Some(match reset_result {
                     Ok(state) => state,
                     Err(error) => {

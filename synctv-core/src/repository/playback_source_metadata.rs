@@ -298,31 +298,32 @@ impl PlaybackSourceMetadataRepository {
         }
 
         let room_ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
-        let rows = sqlx::query_as::<_, PlaybackSourceWithStateRow>(
+        let rows = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
             r#"
-            SELECT metadata.room_id AS metadata_room_id,
-                   metadata.media_id AS metadata_media_id,
-                   metadata.playlist_id AS metadata_playlist_id,
-                   metadata.target_hash AS metadata_target_hash,
+            SELECT metadata.room_id AS "metadata_room_id!: RoomId",
+                   metadata.media_id AS "metadata_media_id?: MediaId",
+                   metadata.playlist_id AS "metadata_playlist_id?: PlaylistId",
+                   metadata.target_hash AS "metadata_target_hash!",
                    metadata.is_live AS metadata_is_live,
                    metadata.duration_seconds,
-                   metadata.duration_status AS metadata_duration_status,
-                   metadata.duration_source AS metadata_duration_source,
+                   metadata.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   metadata.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
                    metadata.duration_error,
                    metadata.next_retry_at,
-                   metadata.created_at AS metadata_created_at,
-                   metadata.updated_at AS metadata_updated_at,
-                   metadata.version AS metadata_version,
-                   state.room_id AS state_room_id,
-                   state.playing_media_id AS state_playing_media_id,
-                   state.playing_playlist_id AS state_playing_playlist_id,
-                   state.target AS state_target,
+                   metadata.created_at AS "metadata_created_at!",
+                   metadata.updated_at AS "metadata_updated_at!",
+                   metadata.version AS "metadata_version!",
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
+                   state.target AS "state_target?: ProviderTarget",
                    state.current_progress_id AS state_current_progress_id,
-                   COALESCE(progress."position", 0.0) AS state_position,
-                   state.speed AS state_speed,
-                   state.is_playing AS state_is_playing,
-                   state.updated_at AS state_updated_at,
-                   state.version AS state_version
+                   COALESCE(progress."position", 0.0) AS "state_position!",
+                   state.speed AS "state_speed!",
+                   state.is_playing AS "state_is_playing!",
+                   state.updated_at AS "state_updated_at!",
+                   state.version AS "state_version!"
             FROM room_playback_state state
             JOIN room_playback_progress progress ON progress.id = state.current_progress_id
             JOIN playback_source_metadata metadata
@@ -337,10 +338,10 @@ impl PlaybackSourceMetadataRepository {
             ORDER BY state.updated_at ASC
             LIMIT $3
             "#,
+            i16::from(PlaybackDurationStatus::Available),
+            &room_ids,
+            limit,
         )
-        .bind(i16::from(PlaybackDurationStatus::Available))
-        .bind(&room_ids)
-        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
@@ -371,7 +372,8 @@ impl PlaybackSourceMetadataRepository {
 
         let room_ids = room_ids.iter().map(RoomId::as_i64).collect::<Vec<_>>();
         let claimable_initial_statuses = PlaybackDurationStatus::claimable_initial_statuses();
-        let rows = sqlx::query_as::<_, PlaybackSourceWithStateRow>(
+        let rows = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
             r#"
             WITH claimed AS (
                 SELECT metadata.room_id,
@@ -427,29 +429,29 @@ impl PlaybackSourceMetadataRepository {
                           metadata.updated_at,
                           metadata.version
             )
-            SELECT updated.room_id AS metadata_room_id,
-                   updated.media_id AS metadata_media_id,
-                   updated.playlist_id AS metadata_playlist_id,
-                   updated.target_hash AS metadata_target_hash,
+            SELECT updated.room_id AS "metadata_room_id!: RoomId",
+                   updated.media_id AS "metadata_media_id?: MediaId",
+                   updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
+                   updated.target_hash AS "metadata_target_hash!",
                    updated.is_live AS metadata_is_live,
                    updated.duration_seconds,
-                   updated.duration_status AS metadata_duration_status,
-                   updated.duration_source AS metadata_duration_source,
+                   updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
                    updated.duration_error,
                    updated.next_retry_at,
-                   updated.created_at AS metadata_created_at,
-                   updated.updated_at AS metadata_updated_at,
-                   updated.version AS metadata_version,
-                   state.room_id AS state_room_id,
-                   state.playing_media_id AS state_playing_media_id,
-                   state.playing_playlist_id AS state_playing_playlist_id,
-                   state.target AS state_target,
+                   updated.created_at AS "metadata_created_at!",
+                   updated.updated_at AS "metadata_updated_at!",
+                   updated.version AS "metadata_version!",
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
+                   state.target AS "state_target?: ProviderTarget",
                    state.current_progress_id AS state_current_progress_id,
-                   COALESCE(progress."position", 0.0) AS state_position,
-                   state.speed AS state_speed,
-                   state.is_playing AS state_is_playing,
-                   state.updated_at AS state_updated_at,
-                   state.version AS state_version
+                   COALESCE(progress."position", 0.0) AS "state_position!",
+                   state.speed AS "state_speed!",
+                   state.is_playing AS "state_is_playing!",
+                   state.updated_at AS "state_updated_at!",
+                   state.version AS "state_version!"
             FROM updated
             JOIN room_playback_state state
               ON state.room_id = updated.room_id
@@ -459,12 +461,12 @@ impl PlaybackSourceMetadataRepository {
               ON progress.id = state.current_progress_id
              AND progress.target_hash = updated.target_hash
             "#,
+            &claimable_initial_statuses[..],
+            i16::from(PlaybackDurationStatus::Pending),
+            limit,
+            i16::from(PlaybackDurationStatus::Pending),
+            &room_ids,
         )
-        .bind(&claimable_initial_statuses[..])
-        .bind(i16::from(PlaybackDurationStatus::Pending))
-        .bind(limit)
-        .bind(i16::from(PlaybackDurationStatus::Pending))
-        .bind(&room_ids)
         .fetch_all(&self.pool)
         .await?;
 
@@ -484,7 +486,8 @@ impl PlaybackSourceMetadataRepository {
         identity: &PlaybackSourceIdentity,
     ) -> Result<Option<ClaimedPlaybackDurationProbe>> {
         let claimable_initial_statuses = PlaybackDurationStatus::claimable_initial_statuses();
-        let row = sqlx::query_as::<_, PlaybackSourceWithStateRow>(
+        let row = sqlx::query_as!(
+            PlaybackSourceWithStateRow,
             r#"
             WITH claimed AS (
                 SELECT metadata.room_id,
@@ -542,29 +545,29 @@ impl PlaybackSourceMetadataRepository {
                           metadata.updated_at,
                           metadata.version
             )
-            SELECT updated.room_id AS metadata_room_id,
-                   updated.media_id AS metadata_media_id,
-                   updated.playlist_id AS metadata_playlist_id,
-                   updated.target_hash AS metadata_target_hash,
+            SELECT updated.room_id AS "metadata_room_id!: RoomId",
+                   updated.media_id AS "metadata_media_id?: MediaId",
+                   updated.playlist_id AS "metadata_playlist_id?: PlaylistId",
+                   updated.target_hash AS "metadata_target_hash!",
                    updated.is_live AS metadata_is_live,
                    updated.duration_seconds,
-                   updated.duration_status AS metadata_duration_status,
-                   updated.duration_source AS metadata_duration_source,
+                   updated.duration_status AS "metadata_duration_status!: PlaybackDurationStatus",
+                   updated.duration_source AS "metadata_duration_source?: PlaybackDurationSource",
                    updated.duration_error,
                    updated.next_retry_at,
-                   updated.created_at AS metadata_created_at,
-                   updated.updated_at AS metadata_updated_at,
-                   updated.version AS metadata_version,
-                   state.room_id AS state_room_id,
-                   state.playing_media_id AS state_playing_media_id,
-                   state.playing_playlist_id AS state_playing_playlist_id,
-                   state.target AS state_target,
+                   updated.created_at AS "metadata_created_at!",
+                   updated.updated_at AS "metadata_updated_at!",
+                   updated.version AS "metadata_version!",
+                   state.room_id AS "state_room_id!: RoomId",
+                   state.playing_media_id AS "state_playing_media_id?: MediaId",
+                   state.playing_playlist_id AS "state_playing_playlist_id?: PlaylistId",
+                   state.target AS "state_target?: ProviderTarget",
                    state.current_progress_id AS state_current_progress_id,
-                   COALESCE(progress."position", 0.0) AS state_position,
-                   state.speed AS state_speed,
-                   state.is_playing AS state_is_playing,
-                   state.updated_at AS state_updated_at,
-                   state.version AS state_version
+                   COALESCE(progress."position", 0.0) AS "state_position!",
+                   state.speed AS "state_speed!",
+                   state.is_playing AS "state_is_playing!",
+                   state.updated_at AS "state_updated_at!",
+                   state.version AS "state_version!"
             FROM updated
             JOIN room_playback_state state
               ON state.room_id = updated.room_id
@@ -574,14 +577,14 @@ impl PlaybackSourceMetadataRepository {
               ON progress.id = state.current_progress_id
              AND progress.target_hash = updated.target_hash
             "#,
+            identity.room_id as RoomId,
+            identity.media_id.map(i64::from),
+            identity.playlist_id.map(i64::from),
+            &identity.target_hash,
+            &claimable_initial_statuses[..],
+            i16::from(PlaybackDurationStatus::Pending),
+            i16::from(PlaybackDurationStatus::Pending),
         )
-        .bind(identity.room_id)
-        .bind(identity.media_id)
-        .bind(identity.playlist_id)
-        .bind(&identity.target_hash)
-        .bind(&claimable_initial_statuses[..])
-        .bind(i16::from(PlaybackDurationStatus::Pending))
-        .bind(i16::from(PlaybackDurationStatus::Pending))
         .fetch_optional(&self.pool)
         .await?;
 

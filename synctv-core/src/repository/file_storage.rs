@@ -1085,24 +1085,25 @@ impl FileStorageRepository {
         reference_kind: &str,
         reference_id: &str,
     ) -> Result<Option<FileUploadSessionRecord>> {
-        let session = sqlx::query_as::<_, FileUploadSessionRecord>(
-            r"
-            SELECT r.storage_backend,
-                   s.upload_session_key,
-                   r.object_key,
-                   s.session_kind,
+        let session = sqlx::query_as!(
+            FileUploadSessionRecord,
+            r#"
+            SELECT r.storage_backend AS "storage_backend!",
+                   s.upload_session_key AS "upload_session_key!",
+                   r.object_key AS "object_key!",
+                   s.session_kind AS "session_kind!: FileUploadSessionKind",
                    s.upload_id,
-                   s.user_id,
-                   s.storage_scope,
-                   s.mime_type,
-                   s.size_bytes,
-                   s.content_manifest_sha256,
-                   s.part_size_bytes,
-                   s.metadata,
-                   s.expires_at,
+                   s.user_id AS "user_id!",
+                   s.storage_scope AS "storage_scope!",
+                   s.mime_type AS "mime_type!",
+                   s.size_bytes AS "size_bytes!",
+                   s.content_manifest_sha256 AS "content_manifest_sha256!",
+                   s.part_size_bytes AS "part_size_bytes!",
+                   s.metadata AS "metadata!: FileUploadSessionMetadata",
+                   s.expires_at AS "expires_at!",
                    s.completed_at,
-                   s.created_at,
-                   s.updated_at
+                   s.created_at AS "created_at!",
+                   s.updated_at AS "updated_at!"
             FROM file_references r
             JOIN file_objects o
               ON o.storage_backend = r.storage_backend
@@ -1119,10 +1120,10 @@ impl FileStorageRepository {
               AND o.deleting_at IS NULL
             ORDER BY r.updated_at DESC, r.id DESC
             LIMIT 1
-            ",
+            "#,
+            reference_kind,
+            reference_id,
         )
-        .bind(reference_kind)
-        .bind(reference_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(session)

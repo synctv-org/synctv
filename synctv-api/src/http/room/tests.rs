@@ -5,7 +5,13 @@ use super::{
     RoomCoverObjectQuery, WatchPlaybackQuery, WatchPlaybackStateQuery, WatchPlaylistItemsQuery,
     WatchQuery,
 };
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::{
+    body::{to_bytes, Body},
+    http::{HeaderMap, HeaderValue, Request, StatusCode},
+    response::IntoResponse,
+    routing::get,
+    Router,
+};
 use synctv_proto::client::{
     AddMediaBatchRequest, CreatePlaylistRequest, DeleteEntriesRequest, DeleteMediaQuery,
     DeletePlaylistQuery, EditMediaRequest, GetChatHistoryRequest, GetHotRoomsRequest,
@@ -13,6 +19,7 @@ use synctv_proto::client::{
     ListRoomsRequest, MoveMediaRequest, MovePlaylistRequest, StartRoomPasswordLoginRequest,
     UpdatePlaybackStateRequest, UpdatePlaylistRequest,
 };
+use tower::ServiceExt;
 
 type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -669,6 +676,44 @@ fn test_parse_chat_history_request_accepts_cursor_only() -> TestResult {
 }
 
 #[test]
+fn test_chat_history_query_accepts_json_array_message_types() -> TestResult {
+    let query: super::chat::GetChatHistoryQuery =
+        serde_urlencoded::from_str("limit=20&includeMessageTypes=%5B1%2C1001%5D")?;
+    let req = app_ok(query.into_request())?;
+
+    assert_eq!(req.limit, 20);
+    assert_eq!(req.include_message_types, vec![1, 1001]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_chat_history_query_rejection_uses_app_error_shape() -> TestResult {
+    async fn handler(
+        crate::http::validation::ProtoQuery(_query): crate::http::validation::ProtoQuery<
+            super::chat::GetChatHistoryQuery,
+        >,
+    ) -> &'static str {
+        "ok"
+    }
+
+    let app = Router::new().route("/chat/history", get(handler));
+    let request = Request::builder()
+        .uri("/chat/history?limit=many")
+        .body(Body::empty())?;
+    let response = app.oneshot(request).await?.into_response();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let json: serde_json::Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["code"], tonic::Code::InvalidArgument as i32);
+    assert!(matches!(
+        json["message"].as_str(),
+        Some(message) if message.contains("limit")
+    ));
+    Ok(())
+}
+
+#[test]
 fn test_chat_message_path_injected_queries_ignore_message_id() -> TestResult {
     let _: super::chat::GetChatMessageQuery = serde_urlencoded::from_str("includeDeleted=true")?;
     let _: super::chat::GetChatMessageQuery =
@@ -697,6 +742,16 @@ fn test_chat_playback_messages_query_accepts_structured_emby_target() -> TestRes
     };
     assert_eq!(target.item_id, "5");
     assert!((query.position_seconds - 12.5).abs() < f64::EPSILON);
+    Ok(())
+}
+
+#[test]
+fn test_chat_playback_messages_query_accepts_json_array_message_types() -> TestResult {
+    let query: super::chat::GetChatPlaybackMessagesQuery =
+        serde_urlencoded::from_str("positionSeconds=12.5&includeMessageTypes=%5B1%2C1001%5D")?;
+    let req = app_ok(query.into_request())?;
+
+    assert_eq!(req.include_message_types, vec![1, 1001]);
     Ok(())
 }
 

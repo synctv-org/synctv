@@ -464,6 +464,7 @@ fn playback_query_with_context() -> ChatPlaybackMessagesQuery {
         media_id: Some(crate::models::MediaId::expect_positive(2)),
         playlist_id: None,
         target: None,
+        selection: crate::models::ChatMessageSelection::user_default(),
         position_seconds: 10.0,
         before_seconds: 1.0,
         after_seconds: 2.0,

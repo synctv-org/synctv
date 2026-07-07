@@ -212,16 +212,6 @@ impl StreamMessageHandler {
                 );
                 return Ok(());
             }
-            Err(CoreError::InvalidInput(message))
-                if is_progress_update
-                    && message == "live playback does not accept position updates" =>
-            {
-                tracing::debug!(
-                    room_id = %self.room_id,
-                    "Playback progress update ignored for live playback"
-                );
-                return Ok(());
-            }
             Err(error) => return Err(error.to_string()),
         };
         prepared_fanout.publish_after_outbox_commit();

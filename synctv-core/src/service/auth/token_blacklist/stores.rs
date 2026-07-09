@@ -449,7 +449,7 @@ impl TieredTokenBlacklistStore {
     }
 
     #[must_use]
-    pub(crate) fn from_shared_state_profile(
+    pub fn from_shared_state_profile(
         durable: impl TokenBlacklistStore + 'static,
         profile: &SharedStateProfile,
     ) -> Self {

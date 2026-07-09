@@ -9,7 +9,6 @@ use chrono::Utc;
 use sqlx::PgPool;
 use synctv_core::{
     cache::{CacheDomain, KeyBuilder, LocalVersionFenceStore, UsernameCache, VersionFenceStore},
-    config::PasswordComplexityConfig,
     models::{
         Media, MediaId, MemberStatus, NotificationType, Playlist, PlaylistId, Room, RoomId,
         RoomMember, RoomStatus, SignupMethod, SourceProvider, User, UserId, UserRole, UserStatus,
@@ -23,12 +22,13 @@ use synctv_core::{
     service::{
         local_passkey_session_store, AccountRegistrationOutcome, AuthFactorMethod,
         AuthenticatedLogin, BruteForceProtection, InMemoryTokenBlacklistStore, JwtService,
-        OpaquePasswordService, PasskeyService, PermissionService, PermissionServiceRuntime,
-        RuntimeSettingsStore, SecurityPipeline, SecurityPipelineRuntime,
+        OpaquePasswordService, PasskeyService, PasskeyServiceOptions, PermissionService,
+        PermissionServiceRuntime, RuntimeSettingsStore, SecurityPipeline, SecurityPipelineRuntime,
         SensitiveVerificationOutcome, SettingsService, TokenAuthContext, UserService,
         UserServiceRuntimeOptions,
     },
-    Config, Error,
+    validation::PasswordComplexityOptions,
+    Error,
 };
 use synctv_core_testing::{
     create_test_pool, opaque_login_user, opaque_login_user_with_challenge, opaque_register_user,
@@ -51,7 +51,7 @@ fn create_user_service_with_runtime(
 ) -> UserService {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_config = PasswordComplexityConfig::default();
+    let password_config = PasswordComplexityOptions::default();
     let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -103,7 +103,7 @@ fn create_user_service_with_security_pipeline(
 ) -> (Arc<UserService>, JwtService, SecurityPipeline) {
     let jwt = create_jwt_service();
     let username_cache = UsernameCache::local_only("test:username:".to_string(), 100, 60);
-    let password_config = PasswordComplexityConfig::default();
+    let password_config = PasswordComplexityOptions::default();
     let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> =
         Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
@@ -420,7 +420,7 @@ async fn insert_oauth2_identity(
 }
 
 fn make_passkey_service(pool: PgPool, user_service: Arc<UserService>) -> PasskeyService {
-    let mut config = Config::default().webauthn;
+    let mut config = PasskeyServiceOptions::default();
     config.enabled = true;
     config.rp_id = "localhost".to_string();
     config.rp_origin = "http://localhost".to_string();
@@ -584,8 +584,8 @@ fn test_username_validation() {
 
 #[test]
 fn test_password_validation() {
-    let validator = synctv_core::validation::PasswordValidator::from_config(
-        &PasswordComplexityConfig::default(),
+    let validator = synctv_core::validation::PasswordValidator::from_options(
+        &PasswordComplexityOptions::default(),
     );
 
     assert!(validator.validate("StrongPass1").is_ok());

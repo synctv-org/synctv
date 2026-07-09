@@ -12,10 +12,50 @@
 #![allow(clippy::unwrap_used)]
 
 mod support;
-use synctv_core::config::{Config, WebRTCConfig, WebRTCMode};
 use synctv_core::models::{RoomGuestPermissionBits, RoomMemberPermissionBits};
 
 // Test Infrastructure Setup
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebRTCMode {
+    SignalingOnly,
+    PeerToPeer,
+}
+
+#[derive(Debug, Clone)]
+struct WebRTCConfig {
+    mode: WebRTCMode,
+    enable_builtin_stun: bool,
+    stun_port: u16,
+    stun_host: String,
+    stun_external_addr: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ServerConfig {
+    advertise_host: String,
+}
+
+#[derive(Debug, Clone)]
+struct Config {
+    server: ServerConfig,
+    webrtc: WebRTCConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerConfig::default(),
+            webrtc: WebRTCConfig {
+                mode: WebRTCMode::PeerToPeer,
+                enable_builtin_stun: true,
+                stun_port: 3478,
+                stun_host: "0.0.0.0".to_string(),
+                stun_external_addr: String::new(),
+            },
+        }
+    }
+}
 
 /// Create a test configuration with WebRTC enabled
 fn test_webrtc_config() -> Config {
@@ -26,7 +66,6 @@ fn test_webrtc_config() -> Config {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            filter_private_ice_candidates: true,
         },
         ..Config::default()
     };
@@ -79,7 +118,6 @@ mod webrtc_modes {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: String::new(),
-            filter_private_ice_candidates: true,
         };
 
         assert_eq!(config.mode, WebRTCMode::SignalingOnly);
@@ -94,7 +132,6 @@ mod webrtc_modes {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            filter_private_ice_candidates: true,
         };
 
         assert_eq!(config.mode, WebRTCMode::PeerToPeer);
@@ -110,7 +147,6 @@ mod webrtc_modes {
             stun_port: 3478,
             stun_host: "0.0.0.0".to_string(),
             stun_external_addr: "203.0.113.1:3478".to_string(),
-            filter_private_ice_candidates: true,
         };
 
         assert!(config.enable_builtin_stun);
@@ -222,12 +258,12 @@ mod permissions {
             test_webrtc_config().webrtc.stun_port
         );
         let client_api = ClientApiImpl::new_with_runtime(
-            synctv_api::ClientApiConfig {
+            synctv_api::ClientApiOptions {
                 read_pool: None,
                 user_service: user_service.clone(),
                 room_service: room_service.clone(),
                 connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
-                config: Arc::new(test_webrtc_config()),
+                runtime_settings: Arc::new(synctv_api::ApiRuntimeSettings::default()),
                 publish_key_service: None,
                 jwt_service,
                 live_streaming_infrastructure: None,

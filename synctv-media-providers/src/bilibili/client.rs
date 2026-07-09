@@ -2953,7 +2953,7 @@ pub struct SegmentBaseData {
 
 // From trait implementations for proto conversion
 
-impl From<&SegmentBaseData> for crate::grpc::bilibili::SegmentBase {
+impl From<&SegmentBaseData> for crate::transport_dto::bilibili::SegmentBase {
     fn from(data: &SegmentBaseData) -> Self {
         Self {
             index_range: data.index_range.clone(),
@@ -2962,7 +2962,7 @@ impl From<&SegmentBaseData> for crate::grpc::bilibili::SegmentBase {
     }
 }
 
-impl From<&VideoStreamData> for crate::grpc::bilibili::VideoStream {
+impl From<&VideoStreamData> for crate::transport_dto::bilibili::VideoStream {
     fn from(data: &VideoStreamData) -> Self {
         Self {
             id: data.id,
@@ -2979,7 +2979,7 @@ impl From<&VideoStreamData> for crate::grpc::bilibili::VideoStream {
     }
 }
 
-impl From<&AudioStreamData> for crate::grpc::bilibili::AudioStream {
+impl From<&AudioStreamData> for crate::transport_dto::bilibili::AudioStream {
     fn from(data: &AudioStreamData) -> Self {
         Self {
             id: data.id,
@@ -2994,7 +2994,7 @@ impl From<&AudioStreamData> for crate::grpc::bilibili::AudioStream {
     }
 }
 
-impl From<&DashData> for crate::grpc::bilibili::DashInfo {
+impl From<&DashData> for crate::transport_dto::bilibili::DashInfo {
     fn from(data: &DashData) -> Self {
         Self {
             duration: data.duration,

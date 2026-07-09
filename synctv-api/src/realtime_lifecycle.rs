@@ -6,9 +6,9 @@ use synctv_core::service::RoomService;
 use synctv_core::service::UserDeletionSummary;
 use synctv_livestream::LiveStreamingInfrastructure;
 use synctv_livestream::StreamError;
+use synctv_realtime::fanout::RealtimeFanoutService;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::realtime_fanout::RealtimeFanoutService;
 use synctv_realtime::sync::ConnectionRuntime;
 
 pub struct DeletedRoomAfterCommitFanout {

@@ -1,4 +1,4 @@
-use super::RoomService;
+use super::member_role_policy::validate_override_bits_for_role;
 use crate::models::{
     room_settings::{GuestAddedPermissions, MemberAddedPermissions},
     RoomGuestPermissionBits, RoomId, RoomMember, RoomMemberPermissionBits, RoomPermissionSet,
@@ -193,7 +193,7 @@ fn test_settings_validate_permissions_member_escalation_is_rejected() {
 
 #[test]
 fn test_validate_override_bits_for_guest_rejects_member_bitspace() {
-    let result = RoomService::validate_override_bits_for_role(
+    let result = validate_override_bits_for_role(
         RoomRole::Guest,
         RoomMemberPermissionBits::CREATE_MEDIA_RESOURCE,
         0,
@@ -213,7 +213,7 @@ fn test_validate_override_bits_for_guest_rejects_member_bitspace() {
 #[test]
 fn test_validate_override_bits_for_guest_accepts_guest_bitspace() {
     ok(
-        RoomService::validate_override_bits_for_role(
+        validate_override_bits_for_role(
             RoomRole::Guest,
             RoomGuestPermissionBits::VIEW_CHAT_HISTORY,
             RoomGuestPermissionBits::USE_WEBRTC,

@@ -2,9 +2,8 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use synctv_core::models::{RoomPlaybackState, UserId};
 use synctv_core::service::RealtimeOutboxPlaybackStateEventFactory;
+use synctv_realtime::fanout::RealtimeFanoutService;
 use synctv_realtime::sync::RealtimeEvent;
-
-use crate::realtime_fanout::RealtimeFanoutService;
 
 pub trait PlaybackFanoutService: Send + Sync {
     fn prepare_state_changed_outbox_fanout(
@@ -217,14 +216,14 @@ pub fn default_playback_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::{default_playback_fanout_service, PlaybackFanoutActor};
-    use crate::realtime_fanout::RealtimeFanoutService;
     use async_trait::async_trait;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
     use synctv_core::models::{MediaId, RoomId, RoomPlaybackState, UserId};
-    use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
+    use synctv_core::service::NewRealtimeOutboxEvent;
+    use synctv_realtime::fanout::RealtimeFanoutService;
     use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;

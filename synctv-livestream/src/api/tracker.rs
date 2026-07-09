@@ -185,7 +185,7 @@ impl StreamTracker {
         inner.by_stream.insert(sk.clone(), user_id);
 
         if is_new_stream {
-            synctv_core::metrics::http::STREAMS_ACTIVE.inc();
+            synctv_core::metrics::application::STREAMS_ACTIVE.inc();
         }
     }
 
@@ -216,7 +216,7 @@ impl StreamTracker {
                     inner.by_room.remove(room_id);
                 }
             }
-            synctv_core::metrics::http::STREAMS_ACTIVE.dec();
+            synctv_core::metrics::application::STREAMS_ACTIVE.dec();
             Some(user_id)
         } else {
             None
@@ -278,7 +278,7 @@ impl StreamTracker {
         // Decrement stream count for all removed streams
         if let Ok(metric_count) = i64::try_from(stream_count) {
             if metric_count > 0 {
-                synctv_core::metrics::http::STREAMS_ACTIVE.sub(metric_count);
+                synctv_core::metrics::application::STREAMS_ACTIVE.sub(metric_count);
             }
             info!(removed = stream_count, "Cleared all stream tracker entries");
         } else {

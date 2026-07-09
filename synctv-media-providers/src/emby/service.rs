@@ -4,7 +4,7 @@
 //! Both gRPC server and local usage call this service.
 
 use super::{client::EmbyClient, types::UserInfo, EmbyError};
-use crate::grpc::emby::{
+use crate::transport_dto::emby::{
     DeleteActiveEncodingsReq, Empty, FsListReq, FsListResp, GetItemReq, GetItemsReq, GetItemsResp,
     Item, LoginReq, LoginResp, LogoutReq, MeReq, MeResp, PlaybackInfoReq, PlaybackInfoResp,
     ReportPlaybackProgressReq, ReportPlaybackStartReq, ReportPlaybackStopReq, SystemInfoReq,
@@ -63,7 +63,7 @@ fn select_user_by_username<'a>(
 
 /// Unified Emby service interface
 ///
-/// This trait defines all Emby operations using proto request/response types.
+/// This trait defines all Emby operations using provider transport DTOs.
 #[async_trait]
 pub trait EmbyInterface: Send + Sync {
     async fn login(&self, request: LoginReq) -> Result<LoginResp, EmbyError>;
@@ -151,7 +151,7 @@ impl EmbyInterface for EmbyService {
             ));
         }
         match request.credential {
-            Some(crate::grpc::emby::login_req::Credential::Password(password)) => {
+            Some(crate::transport_dto::emby::login_req::Credential::Password(password)) => {
                 let password = password.trim();
                 if password.is_empty() {
                     return Err(EmbyError::InvalidConfig(
@@ -178,7 +178,7 @@ impl EmbyInterface for EmbyService {
                     policy: user_info.policy.map(Into::into),
                 })
             }
-            Some(crate::grpc::emby::login_req::Credential::ApiKey(api_key)) => {
+            Some(crate::transport_dto::emby::login_req::Credential::ApiKey(api_key)) => {
                 let api_key = api_key.trim();
                 if api_key.is_empty() {
                     return Err(EmbyError::InvalidConfig(

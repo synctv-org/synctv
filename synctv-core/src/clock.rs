@@ -7,10 +7,51 @@ use rsntp::{AsyncSntpClient, Config as SntpConfig, SynchronizationError};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{ClockSyncProvider, TimeConfig};
-
 const NANOS_PER_SECOND_I64: i64 = 1_000_000_000;
 const NANOS_PER_MILLI_I64: i64 = 1_000_000;
+
+#[derive(Debug, Clone, Default)]
+pub struct TimeOptions {
+    pub timezone: String,
+    pub clock_sync: ClockSyncOptions,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ClockSyncOptions {
+    pub enabled: bool,
+    pub provider: ClockSyncProvider,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockSyncProvider {
+    Sntp(ClockSyncSntpProviderOptions),
+}
+
+impl Default for ClockSyncProvider {
+    fn default() -> Self {
+        Self::Sntp(ClockSyncSntpProviderOptions::default())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSyncSntpProviderOptions {
+    pub servers: Vec<String>,
+    pub interval_seconds: u64,
+    pub timeout_millis: u64,
+}
+
+impl Default for ClockSyncSntpProviderOptions {
+    fn default() -> Self {
+        Self {
+            servers: vec![
+                "time.cloudflare.com:123".to_string(),
+                "pool.ntp.org:123".to_string(),
+            ],
+            interval_seconds: 300,
+            timeout_millis: 1_000,
+        }
+    }
+}
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime<Utc>;
@@ -89,8 +130,8 @@ struct SyncedClockAnchor {
 
 impl SyncedClock {
     #[must_use]
-    pub fn from_config(config: &TimeConfig) -> Self {
-        let clock_sync = &config.clock_sync;
+    pub fn from_options(options: &TimeOptions) -> Self {
+        let clock_sync = &options.clock_sync;
         let ClockSyncProvider::Sntp(provider) = &clock_sync.provider;
         let timeout = Duration::from_millis(provider.timeout_millis.max(1));
         let client = AsyncSntpClient::with_config(SntpConfig::default().timeout(timeout));
@@ -108,7 +149,7 @@ impl SyncedClock {
 
     #[must_use]
     pub fn system() -> Self {
-        Self::from_config(&TimeConfig::default())
+        Self::from_options(&TimeOptions::default())
     }
 
     pub fn start(self: &Arc<Self>, cancel: CancellationToken) -> Option<JoinHandle<()>> {
@@ -356,16 +397,16 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_clock_without_servers_fails_initial_sync() {
-        let clock = SyncedClock::from_config(&TimeConfig {
-            clock_sync: crate::config::ClockSyncConfig {
+        let clock = SyncedClock::from_options(&TimeOptions {
+            clock_sync: ClockSyncOptions {
                 enabled: true,
-                provider: ClockSyncProvider::Sntp(crate::config::ClockSyncSntpProviderConfig {
+                provider: ClockSyncProvider::Sntp(ClockSyncSntpProviderOptions {
                     servers: Vec::new(),
                     timeout_millis: 0,
                     interval_seconds: 0,
                 }),
             },
-            ..TimeConfig::default()
+            ..TimeOptions::default()
         });
 
         let error = clock

@@ -33,6 +33,14 @@ pub struct DnsPeer {
     pub api_address: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct K8sDnsDiscoveryOptions {
+    pub service_name: String,
+    pub namespace: String,
+    pub self_ip: String,
+    pub api_port: u16,
+}
+
 /// Kubernetes DNS-based discovery for cluster peers.
 ///
 /// Resolves the headless service DNS name to discover peer pod IPs,
@@ -65,46 +73,23 @@ pub struct K8sDnsDiscovery {
 }
 
 impl K8sDnsDiscovery {
-    /// Create a new K8s DNS discovery instance from environment variables.
-    ///
-    /// Required env vars:
-    /// - `HEADLESS_SERVICE_NAME`: name of the K8s headless service
-    /// - `POD_NAMESPACE`: namespace of the pod (from downward API)
-    /// - `POD_IP`: this pod's IP address (from downward API)
-    ///
-    /// **Also required**: `REDIS_URL` must be set separately. DNS discovery only
-    /// resolves peer IPs; Redis is required for pub/sub, health checks, leader
-    /// election, and all other cluster coordination.
-    ///
-    /// The shared API port is read from config (`server.port`).
-    pub fn from_env(api_port: u16) -> Result<Self> {
-        let service_name = std::env::var("HEADLESS_SERVICE_NAME").map_err(|_| {
-            Error::Configuration(
-                "HEADLESS_SERVICE_NAME env var is required for k8s_dns discovery mode".to_string(),
-            )
-        })?;
+    /// Create a K8s DNS discovery instance from structured startup options.
+    pub fn from_options(options: &K8sDnsDiscoveryOptions) -> Result<Self> {
+        let service_name = options.service_name.trim();
         if service_name.is_empty() {
             return Err(Error::Configuration(
                 "HEADLESS_SERVICE_NAME must not be empty".to_string(),
             ));
         }
 
-        let namespace = std::env::var("POD_NAMESPACE").map_err(|_| {
-            Error::Configuration(
-                "POD_NAMESPACE env var is required for k8s_dns discovery mode".to_string(),
-            )
-        })?;
+        let namespace = options.namespace.trim();
         if namespace.is_empty() {
             return Err(Error::Configuration(
                 "POD_NAMESPACE must not be empty".to_string(),
             ));
         }
 
-        let self_ip = std::env::var("POD_IP").map_err(|_| {
-            Error::Configuration(
-                "POD_IP env var is required for k8s_dns discovery mode".to_string(),
-            )
-        })?;
+        let self_ip = options.self_ip.trim();
         if self_ip.is_empty() {
             return Err(Error::Configuration("POD_IP must not be empty".to_string()));
         }
@@ -113,8 +98,8 @@ impl K8sDnsDiscovery {
 
         Ok(Self {
             dns_name,
-            api_port,
-            self_ip,
+            api_port: options.api_port,
+            self_ip: self_ip.to_string(),
             peers: Arc::new(RwLock::new(Vec::new())),
             node_registry: None,
             peer_node_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -384,29 +369,14 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env_requires_pod_ip() -> crate::Result<()> {
-        let headless_prev = std::env::var("HEADLESS_SERVICE_NAME").ok();
-        let namespace_prev = std::env::var("POD_NAMESPACE").ok();
-        let pod_ip_prev = std::env::var("POD_IP").ok();
-
-        std::env::set_var("HEADLESS_SERVICE_NAME", "synctv-headless");
-        std::env::set_var("POD_NAMESPACE", "default");
-        std::env::remove_var("POD_IP");
-
-        let result = K8sDnsDiscovery::from_env(8080);
-
-        match headless_prev {
-            Some(value) => std::env::set_var("HEADLESS_SERVICE_NAME", value),
-            None => std::env::remove_var("HEADLESS_SERVICE_NAME"),
-        }
-        match namespace_prev {
-            Some(value) => std::env::set_var("POD_NAMESPACE", value),
-            None => std::env::remove_var("POD_NAMESPACE"),
-        }
-        match pod_ip_prev {
-            Some(value) => std::env::set_var("POD_IP", value),
-            None => std::env::remove_var("POD_IP"),
-        }
+    fn test_from_options_requires_pod_ip() -> crate::Result<()> {
+        let options = K8sDnsDiscoveryOptions {
+            service_name: "synctv-headless".to_string(),
+            namespace: "default".to_string(),
+            self_ip: String::new(),
+            api_port: 8080,
+        };
+        let result = K8sDnsDiscovery::from_options(&options);
 
         let Err(err) = result else {
             return Err(crate::Error::Configuration(

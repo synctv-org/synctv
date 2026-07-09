@@ -1,13 +1,13 @@
 //! Admin API Implementation
 
 use std::sync::Arc;
-use synctv_core::models::UserId;
 use synctv_core::service::{
     AuditService, BanRecordService, ContentReportService, EmailService, RemoteProviderManager,
     ReviewService, RoomService, RuntimeSettingsStore, SettingsService, SystemStatsService,
     UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
+use synctv_realtime::fanout::RealtimeFanoutService;
 
 #[cfg(test)]
 use synctv_core::models::MediaId;
@@ -36,17 +36,17 @@ use crate::playback_fanout::{
     default_playback_fanout_service, PlaybackFanoutActor, PlaybackFanoutService,
 };
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
-use crate::realtime_fanout::RealtimeFanoutService;
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{LocalNoopRealtimeEventService, RealtimeEventService};
+use synctv_realtime::fanout::{LocalNoopRealtimeEventService, RealtimeEventService};
 use synctv_realtime::sync::ConnectionRuntime;
 
 mod audit;
 mod auth;
+mod bans;
 mod batch;
 mod common;
 mod lifecycle;
@@ -59,26 +59,32 @@ mod reports;
 mod response;
 mod reviews;
 mod rooms;
-mod settings;
+pub(crate) mod settings;
 mod stats;
 mod users;
 
 pub use auth::{AdminAuthValidator, ValidatedAdmin};
 use common::*;
+pub use livestream::ActiveStreamListSortBy;
 use mapping::*;
-use query::*;
-
-/// HTTP request context for audit logging (IP address and User-Agent).
+pub(crate) use mapping::{
+    slice_cache_evict_expired_to_admin_proto, slice_cache_purge_to_admin_proto,
+    slice_cache_stats_to_admin_proto,
+};
+pub(crate) use query::*;
+/// Metadata captured by API/management adapters for admin audit records.
+/// Keep this in the API implementation boundary; shared adapter code owns
+/// protocol conversion helpers, while each runtime owns its request context.
 #[derive(Debug, Clone, Default)]
 pub struct RequestContext {
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
 }
 
-pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
+pub use synctv_core::models::LOCAL_MANAGEMENT_ACTOR_USER_ID;
 
 #[derive(Clone)]
-pub struct AdminApiConfig {
+pub struct AdminApiOptions {
     pub room_service: Arc<RoomService>,
     pub user_service: Arc<UserService>,
     pub read_services: AdminReadServices,
@@ -89,9 +95,9 @@ pub struct AdminApiConfig {
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub audit_service: Arc<AuditService>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
 }
 
 #[derive(Clone)]
@@ -154,7 +160,7 @@ pub struct AdminApiImpl {
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
     pub room_settings_fanout: Arc<dyn RoomSettingsFanoutService>,
     pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
@@ -169,14 +175,14 @@ pub struct AdminApiImpl {
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub request_executor: Arc<RequestExecutor>,
 }
 
 impl AdminApiImpl {
     #[must_use]
-    pub fn new_with_runtime(config: AdminApiConfig, runtime: AdminApiRuntime) -> Self {
-        let AdminApiConfig {
+    pub fn new_with_runtime(options: AdminApiOptions, runtime: AdminApiRuntime) -> Self {
+        let AdminApiOptions {
             room_service,
             user_service,
             read_services,
@@ -187,10 +193,10 @@ impl AdminApiImpl {
             provider_instance_manager,
             live_streaming_infrastructure,
             publish_key_service,
-            config,
+            runtime_settings,
             audit_service,
             public_id_codec,
-        } = config;
+        } = options;
 
         let AdminReadServices {
             system_stats_service,
@@ -235,7 +241,7 @@ impl AdminApiImpl {
             provider_instance_manager,
             live_streaming_infrastructure,
             publish_key_service,
-            config,
+            runtime_settings,
             realtime_fanout,
             room_settings_fanout,
             membership_event_fanout,

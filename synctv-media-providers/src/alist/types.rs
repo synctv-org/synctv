@@ -267,7 +267,7 @@ pub struct HttpVideoMeta {
 
 // From trait implementations for proto conversion
 
-impl From<HttpFsGetRelated> for crate::grpc::alist::fs_get_resp::FsGetRelated {
+impl From<HttpFsGetRelated> for crate::transport_dto::alist::fs_get_resp::FsGetRelated {
     fn from(related: HttpFsGetRelated) -> Self {
         Self {
             name: related.name,
@@ -285,7 +285,7 @@ impl From<HttpFsGetRelated> for crate::grpc::alist::fs_get_resp::FsGetRelated {
     }
 }
 
-impl From<HttpFsGetResp> for crate::grpc::alist::FsGetResp {
+impl From<HttpFsGetResp> for crate::transport_dto::alist::FsGetResp {
     fn from(resp: HttpFsGetResp) -> Self {
         Self {
             name: resp.name,
@@ -309,7 +309,7 @@ impl From<HttpFsGetResp> for crate::grpc::alist::FsGetResp {
     }
 }
 
-impl From<HttpFsListContent> for crate::grpc::alist::fs_list_resp::FsListContent {
+impl From<HttpFsListContent> for crate::transport_dto::alist::fs_list_resp::FsListContent {
     fn from(item: HttpFsListContent) -> Self {
         Self {
             name: item.name,
@@ -323,7 +323,7 @@ impl From<HttpFsListContent> for crate::grpc::alist::fs_list_resp::FsListContent
     }
 }
 
-impl From<HttpFsListResp> for crate::grpc::alist::FsListResp {
+impl From<HttpFsListResp> for crate::transport_dto::alist::FsListResp {
     fn from(resp: HttpFsListResp) -> Self {
         Self {
             content: resp
@@ -339,7 +339,9 @@ impl From<HttpFsListResp> for crate::grpc::alist::FsListResp {
     }
 }
 
-impl From<HttpVideoMeta> for crate::grpc::alist::fs_other_resp::video_preview_play_info::Meta {
+impl From<HttpVideoMeta>
+    for crate::transport_dto::alist::fs_other_resp::video_preview_play_info::Meta
+{
     fn from(meta: HttpVideoMeta) -> Self {
         Self {
             duration: meta.duration,
@@ -350,7 +352,7 @@ impl From<HttpVideoMeta> for crate::grpc::alist::fs_other_resp::video_preview_pl
 }
 
 impl From<HttpSubtitleTask>
-    for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingSubtitleTaskList
+    for crate::transport_dto::alist::fs_other_resp::video_preview_play_info::LiveTranscodingSubtitleTaskList
 {
     fn from(sub: HttpSubtitleTask) -> Self {
         Self {
@@ -362,7 +364,7 @@ impl From<HttpSubtitleTask>
 }
 
 impl From<HttpTranscodingTask>
-    for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingTaskList
+    for crate::transport_dto::alist::fs_other_resp::video_preview_play_info::LiveTranscodingTaskList
 {
     fn from(task: HttpTranscodingTask) -> Self {
         Self {
@@ -377,7 +379,9 @@ impl From<HttpTranscodingTask>
     }
 }
 
-impl From<HttpVideoPreviewPlayInfo> for crate::grpc::alist::fs_other_resp::VideoPreviewPlayInfo {
+impl From<HttpVideoPreviewPlayInfo>
+    for crate::transport_dto::alist::fs_other_resp::VideoPreviewPlayInfo
+{
     fn from(preview: HttpVideoPreviewPlayInfo) -> Self {
         Self {
             category: preview.category,
@@ -396,7 +400,7 @@ impl From<HttpVideoPreviewPlayInfo> for crate::grpc::alist::fs_other_resp::Video
     }
 }
 
-impl From<HttpFsOtherResp> for crate::grpc::alist::FsOtherResp {
+impl From<HttpFsOtherResp> for crate::transport_dto::alist::FsOtherResp {
     fn from(resp: HttpFsOtherResp) -> Self {
         Self {
             drive_id: resp.drive_id,
@@ -407,7 +411,7 @@ impl From<HttpFsOtherResp> for crate::grpc::alist::FsOtherResp {
     }
 }
 
-impl From<HttpMeResp> for crate::grpc::alist::MeResp {
+impl From<HttpMeResp> for crate::transport_dto::alist::MeResp {
     fn from(resp: HttpMeResp) -> Self {
         Self {
             id: resp.id,
@@ -422,7 +426,7 @@ impl From<HttpMeResp> for crate::grpc::alist::MeResp {
     }
 }
 
-impl From<HttpFsSearchContent> for crate::grpc::alist::fs_search_resp::FsSearchContent {
+impl From<HttpFsSearchContent> for crate::transport_dto::alist::fs_search_resp::FsSearchContent {
     fn from(item: HttpFsSearchContent) -> Self {
         Self {
             parent: item.parent,
@@ -434,7 +438,7 @@ impl From<HttpFsSearchContent> for crate::grpc::alist::fs_search_resp::FsSearchC
     }
 }
 
-impl From<HttpFsSearchResp> for crate::grpc::alist::FsSearchResp {
+impl From<HttpFsSearchResp> for crate::transport_dto::alist::FsSearchResp {
     fn from(resp: HttpFsSearchResp) -> Self {
         Self {
             content: resp

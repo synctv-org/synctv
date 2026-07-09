@@ -1,48 +1,52 @@
-use std::{collections::HashSet, future::Future};
+use std::future::Future;
 
 use crate::{
-    models::{MediaId, PlaylistId, RoomId, RoomPermission, UserId},
+    models::{MediaId, PlaylistId, RoomId, RoomPermission, RoomPlaybackState, UserId},
     Error, Result,
 };
 
 use super::{
     apply_delete_entries_impact_in_tx, delete_entries_result_from_impact,
-    has_active_room_membership_in_tx, plan_clear_playlist_scope_in_tx,
-    plan_delete_entries_in_room_in_tx, AuthorizedAdminActor, ClearPlaylistResult,
-    DeleteEntriesPlan, DeleteEntriesRequest, DeleteEntriesResult, EntryDeletionImpact,
-    RealtimeOutboxDeleteEntriesEventFactory, RoomService, MAX_DELETE_TARGETS,
+    has_active_room_membership_in_tx, normalize_delete_entries_request,
+    pending_delete_entries_plan, plan_delete_entries_in_room_in_tx, AuthorizedAdminActor,
+    RealtimeOutboxDeleteEntriesEventFactory, RoomService,
 };
 
+#[derive(Debug, Clone, Default)]
+pub struct DeleteEntriesRequest {
+    pub playlist_ids: Vec<PlaylistId>,
+    pub media_ids: Vec<MediaId>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeleteEntriesResult {
+    pub deleted_playlists: usize,
+    pub deleted_media: usize,
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_state: Option<RoomPlaybackState>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeleteEntriesPlan {
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct EntryDeletionImpact {
+    pub playlist_nodes: Vec<(PlaylistId, i32)>,
+    pub deleted_playlist_ids: Vec<PlaylistId>,
+    pub deleted_media_ids: Vec<MediaId>,
+    pub deleted_media_file_references: Vec<crate::models::FileReferenceTarget>,
+    pub playback_reset: bool,
+    pub playback_state: Option<RoomPlaybackState>,
+}
+
 impl RoomService {
-    fn committed_delete_entries_plan(impact: &EntryDeletionImpact) -> DeleteEntriesPlan {
-        DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: impact.playback_state.clone(),
-        }
-    }
-
-    async fn insert_delete_entries_outbox_events_tx(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        impact: &EntryDeletionImpact,
-        outbox_event_factory: Option<&RealtimeOutboxDeleteEntriesEventFactory>,
-    ) -> Result<()> {
-        let Some(outbox) = &self.realtime_outbox else {
-            return Ok(());
-        };
-        let Some(factory) = outbox_event_factory else {
-            return Ok(());
-        };
-
-        let committed_plan = Self::committed_delete_entries_plan(impact);
-        for event in factory(&committed_plan)? {
-            outbox.insert_with_executor(&event, &mut **tx).await?;
-        }
-        Ok(())
-    }
-
     pub async fn remove_media(
         &self,
         room_id: RoomId,
@@ -119,76 +123,36 @@ impl RoomService {
         F: FnOnce(DeleteEntriesPlan) -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        let playlist_ids = dedup_ids(request.playlist_ids);
-        let media_ids = dedup_ids(request.media_ids);
-        let force = request.force;
-        let total_targets = playlist_ids.len() + media_ids.len();
-
-        if total_targets == 0 {
+        let request = normalize_delete_entries_request(request)?;
+        if request.is_empty() {
             return Ok((
                 DeleteEntriesResult::default(),
                 precommit(DeleteEntriesPlan::default()).await?,
             ));
         }
 
-        if total_targets > MAX_DELETE_TARGETS {
-            return Err(Error::InvalidInput(format!(
-                "Delete batch size exceeds maximum of {MAX_DELETE_TARGETS}"
-            )));
-        }
-
         let mut tx = self.pool.begin().await?;
 
-        let playlists = self
-            .playlist_repo
-            .get_by_room_and_ids_with_executor(&room_id, &playlist_ids, &mut *tx)
+        self.load_delete_entry_targets_tx(
+            &mut tx,
+            &room_id,
+            &request.playlist_ids,
+            &request.media_ids,
+        )
+        .await?;
+
+        let mut impact = plan_delete_entries_in_room_in_tx(
+            &mut tx,
+            &room_id,
+            &request.playlist_ids,
+            &request.media_ids,
+            request.force,
+        )
+        .await?;
+
+        let affected_targets = self
+            .load_planned_delete_entry_targets_tx(&mut tx, &room_id, &impact)
             .await?;
-        if playlists.len() != playlist_ids.len() {
-            return Err(Error::NotFound(
-                "One or more playlists not found".to_string(),
-            ));
-        }
-
-        let media_items = self
-            .media_repo
-            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
-            .await?;
-        if media_items.len() != media_ids.len() {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
-            ));
-        }
-
-        let mut impact =
-            plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
-                .await?;
-
-        let affected_playlists = self
-            .playlist_repo
-            .get_by_room_and_ids_with_executor(&room_id, &impact.deleted_playlist_ids, &mut *tx)
-            .await?;
-        if affected_playlists.len() != impact.deleted_playlist_ids.len() {
-            return Err(Error::Internal(
-                "Delete plan referenced a playlist that no longer exists".to_string(),
-            ));
-        }
-
-        let affected_media = self
-            .media_repo
-            .get_by_room_and_ids_with_executor(&room_id, &impact.deleted_media_ids, &mut *tx)
-            .await?;
-        if affected_media.len() != impact.deleted_media_ids.len() {
-            return Err(Error::Internal(
-                "Delete plan referenced a media item that no longer exists".to_string(),
-            ));
-        }
-
-        let has_foreign_resources = affected_playlists
-            .iter()
-            .any(|playlist| playlist.creator_id.as_ref() != Some(&user_id))
-            || affected_media
-                .iter()
-                .any(|media| media.creator_id.as_ref() != Some(&user_id));
 
         if !has_active_room_membership_in_tx(&mut tx, &room_id, &user_id).await? {
             return Err(Error::Authorization(
@@ -196,7 +160,7 @@ impl RoomService {
             ));
         }
 
-        if has_foreign_resources
+        if affected_targets.has_resources_not_owned_by(&user_id)
             && !self
                 .has_room_permission_in_tx(
                     &mut tx,
@@ -210,12 +174,7 @@ impl RoomService {
                 synctv_common::messages::PERMISSION_DENIED.to_string(),
             ));
         }
-        let plan = DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: None,
-        };
+        let plan = pending_delete_entries_plan(&impact);
         let precommit_result = precommit(plan.clone()).await?;
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
         self.insert_delete_entries_outbox_events_tx(
@@ -227,53 +186,12 @@ impl RoomService {
 
         tx.commit().await?;
 
-        if let Some(state) = impact.playback_state.clone() {
-            self.broadcast_playback_reset_after_entry_deletion(state)
-                .await;
-        }
-        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
-            .await;
-
-        let should_notify_playlist_delete = !impact.deleted_playlist_ids.is_empty();
-        if !impact.deleted_media_ids.is_empty() || should_notify_playlist_delete {
-            let actor_username = match self.resolve_actor_username(&user_id).await {
-                Ok(username) => username,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        room_id = %room_id,
-                        user_id = %user_id,
-                        "Skipped delete entries notifications because actor username lookup failed"
-                    );
-                    return Ok((delete_entries_result_from_impact(impact), precommit_result));
-                }
-            };
-            for media_id in &impact.deleted_media_ids {
-                let subscriber_count = self.notification_service.notify_media_removed(
-                    &room_id,
-                    Some(&user_id),
-                    &actor_username,
-                    *media_id,
-                );
-                super::outbox::log_if_no_local_subscribers(
-                    subscriber_count,
-                    &room_id,
-                    "Media removed",
-                );
-            }
-            for playlist_id in &impact.deleted_playlist_ids {
-                let subscriber_count = self.notification_service.notify_playlist_deleted(
-                    &room_id,
-                    Some(&user_id),
-                    &actor_username,
-                    *playlist_id,
-                );
-                super::outbox::log_if_no_local_subscribers(
-                    subscriber_count,
-                    &room_id,
-                    "Playlist deleted",
-                );
-            }
+        self.finalize_entry_deletion_after_commit(&impact).await;
+        if !self
+            .notify_user_entry_deletion_after_commit(&room_id, &user_id, &impact)
+            .await
+        {
+            return Ok((delete_entries_result_from_impact(impact), precommit_result));
         }
 
         tracing::info!(
@@ -329,55 +247,33 @@ impl RoomService {
     {
         let admin_user_id = *actor.user_id();
 
-        let playlist_ids = dedup_ids(request.playlist_ids);
-        let media_ids = dedup_ids(request.media_ids);
-        let force = request.force;
-        let total_targets = playlist_ids.len() + media_ids.len();
-
-        if total_targets == 0 {
+        let request = normalize_delete_entries_request(request)?;
+        if request.is_empty() {
             return Ok((
                 DeleteEntriesResult::default(),
                 precommit(DeleteEntriesPlan::default()).await?,
             ));
         }
 
-        if total_targets > MAX_DELETE_TARGETS {
-            return Err(Error::InvalidInput(format!(
-                "Delete batch size exceeds maximum of {MAX_DELETE_TARGETS}"
-            )));
-        }
-
         let mut tx = self.pool.begin().await?;
 
-        let playlists = self
-            .playlist_repo
-            .get_by_room_and_ids_with_executor(&room_id, &playlist_ids, &mut *tx)
-            .await?;
-        if playlists.len() != playlist_ids.len() {
-            return Err(Error::NotFound(
-                "One or more playlists not found".to_string(),
-            ));
-        }
+        self.load_delete_entry_targets_tx(
+            &mut tx,
+            &room_id,
+            &request.playlist_ids,
+            &request.media_ids,
+        )
+        .await?;
 
-        let media_items = self
-            .media_repo
-            .get_by_room_and_ids_with_executor(&room_id, &media_ids, &mut *tx)
-            .await?;
-        if media_items.len() != media_ids.len() {
-            return Err(Error::NotFound(
-                "One or more media items not found".to_string(),
-            ));
-        }
-
-        let mut impact =
-            plan_delete_entries_in_room_in_tx(&mut tx, &room_id, &playlist_ids, &media_ids, force)
-                .await?;
-        let plan = DeleteEntriesPlan {
-            deleted_playlist_ids: impact.deleted_playlist_ids.clone(),
-            deleted_media_ids: impact.deleted_media_ids.clone(),
-            playback_reset: impact.playback_reset,
-            playback_state: None,
-        };
+        let mut impact = plan_delete_entries_in_room_in_tx(
+            &mut tx,
+            &room_id,
+            &request.playlist_ids,
+            &request.media_ids,
+            request.force,
+        )
+        .await?;
+        let plan = pending_delete_entries_plan(&impact);
         let precommit_result = precommit(plan.clone()).await?;
         apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
         self.insert_delete_entries_outbox_events_tx(
@@ -389,45 +285,13 @@ impl RoomService {
 
         tx.commit().await?;
 
-        if let Some(state) = impact.playback_state.clone() {
-            self.broadcast_playback_reset_after_entry_deletion(state)
-                .await;
-        }
-        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
-            .await;
-
-        if !impact.deleted_media_ids.is_empty() || !impact.deleted_playlist_ids.is_empty() {
-            for media_id in &impact.deleted_media_ids {
-                let subscriber_count = self.notification_service.notify_media_removed(
-                    &room_id,
-                    Some(&admin_user_id),
-                    actor.username(),
-                    *media_id,
-                );
-                if subscriber_count == 0 {
-                    tracing::debug!(
-                        room_id = %room_id,
-                        media_id = %media_id,
-                        "Media removed event had no local subscribers"
-                    );
-                }
-            }
-            for playlist_id in &impact.deleted_playlist_ids {
-                let subscriber_count = self.notification_service.notify_playlist_deleted(
-                    &room_id,
-                    Some(&admin_user_id),
-                    actor.username(),
-                    *playlist_id,
-                );
-                if subscriber_count == 0 {
-                    tracing::debug!(
-                        room_id = %room_id,
-                        playlist_id = %playlist_id,
-                        "Playlist deleted event had no local subscribers"
-                    );
-                }
-            }
-        }
+        self.finalize_entry_deletion_after_commit(&impact).await;
+        self.notify_admin_entry_deletion_after_commit(
+            &room_id,
+            &admin_user_id,
+            actor.username(),
+            &impact,
+        );
 
         tracing::info!(
             room_id = %room_id,
@@ -470,146 +334,4 @@ impl RoomService {
             .await?;
         Ok(result)
     }
-
-    /// Clear media and child playlists in a playlist scope.
-    ///
-    /// The `CLEAR_MEDIA_RESOURCES` permission check is performed inside the
-    /// transaction so revocations cannot race with the clear operation.
-    ///
-    /// `playlist_id = None` clears the room-root scope. `Some(id)` clears the
-    /// given playlist's contents while keeping the playlist itself.
-    pub async fn clear_playlist(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: Option<PlaylistId>,
-    ) -> Result<ClearPlaylistResult> {
-        self.clear_playlist_with_outbox(room_id, user_id, playlist_id, None)
-            .await
-    }
-
-    pub async fn clear_playlist_with_outbox(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        playlist_id: Option<PlaylistId>,
-        outbox_event_factory: Option<RealtimeOutboxDeleteEntriesEventFactory>,
-    ) -> Result<ClearPlaylistResult> {
-        let mut tx = self.pool.begin().await?;
-        self.ensure_actor_has_room_permission_now_tx(
-            &mut tx,
-            &room_id,
-            &user_id,
-            RoomPermission::CLEAR_MEDIA_RESOURCES,
-        )
-        .await?;
-
-        if let Some(playlist_id) = playlist_id {
-            let exists = sqlx::query_scalar!(
-                r#"SELECT EXISTS(
-                    SELECT 1
-                    FROM playlists
-                    WHERE room_id = $1 AND id = $2
-                ) AS "exists!""#,
-                room_id.as_i64(),
-                playlist_id.as_i64()
-            )
-            .fetch_one(&mut *tx)
-            .await?;
-            if !exists {
-                return Err(Error::NotFound("Playlist not found".to_string()));
-            }
-        }
-
-        let mut impact = plan_clear_playlist_scope_in_tx(&mut tx, &room_id, playlist_id).await?;
-        apply_delete_entries_impact_in_tx(&mut tx, &room_id, &mut impact).await?;
-        self.insert_delete_entries_outbox_events_tx(
-            &mut tx,
-            &impact,
-            outbox_event_factory.as_ref(),
-        )
-        .await?;
-
-        tx.commit().await?;
-
-        if let Some(state) = impact.playback_state.clone() {
-            self.broadcast_playback_reset_after_entry_deletion(state)
-                .await;
-        }
-        self.cleanup_deleted_media_file_references(&impact.deleted_media_file_references)
-            .await;
-
-        let actor_username = match self.resolve_actor_username(&user_id).await {
-            Ok(username) => username,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    room_id = %room_id,
-                    user_id = %user_id,
-                    "Skipped clear playlist notifications because actor username lookup failed"
-                );
-                return clear_playlist_result_from_impact(impact);
-            }
-        };
-        for media_id in &impact.deleted_media_ids {
-            let subscriber_count = self.notification_service.notify_media_removed(
-                &room_id,
-                Some(&user_id),
-                &actor_username,
-                *media_id,
-            );
-            if subscriber_count == 0 {
-                tracing::debug!(
-                    room_id = %room_id,
-                    media_id = %media_id,
-                    "Media removed event after clear_playlist had no local subscribers"
-                );
-            }
-        }
-        for playlist_id in &impact.deleted_playlist_ids {
-            let subscriber_count = self.notification_service.notify_playlist_deleted(
-                &room_id,
-                Some(&user_id),
-                &actor_username,
-                *playlist_id,
-            );
-            super::outbox::log_if_no_local_subscribers(
-                subscriber_count,
-                &room_id,
-                "Playlist deleted after clear_playlist",
-            );
-        }
-
-        clear_playlist_result_from_impact(impact)
-    }
-}
-
-fn dedup_ids<T>(ids: Vec<T>) -> Vec<T>
-where
-    T: Eq + std::hash::Hash + Clone,
-{
-    let mut seen = HashSet::new();
-    let mut deduped = Vec::with_capacity(ids.len());
-    for id in ids {
-        if seen.insert(id.clone()) {
-            deduped.push(id);
-        }
-    }
-    deduped
-}
-
-fn clear_playlist_result_from_impact(
-    impact: super::EntryDeletionImpact,
-) -> Result<ClearPlaylistResult> {
-    Ok(ClearPlaylistResult {
-        deleted_count: deleted_count_to_i64(impact.deleted_media_ids.len(), "deleted media count")?,
-        deleted_playlists: impact.deleted_playlist_ids.len(),
-        deleted_playlist_ids: impact.deleted_playlist_ids,
-        deleted_media_ids: impact.deleted_media_ids,
-        playback_state: impact.playback_state,
-    })
-}
-
-fn deleted_count_to_i64(value: usize, field: &'static str) -> Result<i64> {
-    i64::try_from(value).map_err(|_| Error::Internal(format!("{field} exceeds i64::MAX")))
 }

@@ -2092,7 +2092,7 @@ mod tests {
         let client = redis::Client::open("redis://127.0.0.1:1")
             .map_err(|error| crate::Error::Redis(error.to_string()))?;
         let registry = NodeRegistry::new(
-            synctv_core::coordination_runtime_from_client_with_config_and_operation_timeout(
+            synctv_core::coordination_runtime_from_client_with_connection_options_and_operation_timeout(
                 client,
                 redis::aio::ConnectionManagerConfig::new(),
                 std::time::Duration::from_secs(17),

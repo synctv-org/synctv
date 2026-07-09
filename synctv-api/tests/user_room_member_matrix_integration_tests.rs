@@ -2,11 +2,13 @@
 
 mod support;
 
+use synctv_api::ApiRuntimeSettings as Config;
+
 use std::sync::Arc;
 
 use chrono::Utc;
 use synctv_api::{
-    AdminApiConfig, AdminApiImpl, AdminRequestContext as RequestContext, ApiError, ClientApiImpl,
+    AdminApiImpl, AdminApiOptions, AdminRequestContext as RequestContext, ApiError, ClientApiImpl,
 };
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
@@ -24,7 +26,6 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, JwtService, PublishKeyService, RemoteProviderManager,
         RoomService, RoomServiceOptions, RuntimeSettingsStore, SettingsService, UserService,
     },
-    Config,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
@@ -88,12 +89,12 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager,
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
@@ -146,7 +147,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
     );
 
     AdminApiImpl::new_with_runtime(
-        AdminApiConfig {
+        AdminApiOptions {
             room_service: Arc::new(room_service),
             read_services: support::admin_read_services(user_service.as_ref()),
             user_service,
@@ -157,7 +158,7 @@ async fn make_admin_api(pool: sqlx::PgPool) -> AdminApiImpl {
             provider_instance_manager,
             live_streaming_infrastructure: None,
             publish_key_service: Some(publish_key_service),
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             audit_service: Arc::new(AuditService::new_unbuffered(pool)),
             public_id_codec: Arc::new(synctv_api::PublicIdCodec::plain()),
         },

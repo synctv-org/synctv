@@ -10,7 +10,6 @@ use webauthn_rs::prelude::{
 };
 
 use crate::{
-    config::WebAuthnConfig,
     models::{SignupMethod, User, UserId},
     repository::{WebAuthnCredential, WebAuthnCredentialRepository},
     service::{
@@ -73,7 +72,7 @@ fn shared_passkey_session_store(
     Arc::new(RedisPasskeySessionStore::from_runtime(runtime, key_prefix))
 }
 
-pub(crate) fn passkey_session_store_from_shared_state_profile(
+pub fn passkey_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn PasskeySessionStore>> {
     match profile.state_mode() {
@@ -248,23 +247,50 @@ pub struct PasskeyService {
     session_store: Arc<dyn PasskeySessionStore>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PasskeyServiceOptions {
+    pub enabled: bool,
+    pub rp_id: String,
+    pub rp_origin: String,
+    pub rp_name: String,
+    pub allowed_origins: Vec<String>,
+    pub allow_subdomains: bool,
+    pub allow_any_port: bool,
+    pub timeout_seconds: u64,
+}
+
+impl Default for PasskeyServiceOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rp_id: String::new(),
+            rp_origin: String::new(),
+            rp_name: "SyncTV".to_string(),
+            allowed_origins: Vec::new(),
+            allow_subdomains: false,
+            allow_any_port: false,
+            timeout_seconds: 300,
+        }
+    }
+}
+
 impl PasskeyService {
     pub fn new(
-        config: &WebAuthnConfig,
+        options: &PasskeyServiceOptions,
         repository: WebAuthnCredentialRepository,
         user_service: Arc<crate::service::UserService>,
         session_store: Arc<dyn PasskeySessionStore>,
     ) -> Result<Self> {
-        let rp_origin = Url::parse(&config.rp_origin)
+        let rp_origin = Url::parse(&options.rp_origin)
             .map_err(|error| Error::InvalidInput(format!("Invalid webauthn.rp_origin: {error}")))?;
-        let mut builder = WebauthnBuilder::new(config.rp_id.trim(), &rp_origin)
+        let mut builder = WebauthnBuilder::new(options.rp_id.trim(), &rp_origin)
             .map_err(|error| Error::InvalidInput(format!("Invalid WebAuthn config: {error}")))?
-            .rp_name(config.rp_name.trim())
-            .allow_subdomains(config.allow_subdomains)
-            .allow_any_port(config.allow_any_port)
-            .timeout(Duration::from_secs(config.timeout_seconds));
+            .rp_name(options.rp_name.trim())
+            .allow_subdomains(options.allow_subdomains)
+            .allow_any_port(options.allow_any_port)
+            .timeout(Duration::from_secs(options.timeout_seconds));
 
-        for origin in &config.allowed_origins {
+        for origin in &options.allowed_origins {
             let parsed = Url::parse(origin).map_err(|error| {
                 Error::InvalidInput(format!("Invalid webauthn.allowed_origins entry: {error}"))
             })?;

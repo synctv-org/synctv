@@ -86,8 +86,8 @@ pub struct LiveFlvAccess {
 
 /// Services available to provider-specific playback transport resolution.
 ///
-/// Gives providers DB access (e.g., fetching media from playlists) without
-/// depending on axum or concrete transport adapters.
+/// Gives providers DB access (for example, fetching media from playlists)
+/// while keeping concrete transport adapters outside core.
 pub struct PlaybackTransportServices {
     pub room_service: Arc<RoomService>,
     pub permission_service: PermissionService,

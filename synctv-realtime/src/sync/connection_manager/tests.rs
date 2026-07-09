@@ -3,7 +3,6 @@ use super::model::system_time_to_unix_secs;
 use super::redis_state::DISTRIBUTED_COUNTER_TTL_SECONDS;
 use super::*;
 use std::time::UNIX_EPOCH;
-use synctv_core::config::ConnectionLimitsConfig;
 use synctv_core_testing::{start_redis_url_with_label, RedisContainer};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -59,19 +58,19 @@ impl ConnectionManager {
 
 #[test]
 fn test_connection_limits_default_tracks_core_config() {
-    let core = ConnectionLimitsConfig::default();
+    let options = ConnectionLimitsOptions::default();
     let realtime = ConnectionLimits::default();
 
-    assert_eq!(realtime.max_per_user, core.max_per_user);
-    assert_eq!(realtime.max_per_room, core.max_per_room);
-    assert_eq!(realtime.max_total, core.max_total);
+    assert_eq!(realtime.max_per_user, options.max_per_user);
+    assert_eq!(realtime.max_per_room, options.max_per_room);
+    assert_eq!(realtime.max_total, options.max_total);
     assert_eq!(
         realtime.idle_timeout,
-        Duration::from_secs(core.idle_timeout_seconds)
+        Duration::from_secs(options.idle_timeout_seconds)
     );
     assert_eq!(
         realtime.max_duration,
-        Duration::from_secs(core.max_duration_seconds)
+        Duration::from_secs(options.max_duration_seconds)
     );
 }
 

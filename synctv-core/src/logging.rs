@@ -7,9 +7,28 @@ use tracing_subscriber::{
     EnvFilter,
 };
 
-use crate::config::LoggingConfig;
-
 const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";
+
+#[derive(Debug, Clone)]
+pub struct LoggingOptions {
+    pub level: String,
+    pub format: String,
+    pub filter: Option<String>,
+    pub backtrace: bool,
+    pub file_path: Option<String>,
+}
+
+impl Default for LoggingOptions {
+    fn default() -> Self {
+        Self {
+            level: "info".to_string(),
+            format: "pretty".to_string(),
+            filter: None,
+            backtrace: false,
+            file_path: None,
+        }
+    }
+}
 
 /// Initialize structured logging based on configuration
 ///
@@ -25,7 +44,7 @@ const SQLX_POSTGRES_NOTICE_TARGET: &str = "sqlx::postgres::notice";
 /// The caller **must** hold this guard alive (e.g. in `main()`) so that
 /// buffered log entries are flushed on shutdown.
 pub fn init_logging(
-    config: &LoggingConfig,
+    config: &LoggingOptions,
 ) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let env_filter = build_env_filter(config)?;
 
@@ -97,13 +116,13 @@ pub fn init_logging(
     Ok(None)
 }
 
-fn build_env_filter(config: &LoggingConfig) -> anyhow::Result<EnvFilter> {
+fn build_env_filter(config: &LoggingOptions) -> anyhow::Result<EnvFilter> {
     let filter_spec = build_env_filter_spec(config)?;
     EnvFilter::try_new(filter_spec)
         .map_err(|e| anyhow::anyhow!("Invalid log filter specification: {e}"))
 }
 
-fn build_env_filter_spec(config: &LoggingConfig) -> anyhow::Result<String> {
+fn build_env_filter_spec(config: &LoggingOptions) -> anyhow::Result<String> {
     let mut filter_spec = if let Some(filter) = config.filter.as_deref().map(str::trim) {
         if filter.is_empty() {
             parse_log_level(&config.level)?.to_string()
@@ -149,7 +168,7 @@ pub(crate) fn parse_log_level(level: &str) -> anyhow::Result<Level> {
     }
 }
 
-pub(crate) fn effective_log_level(config: &LoggingConfig) -> anyhow::Result<Level> {
+pub fn effective_log_level(config: &LoggingOptions) -> anyhow::Result<Level> {
     if let Some(filter) = config.filter.as_deref().map(str::trim) {
         if !filter.is_empty() {
             for directive in filter.split(',').map(str::trim).filter(|d| !d.is_empty()) {
@@ -206,9 +225,9 @@ mod tests {
 
     #[test]
     fn test_build_env_filter_spec_uses_config_level_without_env_override() {
-        let config = LoggingConfig {
+        let config = LoggingOptions {
             level: "debug".to_string(),
-            ..LoggingConfig::default()
+            ..LoggingOptions::default()
         };
 
         let spec = ok(build_env_filter_spec(&config), "filter spec should build");
@@ -218,10 +237,10 @@ mod tests {
 
     #[test]
     fn test_build_env_filter_spec_prefers_explicit_logging_filter() {
-        let config = LoggingConfig {
+        let config = LoggingOptions {
             level: "info".to_string(),
             filter: Some("warn,synctv=debug".to_string()),
-            ..LoggingConfig::default()
+            ..LoggingOptions::default()
         };
 
         let spec = ok(build_env_filter_spec(&config), "filter spec should build");
@@ -231,10 +250,10 @@ mod tests {
 
     #[test]
     fn test_build_env_filter_spec_preserves_explicit_sqlx_notice_override() {
-        let config = LoggingConfig {
+        let config = LoggingOptions {
             level: "info".to_string(),
             filter: Some("warn,sqlx::postgres::notice=info,synctv=debug".to_string()),
-            ..LoggingConfig::default()
+            ..LoggingOptions::default()
         };
 
         let spec = ok(build_env_filter_spec(&config), "filter spec should build");
@@ -256,9 +275,9 @@ mod tests {
 
     #[test]
     fn test_effective_log_level_uses_config_level_only() {
-        let config = LoggingConfig {
+        let config = LoggingOptions {
             level: "debug".to_string(),
-            ..LoggingConfig::default()
+            ..LoggingOptions::default()
         };
 
         let level = ok(
@@ -271,10 +290,10 @@ mod tests {
 
     #[test]
     fn test_effective_log_level_prefers_global_directive_from_logging_filter() {
-        let config = LoggingConfig {
+        let config = LoggingOptions {
             level: "info".to_string(),
             filter: Some("warn,synctv=debug".to_string()),
-            ..LoggingConfig::default()
+            ..LoggingOptions::default()
         };
 
         let level = ok(

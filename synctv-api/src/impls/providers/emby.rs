@@ -9,11 +9,11 @@ use synctv_core::models::UserId;
 use synctv_core::provider::{
     EmbyListRequest, EmbyMeRequest, EmbyProvider, ExecutionControl, ProviderAccessService,
 };
-use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_proto::providers::emby::{
     BindInfo, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, MediaItem,
 };
+use synctv_realtime::fanout::RealtimeEventService;
 
 use super::ProviderApiRuntime;
 use super::{
@@ -38,18 +38,14 @@ fn emby_thumbnail_url(server_id: &str, credential_owner_id: &UserId, item_id: &s
 pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
     access_service: Arc<dyn ProviderAccessService>,
-    event_service: Arc<dyn crate::runtime::RealtimeEventService>,
+    event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl EmbyApiImpl {
     #[must_use]
-    pub fn new_with_runtime(
-        provider: &Arc<EmbyProvider>,
-        credential_repo: Arc<UserProviderCredentialRepository>,
-        runtime: ProviderApiRuntime,
-    ) -> Self {
+    pub fn new_with_runtime(provider: Arc<EmbyProvider>, runtime: ProviderApiRuntime) -> Self {
         Self {
-            provider: Arc::new(provider.with_credential_repo(credential_repo)),
+            provider,
             access_service: runtime.access_service,
             event_service: runtime.event_service,
         }
@@ -336,11 +332,10 @@ mod tests {
                     Arc::new(synctv_core::provider::ProviderClientManager::new()?),
                 )),
             )),
-            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+            event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
         };
         Ok(EmbyApiImpl::new_with_runtime(
-            &provider,
-            credential_repo,
+            Arc::new(provider.with_credential_repo(credential_repo)),
             runtime,
         ))
     }

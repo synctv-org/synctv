@@ -1,7 +1,8 @@
 use super::*;
+use crate::models::{PlaylistId, RoomId, SourceProvider, UserId};
 use crate::provider::{
     DirectoryItem, DynamicFolder, DynamicListQuery, MediaProvider, NextPlayItem, PlaybackResult,
-    ProviderCredentialDependency, ProviderError,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
 use std::sync::Arc;

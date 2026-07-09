@@ -1,11 +1,11 @@
 use super::*;
+use crate::app_config::default_management_unix_socket_path;
 use clap::{CommandFactory, Parser};
 use serde_json::Value;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
-use synctv_core::config::default_management_unix_socket_path;
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_management::proto as management_proto;
 use synctv_proto::admin as admin_proto;
@@ -138,12 +138,15 @@ impl CurrentDirGuard {
 
 impl Drop for CurrentDirGuard {
     fn drop(&mut self) {
-        std::env::set_current_dir(&self.previous).expect("current dir should be restored");
+        if std::env::set_current_dir(&self.previous).is_err() {
+            std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))
+                .expect("crate root should be available as current dir fallback");
+        }
     }
 }
 
-fn sample_config() -> synctv_core::Config {
-    let mut config = synctv_core::Config::default();
+fn sample_config() -> crate::app_config::AppConfig {
+    let mut config = crate::app_config::AppConfig::default();
     config.database.url = "postgresql://synctv:super-secret-db@db.internal:5432/synctv".into();
     config.redis.url = "redis://:redis-secret@redis.internal:6379/0".into();
     config.jwt.secret = "jwt-secret-123456789012345678901234".into();
@@ -218,9 +221,9 @@ fn switch_process_working_dir_to_data_dir_creates_and_enters_directory() {
     let _cwd = CurrentDirGuard::change_to(temp_dir.path());
     let target = temp_dir.path().join("state");
 
-    let config = synctv_core::Config {
+    let config = crate::app_config::AppConfig {
         data_dir: target.display().to_string(),
-        ..synctv_core::Config::default()
+        ..crate::app_config::AppConfig::default()
     };
 
     switch_process_working_dir_to_data_dir(&config)
@@ -5100,11 +5103,11 @@ fn config_json_output_uses_lower_camel_case_keys() {
     );
     assert!(
         rendered.get("publicIds").is_none(),
-        "config JSON output should use externalIds after config rename: {rendered_text}"
+        "config JSON output should keep public id config outside AppConfig display: {rendered_text}"
     );
     assert!(
-        rendered["externalIds"].is_object(),
-        "config JSON output should include lowerCamelCase externalIds: {rendered_text}"
+        rendered.get("externalIds").is_none(),
+        "config JSON output should keep external id config outside AppConfig display: {rendered_text}"
     );
 }
 

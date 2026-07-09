@@ -10,37 +10,108 @@ use tonic::transport::Server;
 use tracing::warn;
 use tracing::{debug, info};
 
-use synctv_api::{
-    AdminApiImpl, AlistApiImpl, BilibiliApiImpl, ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl,
-};
-use synctv_core::{
-    config::absolute_display_path, config::ManagementTransport, service::UserService, Config,
-};
+use synctv_adapter::PublicIdCodec;
+use synctv_core::service::{ChatService, OnlinePresenceService, RoomService, UserService};
 
+use crate::admin_runtime::AdminRuntime;
 use crate::lifecycle::ManagementLifecycleController;
 use crate::proto::management_service_server::ManagementServiceServer;
+use crate::provider_runtime::{AlistRuntime, BilibiliRuntime, EmbyRuntime, ProviderCommonRuntime};
 use crate::service::{ManagementServiceDependencies, ManagementServiceImpl};
 use crate::FILE_DESCRIPTOR_SET;
+use synctv_realtime::fanout::{
+    MembershipEventFanoutService, RealtimeFanoutService, RoomCacheFanoutService,
+};
 
 pub struct ManagementServerConfig {
-    pub config: Arc<Config>,
+    pub settings: Arc<ManagementRuntimeSettings>,
     pub user_service: Arc<UserService>,
-    pub admin_api: Arc<AdminApiImpl>,
-    pub provider_common_api: Arc<ProviderCommonApiImpl>,
-    pub client_api: Arc<ClientApiImpl>,
-    pub alist_api: Arc<AlistApiImpl>,
-    pub bilibili_api: Arc<BilibiliApiImpl>,
-    pub emby_api: Arc<EmbyApiImpl>,
-    pub slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
-    pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
+    pub admin_api: Arc<dyn AdminRuntime>,
+    pub public_id_codec: Arc<PublicIdCodec>,
+    pub provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    pub chat_service: Option<Arc<ChatService>>,
+    pub clock: Arc<dyn synctv_core::Clock>,
+    pub room_service: Arc<RoomService>,
+    pub presence_service: Arc<OnlinePresenceService>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    pub alist_api: Arc<dyn AlistRuntime>,
+    pub bilibili_api: Arc<dyn BilibiliRuntime>,
+    pub emby_api: Arc<dyn EmbyRuntime>,
+    pub slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
+    pub server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub shutdown_rx: watch::Receiver<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagementTransport {
+    Tcp,
+    Unix,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagementRuntimeSettings {
+    pub transport: ManagementTransport,
+    pub port: u16,
+    pub unix_socket_path: String,
+    pub auth_token: String,
+    pub enable_reflection: bool,
+    pub grpc_max_message_size_bytes: usize,
+    pub grpc_compression_enabled: bool,
+    pub trusted_proxies: Vec<String>,
+}
+
+impl Default for ManagementRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            transport: ManagementTransport::Tcp,
+            port: 50052,
+            unix_socket_path: String::new(),
+            auth_token: String::new(),
+            enable_reflection: false,
+            grpc_max_message_size_bytes: 16 * 1024 * 1024,
+            grpc_compression_enabled: true,
+            trusted_proxies: Vec::new(),
+        }
+    }
+}
+
+impl ManagementRuntimeSettings {
+    #[must_use]
+    pub fn management_bind_target(&self) -> String {
+        match self.transport {
+            ManagementTransport::Tcp => format!("127.0.0.1:{}", self.port),
+            ManagementTransport::Unix => self.unix_socket_path.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_trusted_proxy(&self, ip: &std::net::IpAddr) -> bool {
+        self.trusted_proxies.iter().any(|proxy| {
+            proxy
+                .parse::<ipnet::IpNet>()
+                .is_ok_and(|network| network.contains(ip))
+                || proxy
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|proxy_ip| proxy_ip == *ip)
+        })
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
+fn absolute_display_path(path: &Path) -> String {
+    display_path(path)
 }
 
 pub async fn spawn_management_server(
     config: ManagementServerConfig,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-    match config.config.management.transport {
+    match config.settings.transport {
         ManagementTransport::Tcp => spawn_management_tcp_server(config).await,
         ManagementTransport::Unix => {
             #[cfg(unix)]
@@ -59,7 +130,7 @@ pub async fn spawn_management_server(
 async fn spawn_management_tcp_server(
     config: ManagementServerConfig,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-    let bind_target = config.config.management_bind_target();
+    let bind_target = config.settings.management_bind_target();
     let listener = tokio::net::TcpListener::bind(&bind_target)
         .await
         .with_context(|| format!("failed to bind management TCP address {bind_target}"))?;
@@ -77,14 +148,11 @@ async fn spawn_management_tcp_server(
 fn spawn_management_unix_server(
     config: ManagementServerConfig,
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-    let socket_path = config.config.management.unix_socket_path.clone();
+    let socket_path = config.settings.unix_socket_path.clone();
     prepare_management_unix_socket(&socket_path)?;
-    let listener = tokio::net::UnixListener::bind(&socket_path).with_context(|| {
-        format!(
-            "failed to bind management unix socket {}",
-            absolute_display_path(Path::new(&socket_path))
-        )
-    })?;
+    let socket_display_path = Path::new(&socket_path).display();
+    let listener = tokio::net::UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to bind management unix socket {socket_display_path}"))?;
     restrict_management_unix_socket_permissions(Path::new(&socket_path))?;
     info!(
         "Management gRPC server listening on unix://{}",
@@ -121,22 +189,29 @@ where
 {
     let management_service =
         ManagementServiceServer::new(ManagementServiceImpl::new(ManagementServiceDependencies {
-            config: Arc::clone(&config.config),
+            settings: Arc::clone(&config.settings),
             user_service: config.user_service,
             admin_api: config.admin_api,
+            public_id_codec: config.public_id_codec,
             provider_common_api: config.provider_common_api,
-            client_api: config.client_api,
+            chat_service: config.chat_service,
+            clock: config.clock,
+            room_service: config.room_service,
+            presence_service: config.presence_service,
+            realtime_fanout: config.realtime_fanout,
+            membership_event_fanout: config.membership_event_fanout,
+            room_cache_fanout: config.room_cache_fanout,
             alist_api: config.alist_api,
             bilibili_api: config.bilibili_api,
             emby_api: config.emby_api,
             slice_cache_runtime: config.slice_cache_runtime,
             server_state_runtime: config.server_state_runtime,
             lifecycle_controller: config.lifecycle_controller,
-            management_auth_token: config.config.management.auth_token.clone(),
+            management_auth_token: config.settings.auth_token.clone(),
         }))
-        .max_decoding_message_size(config.config.server.grpc_max_message_size_bytes)
-        .max_encoding_message_size(config.config.server.grpc_max_message_size_bytes);
-    let management_service = if config.config.server.grpc_compression_enabled {
+        .max_decoding_message_size(config.settings.grpc_max_message_size_bytes)
+        .max_encoding_message_size(config.settings.grpc_max_message_size_bytes);
+    let management_service = if config.settings.grpc_compression_enabled {
         management_service
             .accept_compressed(CompressionEncoding::Gzip)
             .send_compressed(CompressionEncoding::Gzip)
@@ -152,7 +227,7 @@ where
         .set_serving::<ManagementServiceServer<ManagementServiceImpl>>()
         .await;
 
-    let reflection_service = if config.config.management.enable_reflection {
+    let reflection_service = if config.settings.enable_reflection {
         Some(
             tonic_reflection::server::Builder::configure()
                 .register_encoded_file_descriptor_set(FILE_DESCRIPTOR_SET)

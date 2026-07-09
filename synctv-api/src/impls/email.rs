@@ -113,7 +113,7 @@ pub struct EmailApiImpl {
     pub email_service: Arc<dyn EmailDeliveryService>,
     pub email_token_service: Arc<EmailTokenService>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
 }
 
 /// Request password reset result
@@ -225,7 +225,7 @@ impl EmailApiImpl {
         email_service: Arc<dyn EmailDeliveryService>,
         email_token_service: Arc<EmailTokenService>,
         rate_limiter: Arc<dyn RequestRateLimiterService>,
-        public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+        public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     ) -> Self {
         Self {
             user_service,
@@ -858,7 +858,7 @@ mod tests {
             Arc::new(TestEmailDeliveryService),
             Arc::new(EmailTokenService::new(pool)),
             Arc::new(RateLimiter::local_only("email-api-tests:".to_string())),
-            Arc::new(crate::public_id::PublicIdCodec::plain()),
+            Arc::new(synctv_adapter::PublicIdCodec::plain()),
         ))
     }
 

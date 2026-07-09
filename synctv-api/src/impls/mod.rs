@@ -4,6 +4,10 @@
 //! Both HTTP and gRPC handlers are thin wrappers that call these implementations.
 //!
 //! All methods use grpc-generated types for parameters and return values.
+//! API impl entrypoints receive `synctv_proto` request messages directly so
+//! HTTP, gRPC, and management can share the same implementation path. Caller
+//! owned `Command`/`Query` DTOs stay in their caller layer; impls validate
+//! protobuf first, then build the core request/query structs needed by services.
 //! Keep shared behavior here or in `synctv-core`; transport modules own only
 //! parsing, encoding, metadata extraction, status mapping, and stream adapters.
 //! See `docs/src/content/docs/en/develop/implementation-contracts.mdx`.
@@ -30,11 +34,12 @@ pub(crate) mod validation;
 
 // Re-export for convenience
 pub use admin::{
-    AdminApiConfig, AdminApiImpl, AdminApiRuntime, AdminAuthValidator, AdminReadServices,
-    RequestContext as AdminRequestContext, ValidatedAdmin, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    ActiveStreamListSortBy, AdminApiImpl, AdminApiOptions, AdminApiRuntime, AdminAuthValidator,
+    AdminReadServices, RequestContext as AdminRequestContext, ValidatedAdmin,
+    LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 pub use client::{
-    ClientApiConfig, ClientApiImpl, ClientApiRuntime, ClientApiRuntimeServices, GuestRoomAccess,
+    ClientApiImpl, ClientApiOptions, ClientApiRuntime, ClientApiRuntimeServices, GuestRoomAccess,
     RoomActor,
 };
 pub use email::EmailApiImpl;
@@ -50,7 +55,7 @@ pub use providers::{
     ProviderCommonApiRuntime,
 };
 pub use request_context::{
-    EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
+    ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope, RequestExecutor,
     RequestMetadata, TransportProtocol,
 };
 
@@ -144,6 +149,56 @@ where
     synctv_proto::validate(message).map_err(|error| ApiError::InvalidInput(error.to_string()))
 }
 
+pub fn validate_room_name_input(name: &str) -> Result<String, ApiError> {
+    synctv_core::validation::validate_room_name_input(name)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))
+}
+
+pub fn validate_room_description_input(description: &str) -> Result<String, ApiError> {
+    synctv_core::validation::validate_room_description_input(description)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))
+}
+
+pub fn validate_media_name_input(name: &str) -> Result<String, ApiError> {
+    synctv_core::validation::validate_media_name_input(name)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))
+}
+
+pub fn add_media_request_from_client_proto(
+    request: synctv_proto::client::AddMediaRequest,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_core::service::AddMediaRequest, ApiError> {
+    synctv_adapter::client::add_media_request_from_client_proto(request, public_id_codec)
+        .map_err(|error| ApiError::InvalidInput(error.to_string()))
+}
+
+pub fn search_chat_messages_query_from_client_proto(
+    room_id: synctv_core::models::RoomId,
+    request: &synctv_proto::client::SearchChatMessagesRequest,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_core::models::ChatSearchMessagesQuery, ApiError> {
+    client::build_search_chat_messages_query(room_id, request, public_id_codec)
+}
+
+pub fn chat_message_receive_to_client_proto(
+    message: &synctv_core::models::ChatMessageWithAttachments,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+    username: String,
+) -> Result<synctv_proto::client::ChatMessageReceive, ApiError> {
+    synctv_adapter::chat::chat_message_receive_to_proto(message, public_id_codec, username)
+        .map_err(|error| ApiError::Internal(error.to_string()))
+}
+
+pub fn chat_history_cursor_to_client_proto(
+    cursor: synctv_core::models::ChatHistoryCursor,
+) -> String {
+    format!(
+        "{}|{}",
+        synctv_common::time::format_datetime_rfc3339(cursor.created_at),
+        cursor.id
+    )
+}
+
 pub(crate) fn proto_page_params(
     page: i32,
     page_size: i32,
@@ -191,10 +246,10 @@ fn invalid_id_input(field: &'static str, err: impl std::fmt::Display) -> ApiErro
 pub fn parse_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
-    T: crate::public_id::PublicIdType,
+    T: synctv_adapter::PublicIdType,
 {
     public_id_codec
         .decode::<T>(value.trim())
@@ -204,7 +259,7 @@ where
 pub fn parse_user_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -212,7 +267,7 @@ pub fn parse_user_id_param(
 pub fn parse_room_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -220,7 +275,7 @@ pub fn parse_room_id_param(
 pub fn parse_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
@@ -228,55 +283,55 @@ pub fn parse_media_id_param(
 pub fn parse_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     parse_id_param(value, field, public_id_codec)
 }
 
 pub fn proto_validated_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<T, ApiError>
 where
-    T: crate::public_id::PublicIdType,
+    T: synctv_adapter::PublicIdType,
 {
     parse_id_param(value.as_ref(), T::TYPE_NAME, public_id_codec)
 }
 
 pub fn proto_validated_user_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::UserId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::RoomId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::MediaId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_core::models::PlaylistId, ApiError> {
     proto_validated_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_id<T>(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
-    T: crate::public_id::PublicIdType,
+    T: synctv_adapter::PublicIdType,
 {
     let value = value.as_ref();
     if value.is_empty() {
@@ -288,28 +343,28 @@ where
 
 pub fn proto_validated_optional_media_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_playlist_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_optional_room_id(
     value: impl AsRef<str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::RoomId>, ApiError> {
     proto_validated_optional_id(value, public_id_codec)
 }
 
 pub fn proto_validated_media_ids(
     values: Vec<String>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::MediaId>, ApiError> {
     values
         .into_iter()
@@ -319,7 +374,7 @@ pub fn proto_validated_media_ids(
 
 pub fn proto_validated_playlist_ids(
     values: Vec<String>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Vec<synctv_core::models::PlaylistId>, ApiError> {
     values
         .into_iter()
@@ -330,7 +385,7 @@ pub fn proto_validated_playlist_ids(
 pub fn parse_optional_media_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::MediaId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -338,7 +393,7 @@ pub fn parse_optional_media_id_param(
 pub fn parse_optional_playlist_id_param(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_core::models::PlaylistId>, ApiError> {
     parse_optional_id_param(value, field, public_id_codec)
 }
@@ -346,10 +401,10 @@ pub fn parse_optional_playlist_id_param(
 pub fn parse_optional_id_param<T>(
     value: &str,
     field: &'static str,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<T>, ApiError>
 where
-    T: crate::public_id::PublicIdType,
+    T: synctv_adapter::PublicIdType,
 {
     if value.trim().is_empty() {
         Ok(None)
@@ -358,86 +413,8 @@ where
     }
 }
 
-/// Application-level error codes for client-side programmatic handling.
-///
-/// These codes are included in the `ErrorMessage.code` field and allow
-/// clients to handle specific error conditions without parsing text.
-///
-/// Convention: 1xxx for auth, 2xxx for resources, 3xxx for validation,
-/// 4xxx for permissions, 9xxx for internal errors.
-#[allow(dead_code)]
-pub(crate) mod error_codes {
-    /// Unspecified error (fallback)
-    pub const UNSPECIFIED: i32 = 0;
-
-    // Authentication errors (1xxx)
-    pub const UNAUTHENTICATED: i32 = 1000;
-    pub const TOKEN_EXPIRED: i32 = 1001;
-    pub const INVALID_CREDENTIALS: i32 = 1002;
-
-    // Resource errors (2xxx)
-    pub const NOT_FOUND: i32 = 2000;
-    pub const ALREADY_EXISTS: i32 = 2001;
-    /// System resource exhausted (backpressure/overload protection)
-    pub const RESOURCE_EXHAUSTED: i32 = 2002;
-    pub const CONFLICT: i32 = 2003;
-
-    // Validation errors (3xxx)
-    pub const INVALID_ARGUMENT: i32 = 3000;
-    pub const INVALID_FORMAT: i32 = 3001;
-    pub const VALUE_TOO_SHORT: i32 = 3002;
-    pub const VALUE_TOO_LONG: i32 = 3003;
-    pub const REQUIRED_FIELD_MISSING: i32 = 3004;
-
-    // Permission errors (4xxx)
-    pub const PERMISSION_DENIED: i32 = 4000;
-    pub const FORBIDDEN: i32 = 4001;
-    pub const BANNED: i32 = 4002;
-
-    // Internal errors (9xxx)
-    pub const INTERNAL_ERROR: i32 = 9000;
-    pub const DATABASE_ERROR: i32 = 9001;
-    pub const SERVICE_UNAVAILABLE: i32 = 9002;
-    pub const TIMEOUT: i32 = 9003;
-}
-
-/// Shared error classification for impls-layer `String` errors.
-///
-/// Maps keyword patterns in error strings to semantic error categories.
-/// Used by both HTTP and gRPC error mapping functions to ensure consistent
-/// behavior across transports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorKind {
-    NotFound,
-    Unauthenticated,
-    PermissionDenied,
-    AlreadyExists,
-    Conflict,
-    InvalidArgument,
-    RateLimited,
-    ServiceUnavailable,
-    Timeout,
-    Internal,
-}
-
-impl ErrorKind {
-    /// Convert this error kind to an application-level error code.
-    #[must_use]
-    pub const fn to_code(&self) -> i32 {
-        match self {
-            Self::NotFound => error_codes::NOT_FOUND,
-            Self::Unauthenticated => error_codes::UNAUTHENTICATED,
-            Self::PermissionDenied => error_codes::PERMISSION_DENIED,
-            Self::AlreadyExists => error_codes::ALREADY_EXISTS,
-            Self::Conflict => error_codes::CONFLICT,
-            Self::InvalidArgument => error_codes::INVALID_ARGUMENT,
-            Self::RateLimited => error_codes::RESOURCE_EXHAUSTED,
-            Self::ServiceUnavailable => error_codes::SERVICE_UNAVAILABLE,
-            Self::Timeout => error_codes::TIMEOUT,
-            Self::Internal => error_codes::INTERNAL_ERROR,
-        }
-    }
-}
+pub(crate) use synctv_adapter::error::error_codes;
+pub use synctv_adapter::error::ErrorKind;
 
 /// Structured API error that wraps `synctv_core::Error` variants for
 /// type-safe status code mapping. This allows callers that propagate
@@ -522,6 +499,9 @@ impl From<synctv_core::Error> for ApiError {
             synctv_core::Error::NotFound(msg) => Self::NotFound(msg),
             synctv_core::Error::Authentication(msg) => Self::Authentication(msg),
             synctv_core::Error::Authorization(msg) => Self::Authorization(msg),
+            synctv_core::Error::KickCooldownDenied => {
+                Self::Authorization(synctv_core::Error::kick_cooldown_denied_message().to_string())
+            }
             synctv_core::Error::AlreadyExists(msg) => Self::AlreadyExists(msg),
             synctv_core::Error::Conflict(msg) | synctv_core::Error::LockConflict(msg) => {
                 Self::Conflict(msg)
@@ -732,6 +712,16 @@ impl ApiError {
             Self::OAuth2General { operation, .. } => *operation,
             _ => None,
         }
+    }
+}
+
+impl synctv_adapter::error::ClassifiedError for ApiError {
+    fn classify(&self) -> ErrorKind {
+        self.classify()
+    }
+
+    fn message(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(self.message())
     }
 }
 

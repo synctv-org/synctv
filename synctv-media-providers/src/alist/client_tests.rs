@@ -270,7 +270,7 @@ fn test_fs_list_content_to_proto() {
         thumb: String::new(),
         r#type: 2,
     };
-    let proto: crate::grpc::alist::fs_list_resp::FsListContent = content.into();
+    let proto: crate::transport_dto::alist::fs_list_resp::FsListContent = content.into();
     assert_eq!(proto.name, "video.mp4");
     assert_eq!(proto.size, 1024);
     assert!(!proto.is_dir);
@@ -304,7 +304,7 @@ fn test_fs_list_resp_to_proto() {
         write: true,
         provider: "local".to_string(),
     };
-    let proto: crate::grpc::alist::FsListResp = resp.into();
+    let proto: crate::transport_dto::alist::FsListResp = resp.into();
     assert_eq!(proto.total, 2);
     assert_eq!(proto.content.len(), 2);
     assert_eq!(proto.readme, "readme text");

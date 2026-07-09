@@ -74,13 +74,10 @@ impl AdminApiImpl {
         if let Some(provider_instance_name) = media.provider_instance_name.as_deref() {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
-        if let Some(repo) = self.room_service.media_service().credential_repo() {
-            ctx = ctx.with_credential_repo(repo.as_ref());
-        }
-        if let Some(enc) = self.room_service.media_service().credential_encryption() {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = self
+            .room_service
+            .media_service()
+            .attach_provider_credential_context(ctx);
         ctx = ctx.with_store(self.provider_stores.load(provider.name()));
         let provider_result = provider
             .generate_playback(&ctx, &media.source_config)
@@ -189,13 +186,10 @@ impl AdminApiImpl {
         if let Some(provider_instance_name) = source_fields.provider_instance_name {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
-        if let Some(repo) = self.room_service.media_service().credential_repo() {
-            ctx = ctx.with_credential_repo(repo.as_ref());
-        }
-        if let Some(enc) = self.room_service.media_service().credential_encryption() {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = self
+            .room_service
+            .media_service()
+            .attach_provider_credential_context(ctx);
         ctx = ctx.with_store(self.provider_stores.load(provider.name()));
         let provider_result = provider
             .generate_playback(&ctx, &item.source_config)
@@ -586,8 +580,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let rid = crate::impls::parse_room_id_param(room_id, "room_id", &self.public_id_codec)?;
-        let command =
-            crate::impls::client::build_playback_state_update(req, &self.public_id_codec)?;
+        let update = crate::impls::client::build_playback_state_update(req, &self.public_id_codec)?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
         let prepared_fanout =
@@ -597,30 +590,21 @@ impl AdminApiImpl {
                     actor.username(),
                 ));
 
-        let state = match command {
-            crate::impls::client::PlaybackStateUpdateCommand::Patch {
-                playing,
-                position,
-                speed,
-                version,
-                expected_source,
-            } => {
-                let mut request = PlaybackStateUpdateRequest::new(
-                    rid,
-                    *actor.user_id(),
-                    PlaybackStatePatch::new(playing, position, speed),
-                )
-                .with_expected_version(version)
-                .with_outbox(Some(prepared_fanout.outbox_factory()));
-                if let Some(expected_source) = expected_source {
-                    request = request.with_expected_source(expected_source);
-                }
-                self.room_service
-                    .admin_update_playback_as_request(&actor, request)
-                    .await
-            }
+        let mut request = PlaybackStateUpdateRequest::new(
+            rid,
+            *actor.user_id(),
+            PlaybackStatePatch::new(update.playing, update.position, update.speed),
+        )
+        .with_expected_version(update.version)
+        .with_outbox(Some(prepared_fanout.outbox_factory()));
+        if let Some(expected_source) = update.expected_source {
+            request = request.with_expected_source(expected_source);
         }
-        .map_err(ApiError::from)?;
+        let state = self
+            .room_service
+            .admin_update_playback_as_request(&actor, request)
+            .await
+            .map_err(ApiError::from)?;
         prepared_fanout.publish_after_outbox_commit();
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;

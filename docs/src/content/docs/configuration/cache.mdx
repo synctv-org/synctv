@@ -1,9 +1,9 @@
 ---
 title: 业务缓存
-description: SyncTV 的 L1/L2、用户名和权限缓存配置。
+description: SyncTV 的 L1/L2 和用户名缓存配置。
 ---
 
-`cache` 只负责业务数据缓存：用户、房间、用户名、权限等小对象。它的目标是减少数据库查询，不负责缓存媒体字节。
+`cache` 只负责业务数据缓存：用户、房间、用户名等小对象。它的目标是减少数据库查询，不负责缓存媒体字节。
 
 媒体代理的 Range 分片缓存已经独立到 [proxy slice cache](../proxy-slice-cache/)。
 
@@ -16,8 +16,6 @@ cache:
   l2_ttl_seconds: 300
   username_cache_capacity: 10000
   username_cache_ttl_seconds: 3600
-  permission_cache_capacity: 20000
-  permission_cache_ttl_seconds: 300
 ```
 
 ## 字段
@@ -29,8 +27,6 @@ cache:
 | `cache.l2_ttl_seconds` | `300` | 已配置 Redis，希望跨请求复用业务缓存时 | 未配置 Redis 时不生效 |
 | `cache.username_cache_capacity` | `10000` | 登录、成员列表或展示页频繁按用户名查询时 | 太小会造成用户名查询反复回源数据库 |
 | `cache.username_cache_ttl_seconds` | `3600` | 用户名变更频率和查询压力不匹配时 | 太长会让用户名变更传播慢；太短会降低命中率 |
-| `cache.permission_cache_capacity` | `20000` | 权限相关缓存容量需要统一调优时 | 太小会增加权限读取开销 |
-| `cache.permission_cache_ttl_seconds` | `300` | 权限变更需要更快或更慢传播时 | 太长会延迟权限变更可见性 |
 
 ## 单机生产
 

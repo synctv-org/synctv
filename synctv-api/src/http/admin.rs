@@ -315,7 +315,7 @@ async fn get_slice_cache_stats(
             all_nodes: req.all_nodes,
         })
         .await?;
-    Ok(Json(crate::status::slice_cache_stats_to_admin_proto(
+    Ok(Json(crate::impls::admin::slice_cache_stats_to_admin_proto(
         response,
     )))
 }
@@ -358,7 +358,7 @@ async fn purge_slice_cache(
             all_nodes: req.all_nodes,
         })
         .await?;
-    Ok(Json(crate::status::slice_cache_purge_to_admin_proto(
+    Ok(Json(crate::impls::admin::slice_cache_purge_to_admin_proto(
         response,
     )))
 }
@@ -402,7 +402,7 @@ async fn evict_expired_slice_cache(
         })
         .await?;
     Ok(Json(
-        crate::status::slice_cache_evict_expired_to_admin_proto(response),
+        crate::impls::admin::slice_cache_evict_expired_to_admin_proto(response),
     ))
 }
 
@@ -430,6 +430,7 @@ pub(crate) async fn list_user_registration_reviews(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_user_registration_reviews(req, &validated.user_id)
                 .await
         },
@@ -462,6 +463,7 @@ pub(crate) async fn approve_user_registration_review(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_user_registration_review(req, &validated.user_id, &rctx)
                 .await
         },
@@ -494,6 +496,7 @@ pub(crate) async fn reject_user_registration_review(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_user_registration_review(req, &validated.user_id)
                 .await
         },
@@ -523,6 +526,7 @@ pub(crate) async fn list_room_creation_reviews(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_creation_reviews(req, &validated.user_id)
                 .await
         },
@@ -552,6 +556,7 @@ pub(crate) async fn approve_room_creation_review(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_room_creation_review(req, &validated.user_id, &rctx)
                 .await
         },
@@ -581,6 +586,7 @@ pub(crate) async fn reject_room_creation_review(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_room_creation_review(req, &validated.user_id)
                 .await
         },
@@ -610,6 +616,7 @@ pub(crate) async fn list_room_join_reviews(
         request_meta,
         require_admin_api,
         move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_join_reviews(req, &validated.user_id).await
         },
     )
@@ -638,6 +645,7 @@ pub(crate) async fn approve_room_join_review(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_room_join_review(req, &validated.user_id, &rctx)
                 .await
         },
@@ -667,6 +675,7 @@ pub(crate) async fn reject_room_join_review(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_room_join_review(req, &validated.user_id, &rctx)
                 .await
         },
@@ -737,16 +746,16 @@ pub(crate) async fn list_content_reports(
     State(state): State<AppState>,
     ProtoQuery(req): ProtoQuery<admin::ListContentReportsRequest>,
 ) -> AppResult<Json<admin::ListContentReportsResponse>> {
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, _| async move {
-                api.list_content_reports(req, &validated.user_id).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_content_reports(req, &validated.user_id).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -769,17 +778,19 @@ pub(crate) async fn get_content_report(
     State(state): State<AppState>,
     Path(report_id): Path<String>,
 ) -> AppResult<Json<admin::ContentReport>> {
-    let req = admin::GetContentReportRequest { report_id };
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, _| async move {
-                api.get_content_report(req, &validated.user_id).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            api.get_content_report(
+                admin::GetContentReportRequest { report_id },
+                &validated.user_id,
+            )
+            .await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -810,6 +821,7 @@ pub(crate) async fn update_content_report_status(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_content_report_status(req, &validated.user_id, &rctx)
                 .await
         },
@@ -841,10 +853,7 @@ pub(crate) async fn get_service_state(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move {
-            api.get_service_state(admin::GetServiceStateRequest {})
-                .await
-        },
+        move |api, _, _| async move { api.get_service_state().await },
     )
     .await?;
     Ok(Json(resp))
@@ -874,8 +883,7 @@ pub(crate) async fn get_settings(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
-            api.get_settings(admin::GetSettingsRequest {}, &validated.user_id, &rctx)
-                .await
+            api.get_settings(&validated.user_id, &rctx).await
         },
     )
     .await?;
@@ -907,6 +915,7 @@ pub(crate) async fn set_settings(
         request_meta,
         require_admin_api,
         move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_settings(req, &validated.user_id, &rctx).await
         },
     )
@@ -941,6 +950,7 @@ pub(crate) async fn send_test_email(
     let executor = api.clone();
     let resp = executor
         .execute_admin_endpoint_with_control(&request_meta, move |request_control, _| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.send_test_email_with_control(req, Some(&request_control))
                 .await
         })
@@ -974,7 +984,10 @@ pub(crate) async fn list_users(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_users(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_users(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1004,7 +1017,10 @@ pub(crate) async fn get_user(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_user(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_user(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1034,7 +1050,10 @@ pub(crate) async fn get_user_preferences(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_user_preferences(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_user_preferences(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1064,6 +1083,7 @@ pub(crate) async fn update_user_preferences(
     Json(mut req): Json<admin::UpdateUserPreferencesRequest>,
 ) -> AppResult<Json<admin::UpdateUserPreferencesResponse>> {
     req.user_id = path.user_id;
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1097,6 +1117,7 @@ pub(crate) async fn create_user(
     State(state): State<AppState>,
     Json(req): Json<admin::CreateUserRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1129,6 +1150,7 @@ pub(crate) async fn delete_user(
     State(state): State<AppState>,
     Path(req): Path<admin::DeleteUserRequest>,
 ) -> AppResult<Json<admin::DeleteUserResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp =
         execute_root_endpoint(
             &state,
@@ -1165,6 +1187,7 @@ pub(crate) async fn set_user_role(
     Json(mut req): Json<admin::UpdateUserRoleRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1204,6 +1227,7 @@ pub(crate) async fn set_user_password(
     if req.reason.is_empty() {
         req.reason = "Admin set user password".to_string();
     }
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1240,6 +1264,7 @@ pub(crate) async fn set_user_username(
     Json(mut req): Json<admin::UpdateUserUsernameRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1276,6 +1301,7 @@ pub(crate) async fn ban_user(
     Json(mut req): Json<admin::BanUserRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
     req.user_id = path.user_id;
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1308,6 +1334,7 @@ pub(crate) async fn unban_user(
     State(state): State<AppState>,
     Path(req): Path<admin::UnbanUserRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp =
         execute_admin_endpoint(
             &state,
@@ -1349,7 +1376,10 @@ pub(crate) async fn get_user_rooms(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_user_rooms(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_user_rooms(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1377,6 +1407,7 @@ pub(crate) async fn batch_ban_users(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanUsersRequest>,
 ) -> AppResult<Json<admin::BatchBanUsersResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -1410,6 +1441,7 @@ pub(crate) async fn batch_delete_users(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteUsersRequest>,
 ) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_root_endpoint(
         &state,
         request_meta,
@@ -1448,7 +1480,10 @@ pub(crate) async fn list_rooms(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_rooms(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_rooms(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1477,7 +1512,10 @@ pub(crate) async fn list_room_categories(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_room_categories(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_room_categories(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1506,7 +1544,10 @@ pub(crate) async fn upsert_room_category(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.upsert_room_category(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.upsert_room_category(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1535,7 +1576,10 @@ pub(crate) async fn delete_room_category(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.delete_room_category(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.delete_room_category(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1564,7 +1608,10 @@ pub(crate) async fn list_room_labels(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_room_labels(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_room_labels(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1593,7 +1640,10 @@ pub(crate) async fn upsert_room_label(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.upsert_room_label(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.upsert_room_label(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1622,7 +1672,10 @@ pub(crate) async fn delete_room_label(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.delete_room_label(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.delete_room_label(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1650,16 +1703,16 @@ pub(crate) async fn update_room_taxonomy(
     Json(mut req): Json<admin::UpdateRoomTaxonomyRequest>,
 ) -> AppResult<Json<admin::Room>> {
     req.room_id = path.room_id;
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, _| async move {
-                api.update_room_taxonomy(req, &validated.user_id).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.update_room_taxonomy(req, &validated.user_id).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -1686,7 +1739,10 @@ pub(crate) async fn get_room(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_room(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_room(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -1788,7 +1844,10 @@ pub(crate) async fn get_room_members(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_room_members(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_room_members(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -2081,7 +2140,10 @@ pub(crate) async fn get_room_settings(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.get_room_settings(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.get_room_settings(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -2110,16 +2172,16 @@ pub(crate) async fn set_room_settings(
     Json(mut req): Json<admin::UpdateRoomSettingsRequest>,
 ) -> AppResult<Json<admin::Room>> {
     req.room_id = path.room_id;
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, _| async move {
-                api.update_room_settings(req, &validated.user_id).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.update_room_settings(req, &validated.user_id).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -2142,16 +2204,16 @@ pub(crate) async fn reset_room_settings(
     State(state): State<AppState>,
     Path(req): Path<admin::ResetRoomSettingsRequest>,
 ) -> AppResult<Json<admin::Room>> {
-    let resp =
-        execute_admin_endpoint(
-            &state,
-            request_meta,
-            require_admin_api,
-            move |api, validated, _| async move {
-                api.reset_room_settings(req, &validated.user_id).await
-            },
-        )
-        .await?;
+    let resp = execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.reset_room_settings(req, &validated.user_id).await
+        },
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -2177,6 +2239,7 @@ pub(crate) async fn batch_ban_rooms(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchBanRoomsRequest>,
 ) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -2209,6 +2272,7 @@ pub(crate) async fn batch_delete_rooms(
     State(state): State<AppState>,
     Json(req): Json<admin::BatchDeleteRoomsRequest>,
 ) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_admin_endpoint(
         &state,
         request_meta,
@@ -2246,7 +2310,10 @@ pub(crate) async fn list_streams(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_active_streams(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_active_streams(req).await
+        },
     )
     .await?;
     Ok(Json(response))
@@ -2272,9 +2339,15 @@ pub(crate) async fn kick_stream(
     State(state): State<AppState>,
     Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
-    execute_admin_endpoint(&state, request_meta, require_admin_api, move |api, validated, rctx| async move {
-        api.kick_stream(req, &validated.user_id, &rctx).await
-    })
+    execute_admin_endpoint(
+        &state,
+        request_meta,
+        require_admin_api,
+        move |api, validated, rctx| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.kick_stream(req, &validated.user_id, &rctx).await
+        },
+    )
     .await?;
     Ok(Json(admin::KickStreamResponse {}))
 }
@@ -2303,7 +2376,10 @@ pub(crate) async fn list_admins(
         &state,
         request_meta,
         require_admin_api,
-        move |api, _, _| async move { api.list_admins(req).await },
+        move |api, _, _| async move {
+            crate::impls::validate_proto_request(&req)?;
+            api.list_admins(req).await
+        },
     )
     .await?;
     Ok(Json(resp))
@@ -2328,6 +2404,7 @@ pub(crate) async fn add_admin(
     State(state): State<AppState>,
     Path(req): Path<admin::AddAdminRequest>,
 ) -> AppResult<Json<admin::AdminUser>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp =
         execute_root_endpoint(
             &state,
@@ -2360,6 +2437,7 @@ pub(crate) async fn remove_admin(
     State(state): State<AppState>,
     Path(req): Path<admin::RemoveAdminRequest>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
+    crate::impls::validate_proto_request(&req).map_err(super::error::map_api_error)?;
     let resp = execute_root_endpoint(
         &state,
         request_meta,
@@ -2507,8 +2585,8 @@ mod tests {
     async fn test_request_context_uses_trusted_proxy_headers_for_audit_ip() -> TestResult {
         let mut state = crate::http::tests::test_app_state();
         {
-            let router_config = std::sync::Arc::make_mut(&mut state.router_config);
-            let config = std::sync::Arc::make_mut(&mut router_config.config);
+            let router_options = std::sync::Arc::make_mut(&mut state.router_options);
+            let config = std::sync::Arc::make_mut(&mut router_options.runtime_settings);
             config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
         }
 

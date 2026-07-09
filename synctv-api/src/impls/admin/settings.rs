@@ -1,12 +1,130 @@
 use synctv_core::{
-    models::{AuditDetails, UserId},
+    models::{room_settings::RoomSettingsPatch, AuditDetails, PlayMode, UserId},
     provider::ExecutionControl,
     Error as CoreError,
 };
 
-use crate::impls::client::convert::{apply_room_settings_patch_from_proto, room_settings_to_proto};
+use crate::impls::client::convert::room_settings_to_proto;
 
 use super::{AdminApiImpl, ApiError, RequestContext};
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeSettingsPatch {
+    pub room_defaults: Option<RoomDefaultsSettingsPatch>,
+    pub permissions: Option<PermissionSettingsPatch>,
+    pub room_creation: Option<RoomCreationSettingsPatch>,
+    pub user: Option<UserSettingsPatch>,
+    pub oauth2: Option<OAuth2SettingsPatch>,
+    pub proxy: Option<ProxySettingsPatch>,
+    pub rtmp: Option<RtmpSettingsPatch>,
+    pub email: Option<EmailSettingsPatch>,
+    pub webrtc: Option<WebRtcSettingsPatch>,
+    pub chat: Option<ChatSettingsPatch>,
+    pub cors: Option<CorsSettingsPatch>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoomDefaultsSettingsPatch {
+    pub default_max_members: Option<i64>,
+    pub default_max_chat_messages: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PermissionSettingsPatch {
+    pub admin_default_permissions: Option<u64>,
+    pub member_default_permissions: Option<u64>,
+    pub guest_default_permissions: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoomCreationSettingsPatch {
+    pub enabled: Option<bool>,
+    pub approval_required: Option<bool>,
+    pub password_policy: Option<synctv_core::service::RoomPasswordPolicy>,
+    pub max_rooms_per_user: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UserSettingsPatch {
+    pub enable_password_signup: Option<bool>,
+    pub password_signup_need_review: Option<bool>,
+    pub enable_email_signup: Option<bool>,
+    pub email_signup_need_review: Option<bool>,
+    pub enable_webauthn_signup: Option<bool>,
+    pub webauthn_signup_need_review: Option<bool>,
+    pub enable_guest: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OAuth2SettingsPatch {
+    pub providers: Option<synctv_core::service::OAuth2ProviderConfigs>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProxySettingsPatch {
+    pub movie_proxy: Option<bool>,
+    pub live_proxy: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RtmpSettingsPatch {
+    pub custom_publish_host: Option<String>,
+    pub ts_disguised_as_png: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EmailSettingsPatch {
+    pub enabled: Option<bool>,
+    pub smtp_host: Option<String>,
+    pub smtp_port: Option<u32>,
+    pub smtp_username: Option<String>,
+    pub smtp_password: Option<String>,
+    pub use_tls: Option<bool>,
+    pub from_email: Option<String>,
+    pub from_name: Option<String>,
+    pub whitelist_enabled: Option<bool>,
+    pub whitelist_domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WebRtcSettingsPatch {
+    pub external_ice_servers: Option<Vec<synctv_core::service::ConfiguredIceServer>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatSettingsPatch {
+    pub max_messages_per_room: Option<u64>,
+    pub max_pinned_messages_per_room: Option<u64>,
+    pub message_retention_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CorsSettingsPatch {
+    pub allowed_origins: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoomSettingsUpdatePatch {
+    pub allow_guest_join: Option<bool>,
+    pub max_members: Option<u64>,
+    pub require_approval: Option<bool>,
+    pub allow_auto_join: Option<bool>,
+    pub chat_enabled: Option<bool>,
+    pub auto_play: Option<RoomAutoPlaySettingsPatch>,
+    pub admin_added_permissions: Option<u64>,
+    pub admin_removed_permissions: Option<u64>,
+    pub member_added_permissions: Option<u64>,
+    pub member_removed_permissions: Option<u64>,
+    pub guest_added_permissions: Option<u64>,
+    pub guest_removed_permissions: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RoomAutoPlaySettingsPatch {
+    pub enabled: Option<bool>,
+    pub mode: Option<PlayMode>,
+    pub delay: Option<u32>,
+}
 
 fn proto_room_password_policy(
     value: synctv_core::service::RoomPasswordPolicy,
@@ -21,25 +139,6 @@ fn proto_room_password_policy(
         synctv_core::service::RoomPasswordPolicy::Forbidden => {
             synctv_proto::admin::RoomPasswordPolicy::Forbidden
         }
-    }
-}
-
-fn core_room_password_policy(
-    value: i32,
-) -> Result<synctv_core::service::RoomPasswordPolicy, ApiError> {
-    match synctv_proto::admin::RoomPasswordPolicy::try_from(value) {
-        Ok(synctv_proto::admin::RoomPasswordPolicy::Optional) => {
-            Ok(synctv_core::service::RoomPasswordPolicy::Optional)
-        }
-        Ok(synctv_proto::admin::RoomPasswordPolicy::Required) => {
-            Ok(synctv_core::service::RoomPasswordPolicy::Required)
-        }
-        Ok(synctv_proto::admin::RoomPasswordPolicy::Forbidden) => {
-            Ok(synctv_core::service::RoomPasswordPolicy::Forbidden)
-        }
-        Ok(synctv_proto::admin::RoomPasswordPolicy::Unspecified) | Err(_) => Err(
-            ApiError::InvalidInput("room_creation password policy is required".to_string()),
-        ),
     }
 }
 
@@ -61,41 +160,39 @@ pub(crate) struct RuntimeSettingsPatchResult {
     pub update_mask: synctv_core::service::RuntimeSettingsUpdateMask,
 }
 
-fn changed_runtime_settings_sections(
-    req: &synctv_proto::admin::UpdateSettingsRequest,
-) -> Vec<String> {
+fn changed_runtime_settings_sections(patch: &RuntimeSettingsPatch) -> Vec<String> {
     let mut sections = Vec::new();
-    if req.room_defaults.is_some() {
+    if patch.room_defaults.is_some() {
         sections.push("roomDefaults".to_string());
     }
-    if req.permissions.is_some() {
+    if patch.permissions.is_some() {
         sections.push("permissions".to_string());
     }
-    if req.room_creation.is_some() {
+    if patch.room_creation.is_some() {
         sections.push("roomCreation".to_string());
     }
-    if req.user.is_some() {
+    if patch.user.is_some() {
         sections.push("user".to_string());
     }
-    if req.oauth2.is_some() {
+    if patch.oauth2.is_some() {
         sections.push("oauth2".to_string());
     }
-    if req.proxy.is_some() {
+    if patch.proxy.is_some() {
         sections.push("proxy".to_string());
     }
-    if req.rtmp.is_some() {
+    if patch.rtmp.is_some() {
         sections.push("rtmp".to_string());
     }
-    if req.email.is_some() {
+    if patch.email.is_some() {
         sections.push("email".to_string());
     }
-    if req.webrtc.is_some() {
+    if patch.webrtc.is_some() {
         sections.push("webrtc".to_string());
     }
-    if req.chat.is_some() {
+    if patch.chat.is_some() {
         sections.push("chat".to_string());
     }
-    if req.cors.is_some() {
+    if patch.cors.is_some() {
         sections.push("cors".to_string());
     }
     sections
@@ -111,16 +208,6 @@ fn proto_ice_server(
     }
 }
 
-fn core_ice_server(
-    room_defaults: synctv_proto::client::IceServer,
-) -> synctv_core::service::ConfiguredIceServer {
-    synctv_core::service::ConfiguredIceServer {
-        urls: room_defaults.urls,
-        username: room_defaults.username,
-        credential: room_defaults.credential,
-    }
-}
-
 fn oauth2_github_config_to_proto(
     config: &synctv_core::service::OAuth2GithubProviderConfig,
 ) -> synctv_proto::admin::OAuth2GithubProviderConfig {
@@ -128,30 +215,6 @@ fn oauth2_github_config_to_proto(
         client_id: config.client_id.clone(),
         client_secret: config.client_secret.clone(),
         redirect_url: config.redirect_url.clone(),
-    }
-}
-
-fn oauth2_github_config_from_proto(
-    client_id: String,
-    client_secret: String,
-    redirect_url: String,
-) -> synctv_core::service::OAuth2GithubProviderConfig {
-    synctv_core::service::OAuth2GithubProviderConfig {
-        client_id,
-        client_secret,
-        redirect_url,
-    }
-}
-
-fn oauth2_google_config_from_proto(
-    client_id: String,
-    client_secret: String,
-    redirect_url: String,
-) -> synctv_core::service::OAuth2GoogleProviderConfig {
-    synctv_core::service::OAuth2GoogleProviderConfig {
-        client_id,
-        client_secret,
-        redirect_url,
     }
 }
 
@@ -201,63 +264,6 @@ fn oauth2_config_to_proto(
             })
         }
     }
-}
-
-fn oauth2_config_from_proto(
-    name: &str,
-    provider: &synctv_proto::admin::OAuth2ProviderSettings,
-) -> Result<synctv_core::service::OAuth2ProviderPrivateConfig, ApiError> {
-    use synctv_core::service::OAuth2ProviderPrivateConfig as CoreConfig;
-    use synctv_proto::admin::o_auth2_provider_settings::Config;
-
-    Ok(
-        match provider.config.clone().ok_or_else(|| {
-            ApiError::InvalidInput(format!("OAuth2 provider '{name}' config is required"))
-        })? {
-            Config::Github(config) => CoreConfig::GitHub(oauth2_github_config_from_proto(
-                config.client_id,
-                config.client_secret,
-                config.redirect_url,
-            )),
-            Config::Google(config) => CoreConfig::Google(oauth2_google_config_from_proto(
-                config.client_id,
-                config.client_secret,
-                config.redirect_url,
-            )),
-            Config::Logto(config) => {
-                CoreConfig::Logto(synctv_core::service::OAuth2LogtoProviderConfig {
-                    client_id: config.client_id,
-                    client_secret: config.client_secret,
-                    redirect_url: config.redirect_url,
-                    endpoint: config.endpoint,
-                })
-            }
-            Config::Oidc(config) => {
-                CoreConfig::Oidc(synctv_core::service::OAuth2OidcProviderConfig {
-                    client_id: config.client_id,
-                    client_secret: config.client_secret,
-                    redirect_url: config.redirect_url,
-                    issuer: config.issuer,
-                    auth_url: config.auth_url,
-                    token_url: config.token_url,
-                    userinfo_url: config.userinfo_url,
-                    jwks_url: config.jwks_url,
-                })
-            }
-            Config::Casdoor(config) => {
-                CoreConfig::Casdoor(synctv_core::service::OAuth2OidcProviderConfig {
-                    client_id: config.client_id,
-                    client_secret: config.client_secret,
-                    redirect_url: config.redirect_url,
-                    issuer: config.issuer,
-                    auth_url: config.auth_url,
-                    token_url: config.token_url,
-                    userinfo_url: config.userinfo_url,
-                    jwks_url: config.jwks_url,
-                })
-            }
-        },
-    )
 }
 
 impl AdminApiImpl {
@@ -366,35 +372,9 @@ impl AdminApiImpl {
         })
     }
 
-    fn oauth2_provider_configs_from_proto(
-        providers: Vec<synctv_proto::admin::OAuth2ProviderSettings>,
-    ) -> Result<synctv_core::service::OAuth2ProviderConfigs, ApiError> {
-        let mut configs = std::collections::BTreeMap::new();
-        for provider in providers {
-            let name = provider.name.clone();
-            let config = oauth2_config_from_proto(&name, &provider)?;
-            if configs
-                .insert(
-                    name.clone(),
-                    synctv_core::service::OAuth2ProviderConfig {
-                        enable_signup: provider.enable_signup,
-                        signup_need_review: provider.signup_need_review,
-                        config,
-                    },
-                )
-                .is_some()
-            {
-                return Err(ApiError::InvalidInput(format!(
-                    "Duplicate OAuth2 provider name '{name}'"
-                )));
-            }
-        }
-        Ok(synctv_core::service::OAuth2ProviderConfigs(configs))
-    }
-
     pub(crate) fn apply_runtime_settings_patch(
         mut current: synctv_core::service::RuntimeSettings,
-        patch: synctv_proto::admin::UpdateSettingsRequest,
+        patch: RuntimeSettingsPatch,
     ) -> Result<RuntimeSettingsPatchResult, ApiError> {
         let mut update_mask = synctv_core::service::RuntimeSettingsUpdateMask::default();
 
@@ -435,7 +415,7 @@ impl AdminApiImpl {
                 update_mask.room_creation.approval_required = true;
             }
             if let Some(value) = room_creation.password_policy {
-                current.room_creation.password_policy = core_room_password_policy(value)?;
+                current.room_creation.password_policy = value;
                 update_mask.room_creation.password_policy = true;
             }
             if let Some(value) = room_creation.max_rooms_per_user {
@@ -477,8 +457,7 @@ impl AdminApiImpl {
 
         if let Some(oauth2) = patch.oauth2 {
             if let Some(providers) = oauth2.providers {
-                current.oauth2.providers =
-                    Self::oauth2_provider_configs_from_proto(providers.providers)?;
+                current.oauth2.providers = providers;
                 update_mask.oauth2.providers = true;
             }
         }
@@ -547,16 +526,14 @@ impl AdminApiImpl {
                 update_mask.email.whitelist_enabled = true;
             }
             if let Some(domains) = email.whitelist_domains {
-                current.email.whitelist_domains = domains.values;
+                current.email.whitelist_domains = domains;
                 update_mask.email.whitelist_domains = true;
             }
         }
 
         if let Some(webrtc) = patch.webrtc {
             if let Some(servers) = webrtc.external_ice_servers {
-                current.webrtc.external_ice_servers = synctv_core::service::IceServerList(
-                    servers.values.into_iter().map(core_ice_server).collect(),
-                );
+                current.webrtc.external_ice_servers = synctv_core::service::IceServerList(servers);
                 update_mask.webrtc.external_ice_servers = true;
             }
         }
@@ -578,8 +555,7 @@ impl AdminApiImpl {
 
         if let Some(cors) = patch.cors {
             if let Some(origins) = cors.allowed_origins {
-                current.cors.allowed_origins =
-                    synctv_core::service::CorsAllowedOrigins(origins.values);
+                current.cors.allowed_origins = synctv_core::service::CorsAllowedOrigins(origins);
                 update_mask.cors.allowed_origins = true;
             }
         }
@@ -592,7 +568,6 @@ impl AdminApiImpl {
 
     pub async fn get_settings(
         &self,
-        _req: synctv_proto::admin::GetSettingsRequest,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
@@ -642,12 +617,13 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(req)?;
         let runtime_settings_store = self.runtime_settings_store()?;
         let current = runtime_settings_store
             .runtime_settings()
             .map_err(ApiError::from)?;
-        let changed_sections = changed_runtime_settings_sections(&req);
-        let patch_result = Self::apply_runtime_settings_patch(current, req)?;
+        let changed_sections = changed_runtime_settings_sections(&patch);
+        let patch_result = Self::apply_runtime_settings_patch(current, patch)?;
 
         runtime_settings_store
             .persist_runtime_settings_patch(&patch_result.settings, &patch_result.update_mask)
@@ -708,6 +684,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::SendTestEmailRequest,
         control: Option<&ExecutionControl>,
     ) -> Result<synctv_proto::admin::SendTestEmailResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
         Ok(Self::map_send_test_email_result(
             &req.to,
             self.email_service
@@ -721,10 +698,10 @@ impl AdminApiImpl {
         req: synctv_proto::admin::GetRoomSettingsRequest,
     ) -> Result<synctv_proto::admin::GetRoomSettingsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
+        let room_id = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let (settings, version) = self
             .room_service
-            .get_room_settings_with_version(&rid)
+            .get_room_settings_with_version(&room_id)
             .await
             .map_err(ApiError::from)?;
         Ok(synctv_proto::admin::GetRoomSettingsResponse {
@@ -741,30 +718,76 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let rid =
             crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
+        let patch = crate::admin_settings_mapping::room_settings_patch_from_admin_proto(&req)?;
         let admin_actor = self.require_admin_actor(admin_user_id).await?;
         let admin_username = admin_actor.username;
-        let current_settings = self
+        let mut settings = self
             .room_service
             .get_room_settings(&rid)
             .await
             .map_err(ApiError::from)?;
-        let settings = apply_room_settings_patch_from_proto(
-            current_settings,
-            synctv_proto::client::UpdateRoomSettingsRequest {
-                allow_guest_join: req.allow_guest_join,
-                max_members: req.max_members,
-                require_approval: req.require_approval,
-                allow_auto_join: req.allow_auto_join,
-                chat_enabled: req.chat_enabled,
-                auto_play: req.auto_play,
-                admin_added_permissions: req.admin_added_permissions,
-                admin_removed_permissions: req.admin_removed_permissions,
-                member_added_permissions: req.member_added_permissions,
-                member_removed_permissions: req.member_removed_permissions,
-                guest_added_permissions: req.guest_added_permissions,
-                guest_removed_permissions: req.guest_removed_permissions,
-            },
-        )?;
+        let mut core_patch = RoomSettingsPatch::default();
+        if let Some(value) = patch.allow_guest_join {
+            core_patch.allow_guest_join = Some(
+                synctv_core::models::room_settings::AllowGuestJoin::new(value),
+            );
+        }
+        if let Some(value) = patch.max_members {
+            core_patch.max_members =
+                Some(synctv_core::models::room_settings::MaxMembers::new(value));
+        }
+        if let Some(value) = patch.require_approval {
+            core_patch.require_approval = Some(
+                synctv_core::models::room_settings::RequireApproval::new(value),
+            );
+        }
+        if let Some(value) = patch.allow_auto_join {
+            core_patch.allow_auto_join = Some(
+                synctv_core::models::room_settings::AllowAutoJoin::new(value),
+            );
+        }
+        if let Some(value) = patch.chat_enabled {
+            core_patch.chat_enabled =
+                Some(synctv_core::models::room_settings::ChatEnabled::new(value));
+        }
+        if let Some(auto_play) = patch.auto_play {
+            let mut value = settings.auto_play.value.clone();
+            if let Some(enabled) = auto_play.enabled {
+                value.enabled = enabled;
+            }
+            if let Some(mode) = auto_play.mode {
+                value.mode = mode;
+            }
+            if let Some(delay) = auto_play.delay {
+                value.delay = delay;
+            }
+            core_patch.auto_play = Some(synctv_core::models::room_settings::AutoPlay::new(value));
+        }
+        if let Some(value) = patch.admin_added_permissions {
+            core_patch.admin_added_permissions =
+                Some(synctv_core::models::room_settings::AdminAddedPermissions::new(value));
+        }
+        if let Some(value) = patch.admin_removed_permissions {
+            core_patch.admin_removed_permissions =
+                Some(synctv_core::models::room_settings::AdminRemovedPermissions::new(value));
+        }
+        if let Some(value) = patch.member_added_permissions {
+            core_patch.member_added_permissions =
+                Some(synctv_core::models::room_settings::MemberAddedPermissions::new(value));
+        }
+        if let Some(value) = patch.member_removed_permissions {
+            core_patch.member_removed_permissions =
+                Some(synctv_core::models::room_settings::MemberRemovedPermissions::new(value));
+        }
+        if let Some(value) = patch.guest_added_permissions {
+            core_patch.guest_added_permissions =
+                Some(synctv_core::models::room_settings::GuestAddedPermissions::new(value));
+        }
+        if let Some(value) = patch.guest_removed_permissions {
+            core_patch.guest_removed_permissions =
+                Some(synctv_core::models::room_settings::GuestRemovedPermissions::new(value));
+        }
+        settings.merge_patch(core_patch);
         let prepared_settings_fanout = self.room_settings_fanout.prepare_settings_changed(
             &rid,
             admin_user_id,

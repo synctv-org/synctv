@@ -999,7 +999,7 @@ mod websocket_e2e {
             synctv_core::service::LiveProxyPlaybackProviderService::new(playback_provider_deps),
         );
 
-        let mut config_inner = synctv_core::Config::default();
+        let mut config_inner = synctv_api::ApiRuntimeSettings::default();
         config_inner.server.cors_allowed_origins = cors_allowed_origins;
         let config = Arc::new(config_inner);
         let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
@@ -1020,7 +1020,7 @@ mod websocket_e2e {
             jwt_service.clone(),
         )));
         let public_id_codec = Arc::new(
-            synctv_api::PublicIdCodec::from_config(&config.external_ids)
+            synctv_api::PublicIdCodec::from_config(&synctv_api::PublicIdConfig::default())
                 .expect("test public ID codec should build"),
         );
         let request_executor = Arc::new(synctv_api::RequestExecutor::new(
@@ -1046,23 +1046,22 @@ mod websocket_e2e {
             access_service: provider_access_service.clone(),
             event_service: realtime_manager.clone(),
         };
+        let credential_backed_providers =
+            providers.with_credential_repo(user_provider_credential_repo.clone());
         let bilibili_api = Arc::new(
             synctv_api::BilibiliApiImpl::new_with_runtime(
-                &providers.bilibili,
-                user_provider_credential_repo.clone(),
+                credential_backed_providers.bilibili.clone(),
                 b"test-secret-key-for-websocket-tests-minimum-32-chars",
                 provider_api_runtime.clone(),
             )
             .expect("test Bilibili API should build"),
         );
         let alist_api = Arc::new(synctv_api::AlistApiImpl::new_with_runtime(
-            &providers.alist,
-            user_provider_credential_repo.clone(),
+            credential_backed_providers.alist.clone(),
             provider_api_runtime.clone(),
         ));
         let emby_api = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
-            &providers.emby,
-            user_provider_credential_repo.clone(),
+            credential_backed_providers.emby.clone(),
             provider_api_runtime,
         ));
 
@@ -1077,12 +1076,12 @@ mod websocket_e2e {
             .expect("test proxy signing key should derive"),
         );
         let client_api = Arc::new(synctv_api::ClientApiImpl::new_with_runtime(
-            synctv_api::ClientApiConfig {
+            synctv_api::ClientApiOptions {
                 user_service: user_service.clone(),
                 read_pool: None,
                 room_service: room_service.clone(),
                 connection_service: connection_manager.clone(),
-                config: config.clone(),
+                runtime_settings: config.clone(),
                 publish_key_service: None,
                 jwt_service: jwt_service.clone(),
                 live_streaming_infrastructure: None,
@@ -1111,17 +1110,14 @@ mod websocket_e2e {
             }),
         ));
 
-        let router_config = synctv_api::RouterConfig {
-            config,
+        let router_options = synctv_api::RouterOptions {
+            runtime_settings: config,
             user_service: user_service.clone(),
             read_pool: None,
             user_cache,
             room_service: room_service.clone(),
             content_filter: synctv_core::service::ContentFilter::new(),
-            provider_instance_manager,
-            user_provider_credential_repository: user_provider_credential_repo.clone(),
             provider_access_service,
-            providers: providers.clone(),
             event_service: realtime_manager.clone(),
             connection_manager,
             presence_service,
@@ -1188,7 +1184,7 @@ mod websocket_e2e {
             playback_duration_probe: None,
         };
 
-        let state = synctv_api::create_app_state_from_config(router_config)
+        let state = synctv_api::create_app_state_from_options(router_options)
             .expect("test HTTP app state should build");
 
         let app = axum::Router::new()

@@ -10,6 +10,8 @@ use crate::{
     Error, Result,
 };
 
+use super::outbox::MemberJoinedEffectsRequest;
+
 #[derive(Clone, Debug)]
 pub(super) enum RoomPasswordJoinProof {
     None,
@@ -113,9 +115,7 @@ impl RoomService {
 
         if ctx.is_in_kick_cooldown {
             tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
-            return Err(Error::Authorization(
-                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
-            ));
+            return Err(Error::kick_cooldown_denied());
         }
         if self
             .member_repo
@@ -123,9 +123,7 @@ impl RoomService {
             .await?
         {
             tracing::warn!(room_id = %room_id, user_id = %user_id, "Kicked user attempted to join room during cooldown");
-            return Err(Error::Authorization(
-                crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
-            ));
+            return Err(Error::kick_cooldown_denied());
         }
 
         self.verify_room_password_join_proof(&ctx, &room_id, &user_id, &password_proof)?;
@@ -155,20 +153,14 @@ impl RoomService {
                         return Err(Error::InvalidInput("Room is closed".to_string()));
                     }
                     if fresh_ctx.is_in_kick_cooldown {
-                        return Err(Error::Authorization(
-                            crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
-                                .to_string(),
-                        ));
+                        return Err(Error::kick_cooldown_denied());
                     }
                     if self
                         .member_repo
                         .is_in_kick_cooldown(&room_id, &user_id)
                         .await?
                     {
-                        return Err(Error::Authorization(
-                            crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
-                                .to_string(),
-                        ));
+                        return Err(Error::kick_cooldown_denied());
                     }
 
                     self.verify_room_password_join_proof(
@@ -322,35 +314,17 @@ impl RoomService {
             }
             Err(e) => return Err(e),
         };
-        let snapshot = self
-            .permission_changed_snapshot_tx(
-                &mut tx,
-                room_id,
-                user_id,
-                user_id,
-                Some(&created_member),
-                Self::role_member_event_scope(),
-            )
-            .await?;
-        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory.as_ref())
-            .await?;
-        self.insert_member_joined_system_chat_tx(
-            &mut tx,
-            super::outbox::MemberJoinedSystemChatInsert {
+        self.apply_member_joined_effects_and_commit(
+            tx,
+            MemberJoinedEffectsRequest {
                 room_id,
                 target_user_id: user_id,
-                target_username: snapshot.target_username.clone(),
-                actor_user_id: user_id,
-                actor_username: snapshot.changed_by_username.clone(),
-                role: created_member.role,
+                actor_id: user_id,
+                member: &created_member,
+                outbox_event_factory: outbox_event_factory.as_ref(),
             },
         )
         .await?;
-        tx.commit().await?;
-
-        self.permission_service
-            .seed_added_member_cache(&room_id, &user_id, created_member.version)
-            .await;
 
         let members = self.member_service.list_members(&room_id).await?;
 

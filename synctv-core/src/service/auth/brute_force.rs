@@ -27,11 +27,11 @@
 //! The brute-force protection counters MUST be shared across all replicas to
 //! prevent attackers from bypassing lockouts by distributing requests.
 //!
-//! ### Cluster Mode Configuration
+//! ### Cluster Mode Requirements
 //!
-//! 1. Set `cluster.enabled = true` in configuration
-//! 2. Configure Redis via `redis.url` or `SYNCTV_REDIS_URL`
-//! 3. The system will automatically use `fail_closed=true` for brute-force protection
+//! 1. Enable cluster runtime in the caller's service options
+//! 2. Provide a shared Redis runtime to all replicas
+//! 3. Use `fail_closed=true` for brute-force protection
 //!
 //! When `fail_closed=true` and Redis becomes unavailable:
 //! - All login attempts are rejected with an internal error
@@ -395,7 +395,7 @@ impl BruteForceProtection {
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
-    pub(crate) fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
         match profile.state_mode() {
             SharedStateMode::SharedRequired => Ok(Self::with_redis_runtime_fail_closed(
                 profile.require_shared_runtime("brute-force protection state")?,

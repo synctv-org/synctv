@@ -1446,7 +1446,7 @@ impl ConsistencyCoordinator {
     }
 }
 
-pub(crate) fn version_fence_store_from_shared_state_profile(
+pub fn version_fence_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn VersionFenceStore>> {
     match profile.state_mode() {

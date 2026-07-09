@@ -8,6 +8,7 @@ pub(crate) mod playback;
 pub(crate) mod rtmp;
 
 use std::sync::Arc;
+use synctv_realtime::fanout::RealtimeEventService;
 
 pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
@@ -19,7 +20,7 @@ pub use common::{ProviderCommonApiImpl, ProviderCommonApiRuntime};
 pub use emby::EmbyApiImpl;
 
 pub(crate) fn publish_provider_credential_changed(
-    event_service: &Arc<dyn crate::runtime::RealtimeEventService>,
+    event_service: &Arc<dyn RealtimeEventService>,
     user_id: synctv_core::models::UserId,
     provider: &str,
     server_id: &str,

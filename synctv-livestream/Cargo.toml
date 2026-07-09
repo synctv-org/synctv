@@ -108,8 +108,6 @@ jsonwebtoken.workspace = true
 # URL encoding
 percent-encoding.workspace = true
 
-# Configuration
-config.workspace = true
 clap.workspace = true
 
 [lints]

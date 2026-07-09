@@ -2,6 +2,8 @@
 
 mod support;
 
+use synctv_api::ApiRuntimeSettings as Config;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -23,7 +25,6 @@ use synctv_core::{
         RateLimitConfig, RateLimiter, RequestRateLimiterService, RoomService, RoomSettingsService,
         UserService,
     },
-    Config,
 };
 use synctv_proto::client::{
     CreateChatAttachmentUploadSessionRequest, DeleteChatMessageRequest, EditChatMessageRequest,
@@ -128,12 +129,12 @@ fn make_client_api(
     let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
 
     ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager,
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new(TEST_JWT_SECRET).unwrap(),
             live_streaming_infrastructure: None,

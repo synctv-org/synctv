@@ -12,9 +12,12 @@ const PUBLISH_KEY_SERVICE_UNAVAILABLE_MESSAGE: &str =
     "Publish key service is not available on this server.";
 
 #[must_use]
-pub(crate) fn build_publish_rtmp_url(config: &synctv_core::Config, room_id: &str) -> String {
-    let rtmp_host = config.public_rtmp_host();
-    let rtmp_port = config.livestream.rtmp_port;
+pub(crate) fn build_publish_rtmp_url(
+    runtime_settings: &crate::ApiRuntimeSettings,
+    room_id: &str,
+) -> String {
+    let rtmp_host = runtime_settings.public_rtmp_host();
+    let rtmp_port = runtime_settings.livestream.rtmp_port;
     format!("rtmp://{rtmp_host}:{rtmp_port}/{room_id}")
 }
 
@@ -27,11 +30,11 @@ pub(crate) fn publish_key_service_unavailable_error() -> ApiError {
 }
 
 struct RtmpProviderApiCodec<'a> {
-    public_id_codec: &'a crate::public_id::PublicIdCodec,
+    public_id_codec: &'a synctv_adapter::PublicIdCodec,
 }
 
 impl<'a> RtmpProviderApiCodec<'a> {
-    const fn new(public_id_codec: &'a crate::public_id::PublicIdCodec) -> Self {
+    const fn new(public_id_codec: &'a synctv_adapter::PublicIdCodec) -> Self {
         Self { public_id_codec }
     }
 
@@ -174,7 +177,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to generate publish key: {e}")))?;
 
         let (room_id_key, media_id_key) = codec.encode_public_stream_ids(rid, media_id)?;
-        let rtmp_url = build_publish_rtmp_url(&self.config, &room_id_key);
+        let rtmp_url = build_publish_rtmp_url(&self.runtime_settings, &room_id_key);
         let stream_key = format!("{}?token={}", media_id_key, publish_key.token);
 
         Ok(CreatePublishKeyResponse {
@@ -296,7 +299,7 @@ impl AdminApiImpl {
 
         Ok(CreatePublishKeyResponse {
             publish_key: token,
-            rtmp_url: build_publish_rtmp_url(&self.config, &room_id_key),
+            rtmp_url: build_publish_rtmp_url(&self.runtime_settings, &room_id_key),
             stream_key,
             expires_at: publish_key.expires_at,
         })
@@ -353,7 +356,7 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_rejects_invalid_media_id() -> TestResult {
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let codec = RtmpProviderApiCodec::new(&public_id_codec);
         let err =
             api_err(
@@ -375,7 +378,7 @@ mod tests {
 
     #[test]
     fn build_get_stream_info_request_accepts_valid_request() -> TestResult {
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let codec = RtmpProviderApiCodec::new(&public_id_codec);
         let expected_room_id = codec_ok(
             public_id_codec.encode_room_id(synctv_core::models::RoomId::expect_positive(123)),

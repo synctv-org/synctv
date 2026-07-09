@@ -621,13 +621,10 @@ impl ProviderPlaybackLifecycleApi for AdminApiImpl {
         {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
-        if let Some(repo) = self.room_service.media_service().credential_repo() {
-            ctx = ctx.with_credential_repo(repo.as_ref());
-        }
-        if let Some(enc) = self.room_service.media_service().credential_encryption() {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = self
+            .room_service
+            .media_service()
+            .attach_provider_credential_context(ctx);
         Ok(ctx)
     }
 }
@@ -720,7 +717,7 @@ mod tests {
         ) -> Result<(), ProviderError> {
             if self
                 .start_failures_remaining
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                     |remaining| remaining.checked_sub(1),
@@ -853,12 +850,12 @@ mod tests {
         );
 
         ClientApiImpl::new_with_runtime(
-            crate::impls::ClientApiConfig {
+            crate::impls::ClientApiOptions {
                 read_pool: None,
                 user_service,
                 room_service,
                 connection_service: Arc::new(synctv_realtime::sync::ConnectionManager::default()),
-                config: Arc::new(synctv_core::Config::default()),
+                runtime_settings: Arc::new(crate::ApiRuntimeSettings::default()),
                 publish_key_service: None,
                 jwt_service: synctv_core::service::JwtService::new(
                     "Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
@@ -866,7 +863,7 @@ mod tests {
                 .checked("test jwt service"),
                 live_streaming_infrastructure: None,
                 runtime_settings_store: None,
-                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
                 chat_service: None,
                 provider_stores: stores,
                 email_api: None,

@@ -1,16 +1,9 @@
-use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::models::RoomId;
+use synctv_realtime::fanout::{publish_best_effort, RealtimeFanoutService};
 use synctv_realtime::sync::{CacheTarget, PublishRequest, RealtimeEvent};
 
-use crate::realtime_fanout::{publish_best_effort, RealtimeFanoutService};
-
-#[async_trait]
-pub trait RoomCacheFanoutService: Send + Sync {
-    fn publish_invalidation(&self, room_id: &RoomId);
-
-    async fn try_publish_all_invalidation(&self) -> bool;
-}
+pub use synctv_realtime::fanout::RoomCacheFanoutService;
 
 pub struct DefaultRoomCacheFanoutService {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
@@ -34,7 +27,7 @@ impl std::fmt::Debug for DefaultRoomCacheFanoutService {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl RoomCacheFanoutService for DefaultRoomCacheFanoutService {
     fn publish_invalidation(&self, room_id: &RoomId) {
         publish_best_effort(

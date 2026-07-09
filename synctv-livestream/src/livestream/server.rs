@@ -18,7 +18,6 @@ use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_common::ssrf::SsrfGuard;
-use synctv_core::config::{HlsOssConfig, HlsStorageBackend};
 use synctv_core::service::LeaderCheck;
 use synctv_xiu::hls::{segment_manager::CleanupAuthority, CustomHlsRemuxer, StreamRegistry};
 use synctv_xiu::rtmp::auth::AuthCallback;
@@ -32,6 +31,38 @@ use tracing::{error, info, warn};
 /// Maximum number of `StreamHub` automatic restart attempts before giving up.
 const HUB_MAX_RESTARTS: u32 = 10;
 const HUB_REREGISTER_TIMEOUT_SECS: u64 = 60;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HlsStorageBackend {
+    #[default]
+    Memory,
+    File,
+    SharedFile,
+    Oss,
+}
+
+#[derive(Clone)]
+pub struct HlsOssOptions {
+    pub endpoint: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub bucket: String,
+    pub region: Option<String>,
+    pub base_path: String,
+}
+
+impl Default for HlsOssOptions {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            access_key_id: String::new(),
+            secret_access_key: String::new(),
+            bucket: String::new(),
+            region: None,
+            base_path: "hls/".to_string(),
+        }
+    }
+}
 
 type ReregisterRequest = oneshot::Sender<()>;
 
@@ -180,7 +211,7 @@ pub struct LivestreamConfig {
     /// Base path for file-backed HLS storage.
     pub hls_storage_path: String,
     /// S3-compatible object storage settings for the OSS backend.
-    pub hls_oss: HlsOssConfig,
+    pub hls_oss: HlsOssOptions,
     /// Global SSRF policy for outbound livestream pull requests.
     pub ssrf_guard: SsrfGuard,
 }
@@ -1048,7 +1079,7 @@ mod tests {
             hls_memory_max_mb: 0,
             hls_storage_backend: HlsStorageBackend::Memory,
             hls_storage_path: String::new(),
-            hls_oss: HlsOssConfig::default(),
+            hls_oss: HlsOssOptions::default(),
             ssrf_guard: SsrfGuard::strict_policy(),
         }
     }

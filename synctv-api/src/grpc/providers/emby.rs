@@ -6,7 +6,6 @@ use tonic::{Request, Response, Status};
 use crate::api_runtime::SharedApiRuntime;
 use crate::impls::EmbyApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
-use synctv_core::Config;
 
 // Import generated proto types from synctv_proto
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderService;
@@ -23,7 +22,7 @@ use crate::grpc::map_api_error;
 pub struct EmbyProviderGrpcService {
     api: Arc<EmbyApiImpl>,
     request_executor: Arc<RequestExecutor>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl EmbyProviderGrpcService {
@@ -31,12 +30,12 @@ impl EmbyProviderGrpcService {
     pub fn new(
         shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
     ) -> Self {
         Self {
             api: shared_api_runtime.emby_api.clone(),
             request_executor,
-            config,
+            runtime_settings,
         }
     }
 }
@@ -50,7 +49,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby login request: host={}", req.host);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -77,7 +76,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!(
             "gRPC Emby list request: server_id={}, path={}",
@@ -111,7 +110,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetMeRequest>,
     ) -> Result<Response<GetMeResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby me request: server_id={}", req.server_id);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -141,7 +140,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Emby logout request");
         let api = self.api.clone();
@@ -165,7 +164,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

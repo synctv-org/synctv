@@ -1,6 +1,6 @@
 use super::{
     apply_global_layers, build_app_state, build_cors_layer, optional_header_str,
-    register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterConfig,
+    register_all_routes, required_header_str, start_proxy_cache_lifecycle, RouterOptions,
 };
 use crate::proxy_signature::ProxySigningKey;
 use axum::body::Body;
@@ -79,14 +79,14 @@ struct TestCoreApiImpls {
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn test_core_api_impls(
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     user_service: Arc<UserService>,
     read_pool: Option<sqlx::PgPool>,
     room_service: Arc<RoomService>,
     connection_service: Arc<dyn synctv_realtime::sync::ConnectionRuntime>,
     presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     jwt_service: synctv_core::service::JwtService,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     request_executor: Arc<crate::impls::RequestExecutor>,
     jwt_validator: Arc<synctv_core::service::JwtValidator>,
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
@@ -112,14 +112,15 @@ fn test_core_api_impls(
         }
         _ => None,
     };
-    let realtime_event_service = Arc::new(crate::runtime::LocalNoopRealtimeEventService::new());
+    let realtime_event_service =
+        Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new());
     let client = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
+        crate::impls::ClientApiOptions {
             user_service: user_service.clone(),
             read_pool: read_pool.clone(),
             room_service: room_service.clone(),
             connection_service: connection_service.clone(),
-            config: config.clone(),
+            runtime_settings: runtime_settings.clone(),
             publish_key_service: None,
             jwt_service,
             live_streaming_infrastructure: None,
@@ -150,7 +151,7 @@ fn test_core_api_impls(
         let email_service = email_service
             .ok_or_else(|| test_error("email service is required to build admin API"))?;
         Some(Arc::new(crate::impls::AdminApiImpl::new_with_runtime(
-            crate::impls::AdminApiConfig {
+            crate::impls::AdminApiOptions {
                 room_service,
                 user_service: user_service.clone(),
                 read_services: crate::test_support::admin_read_services(user_service.as_ref()),
@@ -161,7 +162,7 @@ fn test_core_api_impls(
                 provider_instance_manager,
                 live_streaming_infrastructure: None,
                 publish_key_service: None,
-                config,
+                runtime_settings,
                 audit_service,
                 public_id_codec: public_id_codec.clone(),
             },
@@ -211,25 +212,23 @@ fn test_provider_api_impls(
     ));
     let runtime = crate::impls::ProviderApiRuntime {
         access_service: provider_access_service,
-        event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
     };
+    let credential_backed_providers = providers.with_credential_repo(credential_repo);
     let bilibili = Arc::new(
         crate::impls::BilibiliApiImpl::new_with_runtime(
-            &providers.bilibili,
-            credential_repo.clone(),
+            credential_backed_providers.bilibili.clone(),
             b"test-secret-key-for-http-router-tests-minimum-32-chars",
             runtime.clone(),
         )
         .map_err(|error| test_error(error.to_string()))?,
     );
     let alist = Arc::new(crate::impls::AlistApiImpl::new_with_runtime(
-        &providers.alist,
-        credential_repo.clone(),
+        credential_backed_providers.alist.clone(),
         runtime.clone(),
     ));
     let emby = Arc::new(crate::impls::EmbyApiImpl::new_with_runtime(
-        &providers.emby,
-        credential_repo,
+        credential_backed_providers.emby.clone(),
         runtime,
     ));
 
@@ -288,13 +287,13 @@ fn test_playback_provider_services(
 struct TestApiExecutionRuntime {
     jwt_validator: Arc<synctv_core::service::JwtValidator>,
     security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     request_executor: Arc<crate::impls::RequestExecutor>,
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn test_api_execution_runtime(
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     user_service: Arc<UserService>,
     user_cache: Arc<synctv_core::cache::UserCache>,
     jwt_service: synctv_core::service::JwtService,
@@ -312,11 +311,11 @@ fn test_api_execution_runtime(
         jwt_service,
     )));
     let public_id_codec = Arc::new(
-        crate::public_id::PublicIdCodec::from_config(&config.external_ids)
+        synctv_adapter::PublicIdCodec::from_config(&synctv_adapter::PublicIdConfig::default())
             .map_err(|error| test_error(format!("invalid test public id config: {error}")))?,
     );
     let request_executor = Arc::new(crate::impls::RequestExecutor::new(
-        config,
+        runtime_settings,
         jwt_validator.clone(),
         security_pipeline.clone(),
         rate_limiter,
@@ -572,7 +571,7 @@ fn optional_header_str_rejects_non_utf8_header() -> TestResult {
 
 #[test]
 fn forwarded_proto_is_https_accepts_trusted_proxy_https() -> TestResult {
-    let mut server = synctv_core::config::ServerConfig::default();
+    let mut server = crate::ApiServerSettings::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
@@ -589,7 +588,7 @@ fn forwarded_proto_is_https_accepts_trusted_proxy_https() -> TestResult {
 
 #[test]
 fn forwarded_proto_is_https_ignores_untrusted_peer() -> TestResult {
-    let mut server = synctv_core::config::ServerConfig::default();
+    let mut server = crate::ApiServerSettings::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
@@ -602,7 +601,7 @@ fn forwarded_proto_is_https_ignores_untrusted_peer() -> TestResult {
 
 #[test]
 fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() -> TestResult {
-    let mut server = synctv_core::config::ServerConfig::default();
+    let mut server = crate::ApiServerSettings::default();
     server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
     let mut headers = HeaderMap::new();
     headers.insert("x-forwarded-proto", HeaderValue::from_bytes(&[0xff])?);
@@ -619,11 +618,11 @@ fn forwarded_proto_is_https_rejects_non_utf8_from_trusted_proxy() -> TestResult 
 }
 
 pub(crate) fn test_app_state() -> super::AppState {
-    test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig::default())
+    test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings::default())
 }
 
 fn test_app_state_with_rate_limits(
-    request_rate_limits: synctv_core::RequestRateLimitConfig,
+    request_rate_limits: crate::api_runtime::RequestRateLimitSettings,
 ) -> super::AppState {
     let database = http_test_database();
     let pool = database.pool.clone();
@@ -656,9 +655,9 @@ fn test_app_state_with_rate_limits(
     ));
     let (audit_service, _audit_handle) = AuditService::new(pool.clone());
     let audit_service = Arc::new(audit_service);
-    let config = synctv_core::Config {
+    let config = crate::ApiRuntimeSettings {
         request_rate_limits,
-        ..synctv_core::Config::default()
+        ..crate::ApiRuntimeSettings::default()
     };
     let config = Arc::new(config);
     let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
@@ -735,18 +734,15 @@ fn test_app_state_with_rate_limits(
         credential_repo.clone(),
         provider_access_service.clone(),
     ));
-    let router_config = RouterConfig {
-        config,
+    let router_options = RouterOptions {
+        runtime_settings: config,
         user_cache,
         user_service,
         read_pool: None,
         room_service,
         content_filter: ContentFilter::new(),
-        provider_instance_manager,
-        user_provider_credential_repository: credential_repo,
         provider_access_service,
-        providers,
-        event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
         connection_manager,
         presence_service,
         jwt_service,
@@ -804,14 +800,14 @@ fn test_app_state_with_rate_limits(
         providers_manager,
         playback_duration_probe: None,
     };
-    test_fixture(build_app_state(router_config)).with_test_database_leases(vec![database])
+    test_fixture(build_app_state(router_options)).with_test_database_leases(vec![database])
 }
 
 async fn test_app_state_with_websocket_runtime(
-    request_rate_limits: synctv_core::RequestRateLimitConfig,
+    request_rate_limits: crate::api_runtime::RequestRateLimitSettings,
 ) -> super::AppState {
     let state = test_app_state_with_rate_limits(request_rate_limits);
-    let mut router_config = state.router_config.as_ref().clone();
+    let mut router_options = state.router_options.as_ref().clone();
     let database = http_test_database();
     let pool = database.pool.clone();
 
@@ -826,7 +822,7 @@ async fn test_app_state_with_websocket_runtime(
         Arc::new(synctv_core::repository::ChatRepository::new(pool.clone())),
         synctv_core::service::ChatRuntime {
             clock: Arc::new(synctv_core::SystemClock),
-            rate_limiter: router_config.rate_limiter.clone(),
+            rate_limiter: router_options.rate_limiter.clone(),
             rate_limit_config: state
                 .shared_api_runtime
                 .messaging_rate_limit_config
@@ -835,16 +831,16 @@ async fn test_app_state_with_websocket_runtime(
             content_filter: state.shared_api_runtime.content_filter.as_ref().clone(),
         },
         synctv_core::service::ChatDependencies {
-            permission_service: router_config.room_service.permission_service().clone(),
+            permission_service: router_options.room_service.permission_service().clone(),
             room_settings_service,
-            user_service: router_config.user_service.clone(),
+            user_service: router_options.user_service.clone(),
             file_storage_service: Arc::new(synctv_core::service::DisabledFileStorageService),
             audit_service: None,
             notification_service: synctv_core::service::NotificationService::default(),
             runtime_settings_store: None,
         },
     );
-    router_config.chat_service = Some(Arc::new(chat_service));
+    router_options.chat_service = Some(Arc::new(chat_service));
     let realtime_manager =
         synctv_realtime::sync::RealtimeManager::new(synctv_realtime::sync::RealtimeConfig {
             distributed_transport_factory: None,
@@ -862,20 +858,21 @@ async fn test_app_state_with_websocket_runtime(
         })
         .await;
     let realtime_manager = Arc::new(test_fixture(realtime_manager));
-    router_config.event_service = realtime_manager;
-    test_fixture(build_app_state(router_config))
+    router_options.event_service = realtime_manager;
+    test_fixture(build_app_state(router_options))
         .with_shared_test_database_leases(state.test_database_leases())
         .with_added_test_database_lease(database)
 }
 
 async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::AppState {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig::default());
-    let mut router_config = state.router_config.as_ref().clone();
+    let state =
+        test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings::default());
+    let mut router_options = state.router_options.as_ref().clone();
 
     let username_cache = UsernameCache::local_only("test:http-chat:username:".to_string(), 128, 60);
     let user_service = UserService::new_for_tests(
         &pool,
-        router_config.jwt_service.clone(),
+        router_options.jwt_service.clone(),
         username_cache,
         Arc::new(InMemoryTokenBlacklistStore::new(128, 3600, 86400)),
         KeyBuilder::new("test:http-chat"),
@@ -951,69 +948,73 @@ async fn test_app_state_with_real_chat_runtime(pool: sqlx::PgPool) -> super::App
         "test:http-chat:user:".to_string(),
     ));
     let api_execution_runtime = test_fixture(test_api_execution_runtime(
-        router_config.config.clone(),
+        router_options.runtime_settings.clone(),
         user_service.clone(),
         user_cache.clone(),
-        router_config.jwt_service.clone(),
-        router_config.rate_limiter.clone(),
+        router_options.jwt_service.clone(),
+        router_options.rate_limiter.clone(),
     ));
     let client_api = Arc::new(crate::impls::ClientApiImpl::new_with_runtime(
-        crate::impls::ClientApiConfig {
+        crate::impls::ClientApiOptions {
             user_service: user_service.clone(),
             read_pool: None,
             room_service: room_service.clone(),
             chat_service: Some(chat_service.clone()),
-            connection_service: router_config.connection_manager.clone(),
-            config: router_config.config.clone(),
+            connection_service: router_options.connection_manager.clone(),
+            runtime_settings: router_options.runtime_settings.clone(),
             publish_key_service: None,
-            jwt_service: router_config.jwt_service.clone(),
+            jwt_service: router_options.jwt_service.clone(),
             live_streaming_infrastructure: None,
-            runtime_settings_store: router_config.runtime_settings_store.clone(),
-            provider_stores: router_config.shared_provider_stores.clone(),
+            runtime_settings_store: router_options.runtime_settings_store.clone(),
+            provider_stores: router_options.shared_provider_stores.clone(),
             public_id_codec: api_execution_runtime.public_id_codec.clone(),
-            email_api: router_config.email_api.clone(),
-            passkey_service: router_config.passkey_service.clone(),
+            email_api: router_options.email_api.clone(),
+            passkey_service: router_options.passkey_service.clone(),
         },
         crate::impls::ClientApiRuntime::new_with_services(crate::impls::ClientApiRuntimeServices {
             clock: Arc::new(synctv_core::SystemClock),
-            realtime_fanout: router_config.realtime_fanout_service.clone(),
+            realtime_fanout: router_options.realtime_fanout_service.clone(),
             realtime_event_service: realtime_manager.clone(),
-            redis_runtime: router_config.redis_runtime.clone(),
+            redis_runtime: router_options.redis_runtime.clone(),
             builtin_stun_url: None,
-            webrtc_status: router_config.webrtc_status.clone(),
-            provider_access_service: router_config.provider_access_service.clone(),
-            signing_key: router_config.shared_proxy_signing_key.clone(),
-            presence_service: router_config.presence_service.clone(),
+            webrtc_status: router_options.webrtc_status.clone(),
+            provider_access_service: router_options.provider_access_service.clone(),
+            signing_key: router_options.shared_proxy_signing_key.clone(),
+            presence_service: router_options.presence_service.clone(),
             jwt_validator: api_execution_runtime.jwt_validator.clone(),
             request_executor: api_execution_runtime.request_executor.clone(),
-            ws_ticket_service: router_config.ws_ticket_service.clone(),
-            playback_duration_probe: router_config.playback_duration_probe.clone(),
+            ws_ticket_service: router_options.ws_ticket_service.clone(),
+            playback_duration_probe: router_options.playback_duration_probe.clone(),
         }),
     ));
 
-    router_config.user_cache = user_cache;
-    router_config.user_service = user_service;
-    router_config.room_service = room_service;
-    router_config.chat_service = Some(chat_service);
-    router_config.event_service = realtime_manager;
-    router_config.jwt_validator = api_execution_runtime.jwt_validator;
-    router_config.security_pipeline = api_execution_runtime.security_pipeline;
-    router_config.public_id_codec = api_execution_runtime.public_id_codec;
-    router_config.request_executor = api_execution_runtime.request_executor;
-    router_config.client_api = client_api;
-    router_config.connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
+    router_options.user_cache = user_cache;
+    router_options.user_service = user_service;
+    router_options.room_service = room_service;
+    router_options.chat_service = Some(chat_service);
+    router_options.event_service = realtime_manager;
+    router_options.jwt_validator = api_execution_runtime.jwt_validator;
+    router_options.security_pipeline = api_execution_runtime.security_pipeline;
+    router_options.public_id_codec = api_execution_runtime.public_id_codec;
+    router_options.request_executor = api_execution_runtime.request_executor;
+    router_options.client_api = client_api;
+    router_options.connection_manager = Arc::new(synctv_realtime::sync::ConnectionManager::new(
         synctv_realtime::sync::ConnectionLimits::default(),
     ));
-    router_config.audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
-    router_config.user_provider_credential_repository =
+    router_options.audit_service = Arc::new(AuditService::new_unbuffered(pool.clone()));
+    let credential_repo =
         Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool));
-    router_config.provider_access_service = test_provider_access_service(
-        router_config.user_provider_credential_repository.clone(),
-        &router_config.providers,
-        router_config.shared_provider_stores.clone(),
+    let providers = test_fixture(ProviderSet::new_with_ssrf_guard(
+        state.providers_manager.instance_manager().clone(),
+        synctv_common::ssrf::SsrfGuard::strict_policy(),
+    ));
+    router_options.provider_access_service = test_provider_access_service(
+        credential_repo,
+        &providers,
+        router_options.shared_provider_stores.clone(),
     );
 
-    test_fixture(build_app_state(router_config))
+    test_fixture(build_app_state(router_options))
 }
 
 #[tokio::test]
@@ -1116,7 +1117,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         "test-secret-key-for-http-router-tests-minimum-32-chars",
     )
     .map_err(|error| test_error(error.to_string()))?;
-    let config = Arc::new(synctv_core::Config::default());
+    let config = Arc::new(crate::ApiRuntimeSettings::default());
     let user_cache = Arc::new(synctv_core::cache::UserCache::local_only(
         128,
         60,
@@ -1206,18 +1207,15 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
     let injected_metrics_access_controller =
         Arc::new(crate::metrics_auth::MetricsAccessController::new());
 
-    let state = build_app_state(RouterConfig {
-        config,
+    let state = build_app_state(RouterOptions {
+        runtime_settings: config,
         user_service,
         user_cache,
         room_service,
         read_pool: None,
         content_filter: ContentFilter::new(),
-        provider_instance_manager,
-        user_provider_credential_repository: injected_credential_repo,
         provider_access_service: injected_provider_access_service.clone(),
-        providers,
-        event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+        event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
         connection_manager,
         presence_service,
         jwt_service,
@@ -2128,10 +2126,10 @@ async fn test_delete_all_read_notifications_route_is_reachable() -> TestResult {
 #[tokio::test]
 async fn test_main_router_does_not_expose_metrics_endpoint() -> TestResult {
     let mut state = test_app_state();
-    Arc::make_mut(&mut state.router_config).config = Arc::new({
-        let mut config = (*state.config).clone();
+    Arc::make_mut(&mut state.router_options).runtime_settings = Arc::new({
+        let mut config = (*state.runtime_settings).clone();
         config.metrics.enabled = true;
-        config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::BearerToken;
+        config.metrics.auth.mode = crate::api_runtime::MetricsAuthMode::BearerToken;
         config.metrics.auth.bearer_token = "metrics-secret".to_string();
         config
     });
@@ -2146,12 +2144,12 @@ async fn test_main_router_does_not_expose_metrics_endpoint() -> TestResult {
 
 #[tokio::test]
 async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting() -> TestResult {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+    let state = test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings {
         auth_max_requests: 1,
         auth_window_seconds: 60,
         read_max_requests: 100,
         read_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
+        ..crate::api_runtime::RequestRateLimitSettings::default()
     });
     let app = register_all_routes().with_state(state);
 
@@ -2189,12 +2187,12 @@ async fn test_provider_login_routes_reject_invalid_tokens_before_rate_limiting()
 
 #[tokio::test]
 async fn test_auth_login_malformed_json_still_consumes_auth_rate_limit_bucket() -> TestResult {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+    let state = test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings {
         auth_max_requests: 1,
         auth_window_seconds: 60,
         read_max_requests: 100,
         read_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
+        ..crate::api_runtime::RequestRateLimitSettings::default()
     });
     let app = register_all_routes().with_state(state);
 
@@ -2247,14 +2245,15 @@ async fn test_bilibili_me_route_requires_post() -> TestResult {
 
 #[tokio::test]
 async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
-    let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
-        write_max_requests: 1,
-        write_window_seconds: 60,
-        read_max_requests: 100,
-        read_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
-    })
-    .await;
+    let state =
+        test_app_state_with_websocket_runtime(crate::api_runtime::RequestRateLimitSettings {
+            write_max_requests: 1,
+            write_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..crate::api_runtime::RequestRateLimitSettings::default()
+        })
+        .await;
     let app = register_all_routes().with_state(state);
 
     let first_request = test_request(
@@ -2289,12 +2288,12 @@ async fn test_ticket_route_uses_write_rate_limit_tier() -> TestResult {
 
 #[tokio::test]
 async fn test_provider_proxy_routes_use_streaming_rate_limit_tier() -> TestResult {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+    let state = test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings {
         streaming_max_requests: 1,
         streaming_window_seconds: 60,
         read_max_requests: 100,
         read_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
+        ..crate::api_runtime::RequestRateLimitSettings::default()
     });
     let app = register_all_routes().with_state(state);
 
@@ -2407,7 +2406,7 @@ async fn test_streaming_proxy_routes_preserve_options_preflight() -> TestResult 
 
 #[tokio::test]
 async fn test_cors_preflight_does_not_advertise_credentials() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
@@ -2436,7 +2435,7 @@ async fn test_cors_preflight_does_not_advertise_credentials() -> TestResult {
 
 #[tokio::test]
 async fn test_cors_preflight_allows_request_correlation_headers() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
@@ -2474,7 +2473,7 @@ async fn test_cors_preflight_allows_request_correlation_headers() -> TestResult 
 
 #[tokio::test]
 async fn test_cors_preflight_allows_upload_and_range_headers() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
@@ -2511,7 +2510,7 @@ async fn test_cors_preflight_allows_upload_and_range_headers() -> TestResult {
 
 #[tokio::test]
 async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
@@ -2543,7 +2542,7 @@ async fn test_cors_actual_response_exposes_request_id_header() -> TestResult {
 
 #[tokio::test]
 async fn test_cors_actual_response_exposes_upload_and_range_headers() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com".to_string()];
 
     let app = Router::new()
@@ -2730,7 +2729,7 @@ async fn test_swagger_ui_route_is_available() -> TestResult {
 
 #[test]
 fn test_build_cors_layer_rejects_invalid_configured_origin() {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec![
         "https://example.com".to_string(),
         "not a valid origin".to_string(),
@@ -2746,7 +2745,7 @@ fn test_build_cors_layer_rejects_invalid_configured_origin() {
 
 #[test]
 fn test_build_cors_layer_rejects_configured_origin_with_path() {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.cors_allowed_origins = vec!["https://example.com/app".to_string()];
 
     let result = build_cors_layer(&config);
@@ -2760,12 +2759,12 @@ fn test_build_cors_layer_rejects_configured_origin_with_path() {
 #[tokio::test]
 async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentication() -> TestResult
 {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+    let state = test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings {
         admin_max_requests: 1,
         admin_window_seconds: 60,
         auth_max_requests: 100,
         auth_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
+        ..crate::api_runtime::RequestRateLimitSettings::default()
     });
     let app = register_all_routes().with_state(state);
 
@@ -2801,12 +2800,12 @@ async fn test_provider_common_routes_rate_limit_invalid_tokens_before_authentica
 
 #[tokio::test]
 async fn test_provider_management_routes_do_not_consume_outer_read_bucket() -> TestResult {
-    let state = test_app_state_with_rate_limits(synctv_core::RequestRateLimitConfig {
+    let state = test_app_state_with_rate_limits(crate::api_runtime::RequestRateLimitSettings {
         read_max_requests: 1,
         read_window_seconds: 60,
         auth_max_requests: 100,
         auth_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
+        ..crate::api_runtime::RequestRateLimitSettings::default()
     });
     let app = register_all_routes().with_state(state);
 
@@ -2845,14 +2844,15 @@ async fn test_provider_management_routes_do_not_consume_outer_read_bucket() -> T
 
 #[tokio::test]
 async fn test_ticket_routes_use_write_rate_limit_tier() -> TestResult {
-    let state = test_app_state_with_websocket_runtime(synctv_core::RequestRateLimitConfig {
-        write_max_requests: 1,
-        write_window_seconds: 60,
-        read_max_requests: 100,
-        read_window_seconds: 60,
-        ..synctv_core::RequestRateLimitConfig::default()
-    })
-    .await;
+    let state =
+        test_app_state_with_websocket_runtime(crate::api_runtime::RequestRateLimitSettings {
+            write_max_requests: 1,
+            write_window_seconds: 60,
+            read_max_requests: 100,
+            read_window_seconds: 60,
+            ..crate::api_runtime::RequestRateLimitSettings::default()
+        })
+        .await;
     let app = register_all_routes().with_state(state);
 
     let first_request = test_request(

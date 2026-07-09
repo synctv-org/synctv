@@ -94,14 +94,12 @@ impl RemoteProviderManager {
     }
 
     #[must_use]
-    pub(crate) fn invalidation_listener_task(
-        &self,
-    ) -> Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> {
+    pub fn invalidation_listener_task(&self) -> Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> {
         Arc::clone(&self.invalidation_listener_task)
     }
 
     #[must_use]
-    pub(crate) fn invalidation_cancel_token(&self) -> tokio_util::sync::CancellationToken {
+    pub fn invalidation_cancel_token(&self) -> tokio_util::sync::CancellationToken {
         self.invalidation_cancel.clone()
     }
 

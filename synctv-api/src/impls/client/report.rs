@@ -324,7 +324,7 @@ fn content_report_status_to_client_proto(value: ContentReportStatus) -> i32 {
 
 fn content_report_row_to_client_proto(
     row: &ContentReportAdminRow,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<ContentReport, ApiError> {
     Ok(ContentReport {
         id: public_id_codec
@@ -368,7 +368,7 @@ fn content_report_row_to_client_proto(
 }
 
 fn encode_optional_room_id(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     room_id: Option<RoomId>,
 ) -> Result<String, ApiError> {
     room_id
@@ -382,7 +382,7 @@ fn encode_optional_room_id(
 }
 
 fn encode_optional_user_id(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     user_id: Option<UserId>,
 ) -> Result<String, ApiError> {
     user_id

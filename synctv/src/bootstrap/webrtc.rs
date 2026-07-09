@@ -1,9 +1,99 @@
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use synctv_core::config::WebRTCMode;
+use crate::app_config::{AppConfig as Config, WebRTCMode};
 use synctv_core::service::{BuiltinStunRuntimeReason, WebRtcRuntimeMode, WebRtcRuntimeStatus};
-use synctv_core::Config;
+
+fn ip_from_env(var: &str) -> Option<std::net::IpAddr> {
+    std::env::var(var)
+        .ok()
+        .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
+        .filter(|ip| !ip.is_unspecified())
+}
+
+async fn try_aws_metadata(client: &reqwest::Client) -> Option<std::net::IpAddr> {
+    let token = client
+        .put("http://169.254.169.254/latest/api/token")
+        .header("X-aws-ec2-metadata-token-ttl-seconds", "30")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+
+    let ip_str = client
+        .get("http://169.254.169.254/latest/meta-data/public-ipv4")
+        .header("X-aws-ec2-metadata-token", token.trim())
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+
+    ip_str.trim().parse::<std::net::IpAddr>().ok()
+}
+
+async fn try_gcp_metadata(client: &reqwest::Client) -> Option<std::net::IpAddr> {
+    let ip_str = client
+        .get("http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip")
+        .header("Metadata-Flavor", "Google")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+
+    ip_str.trim().parse::<std::net::IpAddr>().ok()
+}
+
+async fn try_azure_metadata(client: &reqwest::Client) -> Option<std::net::IpAddr> {
+    let resp = client
+        .get("http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text")
+        .header("Metadata", "true")
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+
+    resp.trim().parse::<std::net::IpAddr>().ok()
+}
+
+async fn resolve_external_ip() -> Option<std::net::IpAddr> {
+    if let Some(ip) = ip_from_env("STUN_EXTERNAL_IP") {
+        info!(ip = %ip, "Resolved external IP from STUN_EXTERNAL_IP env var");
+        return Some(ip);
+    }
+
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .connect_timeout(std::time::Duration::from_secs(1))
+        .build()
+    else {
+        return None;
+    };
+
+    if let Some(ip) = try_aws_metadata(&client).await {
+        info!(ip = %ip, "Resolved external IP from AWS EC2 metadata");
+        return Some(ip);
+    }
+
+    if let Some(ip) = try_gcp_metadata(&client).await {
+        info!(ip = %ip, "Resolved external IP from GCP metadata");
+        return Some(ip);
+    }
+
+    if let Some(ip) = try_azure_metadata(&client).await {
+        info!(ip = %ip, "Resolved external IP from Azure IMDS");
+        return Some(ip);
+    }
+
+    None
+}
 
 /// WebRTC components initialized during bootstrap
 pub struct WebRTCComponents {
@@ -35,27 +125,23 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
         info!("Starting built-in STUN server...");
         let bind_addr = format!("{}:{}", config.webrtc.stun_host, config.webrtc.stun_port);
 
-        // Resolve external address with auto-detection fallback chain:
-        // 1. Explicit config (stun_external_addr)
-        // 2. advertise_host config
-        // 3. STUN_EXTERNAL_IP / cloud metadata (AWS/GCP/Azure)
+        // Resolve the external address from top-level startup inputs and
+        // process-environment discovery. Core receives only the final address.
         let external_addr = if config.webrtc.stun_external_addr.is_empty() {
             let advertise = config.advertise_host();
-            // Check if advertise_host resolved to something usable
             let candidate = format!("{advertise}:{}", config.webrtc.stun_port);
             if synctv_core::service::validate_external_addr(&candidate).is_ok() {
                 candidate
             } else {
-                // Try auto-detecting from cloud metadata
                 info!("advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...", advertise);
-                if let Some(ip) = synctv_core::service::resolve_external_ip().await {
+                if let Some(ip) = resolve_external_ip().await {
                     format!("{ip}:{}", config.webrtc.stun_port)
                 } else {
                     let message = format!(
                         "Could not resolve a routable external IP for STUN server. \
                          advertise_host '{advertise}' is not routable and cloud metadata detection failed. \
-                         Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public ip:port or DNS name:port, \
-                         or set STUN_EXTERNAL_IP to a public IP. \
+                         Set webrtc.stun_external_addr to a public ip:port or DNS name:port, \
+                         or set STUN_EXTERNAL_IP in the startup environment. \
                          Built-in STUN server will NOT start."
                     );
                     error!("{message}");
@@ -78,7 +164,7 @@ pub async fn init_webrtc(config: &Config) -> WebRTCComponents {
             let message = format!(
                 "STUN external address validation failed: {e}. Built-in STUN server will NOT start. \
                  NAT traversal requires a valid public external address. Set \
-                 SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
+                 webrtc.stun_external_addr to a routable IP."
             );
             error!("{message}");
             return WebRTCComponents {

@@ -1,140 +1,12 @@
 use async_trait::async_trait;
-use parking_lot::Mutex;
 use std::sync::Arc;
-use synctv_core::repository::realtime_outbox::{NewRealtimeOutboxEvent, RealtimeOutboxRepository};
+use synctv_core::service::{NewRealtimeOutboxEvent, RealtimeOutboxService};
+use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
-use crate::runtime::RealtimeEventService;
-
-#[async_trait]
-pub trait RealtimeFanoutService: Send + Sync {
-    async fn try_publish(&self, request: PublishRequest) -> bool;
-
-    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String>;
-
-    fn publish_after_outbox_commit(&self, event: RealtimeEvent);
-
-    fn is_distributed_enabled(&self) -> bool;
-
-    fn accepts_immediate_publish(&self) -> bool {
-        self.is_distributed_enabled()
-    }
-}
-
-pub fn publish_best_effort(
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    request: PublishRequest,
-) {
-    if !realtime_fanout.accepts_immediate_publish() {
-        return;
-    }
-
-    synctv_core::spawn::spawn_monitored("realtime_fanout_best_effort_publish", async move {
-        if !realtime_fanout.try_publish(request).await {
-            tracing::warn!("Best-effort realtime fanout publish was not accepted");
-        }
-    });
-}
-
-/// Prepared single-event fanout plan shared by transaction-aware API flows.
-///
-/// A plan makes the outbox row, local after-commit fanout, distributed
-/// after-commit expectation, and delivery requirement explicit in one value.
-#[derive(Clone)]
-pub struct PreparedRealtimeFanoutPlan {
-    event: RealtimeEvent,
-    outbox_event: NewRealtimeOutboxEvent,
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-}
-
-impl PreparedRealtimeFanoutPlan {
-    #[must_use]
-    pub fn new(
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        event: RealtimeEvent,
-    ) -> Result<Self, String> {
-        let outbox_event = realtime_fanout.outbox_event(&event)?;
-        Ok(Self {
-            event,
-            outbox_event,
-            realtime_fanout,
-        })
-    }
-
-    #[must_use]
-    pub const fn event(&self) -> &RealtimeEvent {
-        &self.event
-    }
-
-    #[must_use]
-    pub fn into_event(self) -> RealtimeEvent {
-        self.event
-    }
-
-    #[must_use]
-    pub const fn outbox_event(&self) -> &NewRealtimeOutboxEvent {
-        &self.outbox_event
-    }
-
-    #[must_use]
-    pub fn cloned_outbox_event(&self) -> NewRealtimeOutboxEvent {
-        self.outbox_event.clone()
-    }
-
-    pub fn publish_after_outbox_commit(self) {
-        self.realtime_fanout.publish_after_outbox_commit(self.event);
-    }
-}
-
-type RealtimeEventBuilder<T> = Arc<dyn Fn(&T) -> RealtimeEvent + Send + Sync>;
-type RealtimeOutboxEventFactory<T> =
-    Arc<dyn Fn(&T) -> synctv_core::Result<NewRealtimeOutboxEvent> + Send + Sync>;
-
-/// Prepared outbox fanout for repository callbacks that return one saved entity.
-///
-/// Several services need the same transaction-safe sequence: build a realtime
-/// event from the saved model inside the repository transaction, return the
-/// matching outbox row, then publish the exact same event only after commit.
-#[derive(Clone)]
-pub struct PreparedOutboxFanout<T> {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_builder: RealtimeEventBuilder<T>,
-    event: Arc<Mutex<Option<RealtimeEvent>>>,
-}
-
-impl<T: 'static> PreparedOutboxFanout<T> {
-    #[must_use]
-    pub fn new(
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        event_builder: impl Fn(&T) -> RealtimeEvent + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            realtime_fanout,
-            event_builder: Arc::new(event_builder),
-            event: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    #[must_use]
-    pub fn outbox_factory(&self) -> RealtimeOutboxEventFactory<T> {
-        let realtime_fanout = self.realtime_fanout.clone();
-        let event_builder = self.event_builder.clone();
-        let event_slot = self.event.clone();
-        Arc::new(move |value: &T| {
-            let event = event_builder(value);
-            *event_slot.lock() = Some(event.clone());
-            realtime_fanout
-                .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
-        })
-    }
-
-    pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self.event.lock().take() {
-            self.realtime_fanout.publish_after_outbox_commit(event);
-        }
-    }
-}
+pub use synctv_realtime::fanout::{
+    publish_best_effort, PreparedOutboxFanout, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct NoopRealtimeFanoutService;
@@ -200,14 +72,14 @@ impl RealtimeFanoutService for LocalRealtimeFanoutService {
 
 #[derive(Clone)]
 pub struct OutboxRealtimeFanoutService {
-    outbox: Arc<RealtimeOutboxRepository>,
+    outbox: Arc<RealtimeOutboxService>,
     event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl OutboxRealtimeFanoutService {
     #[must_use]
     pub fn new(
-        outbox: Arc<RealtimeOutboxRepository>,
+        outbox: Arc<RealtimeOutboxService>,
         event_service: Arc<dyn RealtimeEventService>,
     ) -> Self {
         Self {
@@ -360,7 +232,7 @@ pub fn local_realtime_fanout_service(
 
 #[must_use]
 pub fn distributed_realtime_fanout_service(
-    outbox: Arc<RealtimeOutboxRepository>,
+    outbox: Arc<RealtimeOutboxService>,
     event_service: Arc<dyn RealtimeEventService>,
 ) -> Arc<dyn RealtimeFanoutService> {
     Arc::new(OutboxRealtimeFanoutService::new(outbox, event_service))

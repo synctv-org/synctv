@@ -50,6 +50,10 @@ pub enum CloneableError {
     Authentication(String),
     #[error("Authorization error: {0}")]
     Authorization(String),
+    #[error(
+        "Authorization error: User was recently kicked from this room and cannot access it yet"
+    )]
+    KickCooldownDenied,
     #[error("Not found: {0}")]
     NotFound(String),
     #[error("Already exists: {0}")]
@@ -96,6 +100,7 @@ impl From<Error> for CloneableError {
             )),
             Error::Authentication(message) => Self::Authentication(message),
             Error::Authorization(message) => Self::Authorization(message),
+            Error::KickCooldownDenied => Self::KickCooldownDenied,
             Error::NotFound(message) => Self::NotFound(message),
             Error::AlreadyExists(message) => Self::AlreadyExists(message),
             Error::Conflict(message) => Self::Conflict(message),
@@ -118,6 +123,7 @@ impl From<CloneableError> for Error {
         match error {
             CloneableError::Authentication(message) => Self::Authentication(message),
             CloneableError::Authorization(message) => Self::Authorization(message),
+            CloneableError::KickCooldownDenied => Self::KickCooldownDenied,
             CloneableError::NotFound(message) => Self::NotFound(message),
             CloneableError::AlreadyExists(message) => Self::AlreadyExists(message),
             CloneableError::Conflict(message) => Self::Conflict(message),

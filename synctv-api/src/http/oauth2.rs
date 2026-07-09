@@ -212,8 +212,8 @@ pub async fn exchange_authorization_code(
     Json(req): Json<ExchangeAuthorizationCodeRequest>,
 ) -> AppResult<Json<ExchangeAuthorizationCodeResponse>> {
     let oauth2_api = require_oauth2_api(&state)?;
-    let client_ip = crate::client_ip::extract_client_ip_from_headers(
-        &state.config,
+    let client_ip = synctv_adapter::client_ip::extract_client_ip_from_headers(
+        |ip| state.runtime_settings.server.is_trusted_proxy(ip),
         connect_info.0.ip(),
         &headers,
     )

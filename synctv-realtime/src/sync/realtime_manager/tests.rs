@@ -3,7 +3,6 @@ use crate::sync::{CacheTarget, ConnectionLimits, ConnectionManager, SharedRealti
 use async_trait::async_trait;
 use std::sync::atomic::AtomicUsize;
 use synctv_cluster::NodeRegistry;
-use synctv_core::config::ClusterChannelConfig;
 use tokio::sync::{broadcast, mpsc};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -153,19 +152,12 @@ impl RoomMessageRuntime for FixedMetricsRoomRuntime {
 
 #[test]
 fn test_realtime_config_default_tracks_core_cluster_capacity() {
-    let core = ClusterChannelConfig::default();
     let realtime = RealtimeConfig::default();
 
-    assert_eq!(
-        realtime.critical_channel_capacity,
-        core.critical_channel_capacity
-    );
-    assert_eq!(
-        realtime.publish_channel_capacity,
-        core.publish_channel_capacity
-    );
-    assert_eq!(realtime.catchup_window_secs, core.catchup_window_secs);
-    assert_eq!(realtime.stream_max_length, core.stream_max_length);
+    assert_eq!(realtime.critical_channel_capacity, 10_000);
+    assert_eq!(realtime.publish_channel_capacity, 100_000);
+    assert_eq!(realtime.catchup_window_secs, 300);
+    assert_eq!(realtime.stream_max_length, 100_000);
 }
 
 #[tokio::test]

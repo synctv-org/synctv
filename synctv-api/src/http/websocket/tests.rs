@@ -138,7 +138,7 @@ fn test_realtime_transport_format_rejects_unknown_values() -> TestResult {
 
 #[test]
 fn test_websocket_request_metadata_uses_forwarded_ip_for_trusted_proxy() -> TestResult {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
     let mut headers = HeaderMap::new();
@@ -156,7 +156,7 @@ fn test_websocket_request_metadata_uses_forwarded_ip_for_trusted_proxy() -> Test
 
 #[test]
 fn test_websocket_request_metadata_rejects_non_utf8_user_agent() -> TestResult {
-    let config = synctv_core::Config::default();
+    let config = crate::ApiRuntimeSettings::default();
     let mut headers = HeaderMap::new();
     headers.insert(
         header::USER_AGENT,
@@ -351,7 +351,7 @@ fn test_unauthorized_error_for_revoked_token() {
 #[test]
 fn test_validate_websocket_origin_allows_missing_origin_for_non_browser_clients() -> TestResult {
     let headers = HeaderMap::new();
-    let config = synctv_core::Config::default();
+    let config = crate::ApiRuntimeSettings::default();
     app_ok(validate_websocket_origin(
         &headers,
         &[],
@@ -372,7 +372,7 @@ fn test_validate_websocket_origin_allows_same_origin_host_when_explicitly_allowl
         &headers,
         &["https://app.example.com".to_string()],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     Ok(())
 }
@@ -388,7 +388,7 @@ fn test_validate_websocket_origin_allows_same_origin_host_without_explicit_allow
         &headers,
         &[],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     Ok(())
 }
@@ -403,7 +403,7 @@ fn test_validate_websocket_origin_allows_explicitly_configured_cross_origin() ->
         &headers,
         &["https://app.example.com".to_string()],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     Ok(())
 }
@@ -414,7 +414,7 @@ fn test_validate_websocket_origin_rejects_same_host_with_mismatched_scheme() -> 
     headers.insert(header::HOST, "app.example.com".parse()?);
     headers.insert(header::ORIGIN, "http://app.example.com".parse()?);
     headers.insert("x-forwarded-proto", "https".parse()?);
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
     let err = app_err(validate_websocket_origin(
@@ -440,7 +440,7 @@ fn test_validate_websocket_origin_rejects_non_utf8_host() -> TestResult {
         &headers,
         &[],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     assert!(err.message().contains("Host"));
@@ -457,7 +457,7 @@ fn test_validate_websocket_origin_rejects_malformed_host_port() -> TestResult {
         &headers,
         &[],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     assert!(err.message().contains("Host"));
@@ -482,7 +482,7 @@ fn test_validate_websocket_origin_rejects_non_utf8_forwarded_proto_from_trusted_
         "x-forwarded-proto",
         axum::http::HeaderValue::from_bytes(b"https\xff")?,
     );
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
     let err = app_err(validate_websocket_origin(
@@ -502,7 +502,7 @@ fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() 
     headers.insert(header::HOST, "app.example.com".parse()?);
     headers.insert(header::ORIGIN, "http://app.example.com".parse()?);
     headers.insert("x-forwarded-proto", "https".parse()?);
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
     app_ok(validate_websocket_origin(
@@ -517,7 +517,7 @@ fn test_validate_websocket_origin_ignores_forwarded_proto_from_untrusted_peer() 
 #[test]
 fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_proto() -> TestResult
 {
-    let mut config = synctv_core::Config::default();
+    let mut config = crate::ApiRuntimeSettings::default();
     config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
 
     let mut headers = HeaderMap::new();
@@ -527,8 +527,11 @@ fn test_validate_websocket_origin_uses_direct_peer_for_trusted_proxy_forwarded_p
     headers.insert("x-forwarded-proto", "https".parse()?);
 
     let direct_peer_ip = "10.2.3.4".parse()?;
-    let resolved_client_ip =
-        crate::client_ip::extract_client_ip_from_headers(&config, direct_peer_ip, &headers)?;
+    let resolved_client_ip = synctv_adapter::client_ip::extract_client_ip_from_headers(
+        |ip| config.server.is_trusted_proxy(ip),
+        direct_peer_ip,
+        &headers,
+    )?;
     assert_eq!(
         resolved_client_ip,
         "203.0.113.10".parse::<std::net::IpAddr>()?
@@ -569,7 +572,7 @@ fn test_validate_websocket_origin_rejects_unconfigured_cross_origin() -> TestRes
         &headers,
         &[],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     assert!(err.message().contains("Origin"));
@@ -586,7 +589,7 @@ fn test_validate_websocket_origin_rejects_null_origin() -> TestResult {
         &headers,
         &[],
         None,
-        &synctv_core::Config::default().server,
+        &crate::ApiRuntimeSettings::default().server,
     ))?;
     assert_eq!(err.status(), axum::http::StatusCode::FORBIDDEN);
     Ok(())
@@ -1036,12 +1039,12 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResul
     let reservation = HandshakeReservation { room_id, user_id };
 
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_user_slot(&user_id)
         .map_err(|error| test_error(error.clone()))?;
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
         .map_err(|error| test_error(error.clone()))?;
@@ -1075,7 +1078,7 @@ async fn test_failed_upgrade_cleanup_leaves_consumed_ticket_spent() -> TestResul
         .map_err(|error| test_error(format!("{error:?}")))?;
 
     let cleanup =
-        build_failed_upgrade_cleanup(state.router_config.connection_manager.clone(), reservation);
+        build_failed_upgrade_cleanup(state.router_options.connection_manager.clone(), reservation);
     cleanup(axum::Error::new(std::io::Error::other("upgrade failed")));
 
     let validated = ws_ticket_service
@@ -1097,7 +1100,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     let room_id = RoomId::expect_positive(130_009);
 
     let reservation = reserve_websocket_upgrade_slots(
-        state.router_config.connection_manager.as_ref(),
+        state.router_options.connection_manager.as_ref(),
         &room_id,
         &user_id,
     )
@@ -1134,12 +1137,12 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_ticket_claim_fa
     assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
 
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_user_slot(&user_id)
         .map_err(|error| test_error(error.clone()))?;
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
         .map_err(|error| test_error(error.clone()))?;
@@ -1154,7 +1157,7 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
     let user_id = UserId::expect_positive(130_010);
     let room_id = RoomId::expect_positive(130_011);
     let reservation = reserve_websocket_upgrade_slots(
-        state.router_config.connection_manager.as_ref(),
+        state.router_options.connection_manager.as_ref(),
         &room_id,
         &user_id,
     )
@@ -1189,12 +1192,12 @@ async fn test_commit_websocket_upgrade_releases_reservation_when_timeout_cancels
     assert_eq!(err.status(), StatusCode::REQUEST_TIMEOUT);
 
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_user_slot(&user_id)
         .map_err(|error| test_error(error.clone()))?;
     state
-        .router_config
+        .router_options
         .connection_manager
         .reserve_room_slot(&room_id)
         .map_err(|error| test_error(error.clone()))?;

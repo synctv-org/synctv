@@ -57,13 +57,13 @@ pub(super) fn print_toml(value: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn config_json_for_display(config: &synctv_core::Config) -> Result<Value> {
+pub(super) fn config_json_for_display(config: &crate::app_config::AppConfig) -> Result<Value> {
     let mut value = redact_config_for_display(config)?;
     lower_camel_config_json_keys(&mut value, &[]);
     Ok(value)
 }
 
-pub(super) fn redact_config_for_display(config: &synctv_core::Config) -> Result<Value> {
+pub(super) fn redact_config_for_display(config: &crate::app_config::AppConfig) -> Result<Value> {
     let mut value = serde_json::to_value(config)?;
     redact_config_value(&mut value);
     Ok(value)

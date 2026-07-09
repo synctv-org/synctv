@@ -423,18 +423,11 @@ fn versioned_hmac_token_split_rejects_malformed_tokens() {
 
 #[test]
 fn presigned_upload_headers_normalizes_and_rejects_invalid_values() {
-    let mut headers = http::HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        ok("image/png".parse(), "content type header should parse"),
-    );
-    headers.insert(
-        "host",
-        ok("storage.example.com".parse(), "host header should parse"),
-    );
-
     let upload_headers = ok(
-        presigned_upload_headers(&headers),
+        presigned_upload_headers([
+            ("Content-Type", "image/png".as_bytes()),
+            ("host", "storage.example.com".as_bytes()),
+        ]),
         "presigned upload headers should normalize",
     );
     assert_eq!(
@@ -443,17 +436,8 @@ fn presigned_upload_headers_normalizes_and_rejects_invalid_values() {
     );
     assert!(!upload_headers.contains_key("host"));
 
-    let mut invalid_headers = http::HeaderMap::new();
-    invalid_headers.insert(
-        "x-amz-meta-name",
-        ok(
-            http::HeaderValue::from_bytes(&[0xff]),
-            "invalid-byte header fixture should build",
-        ),
-    );
-
     assert!(matches!(
-        presigned_upload_headers(&invalid_headers),
+        presigned_upload_headers([("x-amz-meta-name", &[0xff][..])]),
         Err(Error::Internal(message)) if message.contains("x-amz-meta-name")
     ));
 }

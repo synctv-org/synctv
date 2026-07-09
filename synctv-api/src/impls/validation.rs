@@ -113,6 +113,7 @@ pub fn validate_login_username(username: &str) -> InputValidationResult<String> 
     Ok(sanitized.into_owned())
 }
 
+#[cfg(test)]
 pub fn validate_room_name(name: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(name);
     synctv_core::validation::RoomNameValidator::new()
@@ -126,18 +127,11 @@ pub fn validate_room_name(name: &str) -> InputValidationResult<String> {
     Ok(sanitized.into_owned())
 }
 
+#[cfg(test)]
 pub fn validate_room_description(description: &str) -> InputValidationResult<String> {
     let sanitized = sanitize_string(description);
-    let len = sanitized.chars().count();
-    if len > synctv_core::validation::ROOM_DESCRIPTION_MAX {
-        return Err(InputValidationError::Core {
-            field: "room_description",
-            message: format!(
-                "must be at most {} characters",
-                synctv_core::validation::ROOM_DESCRIPTION_MAX
-            ),
-        });
-    }
+    synctv_core::validation::validate_room_description(&sanitized)
+        .map_err(|error| map_core_validation_error("room_description", &error))?;
 
     if contains_html_markup(&sanitized) {
         return Err(InputValidationError::SecurityRisk);

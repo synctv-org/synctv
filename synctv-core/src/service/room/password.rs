@@ -17,6 +17,13 @@ use super::{
     ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
 
+pub(in crate::service::room) fn room_opaque_credential_identifier(room_id: &RoomId) -> Vec<u8> {
+    format!("synctv:room-password:{}", room_id.as_i64()).into_bytes()
+}
+
+const PASSWORD_UPDATE_MAX_RETRIES: u32 = 3;
+const PASSWORD_UPDATE_BACKOFF_BASE_MS: u64 = 5;
+
 impl RoomService {
     pub async fn check_room_password(&self, room_id: &RoomId, password: &str) -> Result<bool> {
         let credential = self
@@ -196,7 +203,7 @@ impl RoomService {
                 crate::models::RoomPermission::SET_ROOM_SETTINGS,
             )
             .await?;
-        let credential_identifier = Self::room_opaque_credential_identifier(room_id);
+        let credential_identifier = room_opaque_credential_identifier(room_id);
         let registration_start = self
             .opaque_password_service
             .start_registration(&credential_identifier, &registration_request)?;
@@ -260,10 +267,14 @@ impl RoomService {
         actor_user_id: Option<&UserId>,
         new_password: Option<&str>,
     ) -> Result<RoomPasswordCredentialState> {
+        if let Some(password) = new_password {
+            crate::validation::validate_room_password_for_set(password)
+                .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        }
         let opaque_record = new_password
             .map(|password| {
                 self.opaque_password_service
-                    .register_password(&Self::room_opaque_credential_identifier(room_id), password)
+                    .register_password(&room_opaque_credential_identifier(room_id), password)
             })
             .transpose()?;
         self.update_room_password_as(room_id, actor_user_id, opaque_record)
@@ -386,11 +397,15 @@ impl RoomService {
         room_id: &RoomId,
         password: Option<String>,
     ) -> Result<()> {
+        if let Some(password) = password.as_deref() {
+            crate::validation::validate_room_password_for_set(password)
+                .map_err(|error| Error::InvalidInput(error.to_string()))?;
+        }
         let opaque_record = password
             .as_deref()
             .map(|password| {
                 self.opaque_password_service
-                    .register_password(&Self::room_opaque_credential_identifier(room_id), password)
+                    .register_password(&room_opaque_credential_identifier(room_id), password)
             })
             .transpose()?;
         self.update_room_password_as(room_id, None, opaque_record)
@@ -434,8 +449,8 @@ impl RoomService {
         opaque_record: Option<OpaquePasswordRecord>,
     ) -> Result<RoomPasswordCredentialState> {
         optimistic_retry::retry_with_optimistic_lock(
-            Self::MAX_RETRIES,
-            Self::BACKOFF_BASE_MS,
+            PASSWORD_UPDATE_MAX_RETRIES,
+            PASSWORD_UPDATE_BACKOFF_BASE_MS,
             "Password update failed after maximum retry attempts",
             || async {
                 let mut tx = self.pool.begin().await?;

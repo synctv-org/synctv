@@ -1164,7 +1164,7 @@ async fn test_kick_member_cleans_resources_and_blocks_until_cooldown_expires() {
 
     let blocked_rejoin = room_service.join_room(room.id, target.id, None).await;
     assert!(
-        matches!(blocked_rejoin, Err(Error::Authorization(ref msg)) if msg.contains("recently kicked")),
+        matches!(blocked_rejoin, Err(Error::KickCooldownDenied)),
         "rejoin during kick cooldown should be blocked, got {blocked_rejoin:?}"
     );
 
@@ -1393,13 +1393,8 @@ async fn test_kicked_user_cannot_rejoin_until_cooldown_expires() {
         "Kicked user should not be able to rejoin during cooldown"
     );
     match result.failed("operation should fail") {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("recently kicked") || msg.contains("cooldown"),
-                "Error should mention kick cooldown: {msg}"
-            );
-        }
-        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
+        Error::KickCooldownDenied => {}
+        other => std::panic::panic_any(format!("Expected kick cooldown error, got: {other:?}")),
     }
 
     expire_kick_cooldown(&pool, room.id, target.id).await;
@@ -2086,13 +2081,8 @@ async fn test_kick_prevents_room_access_even_with_cached_permissions() {
     );
 
     match result.failed("operation should fail") {
-        Error::Authorization(msg) => {
-            assert!(
-                msg.contains("recently kicked") || msg.contains("cooldown"),
-                "Error should mention kick cooldown: {msg}"
-            );
-        }
-        other => std::panic::panic_any(format!("Expected Authorization error, got: {other:?}")),
+        Error::KickCooldownDenied => {}
+        other => std::panic::panic_any(format!("Expected kick cooldown error, got: {other:?}")),
     }
 }
 

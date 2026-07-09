@@ -4,7 +4,6 @@ use tonic::{Request, Response, Status};
 use crate::api_runtime::SharedApiRuntime;
 use crate::grpc::map_api_error;
 use crate::impls::admin::RequestContext;
-use synctv_core::Config;
 
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonService;
 use synctv_proto::providers::common::{
@@ -20,23 +19,27 @@ use synctv_proto::providers::common::{
 #[derive(Clone)]
 pub struct ProviderCommonGrpcService {
     api: Arc<crate::impls::ProviderCommonApiImpl>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl ProviderCommonGrpcService {
     #[must_use]
-    pub fn new(shared_api_runtime: &Arc<SharedApiRuntime>, config: Arc<Config>) -> Self {
+    pub fn new(
+        shared_api_runtime: &Arc<SharedApiRuntime>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
         Self {
             api: shared_api_runtime.provider_common_api.clone(),
-            config,
+            runtime_settings,
         }
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(
         request: &Request<T>,
-        config: &Config,
+        runtime_settings: &crate::ApiRuntimeSettings,
     ) -> Result<RequestContext, Status> {
-        let ip_address = crate::grpc::extract_client_ip(request, config)?.map(|ip| ip.to_string());
+        let ip_address =
+            crate::grpc::extract_client_ip(request, runtime_settings)?.map(|ip| ip.to_string());
         let user_agent = crate::grpc::request_user_agent(request)?;
         Ok(RequestContext {
             ip_address,
@@ -51,7 +54,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListAvailableProviderInstancesRequest>,
     ) -> Result<Response<ProviderInstancesResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -71,7 +74,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListProviderBackendsRequest>,
     ) -> Result<Response<ProviderBackendsResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -91,7 +94,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ListProviderInstancesRequest>,
     ) -> Result<Response<ListProviderInstancesResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -109,8 +112,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<AddProviderInstanceRequest>,
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
-        let ctx = Self::grpc_request_context(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let ctx = Self::grpc_request_context(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -133,8 +136,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<UpdateProviderInstanceRequest>,
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
-        let ctx = Self::grpc_request_context(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let ctx = Self::grpc_request_context(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -162,8 +165,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<DeleteProviderInstanceRequest>,
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
-        let ctx = Self::grpc_request_context(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let ctx = Self::grpc_request_context(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -186,8 +189,8 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<ReconnectProviderInstanceRequest>,
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
-        let ctx = Self::grpc_request_context(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
+        let ctx = Self::grpc_request_context(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -215,7 +218,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<EnableProviderInstanceRequest>,
     ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();
@@ -237,7 +240,7 @@ impl ProviderCommonService for ProviderCommonGrpcService {
         &self,
         request: Request<DisableProviderInstanceRequest>,
     ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
         let executor_api = api.clone();

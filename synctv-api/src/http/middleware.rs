@@ -39,8 +39,8 @@ where
                 .map(|info| info.0.ip());
             let client_ip = peer_ip
                 .map(|peer_ip| {
-                    crate::client_ip::extract_client_ip_from_headers(
-                        &app_state.config,
+                    synctv_adapter::client_ip::extract_client_ip_from_headers(
+                        |ip| app_state.runtime_settings.server.is_trusted_proxy(ip),
                         peer_ip,
                         &parts.headers,
                     )

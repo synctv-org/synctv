@@ -10,9 +10,6 @@ use crate::{
     Error, Result,
 };
 
-pub const KICK_COOLDOWN_DENIED_MESSAGE: &str =
-    "User was recently kicked from this room and cannot access it yet";
-
 use super::{
     query_builder::{ilike_contains_pattern, WhereClauseBuilder},
     required_count,
@@ -2833,9 +2830,7 @@ impl RoomMemberRepository {
         .await?;
 
         if row.is_in_kick_cooldown {
-            return Err(Error::Authorization(
-                KICK_COOLDOWN_DENIED_MESSAGE.to_string(),
-            ));
+            return Err(Error::kick_cooldown_denied());
         }
         if row.is_member {
             return Err(Error::AlreadyExists(

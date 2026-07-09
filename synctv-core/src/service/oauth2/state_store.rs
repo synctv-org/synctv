@@ -30,7 +30,7 @@ pub trait OAuthStateStore: Send + Sync {
     fn supports_cross_node_single_use(&self) -> bool;
 }
 
-pub(crate) fn state_store_from_shared_state_profile(
+pub fn state_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OAuthStateStore>> {
     match profile.state_mode() {

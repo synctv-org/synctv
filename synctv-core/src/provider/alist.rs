@@ -6,10 +6,7 @@
 use super::upstream_transport::alist as alist_upstream;
 use super::{
     access::{AlistAccess, AlistBinding},
-    provider_client::{
-        create_remote_alist_client, AlistClientArc, AlistClientExt, AlistFileInfo,
-        AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview, ProviderClientManager,
-    },
+    provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
     DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
     MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
     PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
@@ -40,6 +37,154 @@ const LIST_PAGE_SIZE: usize = 50;
 const SHUFFLE_MAX_ITEMS: usize = 200;
 const RELATED_SUBTITLE_FETCH_LIMIT: usize = 32;
 const ALIST_PASSWORD_HASH_SALT: &str = "https://github.com/alist-org/alist";
+
+#[derive(Debug, Clone)]
+pub struct AlistFileInfo {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+    pub raw_url: String,
+    pub provider: String,
+    pub thumb: String,
+    pub related: Vec<AlistRelatedFile>,
+}
+
+impl From<alist_upstream::FsGetResp> for AlistFileInfo {
+    fn from(data: alist_upstream::FsGetResp) -> Self {
+        Self {
+            name: data.name,
+            size: data.size,
+            is_dir: data.is_dir,
+            raw_url: data.raw_url,
+            provider: data.provider,
+            thumb: data.thumb,
+            related: data
+                .related
+                .into_iter()
+                .map(|related| AlistRelatedFile {
+                    name: related.name,
+                    is_dir: related.is_dir,
+                    raw_url: related.raw_url,
+                    provider: related.provider,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistRelatedFile {
+    pub name: String,
+    pub is_dir: bool,
+    pub raw_url: String,
+    pub provider: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistVideoPreview {
+    pub transcoding_tasks: Vec<AlistTranscodingTask>,
+    pub subtitle_tasks: Vec<AlistSubtitleTask>,
+    pub drive_id: String,
+    pub file_id: String,
+    pub provider: String,
+    pub category: String,
+    pub duration: f64,
+    pub width: u64,
+    pub height: u64,
+}
+
+impl AlistVideoPreview {
+    #[must_use]
+    pub fn from_fs_other_resp(other_data: alist_upstream::FsOtherResp) -> Option<Self> {
+        other_data.video_preview_play_info.map(|preview| Self {
+            transcoding_tasks: preview
+                .live_transcoding_task_list
+                .into_iter()
+                .map(|task| AlistTranscodingTask {
+                    template_name: task.template_name,
+                    template_id: task.template_id,
+                    template_width: task.template_width,
+                    template_height: task.template_height,
+                    stage: task.stage,
+                    status: task.status,
+                    url: task.url,
+                })
+                .collect(),
+            subtitle_tasks: preview
+                .live_transcoding_subtitle_task_list
+                .into_iter()
+                .map(|sub| AlistSubtitleTask {
+                    language: sub.language,
+                    status: sub.status,
+                    url: sub.url,
+                })
+                .collect(),
+            drive_id: other_data.drive_id,
+            file_id: other_data.file_id,
+            provider: other_data.provider,
+            category: preview.category,
+            duration: preview.meta.as_ref().map_or(0.0, |m| m.duration),
+            width: preview.meta.as_ref().map_or(0, |m| m.width),
+            height: preview.meta.as_ref().map_or(0, |m| m.height),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistTranscodingTask {
+    pub template_name: String,
+    pub template_id: String,
+    pub template_width: u64,
+    pub template_height: u64,
+    pub stage: String,
+    pub status: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlistSubtitleTask {
+    pub language: String,
+    #[allow(dead_code)]
+    pub status: String,
+    pub url: String,
+}
+
+#[async_trait]
+trait AlistClientExt {
+    async fn get_video_preview(
+        &self,
+        host: &str,
+        token: &str,
+        path: &str,
+        password: Option<&str>,
+    ) -> Result<Option<AlistVideoPreview>, ProviderError>;
+}
+
+#[async_trait]
+impl AlistClientExt for AlistClientArc {
+    async fn get_video_preview(
+        &self,
+        host: &str,
+        token: &str,
+        path: &str,
+        password: Option<&str>,
+    ) -> Result<Option<AlistVideoPreview>, ProviderError> {
+        let request = alist_upstream::FsOtherReq {
+            host: host.to_string(),
+            token: token.to_string(),
+            path: path.to_string(),
+            method: "video_preview".to_string(),
+            password: password.unwrap_or("").to_string(),
+        };
+
+        let other_data = self
+            .fs_other(request)
+            .await
+            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+
+        Ok(AlistVideoPreview::from_fs_other_resp(other_data))
+    }
+}
 
 fn alist_headers() -> HashMap<String, String> {
     HashMap::from([(

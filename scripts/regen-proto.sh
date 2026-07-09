@@ -8,4 +8,7 @@ SYNCTV_REGEN_PROTO=1 cargo check \
   -p synctv-proto \
   -p synctv-media-providers \
   -p synctv-cluster \
+  -p synctv-livestream \
+  -p synctv-realtime \
+  -p synctv-proxy \
   --locked

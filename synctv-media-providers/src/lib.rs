@@ -31,6 +31,12 @@ pub mod emby;
 // gRPC servers (wrap HTTP clients)
 pub mod grpc;
 
+// Remote provider gRPC clients and transport connection helpers.
+pub mod remote_transport;
+
+// DTOs exchanged by local and remote provider clients.
+pub mod transport_dto;
+
 // Re-export client types for convenience
 pub use alist::{AlistClient, AlistError};
 pub use bilibili::{BilibiliClient, BilibiliError};
@@ -63,4 +69,49 @@ pub fn build_provider_http_client(
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> Result<reqwest::Client, reqwest::Error> {
     provider_http_client_builder(ssrf_guard).build()
+}
+
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
+pub fn install_process_crypto_provider() {
+    if rustls::crypto::CryptoProvider::install_default(default_crypto_provider()).is_err() {
+        tracing::debug!("Process rustls crypto provider was already installed");
+    }
+}
+
+#[cfg(not(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+)))]
+pub const fn install_process_crypto_provider() {}
+
+#[cfg(any(
+    feature = "tls-aws-lc",
+    feature = "tls-ring",
+    feature = "tls-webpki-roots",
+    feature = "tls-native-roots"
+))]
+fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
+    #[cfg(feature = "tls-aws-lc")]
+    {
+        rustls::crypto::aws_lc_rs::default_provider()
+    }
+
+    #[cfg(all(
+        not(feature = "tls-aws-lc"),
+        any(
+            feature = "tls-ring",
+            feature = "tls-webpki-roots",
+            feature = "tls-native-roots"
+        )
+    ))]
+    {
+        rustls::crypto::ring::default_provider()
+    }
 }

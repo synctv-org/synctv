@@ -11,159 +11,33 @@
 // their local connection cache even across restarts and transient disconnects.
 
 use crate::cache::CacheInvalidationRuntime;
-use crate::models::{ProviderInstance, ProviderInstanceListQuery};
-use crate::provider::provider_client::{
-    execute_health_check, validate_auth_secret, RemoteProviderConnection,
-};
-use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider, ProviderError};
+use crate::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use crate::repository::ProviderInstanceRepository;
-use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use synctv_common::ExecutionControl;
+pub use store::ProviderInstanceStore;
+use synctv_media_providers::remote_transport::RemoteProviderConnection;
 use tokio::task::JoinHandle;
 
+mod health;
 mod invalidation;
 mod management;
+mod queries;
+mod resolution;
+mod store;
 mod transport;
 mod validation;
+pub use store::empty_provider_instance_manager;
+#[cfg(test)]
+pub(crate) use store::empty_provider_instance_store;
 
 /// Default connection cache TTL (5 minutes)
 const CONNECTION_CACHE_TTL_SECS: u64 = 300;
 
 /// Maximum number of cached connections
 const MAX_CACHED_CONNECTIONS: u64 = 1_000;
-
-const REMOTE_HEALTH_CHECK_CONCURRENCY: usize = 16;
-
-#[async_trait::async_trait]
-pub trait ProviderInstanceStore: Send + Sync + std::fmt::Debug {
-    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>>;
-    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>>;
-    async fn get_by_name(&self, name: &str) -> crate::Result<Option<ProviderInstance>>;
-    async fn list_with_total(
-        &self,
-        query: &ProviderInstanceListQuery,
-    ) -> crate::Result<(Vec<ProviderInstance>, i64)>;
-    async fn find_by_provider(&self, provider: &str) -> crate::Result<Vec<ProviderInstance>>;
-    async fn create(&self, instance: &ProviderInstance) -> crate::Result<()>;
-    async fn update(&self, instance: &ProviderInstance) -> crate::Result<()>;
-    async fn delete(&self, name: &str) -> crate::Result<()>;
-    async fn enable(&self, name: &str) -> crate::Result<()>;
-    async fn disable(&self, name: &str) -> crate::Result<()>;
-}
-
-#[async_trait::async_trait]
-impl ProviderInstanceStore for ProviderInstanceRepository {
-    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>> {
-        self.get_all_enabled().await
-    }
-
-    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>> {
-        self.get_all().await
-    }
-
-    async fn get_by_name(&self, name: &str) -> crate::Result<Option<ProviderInstance>> {
-        self.get_by_name(name).await
-    }
-
-    async fn list_with_total(
-        &self,
-        query: &ProviderInstanceListQuery,
-    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
-        self.list_with_total(query).await
-    }
-
-    async fn find_by_provider(&self, provider: &str) -> crate::Result<Vec<ProviderInstance>> {
-        self.find_by_provider(provider).await
-    }
-
-    async fn create(&self, instance: &ProviderInstance) -> crate::Result<()> {
-        self.create(instance).await
-    }
-
-    async fn update(&self, instance: &ProviderInstance) -> crate::Result<()> {
-        self.update(instance).await
-    }
-
-    async fn delete(&self, name: &str) -> crate::Result<()> {
-        self.delete(name).await
-    }
-
-    async fn enable(&self, name: &str) -> crate::Result<()> {
-        self.enable(name).await
-    }
-
-    async fn disable(&self, name: &str) -> crate::Result<()> {
-        self.disable(name).await
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct EmptyProviderInstanceStore;
-
-#[cfg(test)]
-#[async_trait::async_trait]
-impl ProviderInstanceStore for EmptyProviderInstanceStore {
-    async fn get_all_enabled(&self) -> crate::Result<Vec<ProviderInstance>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_all(&self) -> crate::Result<Vec<ProviderInstance>> {
-        Ok(Vec::new())
-    }
-
-    async fn get_by_name(&self, _name: &str) -> crate::Result<Option<ProviderInstance>> {
-        Ok(None)
-    }
-
-    async fn list_with_total(
-        &self,
-        _query: &ProviderInstanceListQuery,
-    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
-        Ok((Vec::new(), 0))
-    }
-
-    async fn find_by_provider(&self, _provider: &str) -> crate::Result<Vec<ProviderInstance>> {
-        Ok(Vec::new())
-    }
-
-    async fn create(&self, _instance: &ProviderInstance) -> crate::Result<()> {
-        Ok(())
-    }
-
-    async fn update(&self, _instance: &ProviderInstance) -> crate::Result<()> {
-        Ok(())
-    }
-
-    async fn delete(&self, _name: &str) -> crate::Result<()> {
-        Ok(())
-    }
-
-    async fn enable(&self, _name: &str) -> crate::Result<()> {
-        Ok(())
-    }
-
-    async fn disable(&self, _name: &str) -> crate::Result<()> {
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn empty_provider_instance_store() -> Arc<dyn ProviderInstanceStore> {
-    Arc::new(EmptyProviderInstanceStore)
-}
-
-#[cfg(test)]
-pub(crate) fn empty_provider_instance_manager() -> Arc<RemoteProviderManager> {
-    Arc::new(RemoteProviderManager::new_with_store(
-        empty_provider_instance_store(),
-        None,
-    ))
-}
 
 /// Remote Provider Manager
 ///
@@ -203,14 +77,14 @@ pub struct RemoteProviderManager {
     /// Global SSRF policy for remote provider endpoints.
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 
-    /// Whether remote provider clients should negotiate gzip compression.
-    grpc_compression_enabled: bool,
+    /// Whether remote provider clients should negotiate transport compression.
+    transport_compression_enabled: bool,
 }
 
 pub struct RemoteProviderManagerOptions {
     pub address_overrides: HashMap<String, SocketAddr>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    pub grpc_compression_enabled: bool,
+    pub transport_compression_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +98,7 @@ impl Default for RemoteProviderManagerOptions {
         Self {
             address_overrides: HashMap::new(),
             ssrf_guard: synctv_common::ssrf::SsrfGuard::strict_policy(),
-            grpc_compression_enabled: true,
+            transport_compression_enabled: true,
         }
     }
 }
@@ -244,187 +118,6 @@ impl RemoteProviderManager {
         EmbyProvider::NAME,
         BilibiliProvider::NAME,
     ];
-
-    fn probe_execution_control(
-        control: Option<&ExecutionControl>,
-        timeout: Duration,
-    ) -> ExecutionControl {
-        let probe_deadline = std::time::Instant::now() + timeout;
-        match control {
-            Some(control) => {
-                let deadline = control
-                    .deadline()
-                    .map_or(probe_deadline, |deadline| deadline.min(probe_deadline));
-                ExecutionControl::from_parts(Some(deadline), control.cancellation_token())
-            }
-            None => ExecutionControl::from_timeout(Some(timeout)),
-        }
-    }
-
-    fn provider_registry_unavailable(
-        operation: &'static str,
-        error: impl std::fmt::Display,
-    ) -> crate::Error {
-        tracing::warn!(operation, error = %error, "Provider registry unavailable");
-        crate::Error::ServiceUnavailable(
-            "Provider configuration service is temporarily unavailable.".to_string(),
-        )
-    }
-
-    fn provider_connection_setup_error(
-        message: &'static str,
-        error: impl std::fmt::Display,
-    ) -> crate::Error {
-        tracing::error!(error = %error, "{message}");
-        crate::Error::Internal(message.to_string())
-    }
-
-    fn map_remote_resolution_error(err: crate::Error) -> ProviderError {
-        match err {
-            crate::Error::InvalidInput(msg) => ProviderError::InvalidConfig(msg),
-            crate::Error::RangeNotSatisfiable { total_size } => ProviderError::InvalidConfig(
-                format!("Range not satisfiable: total size {total_size}"),
-            ),
-            crate::Error::Timeout(msg) => ProviderError::NetworkError(msg),
-            crate::Error::ServiceUnavailable(msg) | crate::Error::RateLimited(msg) => {
-                ProviderError::ApiError(msg)
-            }
-            crate::Error::Database(error) => {
-                tracing::warn!(error = %error, "Provider configuration store unavailable");
-                ProviderError::ApiError(
-                    "Provider configuration service is temporarily unavailable.".to_string(),
-                )
-            }
-            crate::Error::Redis(error) => {
-                tracing::warn!(error = %error, "Provider configuration cache unavailable");
-                ProviderError::ApiError(
-                    "Provider configuration service is temporarily unavailable.".to_string(),
-                )
-            }
-            crate::Error::Serialization(err) => {
-                ProviderError::Internal(format!("Serialization error: {err}"))
-            }
-            crate::Error::Deserialization { context } => {
-                ProviderError::Internal(format!("Deserialization error: {context}"))
-            }
-            crate::Error::Authentication(msg) => ProviderError::Internal(format!(
-                "Unexpected authentication error while resolving provider instance: {msg}"
-            )),
-            crate::Error::Authorization(msg) => ProviderError::Internal(format!(
-                "Unexpected authorization error while resolving provider instance: {msg}"
-            )),
-            crate::Error::NotFound(msg) => ProviderError::Internal(format!(
-                "Unexpected not found error while resolving provider instance: {msg}"
-            )),
-            crate::Error::AlreadyExists(msg) => ProviderError::Internal(format!(
-                "Unexpected already exists error while resolving provider instance: {msg}"
-            )),
-            crate::Error::Conflict(msg) => ProviderError::Internal(format!(
-                "Unexpected conflict while resolving provider instance: {msg}"
-            )),
-            crate::Error::Internal(msg) => ProviderError::Internal(msg),
-            crate::Error::OptimisticLockConflict => {
-                ProviderError::Internal("Optimistic lock conflict".to_string())
-            }
-            crate::Error::LockConflict(msg) => ProviderError::Internal(format!(
-                "Distributed lock conflict while resolving provider instance: {msg}"
-            )),
-        }
-    }
-
-    fn provider_error_from_ref(error: &ProviderError) -> ProviderError {
-        match error {
-            ProviderError::InvalidUrl(message) => ProviderError::InvalidUrl(message.clone()),
-            ProviderError::InvalidConfig(message) => ProviderError::InvalidConfig(message.clone()),
-            ProviderError::MissingField(message) => ProviderError::MissingField(message.clone()),
-            ProviderError::NetworkError(message) => ProviderError::NetworkError(message.clone()),
-            ProviderError::AuthRequired => ProviderError::AuthRequired,
-            ProviderError::CredentialRequired => ProviderError::CredentialRequired,
-            ProviderError::InvalidCredentialType => ProviderError::InvalidCredentialType,
-            ProviderError::Authentication(message) => {
-                ProviderError::Authentication(message.clone())
-            }
-            ProviderError::NotFound => ProviderError::NotFound,
-            ProviderError::ApiError(message) => ProviderError::ApiError(message.clone()),
-            ProviderError::UpstreamHttp { status, url } => ProviderError::UpstreamHttp {
-                status: *status,
-                url: url.clone(),
-            },
-            ProviderError::UnsupportedFormat(format) => {
-                ProviderError::UnsupportedFormat(format.clone())
-            }
-            ProviderError::ParseError(message) => ProviderError::ParseError(message.clone()),
-            ProviderError::MissingInstance => ProviderError::MissingInstance,
-            ProviderError::InstanceNotFound(name) => ProviderError::InstanceNotFound(name.clone()),
-            ProviderError::CredentialNotFound(message) => {
-                ProviderError::CredentialNotFound(message.clone())
-            }
-            ProviderError::CredentialExpired(message) => {
-                ProviderError::CredentialExpired(message.clone())
-            }
-            ProviderError::EncryptionRequired(provider) => {
-                ProviderError::EncryptionRequired(provider)
-            }
-            ProviderError::RouteRegistrationFailed(message) => {
-                ProviderError::RouteRegistrationFailed(message.clone())
-            }
-            ProviderError::Internal(message) => ProviderError::Internal(message.clone()),
-            ProviderError::IoError(error) => {
-                ProviderError::IoError(std::io::Error::new(error.kind(), error.to_string()))
-            }
-            ProviderError::JsonError(error) => ProviderError::JsonError(serde_json::Error::io(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
-            )),
-        }
-    }
-
-    async fn get_connection_result(
-        &self,
-        name: &str,
-    ) -> std::result::Result<Option<RemoteProviderConnection>, ProviderError> {
-        enum LoadError {
-            NotCacheable,
-            Provider(ProviderError),
-        }
-
-        let loaded = self
-            .connection_cache
-            .try_get_with_by_ref(name, async {
-                let Some(config) = self.repository.get_by_name(name).await.map_err(|error| {
-                    LoadError::Provider(Self::map_remote_resolution_error(error))
-                })?
-                else {
-                    return Err(LoadError::NotCacheable);
-                };
-
-                if !config.enabled || !Self::requires_remote_connection(&config) {
-                    return Err(LoadError::NotCacheable);
-                }
-
-                let connection = self.create_remote_connection(&config).map_err(|error| {
-                    LoadError::Provider(Self::map_remote_resolution_error(error))
-                })?;
-
-                tracing::debug!(
-                    "Lazily created and cached remote provider connection for instance '{}'",
-                    config.name
-                );
-                Ok(connection)
-            })
-            .await;
-
-        match loaded {
-            Ok(connection) => Ok(Some(connection)),
-            Err(error) => match Arc::try_unwrap(error) {
-                Ok(LoadError::NotCacheable) => Ok(None),
-                Ok(LoadError::Provider(error)) => Err(error),
-                Err(error) => match error.as_ref() {
-                    LoadError::NotCacheable => Ok(None),
-                    LoadError::Provider(error) => Err(Self::provider_error_from_ref(error)),
-                },
-            },
-        }
-    }
 
     /// Create a new `RemoteProviderManager` without shared durable invalidation.
     #[must_use]
@@ -521,7 +214,7 @@ impl RemoteProviderManager {
             invalidation_listener_task: Arc::new(tokio::sync::Mutex::new(None)),
             address_overrides: Arc::new(options.address_overrides),
             ssrf_guard: options.ssrf_guard,
-            grpc_compression_enabled: options.grpc_compression_enabled,
+            transport_compression_enabled: options.transport_compression_enabled,
         }
     }
 
@@ -574,317 +267,6 @@ impl RemoteProviderManager {
         );
 
         Ok(())
-    }
-
-    async fn build_management_validated_remote_connection_with_control(
-        &self,
-        config: &ProviderInstance,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<RemoteProviderConnection> {
-        let connection = self.create_remote_connection(config)?;
-        self.validate_management_connection_with_control(config, &connection, control)
-            .await?;
-        Ok(connection)
-    }
-
-    async fn validate_management_connection_with_control(
-        &self,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-        control: Option<&ExecutionControl>,
-    ) -> crate::Result<()> {
-        let timeout = Duration::from_secs(5);
-        let control = Self::probe_execution_control(control, timeout);
-
-        let status = execute_health_check(&config.name, connection, &control, timeout).await?;
-        if status != 1 {
-            return Err(crate::Error::InvalidInput(format!(
-                "Remote provider instance '{}' is not serving (health status: {status})",
-                config.name
-            )));
-        }
-
-        Ok(())
-    }
-
-    /// Get a remote provider instance connection by name for best-effort probes.
-    ///
-    /// Checks the local moka cache first. On cache miss, loads the instance config
-    /// from the database and creates a connection lazily. This ensures that provider
-    /// instances added on other replicas are visible after the cache TTL expires
-    /// (or immediately if a Redis invalidation notification was received).
-    ///
-    /// Returns:
-    /// - `Some(connection)` if the instance exists and is enabled
-    /// - `None` if not found, disabled, or temporarily unavailable
-    pub async fn runtime_status(&self, name: &str) -> RemoteProviderRuntimeStatus {
-        match self.get_connection_result(name).await {
-            Ok(Some(connection)) => RemoteProviderRuntimeStatus {
-                available: true,
-                has_auth_secret: connection.auth_secret().is_some(),
-            },
-            Ok(None) => RemoteProviderRuntimeStatus {
-                available: false,
-                has_auth_secret: false,
-            },
-            Err(err) => {
-                tracing::error!(
-                    "Failed to resolve remote provider instance '{}' for runtime status: {}",
-                    name,
-                    err
-                );
-                RemoteProviderRuntimeStatus {
-                    available: false,
-                    has_auth_secret: false,
-                }
-            }
-        }
-    }
-
-    pub(crate) async fn get(&self, name: &str) -> Option<RemoteProviderConnection> {
-        match self.get_connection_result(name).await {
-            Ok(connection) => connection,
-            Err(err) => {
-                tracing::error!(
-                    "Failed to resolve remote provider instance '{}' for best-effort probe: {}",
-                    name,
-                    err
-                );
-                None
-            }
-        }
-    }
-
-    /// Resolve a provider client without silent fallback and attach a cooperative request context.
-    ///
-    /// Semantics:
-    /// - `instance_name=None`: use the local singleton client.
-    /// - `instance_name=Some(name)` and remote exists: use remote client.
-    /// - `instance_name=Some(name)` and remote missing/disabled: return
-    ///   [`ProviderError::InstanceNotFound`] instead of masking the issue by
-    ///   falling back to the local singleton.
-    /// - `instance_name=Some(name)` and remote resolution/config loading fails:
-    ///   surface the underlying provider/config/internal error.
-    pub(crate) async fn resolve_client_required_with_context<T>(
-        &self,
-        instance_name: Option<&str>,
-        request_context: Option<&crate::provider::ExecutionControl>,
-        create_remote: impl FnOnce(RemoteProviderConnection) -> T,
-        load_local: impl FnOnce() -> T,
-    ) -> std::result::Result<T, ProviderError> {
-        if let Some(request_context) = request_context {
-            request_context
-                .check_active()
-                .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
-        }
-
-        match instance_name {
-            Some(name) => self
-                .get_connection_result(name)
-                .await?
-                .map(|connection| {
-                    if let Some(request_context) = request_context {
-                        request_context
-                            .check_active()
-                            .map_err(|err| ProviderError::NetworkError(err.to_string()))?;
-                    }
-                    Ok::<T, ProviderError>(create_remote(
-                        connection.with_request_context(request_context.cloned()),
-                    ))
-                })
-                .transpose()?
-                .ok_or_else(|| ProviderError::InstanceNotFound(name.to_string())),
-            None => Ok(load_local()),
-        }
-    }
-
-    /// List all remote instance names (from cache + DB)
-    ///
-    /// Returns the union of cached instances and enabled instances from the DB.
-    pub async fn list(&self) -> crate::Result<Vec<String>> {
-        self.repository
-            .get_all_enabled()
-            .await
-            .map(|configs| configs.into_iter().map(|c| c.name).collect())
-            .map_err(|e| Self::provider_registry_unavailable("list enabled instances", e))
-    }
-
-    /// Get all provider instances with full metadata
-    pub async fn get_all_instances(&self) -> crate::Result<Vec<ProviderInstance>> {
-        self.repository
-            .get_all()
-            .await
-            .map_err(|e| Self::provider_registry_unavailable("get all instances", e))
-    }
-
-    pub async fn get_instance(&self, name: &str) -> crate::Result<Option<ProviderInstance>> {
-        self.repository
-            .get_by_name(name)
-            .await
-            .map_err(|e| Self::provider_registry_unavailable("get instance by name", e))
-    }
-
-    pub async fn list_instances(
-        &self,
-        query: &ProviderInstanceListQuery,
-    ) -> crate::Result<Vec<ProviderInstance>> {
-        self.list_instances_with_total(query)
-            .await
-            .map(|(instances, _)| instances)
-    }
-
-    pub async fn list_instances_with_total(
-        &self,
-        query: &ProviderInstanceListQuery,
-    ) -> crate::Result<(Vec<ProviderInstance>, i64)> {
-        self.repository
-            .list_with_total(query)
-            .await
-            .map_err(|e| Self::provider_registry_unavailable("list instances", e))
-    }
-
-    pub async fn find_instances_by_provider(
-        &self,
-        provider: &str,
-    ) -> crate::Result<Vec<ProviderInstance>> {
-        self.repository
-            .find_by_provider(provider)
-            .await
-            .map_err(|e| Self::provider_registry_unavailable("find instances by provider", e))
-    }
-
-    /// Health check all remote instances
-    ///
-    /// Returns a map of instance name to health status.
-    /// Uses the remote provider health-check protocol with a 5-second timeout per instance.
-    ///
-    /// Loads the full list from DB to check all instances, not just cached ones.
-    pub async fn health_check(&self) -> HashMap<String, bool> {
-        let configs = match self.repository.get_all_enabled().await {
-            Ok(configs) => configs,
-            Err(e) => {
-                tracing::error!("Failed to load instances for health check: {e}");
-                return HashMap::new();
-            }
-        };
-
-        self.health_check_instances(&configs).await
-    }
-
-    /// Health check a selected set of provider instances.
-    ///
-    /// This avoids probing every enabled instance when a caller only needs
-    /// status for a filtered or paginated subset.
-    pub async fn health_check_instances(
-        &self,
-        configs: &[ProviderInstance],
-    ) -> HashMap<String, bool> {
-        let mut results = HashMap::new();
-
-        for config in configs {
-            if !Self::requires_remote_connection(config) {
-                continue;
-            }
-
-            if validate_auth_secret(config.jwt_secret.as_deref()).is_err() {
-                tracing::warn!(
-                    "Health check reporting provider instance '{}' unhealthy: missing or invalid jwt_secret for remote-capable configuration",
-                    config.name
-                );
-                results.insert(config.name.clone(), false);
-                continue;
-            }
-
-            let Some(connection) = self.get(&config.name).await else {
-                results.insert(config.name.clone(), false);
-                continue;
-            };
-
-            let is_healthy = self
-                .check_instance_health(&config.name, config, &connection)
-                .await;
-            results.insert(config.name.clone(), is_healthy);
-        }
-
-        results
-    }
-
-    pub async fn health_check_instances_owned(
-        self: Arc<Self>,
-        configs: Vec<ProviderInstance>,
-    ) -> HashMap<String, bool> {
-        let mut results = HashMap::new();
-        let mut remote_configs = Vec::new();
-
-        for config in configs {
-            if !Self::requires_remote_connection(&config) {
-                continue;
-            }
-
-            if validate_auth_secret(config.jwt_secret.as_deref()).is_err() {
-                tracing::warn!(
-                    "Health check reporting provider instance '{}' unhealthy: missing or invalid jwt_secret for remote-capable configuration",
-                    config.name
-                );
-                results.insert(config.name.clone(), false);
-                continue;
-            }
-
-            remote_configs.push(config);
-        }
-
-        let manager = Arc::clone(&self);
-        let remote_results = stream::iter(remote_configs)
-            .map(move |config| {
-                let manager = Arc::clone(&manager);
-                let name = config.name.clone();
-                async move {
-                    let is_healthy = manager.health_check_instance(&config).await;
-                    (name, is_healthy)
-                }
-            })
-            .buffer_unordered(REMOTE_HEALTH_CHECK_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-
-        for (name, is_healthy) in remote_results {
-            results.insert(name, is_healthy);
-        }
-
-        results
-    }
-
-    async fn health_check_instance(self: Arc<Self>, config: &ProviderInstance) -> bool {
-        let Some(connection) = self.get(&config.name).await else {
-            return false;
-        };
-
-        self.check_instance_health(&config.name, config, &connection)
-            .await
-    }
-
-    /// Check health of a single remote instance
-    ///
-    /// Calls the remote provider health-check endpoint with a 5-second timeout.
-    async fn check_instance_health(
-        &self,
-        name: &str,
-        config: &ProviderInstance,
-        connection: &RemoteProviderConnection,
-    ) -> bool {
-        match self
-            .validate_management_connection_with_control(config, connection, None)
-            .await
-        {
-            Ok(()) => {
-                tracing::debug!("Provider instance '{}' is healthy", name);
-                true
-            }
-            Err(error) => {
-                tracing::error!("Health check failed for instance '{}': {}", name, error);
-                false
-            }
-        }
     }
 }
 

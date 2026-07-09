@@ -1,5 +1,6 @@
 // Live streaming API helpers used by synctv-api HTTP endpoints.
 
+use crate::livestream::server::HlsStorageBackend;
 use crate::{
     error::StreamError,
     grpc::{HlsProxyClient, StreamRelayServiceImpl},
@@ -14,7 +15,6 @@ use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use synctv_common::ssrf::SsrfGuard;
-use synctv_core::config::HlsStorageBackend;
 use synctv_xiu::hls::remuxer::StreamRegistry as HlsStreamRegistry;
 use synctv_xiu::httpflv::HttpFlvSession;
 use synctv_xiu::streamhub::{

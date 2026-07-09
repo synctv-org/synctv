@@ -204,7 +204,7 @@ fn test_media_stream_to_proto() {
         protocol: String::new(),
         delivery_url: String::new(),
     };
-    let proto: crate::grpc::emby::MediaStreamInfo = stream.into();
+    let proto: crate::transport_dto::emby::MediaStreamInfo = stream.into();
     assert_eq!(proto.codec, "h264");
     assert_eq!(proto.language, "eng");
     assert!(proto.is_default);
@@ -230,7 +230,7 @@ fn test_item_to_proto() {
         production_year: Some(2024),
         image_tags: None,
     };
-    let proto: crate::grpc::emby::Item = item.into();
+    let proto: crate::transport_dto::emby::Item = item.into();
     assert_eq!(proto.id, "item1");
     assert_eq!(proto.name, "Test Movie");
     assert_eq!(proto.parent_id, "parent1");
@@ -261,7 +261,7 @@ fn test_item_to_proto_preserves_thumbnail_presence() {
             thumb: None,
         }),
     };
-    let proto: crate::grpc::emby::Item = item.into();
+    let proto: crate::transport_dto::emby::Item = item.into();
     assert!(proto.has_thumbnail);
 }
 
@@ -273,7 +273,7 @@ fn test_user_policy_to_proto() {
         is_disabled: false,
         enable_all_folders: true,
     };
-    let proto: crate::grpc::emby::UserPolicy = policy.into();
+    let proto: crate::transport_dto::emby::UserPolicy = policy.into();
     assert!(proto.is_administrator);
     assert!(!proto.is_hidden);
     assert!(proto.enable_all_folders);

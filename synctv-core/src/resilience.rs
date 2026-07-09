@@ -112,8 +112,8 @@ pub mod retry {
         }
 
         // Fallback: check the display message for transient indicators.
-        // This covers wrapped error types (e.g. hyper, tonic, anyhow) that
-        // include the underlying I/O error message in their Display output.
+        // This covers wrapped error types that include the underlying I/O
+        // error message in their Display output.
         let err_msg = err.to_string().to_lowercase();
         err_msg.contains("timed out")
             || err_msg.contains("timeout")

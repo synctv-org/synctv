@@ -17,7 +17,7 @@ use crate::proxy_signature::ProxySigningKeyQueryExt;
 
 pub struct PlaybackProviderAccessDeps<'a> {
     pub proxy_signing_key: &'a ProxySigningKey,
-    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
+    pub public_id_codec: &'a synctv_adapter::PublicIdCodec,
     pub provider_stores: &'a dyn synctv_core::provider::ProviderStoreResolver,
     pub user_service: &'a UserService,
     pub playback_transport_services: &'a PlaybackTransportServices,
@@ -83,7 +83,7 @@ impl PlaybackProviderAccessDeps<'_> {
 #[derive(Clone, Copy)]
 pub struct PlaybackProviderApiRuntime<'a> {
     pub proxy_signing_key: &'a ProxySigningKey,
-    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
+    pub public_id_codec: &'a synctv_adapter::PublicIdCodec,
     pub provider_stores: &'a dyn synctv_core::provider::ProviderStoreResolver,
     pub user_service: &'a UserService,
     pub playback_transport_services: &'a PlaybackTransportServices,
@@ -109,7 +109,7 @@ impl PlaybackProviderApiRuntime<'_> {
 
 #[derive(Clone, Copy)]
 pub struct PlaybackProviderIdentityRuntime<'a> {
-    pub public_id_codec: &'a crate::public_id::PublicIdCodec,
+    pub public_id_codec: &'a synctv_adapter::PublicIdCodec,
 }
 
 pub struct PlaybackProviderAccessRequest<'a> {
@@ -133,7 +133,7 @@ macro_rules! impl_has_playback_provider_access_fields {
             fn proxy_signing_key(&self) -> &'a $crate::proxy_signature::ProxySigningKey {
                 self.runtime.proxy_signing_key
             }
-            fn public_id_codec(&self) -> &'a $crate::public_id::PublicIdCodec {
+            fn public_id_codec(&self) -> &'a synctv_adapter::PublicIdCodec {
                 self.runtime.public_id_codec
             }
             fn provider_stores(&self) -> &'a dyn synctv_core::provider::ProviderStoreResolver {
@@ -153,7 +153,7 @@ macro_rules! impl_has_playback_provider_access_fields {
 
 pub trait HasPlaybackProviderAccessFields<'a> {
     fn proxy_signing_key(&self) -> &'a ProxySigningKey;
-    fn public_id_codec(&self) -> &'a crate::public_id::PublicIdCodec;
+    fn public_id_codec(&self) -> &'a synctv_adapter::PublicIdCodec;
     fn provider_stores(&self) -> &'a dyn synctv_core::provider::ProviderStoreResolver;
     fn user_service(&self) -> &'a UserService;
     fn playback_transport_services(&self) -> &'a PlaybackTransportServices;
@@ -184,7 +184,7 @@ pub async fn verify_playback_provider_access_with_deps(
 }
 
 pub fn live_flv_access_from_claims(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     claims: &ProxyUrlClaims,
 ) -> Result<LiveFlvAccess, ApiError> {
     let user_id = public_id_codec
@@ -224,7 +224,7 @@ pub struct LivePlaybackDeps<'a> {
     pub live_streaming_infrastructure:
         Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
-    pub livestream_config: &'a synctv_core::config::LivestreamConfig,
+    pub livestream_config: &'a crate::api_runtime::LivestreamRuntimeSettings,
     pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
@@ -234,7 +234,7 @@ pub struct LivePlaybackApiRuntime<'a> {
     pub live_streaming_infrastructure:
         Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub connection_runtime: &'a dyn synctv_realtime::sync::ConnectionRuntime,
-    pub livestream_config: &'a synctv_core::config::LivestreamConfig,
+    pub livestream_config: &'a crate::api_runtime::LivestreamRuntimeSettings,
     pub runtime_settings_store: Option<&'a synctv_core::service::RuntimeSettingsStore>,
 }
 
@@ -255,7 +255,7 @@ macro_rules! impl_has_live_playback_fields {
             fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime {
                 self.live_runtime.connection_runtime
             }
-            fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig {
+            fn livestream_config(&self) -> &'a $crate::api_runtime::LivestreamRuntimeSettings {
                 self.live_runtime.livestream_config
             }
             fn runtime_settings_store(
@@ -273,7 +273,7 @@ pub trait HasLivePlaybackFields<'a> {
         &self,
     ) -> Option<&'a Arc<synctv_livestream::LiveStreamingInfrastructure>>;
     fn connection_runtime(&self) -> &'a dyn synctv_realtime::sync::ConnectionRuntime;
-    fn livestream_config(&self) -> &'a synctv_core::config::LivestreamConfig;
+    fn livestream_config(&self) -> &'a crate::api_runtime::LivestreamRuntimeSettings;
     fn runtime_settings_store(&self) -> Option<&'a synctv_core::service::RuntimeSettingsStore>;
 
     fn live_deps(&self) -> LivePlaybackDeps<'a> {
@@ -541,10 +541,8 @@ pub async fn get_live_hls_segment_chunks(
 
 pub(crate) fn map_playback_provider_membership_probe_error(err: synctv_core::Error) -> ApiError {
     match err {
-        synctv_core::Error::Authorization(message)
-            if message == synctv_core::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE =>
-        {
-            ApiError::Authorization(message)
+        synctv_core::Error::KickCooldownDenied => {
+            ApiError::Authorization(synctv_core::Error::kick_cooldown_denied_message().to_string())
         }
         synctv_core::Error::Authorization(_) => {
             ApiError::Authorization(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string())
@@ -1106,7 +1104,7 @@ mod tests {
 
     #[test]
     fn live_flv_access_decodes_signed_public_user_id_at_api_boundary() {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),
@@ -1129,7 +1127,7 @@ mod tests {
 
     #[test]
     fn live_flv_access_rejects_unprefixed_public_user_id() {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let claims = crate::proxy_signature::ProxyUrlClaims {
             provider: "rtmp".to_string(),
             version: "v1".to_string(),

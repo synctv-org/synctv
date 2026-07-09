@@ -4,7 +4,6 @@
 //! Built-in local providers are created once at startup from explicit local
 //! provider configuration.
 
-use crate::config::{LocalProviderHttpConfig, MediaProvidersConfig};
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
     AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
@@ -16,14 +15,36 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Debug, Clone)]
+pub struct LocalProviderHttpOptions {
+    pub request_timeout_seconds: u64,
+    pub connect_timeout_seconds: u64,
+}
+
+impl Default for LocalProviderHttpOptions {
+    fn default() -> Self {
+        Self {
+            request_timeout_seconds: 30,
+            connect_timeout_seconds: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MediaProvidersOptions {
+    pub alist: LocalProviderHttpOptions,
+    pub bilibili: LocalProviderHttpOptions,
+    pub emby: LocalProviderHttpOptions,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LocalProviderConfig {
-    pub http: Option<LocalProviderHttpConfig>,
+    pub http: Option<LocalProviderHttpOptions>,
 }
 
 impl LocalProviderConfig {
     #[must_use]
-    pub const fn with_http(http: LocalProviderHttpConfig) -> Self {
+    pub const fn with_http(http: LocalProviderHttpOptions) -> Self {
         Self { http: Some(http) }
     }
 }
@@ -335,15 +356,15 @@ impl ProvidersManager {
     /// Default instances are addressable by provider type name directly, e.g.
     /// `direct_url`, `alist`, `emby`.
     pub async fn create_builtin_defaults(&self) -> Result<usize> {
-        self.create_builtin_defaults_with_config(&MediaProvidersConfig::default())
+        self.create_builtin_defaults_with_options(&MediaProvidersOptions::default())
             .await
     }
 
     /// Create missing built-in default provider instances using explicit local
-    /// provider config from static configuration.
-    pub async fn create_builtin_defaults_with_config(
+    /// provider construction options.
+    pub async fn create_builtin_defaults_with_options(
         &self,
-        config: &MediaProvidersConfig,
+        options: &MediaProvidersOptions,
     ) -> Result<usize> {
         let mut provider_types = self.list_types();
         provider_types.sort();
@@ -357,9 +378,9 @@ impl ProvidersManager {
             }
 
             let provider_config = match provider_type.as_str() {
-                AlistProvider::NAME => LocalProviderConfig::with_http(config.alist.clone()),
-                BilibiliProvider::NAME => LocalProviderConfig::with_http(config.bilibili.clone()),
-                EmbyProvider::NAME => LocalProviderConfig::with_http(config.emby.clone()),
+                AlistProvider::NAME => LocalProviderConfig::with_http(options.alist.clone()),
+                BilibiliProvider::NAME => LocalProviderConfig::with_http(options.bilibili.clone()),
+                EmbyProvider::NAME => LocalProviderConfig::with_http(options.emby.clone()),
                 _ => LocalProviderConfig::default(),
             };
 
@@ -504,7 +525,7 @@ mod tests {
         request_timeout_seconds: u64,
         connect_timeout_seconds: u64,
     ) -> LocalProviderConfig {
-        LocalProviderConfig::with_http(LocalProviderHttpConfig {
+        LocalProviderConfig::with_http(LocalProviderHttpOptions {
             request_timeout_seconds,
             connect_timeout_seconds,
         })

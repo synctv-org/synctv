@@ -5,6 +5,32 @@ use super::{
     RequestContext,
 };
 
+const MAX_BATCH_ITEMS: usize = 100;
+const MAX_BATCH_REASON_LEN: usize = 500;
+
+fn validate_batch_items(items: &[String], label: &str) -> Result<(), ApiError> {
+    if items.is_empty() {
+        return Err(ApiError::InvalidInput(format!(
+            "{label} must contain at least one item"
+        )));
+    }
+    if items.len() > MAX_BATCH_ITEMS {
+        return Err(ApiError::InvalidInput(format!(
+            "{label} must contain at most {MAX_BATCH_ITEMS} items"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_batch_reason(reason: &str) -> Result<(), ApiError> {
+    if reason.len() > MAX_BATCH_REASON_LEN {
+        return Err(ApiError::InvalidInput(format!(
+            "reason must be at most {MAX_BATCH_REASON_LEN} characters"
+        )));
+    }
+    Ok(())
+}
+
 impl AdminApiImpl {
     pub async fn batch_ban_users(
         &self,
@@ -14,6 +40,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchBanUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        validate_batch_items(&req.user_ids, "user_ids")?;
+        validate_batch_reason(&req.reason)?;
         let parsed_user_ids = super::parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
         let reason = req.reason.trim();
         let reason = (!reason.is_empty()).then(|| reason.to_string());
@@ -74,6 +102,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchDeleteUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        validate_batch_items(&req.user_ids, "user_ids")?;
         let parsed_user_ids = super::parse_batch_user_ids(&req.user_ids, &self.public_id_codec)?;
 
         let mut allowed_ids = Vec::with_capacity(req.user_ids.len());
@@ -159,6 +188,8 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchBanRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        validate_batch_items(&req.room_ids, "room_ids")?;
+        validate_batch_reason(&req.reason)?;
         let mut accumulator = BatchResultsAccumulator::new(req.room_ids.len());
 
         for room_id in &req.room_ids {
@@ -234,6 +265,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::BatchDeleteRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
+        validate_batch_items(&req.room_ids, "room_ids")?;
         let actor = self.require_authorized_admin_actor(admin_user_id).await?;
         let mut accumulator = BatchResultsAccumulator::new(req.room_ids.len());
 

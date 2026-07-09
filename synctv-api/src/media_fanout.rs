@@ -1,8 +1,9 @@
 use std::sync::Arc;
 use synctv_core::models::Media;
 use synctv_core::models::{MediaId, RoomId, UserId};
-use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::{RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory};
+use synctv_core::service::{
+    NewRealtimeOutboxEvent, RealtimeOutboxMediaBatchEventFactory, RealtimeOutboxMediaEventFactory,
+};
 use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
 use crate::realtime_fanout::{

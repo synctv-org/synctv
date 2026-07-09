@@ -6,10 +6,59 @@ use synctv_core::{
     service::{ContentReportListQuery, ContentReportListScope},
 };
 
-use super::{
-    content_report_row_to_proto, i64_to_i32_api, pagination_limit_offset_i64, AdminApiImpl,
-    ApiError, RequestContext,
-};
+use super::{content_report_row_to_proto, i64_to_i32_api, AdminApiImpl, ApiError, RequestContext};
+
+fn content_report_list_query(
+    api: &AdminApiImpl,
+    req: synctv_proto::admin::ListContentReportsRequest,
+) -> Result<ContentReportListQuery, ApiError> {
+    let (limit, offset) =
+        super::pagination_limit_offset_i64(req.page, req.page_size, "content report")?;
+    let reporter_user_id = crate::impls::parse_optional_id_param(
+        &req.reporter_user_id,
+        "reporter_user_id",
+        &api.public_id_codec,
+    )?;
+    let room_id =
+        crate::impls::parse_optional_id_param(&req.room_id, "room_id", &api.public_id_codec)?;
+    let target_room_id = crate::impls::parse_optional_id_param(
+        &req.target_room_id,
+        "target_room_id",
+        &api.public_id_codec,
+    )?;
+    let target_user_id = crate::impls::parse_optional_id_param(
+        &req.target_user_id,
+        "target_user_id",
+        &api.public_id_codec,
+    )?;
+    let target_member_room_id = crate::impls::parse_optional_id_param(
+        &req.target_member_room_id,
+        "target_member_room_id",
+        &api.public_id_codec,
+    )?;
+    let target_member_user_id = crate::impls::parse_optional_id_param(
+        &req.target_member_user_id,
+        "target_member_user_id",
+        &api.public_id_codec,
+    )?;
+
+    Ok(ContentReportListQuery {
+        status: report_status_from_proto(req.status)?,
+        target_type: report_target_type_from_proto(req.target_type)?,
+        reporter_user_id,
+        room_id,
+        target_room_id,
+        target_user_id,
+        target_member_room_id,
+        target_member_user_id,
+        target_chat_message_id: (req.target_chat_message_id > 0)
+            .then_some(req.target_chat_message_id),
+        scope: report_scope_from_proto(req.scope)?,
+        search: req.search,
+        limit,
+        offset,
+    })
+}
 
 impl AdminApiImpl {
     pub async fn list_content_reports(
@@ -19,60 +68,9 @@ impl AdminApiImpl {
     ) -> Result<synctv_proto::admin::ListContentReportsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
         self.require_admin_actor(admin_user_id).await?;
-        let (limit, offset) =
-            pagination_limit_offset_i64(req.page, req.page_size, "content report")?;
+        let query = content_report_list_query(self, req)?;
 
-        let reporter_user_id = crate::impls::parse_optional_id_param(
-            &req.reporter_user_id,
-            "reporter_user_id",
-            &self.public_id_codec,
-        )?;
-        let room_id =
-            crate::impls::parse_optional_id_param(&req.room_id, "room_id", &self.public_id_codec)?;
-        let target_room_id = crate::impls::parse_optional_id_param(
-            &req.target_room_id,
-            "target_room_id",
-            &self.public_id_codec,
-        )?;
-        let target_user_id = crate::impls::parse_optional_id_param(
-            &req.target_user_id,
-            "target_user_id",
-            &self.public_id_codec,
-        )?;
-        let target_member_room_id = crate::impls::parse_optional_id_param(
-            &req.target_member_room_id,
-            "target_member_room_id",
-            &self.public_id_codec,
-        )?;
-        let target_member_user_id = crate::impls::parse_optional_id_param(
-            &req.target_member_user_id,
-            "target_member_user_id",
-            &self.public_id_codec,
-        )?;
-        let target_chat_message_id = if req.target_chat_message_id <= 0 {
-            None
-        } else {
-            Some(req.target_chat_message_id)
-        };
-
-        let page = self
-            .content_report_service
-            .list_reports(ContentReportListQuery {
-                status: report_status_from_proto(req.status)?,
-                target_type: report_target_type_from_proto(req.target_type)?,
-                reporter_user_id,
-                room_id,
-                target_room_id,
-                target_user_id,
-                target_member_room_id,
-                target_member_user_id,
-                target_chat_message_id,
-                scope: report_scope_from_proto(req.scope)?,
-                search: req.search,
-                limit,
-                offset,
-            })
-            .await?;
+        let page = self.content_report_service.list_reports(query).await?;
 
         let reports = page
             .rows
@@ -141,7 +139,9 @@ impl AdminApiImpl {
     }
 }
 
-fn report_target_type_from_proto(value: i32) -> Result<Option<ContentReportTargetType>, ApiError> {
+pub(crate) fn report_target_type_from_proto(
+    value: i32,
+) -> Result<Option<ContentReportTargetType>, ApiError> {
     match synctv_proto::admin::ContentReportTargetType::try_from(value) {
         Ok(synctv_proto::admin::ContentReportTargetType::Unspecified) => Ok(None),
         Ok(synctv_proto::admin::ContentReportTargetType::Room) => {
@@ -162,7 +162,9 @@ fn report_target_type_from_proto(value: i32) -> Result<Option<ContentReportTarge
     }
 }
 
-fn report_scope_from_proto(value: i32) -> Result<ContentReportListScope, ApiError> {
+pub(crate) fn report_scope_from_proto(
+    value: i32,
+) -> Result<synctv_core::service::ContentReportListScope, ApiError> {
     match synctv_proto::admin::ContentReportScope::try_from(value) {
         Ok(
             synctv_proto::admin::ContentReportScope::Unspecified
@@ -189,7 +191,9 @@ fn report_scope_from_proto(value: i32) -> Result<ContentReportListScope, ApiErro
     }
 }
 
-fn report_status_from_proto(value: i32) -> Result<Option<ContentReportStatus>, ApiError> {
+pub(crate) fn report_status_from_proto(
+    value: i32,
+) -> Result<Option<ContentReportStatus>, ApiError> {
     match synctv_proto::admin::ContentReportStatus::try_from(value) {
         Ok(synctv_proto::admin::ContentReportStatus::Unspecified) => Ok(None),
         Ok(synctv_proto::admin::ContentReportStatus::Open) => Ok(Some(ContentReportStatus::Open)),
@@ -208,7 +212,9 @@ fn report_status_from_proto(value: i32) -> Result<Option<ContentReportStatus>, A
     }
 }
 
-fn required_report_status_from_proto(value: i32) -> Result<ContentReportStatus, ApiError> {
+pub(crate) fn required_report_status_from_proto(
+    value: i32,
+) -> Result<ContentReportStatus, ApiError> {
     report_status_from_proto(value)?
         .ok_or_else(|| ApiError::InvalidInput("Content report status is required".to_string()))
 }

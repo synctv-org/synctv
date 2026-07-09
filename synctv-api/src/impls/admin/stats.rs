@@ -3,7 +3,6 @@ use super::{AdminApiImpl, ApiError};
 impl AdminApiImpl {
     pub async fn get_service_state(
         &self,
-        _req: synctv_proto::admin::GetServiceStateRequest,
     ) -> Result<synctv_proto::admin::GetServiceStateResponse, ApiError> {
         let service = synctv_core::service::ServiceStateService::new(
             synctv_core::service::ServiceStateServiceDependencies {

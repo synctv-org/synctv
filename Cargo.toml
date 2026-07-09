@@ -4,6 +4,7 @@ members = [
     "synctv-proto",
     "synctv-core",
     "synctv-core/testing",
+    "synctv-adapter",
     "synctv-proxy",
     "synctv-api",
     "synctv-livestream",
@@ -318,6 +319,7 @@ mimalloc = { version = "=0.1.52", features = ["v2"] }
 synctv-proto = { path = "synctv-proto", default-features = false }
 synctv-core = { path = "synctv-core", default-features = false }
 synctv-core-testing = { path = "synctv-core/testing", default-features = false }
+synctv-adapter = { path = "synctv-adapter", default-features = false }
 synctv-api = { path = "synctv-api", default-features = false }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-realtime = { path = "synctv-realtime", default-features = false }

@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use crate::{
     cache::ConsistencyCoordinator,
-    config::PasswordComplexityConfig,
     repository::{
         EmailBindRepository, EmailRegistrationTokenRepository, UserEmailRepository,
         UserPasswordRepository, UserPreferencesRepository, UserRepository,
@@ -12,6 +11,7 @@ use crate::{
         BruteForceProtectionService, JwtService, TokenBlacklistStore, UserService,
         UserServiceDependencies, UserServiceRuntimeOptions,
     },
+    validation::PasswordComplexityOptions,
 };
 
 impl UserService {
@@ -33,7 +33,7 @@ impl UserService {
                 token_blacklist,
                 key_builder,
                 brute_force: Arc::new(brute_force),
-                password_complexity: PasswordComplexityConfig::default(),
+                password_complexity: PasswordComplexityOptions::default(),
             },
             UserServiceRuntimeOptions::test_defaults(),
         )
@@ -57,7 +57,7 @@ impl UserService {
                 token_blacklist,
                 key_builder,
                 brute_force: Arc::new(brute_force),
-                password_complexity: PasswordComplexityConfig::default(),
+                password_complexity: PasswordComplexityOptions::default(),
             },
             runtime,
         )

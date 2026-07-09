@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::{
     cache::{KeyBuilder, UsernameCache},
-    models::{User, UserId},
+    models::{StoredFileReference, User, UserId},
+    repository::FileStorageRepository,
     service::{file_storage::FileStorageService, TokenBlacklistStore, UserService},
     Error, Result,
 };
@@ -63,6 +64,15 @@ impl UserService {
     #[must_use]
     pub fn file_storage_service(&self) -> Option<&Arc<dyn FileStorageService>> {
         self.file_storage_service.as_ref()
+    }
+
+    pub async fn get_stored_file_reference(
+        &self,
+        file_reference_id: i64,
+    ) -> Result<Option<StoredFileReference>> {
+        FileStorageRepository::new(self.repository.pool().clone())
+            .get_reference_by_id(file_reference_id)
+            .await
     }
 
     pub fn access_token_duration_seconds(&self) -> Result<i64> {

@@ -112,7 +112,7 @@ fn usize_to_i64_api(value: usize, field: &'static str) -> Result<i64, ApiError> 
 
 fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::client::RoomJoinReview, ApiError> {
     Ok(synctv_proto::client::RoomJoinReview {
         id: public_id_codec

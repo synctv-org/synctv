@@ -1,7 +1,7 @@
 use synctv_core::{
     models::{AuditDetails, ReviewRequestId, RoomId, SortDirection as CoreSortDirection, UserId},
     service::{
-        AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox, RoomCategoryUpdate,
+        AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
         UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
     },
 };
@@ -15,8 +15,8 @@ use super::{
 };
 use crate::impls::client::{
     convert::{room_category_to_proto, room_label_to_proto, room_presence_stats_to_proto},
-    parse_optional_room_category_id, parse_required_room_category_id, parse_room_label_ids,
-    proto_role_filter_to_room_role, proto_role_to_assignable_room_role, proto_role_to_room_role,
+    parse_optional_room_category_id, parse_room_label_ids, proto_role_filter_to_room_role,
+    proto_role_to_assignable_room_role, proto_role_to_room_role,
 };
 
 pub(in crate::impls::admin) fn username_from_loaded_user(
@@ -81,35 +81,24 @@ impl AdminApiImpl {
         req: synctv_proto::admin::ListRoomsRequest,
     ) -> Result<synctv_proto::admin::ListRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let status = proto_room_status_filter(req.status)?;
-
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
-            status,
-            search: if req.search.is_empty() {
-                None
-            } else {
-                Some(req.search)
-            },
+            status: proto_room_status_filter(req.status)?,
+            search: normalize_non_empty_filter(&req.search),
             is_banned: req.is_banned,
-            creator_id: if req.creator_id.is_empty() {
-                None
-            } else {
-                Some(crate::impls::proto_validated_user_id(
-                    req.creator_id,
-                    &self.public_id_codec,
-                )?)
-            },
+            creator_id: normalize_non_empty_filter(&req.creator_id)
+                .map(|creator_id| {
+                    crate::impls::proto_validated_user_id(creator_id, &self.public_id_codec)
+                })
+                .transpose()?,
+            category_id: parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?,
+            label_ids: parse_room_label_ids(&req.label_ids, &self.public_id_codec)?,
             sort_by: proto_admin_room_list_sort_by(req.sort_by)?,
             sort_direction: proto_admin_sort_direction(
                 req.sort_direction,
                 CoreSortDirection::Desc,
             )?,
-            category_id: parse_optional_room_category_id(&req.category_id, &self.public_id_codec)?,
-            label_ids: parse_room_label_ids(&req.label_ids, &self.public_id_codec)?,
         };
-
         let (rooms, total) = self
             .room_service
             .list_rooms(&query)
@@ -231,7 +220,8 @@ impl AdminApiImpl {
         req: synctv_proto::admin::DeleteRoomCategoryRequest,
     ) -> Result<synctv_proto::admin::DeleteRoomCategoryResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let category_id = parse_required_room_category_id(&req.category_id, &self.public_id_codec)?;
+        let category_id =
+            crate::impls::parse_id_param(&req.category_id, "category_id", &self.public_id_codec)?;
         let success = self
             .room_service
             .delete_room_category(category_id)
@@ -286,10 +276,8 @@ impl AdminApiImpl {
         req: synctv_proto::admin::DeleteRoomLabelRequest,
     ) -> Result<synctv_proto::admin::DeleteRoomLabelResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let label_id = self
-            .public_id_codec
-            .decode_room_label_id(&req.label_id)
-            .map_err(ApiError::InvalidInput)?;
+        let label_id =
+            crate::impls::parse_id_param(&req.label_id, "label_id", &self.public_id_codec)?;
         let success = self
             .room_service
             .delete_room_label(label_id)
@@ -311,29 +299,29 @@ impl AdminApiImpl {
             ));
         }
         let category_update = if req.clear_category {
-            RoomCategoryUpdate::Set(None)
-        } else if let Some(category_id) = req.category_id.as_deref() {
-            RoomCategoryUpdate::Set(Some(parse_required_room_category_id(
-                category_id,
+            synctv_core::service::RoomCategoryUpdate::Set(None)
+        } else if let Some(category_id) = req.category_id {
+            synctv_core::service::RoomCategoryUpdate::Set(Some(crate::impls::parse_id_param(
+                &category_id,
+                "category_id",
                 &self.public_id_codec,
             )?))
         } else {
-            RoomCategoryUpdate::Preserve
+            synctv_core::service::RoomCategoryUpdate::Preserve
         };
-        let requested_label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
+        let label_ids = parse_room_label_ids(&req.label_ids, &self.public_id_codec)?;
         let assigned_by =
             (*admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID).then_some(*admin_user_id);
         self.room_service
-            .update_room_taxonomy(room_id, category_update, &requested_label_ids, assigned_by)
+            .update_room_taxonomy(room_id, category_update, &label_ids, assigned_by)
             .await
             .map_err(ApiError::from)?;
-        self.get_room(synctv_proto::admin::GetRoomRequest {
-            room_id: self
-                .public_id_codec
-                .encode_room_id(room_id)
-                .map_err(ApiError::Internal)?,
-        })
-        .await
+        let (room, settings) = self
+            .room_service
+            .get_room_with_settings(&room_id)
+            .await
+            .map_err(ApiError::from)?;
+        self.load_admin_room_proto(&room, Some(&settings)).await
     }
 
     pub async fn delete_room(
@@ -436,14 +424,11 @@ impl AdminApiImpl {
         req: synctv_proto::admin::GetRoomMembersRequest,
     ) -> Result<synctv_proto::admin::GetRoomMembersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let rid =
-            crate::impls::proto_validated_room_id(req.room_id.clone(), &self.public_id_codec)?;
-        let role = proto_role_filter_to_room_role(req.role)?;
+        let rid = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
         let query = synctv_core::models::RoomMemberListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
-            search: (!req.search.is_empty()).then_some(req.search),
-            role,
+            search: normalize_non_empty_filter(&req.search),
+            role: proto_role_filter_to_room_role(req.role)?,
             is_online: None,
             sort_by: proto_admin_room_member_list_sort_by(req.sort_by)?,
             sort_direction: proto_admin_sort_direction(req.sort_direction, CoreSortDirection::Asc)?,
@@ -585,13 +570,12 @@ impl AdminApiImpl {
 
     pub(super) async fn approve_room_join_request(
         &self,
-        room_id: &str,
+        rid: RoomId,
         request_id: ReviewRequestId,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<synctv_proto::common::RoomMember, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let target_uid = self
             .review_service
             .load_room_join_in_room(request_id, rid)
@@ -648,14 +632,13 @@ impl AdminApiImpl {
 
     pub(super) async fn reject_room_join_request(
         &self,
-        room_id: &str,
+        rid: RoomId,
         request_id: ReviewRequestId,
         reason: &str,
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<bool, ApiError> {
         let actor = self.require_admin_actor(admin_user_id).await?;
-        let rid = crate::impls::proto_validated_room_id(room_id, &self.public_id_codec)?;
         let reason_for_service = (!reason.trim().is_empty()).then_some(reason);
         let target_uid = self
             .review_service
@@ -1033,13 +1016,10 @@ impl AdminApiImpl {
         req: synctv_proto::admin::GetUserRoomsRequest,
     ) -> Result<synctv_proto::admin::GetUserRoomsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let uid =
-            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
-        let status = proto_room_status_filter(req.status)?;
+        let user_id = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let query = synctv_core::models::RoomListQuery {
             pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
-            status,
+            status: proto_room_status_filter(req.status)?,
             search: normalize_non_empty_filter(&req.search),
             is_banned: req.is_banned,
             sort_by: proto_admin_room_list_sort_by(req.sort_by)?,
@@ -1049,10 +1029,9 @@ impl AdminApiImpl {
             )?,
             ..Default::default()
         };
-
         let (rooms, total) = self
             .room_service
-            .list_related_rooms_for_user(&uid, &query)
+            .list_related_rooms_for_user(&user_id, &query)
             .await
             .map_err(ApiError::from)?;
 

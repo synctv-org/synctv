@@ -22,7 +22,7 @@ pub(crate) const STARTUP_RUNS_RETENTION_CLEANUP: bool = false;
 
 /// Acquire a dedicated connection for partition DDL with `statement_timeout`
 /// disabled for the lifetime of that session.
-pub(crate) async fn acquire_unbounded_ddl_connection(
+pub async fn acquire_unbounded_ddl_connection(
     pool: &PgPool,
 ) -> anyhow::Result<PoolConnection<Postgres>> {
     let mut conn = pool

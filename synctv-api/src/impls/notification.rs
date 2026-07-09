@@ -2,8 +2,8 @@
 //!
 //! Used by both HTTP and gRPC handlers to avoid duplicating notification logic.
 
-use crate::public_id::PublicIdCodec;
 use std::sync::Arc;
+use synctv_adapter::PublicIdCodec;
 use synctv_core::models::id::UserId;
 use synctv_core::models::notification::{
     MarkAllAsReadRequest, MarkAsReadRequest, Notification, NotificationData, NotificationListQuery,

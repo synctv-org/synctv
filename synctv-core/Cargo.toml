@@ -16,11 +16,6 @@ tokio-util.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 
-# Remote transport
-tonic.workspace = true
-tonic-prost.workspace = true
-tonic-health.workspace = true
-
 # Database
 sqlx.workspace = true
 
@@ -39,9 +34,6 @@ zxcvbn.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
-serde_ignored.workspace = true
-toml.workspace = true
 
 # Caching
 moka.workspace = true
@@ -70,7 +62,6 @@ opendal.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 parking_lot.workspace = true
-dotenvy.workspace = true
 paste.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
@@ -79,12 +70,8 @@ ipnet.workspace = true
 
 # HTTP Client
 reqwest.workspace = true
-http.workspace = true
 
-# TLS (for insecure_tls custom connector)
-tokio-rustls.workspace = true
 rustls.workspace = true
-hyper-util.workspace = true
 
 # Resilience
 tower.workspace = true
@@ -103,8 +90,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 
-# Configuration
-config.workspace = true
 prometheus.workspace = true
 
 # Email
@@ -127,28 +112,23 @@ test-support = []
 tls-aws-lc = [
     "synctv-media-providers/tls-aws-lc",
     "synctv-common/tls-aws-lc",
-    "tonic/tls-aws-lc",
     "sqlx/tls-rustls-aws-lc-rs",
     "lettre/aws-lc-rs",
     "reqwest/rustls",
     "rustls/aws_lc_rs",
-    "tokio-rustls/aws_lc_rs",
     "jsonwebtoken/aws_lc_rs",
 ]
 tls-ring = [
     "synctv-media-providers/tls-ring",
     "synctv-common/tls-ring",
-    "tonic/tls-ring",
     "lettre/ring",
     "reqwest/rustls-no-provider",
     "rustls/ring",
-    "tokio-rustls/ring",
     "jsonwebtoken/rust_crypto",
 ]
 tls-webpki-roots = [
     "synctv-media-providers/tls-webpki-roots",
     "synctv-common/tls-webpki-roots",
-    "tonic/tls-webpki-roots",
     "sqlx/tls-rustls-ring-webpki",
     "lettre/webpki-roots",
     "redis/tokio-rustls-comp",
@@ -158,7 +138,6 @@ tls-webpki-roots = [
 tls-native-roots = [
     "synctv-media-providers/tls-native-roots",
     "synctv-common/tls-native-roots",
-    "tonic/tls-native-roots",
     "sqlx/tls-rustls-ring-native-roots",
     "lettre/rustls-native-certs",
     "redis/tokio-rustls-comp",
@@ -171,7 +150,6 @@ workspace = true
 [dev-dependencies]
 mockall.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-tokio-stream.workspace = true
 criterion.workspace = true
 rand.workspace = true
 synctv-core-testing.workspace = true

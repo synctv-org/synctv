@@ -3,8 +3,11 @@ use std::sync::Arc;
 
 use crate::{
     models::{
-        MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomPermission, RoomRole,
-        RoomSettings, RoomWithCount, UserId,
+        EventCursor, MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomPermission,
+        RoomRole, RoomSettings, RoomWithCount, StoredFileReference, UserId,
+    },
+    repository::{
+        FileStorageRepository, RoomResourceEventLog, RoomResourceEventRepository, RoomResourceKind,
     },
     service::{
         room::RoomService, room_settings::RoomSettingsService, user::UserService,
@@ -27,6 +30,67 @@ impl RoomService {
     #[must_use]
     pub fn file_storage_service(&self) -> Option<&Arc<dyn crate::service::FileStorageService>> {
         self.room_file_storage_service.as_ref()
+    }
+
+    pub async fn get_stored_file_reference(
+        &self,
+        file_reference_id: i64,
+    ) -> Result<Option<StoredFileReference>> {
+        FileStorageRepository::new(self.pool.clone())
+            .get_reference_by_id(file_reference_id)
+            .await
+    }
+
+    pub async fn latest_room_resource_event_cursor_for_resource_types(
+        &self,
+        room_id: &RoomId,
+        resource_types: &[RoomResourceKind],
+    ) -> Result<EventCursor> {
+        RoomResourceEventRepository::new(self.pool.clone())
+            .latest_room_event_cursor_for_resource_types(room_id, resource_types)
+            .await
+    }
+
+    pub async fn room_resource_event_cursor_by_event_id(
+        &self,
+        room_id: &RoomId,
+        event_id: &str,
+    ) -> Result<Option<EventCursor>> {
+        RoomResourceEventRepository::new(self.pool.clone())
+            .room_event_cursor_by_event_id(room_id, event_id)
+            .await
+    }
+
+    pub async fn is_room_resource_event_sequence_retained_for_resource_types(
+        &self,
+        room_id: &RoomId,
+        resource_types: &[RoomResourceKind],
+        after_sequence: i64,
+    ) -> Result<bool> {
+        RoomResourceEventRepository::new(self.pool.clone())
+            .is_room_event_sequence_retained_for_resource_types(
+                room_id,
+                resource_types,
+                after_sequence,
+            )
+            .await
+    }
+
+    pub async fn list_room_resource_events_after_sequence_for_resource_types(
+        &self,
+        room_id: &RoomId,
+        resource_types: &[RoomResourceKind],
+        after_sequence: i64,
+        limit: i32,
+    ) -> Result<Vec<RoomResourceEventLog>> {
+        RoomResourceEventRepository::new(self.pool.clone())
+            .list_room_events_after_sequence_for_resource_types(
+                room_id,
+                resource_types,
+                after_sequence,
+                limit,
+            )
+            .await
     }
 
     #[must_use]
@@ -109,11 +173,8 @@ impl RoomService {
         user_id: &UserId,
         description: String,
     ) -> Result<Room> {
-        if description.chars().count() > 500 {
-            return Err(Error::InvalidInput(
-                "Room description too long (max 500 characters)".to_string(),
-            ));
-        }
+        crate::validation::validate_room_description(&description)
+            .map_err(|error| Error::InvalidInput(error.to_string()))?;
 
         self.permission_service
             .check_permission(room_id, user_id, RoomPermission::SET_ROOM_SETTINGS)

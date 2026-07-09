@@ -12,8 +12,9 @@ use crate::{
         PlaybackStateCache, SingleFlight, VersionFenceReservation, VersionFenceStore,
     },
     models::{
-        BilibiliMediaSourceConfig, MediaId, PlayMode, PlaybackSourceIdentity, PlaylistId,
-        ProviderTarget, RoomId, RoomPlaybackState, RoomSettings, SourceProvider, UserId,
+        BilibiliMediaSourceConfig, MediaId, PlayMode, PlaybackSourceIdentity,
+        PlaybackSourceMetadata, PlaylistId, ProviderTarget, RoomId, RoomPlaybackState,
+        RoomSettings, SourceProvider, UserId,
     },
     repository::{
         realtime_outbox::RealtimeOutboxRepository, PlaybackSourceMetadataRepository,
@@ -237,6 +238,33 @@ impl PlaybackService {
     #[must_use]
     pub const fn source_metadata_repository(&self) -> &PlaybackSourceMetadataRepository {
         &self.source_metadata_repo
+    }
+
+    pub async fn get_playback_source_metadata(
+        &self,
+        identity: &PlaybackSourceIdentity,
+    ) -> Result<Option<PlaybackSourceMetadata>> {
+        self.source_metadata_repo.get(identity).await
+    }
+
+    pub async fn upsert_provider_playback_source_metadata(
+        &self,
+        identity: &PlaybackSourceIdentity,
+        is_live: bool,
+        duration_seconds: Option<f64>,
+    ) -> Result<PlaybackSourceMetadata> {
+        self.source_metadata_repo
+            .upsert_provider_source_metadata(identity, is_live, duration_seconds)
+            .await
+    }
+
+    pub async fn mark_probeable_playback_source_metadata_unknown_if_absent(
+        &self,
+        identity: &PlaybackSourceIdentity,
+    ) -> Result<PlaybackSourceMetadata> {
+        self.source_metadata_repo
+            .mark_probeable_unknown_if_absent(identity)
+            .await
     }
 
     pub async fn source_live_status_for_state(

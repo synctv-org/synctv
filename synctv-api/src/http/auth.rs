@@ -27,11 +27,15 @@ use synctv_proto::client::{
 /// attackers from forging their IP to bypass per-IP brute-force protection.
 #[must_use]
 pub fn extract_client_ip(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     socket_addr: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
-) -> Result<std::net::IpAddr, crate::client_ip::ClientIpHeaderError> {
-    crate::client_ip::extract_client_ip_from_headers(config, socket_addr.ip(), headers)
+) -> Result<std::net::IpAddr, synctv_adapter::client_ip::ClientIpHeaderError> {
+    synctv_adapter::client_ip::extract_client_ip_from_headers(
+        |ip| runtime_settings.server.is_trusted_proxy(ip),
+        socket_addr.ip(),
+        headers,
+    )
 }
 
 async fn extract_auth_request(

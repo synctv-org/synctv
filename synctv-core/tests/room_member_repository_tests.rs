@@ -1168,7 +1168,7 @@ async fn test_add_member_rejects_active_kick_cooldown() {
         .add(&member)
         .await
         .failed("operation should fail");
-    assert!(matches!(err, Error::Authorization(_)));
+    assert!(matches!(err, Error::KickCooldownDenied));
 }
 
 #[tokio::test]

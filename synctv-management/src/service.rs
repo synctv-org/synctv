@@ -5,11 +5,46 @@ use futures::Stream;
 use tonic::{Request, Response, Status};
 
 use crate::access::ManagementAccessController;
+use crate::admin_runtime::{
+    AddAdminCommand, AddMemberCommand, AdminRuntime, AdminSortDirection,
+    ApproveRoomCreationReviewCommand, ApproveRoomJoinReviewCommand,
+    ApproveUserRegistrationReviewCommand, BanRoomCommand, BanUserCommand, BatchBanRoomsCommand,
+    BatchBanUsersCommand, BatchDeleteRoomsCommand, BatchDeleteUsersCommand, CreateUserCommand,
+    DeleteMediaCommand, DeletePlaylistCommand, DeleteRoomCategoryCommand, DeleteRoomCommand,
+    DeleteRoomLabelCommand, DeleteUserCommand, EditMediaCommand, GetRoomMembersQuery, GetRoomQuery,
+    GetRoomSettingsQuery, GetServiceStateQuery, GetSettingsQuery, GetUserPreferencesQuery,
+    GetUserQuery, GetUserRoomsQuery, KickMemberCommand, KickStreamCommand, ListActiveStreamsQuery,
+    ListAdminsQuery, ListBanRecordsQuery, ListMediaQuery, ListPlaylistsQuery,
+    ListRoomCategoriesQuery, ListRoomCreationReviewsQuery, ListRoomJoinReviewsQuery,
+    ListRoomLabelsQuery, ListRoomStreamsQuery, ListRoomsQuery, ListUserRegistrationReviewsQuery,
+    ListUsersQuery, MoveMediaCommand, MovePlaylistCommand, RejectRoomCreationReviewCommand,
+    RejectRoomJoinReviewCommand, RejectUserRegistrationReviewCommand, RemoveAdminCommand,
+    ResetRoomSettingsCommand, SendTestEmailCommand, SetUserPasswordCommand, StartPlaybackCommand,
+    UnbanRoomCommand, UnbanUserCommand, UpdateMemberDisplayTagCommand,
+    UpdateMemberPermissionsCommand, UpdateMemberRemarkNameCommand, UpdatePlaybackStateCommand,
+    UpdatePlaylistCommand, UpdateRoomPasswordCommand, UpdateRoomSettingsCommand,
+    UpdateRoomTaxonomyCommand, UpdateSettingsCommand, UpdateUserPreferencesCommand,
+    UpdateUserRoleCommand, UpdateUserUsernameCommand, UpsertRoomCategoryCommand,
+    UpsertRoomLabelCommand,
+};
 use crate::lifecycle::{LifecycleEvent, ManagementLifecycleController, ShutdownMode};
 use crate::mapping::{
-    map_client_sort_direction, map_management_user_lookup_error, map_room_list_sort_by,
-    map_room_member_list_sort_by, map_room_status, map_room_stream_list_sort_by,
-    map_sort_direction, map_user_list_sort_by, map_user_role, map_user_status,
+    chat_history_cursor_to_client_proto, created_media_to_client_proto,
+    created_playlist_to_client_proto, created_room_to_client_proto,
+    evict_expired_slice_cache_to_management, get_slice_cache_stats_to_management, map_api_error,
+    map_api_result, map_ban_record_target_type_filter, map_classified_result, map_core_error,
+    map_management_core_sort_direction, map_management_room_list_sort_by,
+    map_management_sort_direction, map_management_user_list_sort_by,
+    map_management_user_lookup_error, map_optional_management_sort_direction,
+    map_provider_instance_list_sort_by, map_provider_instance_sort_direction,
+    map_required_user_role, map_required_user_status, map_review_status_filter,
+    map_room_member_list_sort_by, map_room_status_filter, map_room_stream_list_sort_by,
+    map_server_state_error, map_slice_cache_error, map_user_role_filter, map_user_status_filter,
+    optional_playlist_id_from_public, optional_room_category_id_from_public,
+    purge_slice_cache_to_management, room_id_from_public, room_label_ids_from_public,
+    room_settings_from_client_proto, search_chat_messages_query_from_client_proto,
+    server_state_to_management, slice_cache_selection, source_provider_from_proto_filter,
+    user_id_from_public, user_notification_preferences_from_client_proto,
     validate_client_actor_user,
 };
 use crate::proto::{
@@ -37,44 +72,47 @@ use crate::proto::{
     ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
     MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
     RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
-    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest, ServerStateCluster,
-    ServerStateClusterNode, ServerStateClusterStatus as ProtoClusterStatus, ServerStateCpu,
-    ServerStateCpuStatus as ProtoCpuStatus, ServerStateDatabase, ServerStateDatabasePool,
-    ServerStateDatabaseStatus as ProtoDatabaseStatus, ServerStateEmail,
-    ServerStateEmailStatus as ProtoEmailStatus, ServerStateLivestream,
-    ServerStateLivestreamStatus as ProtoLivestreamStatus, ServerStateMemory,
-    ServerStateMemoryStatus as ProtoMemoryStatus, ServerStateNode, ServerStateNodeFailure,
-    ServerStateNodeStatus as ProtoNodeStatus, ServerStateRealtime, ServerStateRedis,
-    ServerStateRedisStatus as ProtoRedisStatus, ServerStateSliceCache,
-    ServerStateSliceCacheStatus as ProtoSliceCacheStatus, ServerStateSummary, ServerStateWebRtc,
-    ServerStateWebRtcStatus as ProtoWebRtcStatus, ServerStateWsTicket,
-    ServerStateWsTicketStatus as ProtoWsTicketStatus, SetUserPasswordRequest,
-    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
-    StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-    UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest,
-    UpdatePlaybackStateRequest, UpdatePlaylistRequest, UpdateRoomPasswordRequest,
-    UpdateUserPreferencesRequest, UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
+    SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
+    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
+    UnbanRoomRequest, UnbanUserRequest, UpdateMemberDisplayTagRequest,
+    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest,
+    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateUserPreferencesRequest,
+    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
 };
+use crate::provider_runtime::{
+    AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand, AlistLoginCredential,
+    AlistRuntime, AlistSearchQuery, BilibiliCheckQrQuery, BilibiliLoginQrCommand,
+    BilibiliLoginSmsCommand, BilibiliLogoutCommand, BilibiliParseQuery, BilibiliRuntime,
+    BilibiliSendSmsCommand, BilibiliStartSmsLoginCommand, BilibiliUserInfoQuery, EmbyListQuery,
+    EmbyLoginCommand, EmbyLoginCredential, EmbyRuntime, ListAvailableProviderInstancesQuery,
+    ListProviderBackendsQuery, ProviderCommonRuntime, ProviderCredentialServerQuery,
+    ProviderInstanceNameCommand, UpdateProviderInstanceCommand,
+};
+use crate::request_context::RequestContext;
+use crate::server::ManagementRuntimeSettings;
 use crate::source_config::{
     alist_media_source_config, alist_playlist_source_config, bilibili_live_source_config,
     bilibili_pgc_source_config, bilibili_video_source_config, direct_url_source_config,
     emby_media_source_config, emby_playlist_source_config,
 };
-use synctv_api::map_api_error;
-use synctv_api::PublicIdCodec;
-use synctv_api::{
-    AdminApiImpl, AdminRequestContext as RequestContext, AlistApiImpl, ApiError, BilibiliApiImpl,
-    ClientApiImpl, EmbyApiImpl, ProviderCommonApiImpl, LOCAL_MANAGEMENT_ACTOR_USER_ID,
+use synctv_adapter::PublicIdCodec;
+use synctv_core::models::{
+    ChatMessageWithAttachments, Media, PageParams, Playlist, ProviderInstanceListQuery,
+    RealtimeEvent, Room, RoomPermission, UserId, UserRole as CoreUserRole,
+    LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
-use synctv_core::models::{UserId, UserRole as CoreUserRole};
-use synctv_core::service::UserService;
-use synctv_core::Config;
+use synctv_core::service::{ChatService, RoomService, UserService};
 use synctv_proto::{
     admin as admin_proto, client as client_proto, common as common_proto,
     providers::{
         alist as alist_proto, bilibili as bilibili_proto, common as provider_common_proto,
         emby as emby_proto, rtmp as rtmp_proto,
     },
+};
+use synctv_realtime::fanout::{
+    MembershipEventFanoutService, PreparedOutboxFanout, RealtimeFanoutService,
+    RoomCacheFanoutService,
 };
 
 struct ValidatedManagementUser {
@@ -87,34 +125,55 @@ struct BatchUserResolution {
     failures: Vec<admin_proto::BatchResultItem>,
 }
 
+fn defaultable_page_i32_to_u32(value: i32) -> Option<u32> {
+    (value > 0).then_some(value.cast_unsigned())
+}
+
+fn defaultable_page_size_i32_to_u32(value: i32, max: i32) -> Option<u32> {
+    (value > 0).then_some(value.clamp(1, max).cast_unsigned())
+}
+
 #[derive(Clone)]
 pub struct ManagementServiceImpl {
-    config: Arc<Config>,
+    settings: Arc<ManagementRuntimeSettings>,
     user_service: Arc<UserService>,
-    admin_api: Arc<AdminApiImpl>,
-    provider_common_api: Arc<ProviderCommonApiImpl>,
-    client_api: Arc<ClientApiImpl>,
-    alist_api: Arc<AlistApiImpl>,
-    bilibili_api: Arc<BilibiliApiImpl>,
-    emby_api: Arc<EmbyApiImpl>,
-    slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
-    server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
+    admin_api: Arc<dyn AdminRuntime>,
+    provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    chat_service: Option<Arc<ChatService>>,
+    clock: Arc<dyn synctv_core::Clock>,
+    room_service: Arc<RoomService>,
+    presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    alist_api: Arc<dyn AlistRuntime>,
+    bilibili_api: Arc<dyn BilibiliRuntime>,
+    emby_api: Arc<dyn EmbyRuntime>,
+    slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
+    server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     lifecycle_controller: Arc<ManagementLifecycleController>,
     access_controller: ManagementAccessController,
     public_id_codec: Arc<PublicIdCodec>,
 }
 
 pub struct ManagementServiceDependencies {
-    pub config: Arc<Config>,
+    pub settings: Arc<ManagementRuntimeSettings>,
     pub user_service: Arc<UserService>,
-    pub admin_api: Arc<AdminApiImpl>,
-    pub provider_common_api: Arc<ProviderCommonApiImpl>,
-    pub client_api: Arc<ClientApiImpl>,
-    pub alist_api: Arc<AlistApiImpl>,
-    pub bilibili_api: Arc<BilibiliApiImpl>,
-    pub emby_api: Arc<EmbyApiImpl>,
-    pub slice_cache_runtime: Arc<synctv_api::status::SliceCacheManagementRuntime>,
-    pub server_state_runtime: Arc<synctv_api::status::ServerStateRuntime>,
+    pub admin_api: Arc<dyn AdminRuntime>,
+    pub public_id_codec: Arc<PublicIdCodec>,
+    pub provider_common_api: Arc<dyn ProviderCommonRuntime>,
+    pub chat_service: Option<Arc<ChatService>>,
+    pub clock: Arc<dyn synctv_core::Clock>,
+    pub room_service: Arc<RoomService>,
+    pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
+    pub realtime_fanout: Arc<dyn RealtimeFanoutService>,
+    pub membership_event_fanout: Arc<dyn MembershipEventFanoutService>,
+    pub room_cache_fanout: Arc<dyn RoomCacheFanoutService>,
+    pub alist_api: Arc<dyn AlistRuntime>,
+    pub bilibili_api: Arc<dyn BilibiliRuntime>,
+    pub emby_api: Arc<dyn EmbyRuntime>,
+    pub slice_cache_runtime: Arc<synctv_core::service::SliceCacheManagementService>,
+    pub server_state_runtime: Arc<synctv_core::service::ServerStateService>,
     pub lifecycle_controller: Arc<ManagementLifecycleController>,
     pub management_auth_token: String,
 }
@@ -123,11 +182,18 @@ impl ManagementServiceImpl {
     #[must_use]
     pub fn new(deps: ManagementServiceDependencies) -> Self {
         let ManagementServiceDependencies {
-            config,
+            settings,
             user_service,
             admin_api,
+            public_id_codec,
             provider_common_api,
-            client_api,
+            chat_service,
+            clock,
+            room_service,
+            presence_service,
+            realtime_fanout,
+            membership_event_fanout,
+            room_cache_fanout,
             alist_api,
             bilibili_api,
             emby_api,
@@ -137,14 +203,18 @@ impl ManagementServiceImpl {
             management_auth_token,
         } = deps;
 
-        let public_id_codec = admin_api.public_id_codec.clone();
-
         Self {
-            config,
+            settings,
             user_service,
             admin_api,
             provider_common_api,
-            client_api,
+            chat_service,
+            clock,
+            room_service,
+            presence_service,
+            realtime_fanout,
+            membership_event_fanout,
+            room_cache_fanout,
             alist_api,
             bilibili_api,
             emby_api,
@@ -353,6 +423,316 @@ impl ManagementServiceImpl {
         Ok((actor_user_id, request))
     }
 
+    async fn create_playlist_for_actor(
+        &self,
+        actor_user_id: UserId,
+        room_id: &str,
+        req: client_proto::CreatePlaylistRequest,
+    ) -> Result<client_proto::Playlist, Status> {
+        synctv_proto::validate(&req)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let room_id = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(Status::invalid_argument)?;
+        let parent_id = optional_playlist_id_from_public(req.parent_id, &self.public_id_codec)?;
+        let source_provider = source_provider_from_proto_filter(req.source_provider)?;
+        let source_config = match req.source_config {
+            Some(source_config) => {
+                let (config_provider, config) =
+                    synctv_adapter::source_config::playlist_source_config_from_proto(Some(
+                        source_config,
+                    ))
+                    .map_err(|error| Status::invalid_argument(error.to_string()))?;
+                if source_provider != Some(config_provider) {
+                    return Err(Status::invalid_argument(format!(
+                        "source_provider '{}' does not match source_config provider '{}'",
+                        source_provider.map_or("", synctv_core::models::SourceProvider::as_str),
+                        config_provider.as_str()
+                    )));
+                }
+                Some(config)
+            }
+            None => None,
+        };
+        let provider_instance_name = {
+            let trimmed = req.provider_instance_name.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        };
+        let actor = self
+            .user_service
+            .get_user(&actor_user_id)
+            .await
+            .map_err(map_core_error)?;
+        let actor_username = actor.username.clone();
+        let clock = self.clock.clone();
+        let prepared_outbox_fanout =
+            PreparedOutboxFanout::new(self.realtime_fanout.clone(), move |playlist: &Playlist| {
+                RealtimeEvent::PlaylistCreated {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id,
+                    user_id: actor_user_id,
+                    username: actor_username.clone(),
+                    playlist: playlist.clone(),
+                    timestamp: clock.now(),
+                }
+            });
+        let playlist = self
+            .room_service
+            .playlist_service()
+            .create_playlist_with_outbox(
+                room_id,
+                actor_user_id,
+                synctv_core::service::CreatePlaylistRequest {
+                    room_id,
+                    name: req.name,
+                    description: req.description,
+                    parent_id,
+                    source_provider,
+                    source_config,
+                    provider_instance_name,
+                },
+                Some(prepared_outbox_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(map_core_error)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
+        self.room_cache_fanout.publish_invalidation(&room_id);
+
+        let item_count = self
+            .room_service
+            .media_service()
+            .count_room_playlist_media(&room_id, &playlist.id)
+            .await
+            .map_err(map_core_error)?;
+        created_playlist_to_client_proto(
+            &playlist,
+            item_count,
+            actor_user_id,
+            &self.public_id_codec,
+        )
+    }
+
+    async fn add_media_for_actor(
+        &self,
+        actor_user_id: UserId,
+        room_id: &str,
+        req: client_proto::AddMediaRequest,
+    ) -> Result<client_proto::Media, Status> {
+        let room_id = self
+            .public_id_codec
+            .decode_room_id(room_id)
+            .map_err(Status::invalid_argument)?;
+        let service_req =
+            synctv_adapter::client::add_media_request_from_client_proto(req, &self.public_id_codec)
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
+
+        let existing_count = if let Some(ref playlist_id) = service_req.playlist_id {
+            self.room_service
+                .media_service()
+                .count_room_playlist_media(&room_id, playlist_id)
+                .await
+        } else {
+            self.room_service
+                .media_service()
+                .count_room_root_media(&room_id)
+                .await
+        }
+        .map_err(map_core_error)?;
+        let existing_count = usize::try_from(existing_count)
+            .map_err(|_| Status::internal("media count exceeds usize::MAX"))?;
+        if existing_count >= synctv_core::validation::MEDIA_PLAYLIST_MAX_ITEMS {
+            return Err(Status::invalid_argument(format!(
+                "Playlist has reached maximum size of {} items",
+                synctv_core::validation::MEDIA_PLAYLIST_MAX_ITEMS
+            )));
+        }
+
+        let actor = self
+            .user_service
+            .get_user(&actor_user_id)
+            .await
+            .map_err(map_core_error)?;
+        let actor_username = actor.username.clone();
+        let clock = self.clock.clone();
+        let prepared_outbox_fanout =
+            PreparedOutboxFanout::new(self.realtime_fanout.clone(), move |media: &Media| {
+                RealtimeEvent::MediaAdded {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id,
+                    user_id: actor_user_id,
+                    username: actor_username.clone(),
+                    media_id: media.id,
+                    media_title: media.name.clone(),
+                    timestamp: clock.now(),
+                }
+            });
+        let media = self
+            .room_service
+            .media_service()
+            .add_media_with_outbox(
+                room_id,
+                actor_user_id,
+                service_req,
+                Some(prepared_outbox_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(map_core_error)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
+
+        created_media_to_client_proto(&media, actor_user_id, &self.public_id_codec)
+    }
+
+    async fn transfer_room_ownership_for_actor(
+        &self,
+        current_owner_id: UserId,
+        room_id: &str,
+        req: client_proto::TransferRoomOwnershipRequest,
+    ) -> Result<client_proto::Room, Status> {
+        synctv_proto::validate(&req)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let room_id = room_id_from_public(room_id, &self.public_id_codec)?;
+        let new_owner_id = user_id_from_public(req.new_owner_user_id, &self.public_id_codec)?;
+
+        let target_presence = self
+            .presence_service
+            .user_room_stats_fresh(current_owner_id, room_id)
+            .await
+            .map_err(map_core_error)?;
+        let prepared_membership_fanout = self
+            .membership_event_fanout
+            .prepare_permission_changed_outbox_fanout(
+                target_presence.is_online,
+                target_presence.connection_count,
+            );
+        let room = self
+            .room_service
+            .transfer_room_ownership_with_outbox(
+                room_id,
+                current_owner_id,
+                new_owner_id,
+                Some(prepared_membership_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(Self::map_room_access_error)?;
+        prepared_membership_fanout.publish_after_outbox_commit();
+        self.room_cache_fanout.publish_invalidation(&room_id);
+
+        let settings = self
+            .room_service
+            .get_room_settings(&room_id)
+            .await
+            .map_err(map_core_error)?;
+        let member_count = self
+            .room_service
+            .get_member_count(&room_id)
+            .await
+            .map_err(map_core_error)?;
+        let creator = self
+            .user_service
+            .get_user(&room.created_by)
+            .await
+            .map_err(map_core_error)?;
+
+        created_room_to_client_proto(
+            &room,
+            &settings,
+            member_count,
+            &creator,
+            &self.public_id_codec,
+        )
+    }
+
+    async fn chat_messages_to_client_proto(
+        &self,
+        messages: Vec<ChatMessageWithAttachments>,
+    ) -> Result<Vec<client_proto::ChatMessageReceive>, Status> {
+        let user_ids: Vec<UserId> = messages
+            .iter()
+            .filter_map(|message| message.message.user_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let username_map = self
+            .user_service
+            .get_usernames(&user_ids)
+            .await
+            .map_err(map_core_error)?;
+
+        messages
+            .into_iter()
+            .map(|message| {
+                let (user_id, username) = match &message.message.user_id {
+                    Some(uid) => {
+                        let user_id =
+                            self.public_id_codec.encode_user_id(*uid).map_err(|error| {
+                                Status::internal(format!(
+                                    "failed to encode chat message user id: {error}"
+                                ))
+                            })?;
+                        let username = username_map
+                            .get(uid)
+                            .cloned()
+                            .ok_or_else(|| Status::not_found("Chat message author not found"))?;
+                        (user_id, username)
+                    }
+                    None => (String::new(), "[deleted]".to_string()),
+                };
+
+                let mut proto = synctv_adapter::chat::chat_message_receive_to_proto(
+                    &message,
+                    &self.public_id_codec,
+                    username,
+                )
+                .map_err(|error| Status::internal(error.to_string()))?;
+                proto.user_id = user_id;
+                Ok(proto)
+            })
+            .collect()
+    }
+
+    async fn search_chat_messages_for_actor(
+        &self,
+        actor_user_id: UserId,
+        room_id: &str,
+        req: client_proto::SearchChatMessagesRequest,
+    ) -> Result<client_proto::SearchChatMessagesResponse, Status> {
+        let room_id = room_id_from_public(room_id, &self.public_id_codec)?;
+        self.room_service
+            .check_membership(&room_id, &actor_user_id)
+            .await
+            .map_err(Self::map_room_access_error)?;
+        self.room_service
+            .check_permission(&room_id, &actor_user_id, RoomPermission::VIEW_CHAT_HISTORY)
+            .await
+            .map_err(Self::map_room_access_error)?;
+
+        let query =
+            search_chat_messages_query_from_client_proto(room_id, &req, &self.public_id_codec)?;
+        let chat_service = self
+            .chat_service
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("Chat service is not available on this server."))?;
+        let page = chat_service
+            .search_messages_with_attachments_for_viewer(query, Some(&actor_user_id))
+            .await
+            .map_err(map_core_error)?;
+        let next_cursor = page
+            .next_cursor
+            .map(chat_history_cursor_to_client_proto)
+            .unwrap_or_default();
+        let messages = self.chat_messages_to_client_proto(page.messages).await?;
+
+        Ok(client_proto::SearchChatMessagesResponse {
+            messages,
+            next_cursor,
+            event_cursor: Some(client_proto::EventCursor {
+                event_id: page.event_cursor.event_id,
+                sequence: page.event_cursor.sequence,
+            }),
+        })
+    }
+
     async fn resolve_batch_user_refs(&self, users: Vec<UserRef>) -> BatchUserResolution {
         let mut resolved = Vec::with_capacity(users.len());
         let mut failures = Vec::new();
@@ -474,7 +854,9 @@ impl ManagementServiceImpl {
     }
 
     fn grpc_request_context<T: std::fmt::Debug>(&self, request: &Request<T>) -> RequestContext {
-        let ip_address = match synctv_api::extract_client_ip(request, &self.config) {
+        let ip_address = match synctv_adapter::grpc::extract_client_ip(request, |ip| {
+            self.settings.is_trusted_proxy(ip)
+        }) {
             Ok(ip_address) => ip_address.map(|ip| ip.to_string()),
             Err(error) => {
                 tracing::warn!(error = %error, "Failed to extract management request client IP");
@@ -508,6 +890,38 @@ impl ManagementServiceImpl {
         }
     }
 
+    fn alist_login_command(req: alist_proto::LoginRequest) -> AlistLoginCommand {
+        AlistLoginCommand {
+            host: req.host,
+            username: req.username,
+            credential: req.credential.map(|credential| match credential {
+                alist_proto::login_request::Credential::Password(password) => {
+                    AlistLoginCredential::Password(password)
+                }
+                alist_proto::login_request::Credential::HashedPassword(hashed_password) => {
+                    AlistLoginCredential::HashedPassword(hashed_password)
+                }
+            }),
+            otp_code: req.otp_code,
+            otp_secret: req.otp_secret,
+        }
+    }
+
+    fn emby_login_command(req: emby_proto::LoginRequest) -> EmbyLoginCommand {
+        EmbyLoginCommand {
+            host: req.host,
+            username: req.username,
+            credential: req.credential.map(|credential| match credential {
+                emby_proto::login_request::Credential::Password(password) => {
+                    EmbyLoginCredential::Password(password)
+                }
+                emby_proto::login_request::Credential::ApiKey(api_key) => {
+                    EmbyLoginCredential::ApiKey(api_key)
+                }
+            }),
+        }
+    }
+
     async fn collect_server_state_response(
         &self,
         target_node_id: Option<String>,
@@ -515,495 +929,22 @@ impl ManagementServiceImpl {
     ) -> Result<GetServerStateResponse, Status> {
         let response = self
             .server_state_runtime
-            .collect_server_state(synctv_api::status::ServerStateSelection {
+            .collect_server_state(synctv_core::service::ServerStateSelection {
                 node_id: target_node_id,
                 all_nodes,
             })
             .await
-            .map_err(|error| Self::map_server_state_error(&error))?;
-        Ok(Self::server_state_to_management(response))
+            .map_err(|error| map_server_state_error(&error))?;
+        Ok(server_state_to_management(response))
     }
 
-    fn map_server_state_error(error: &synctv_api::status::ServerStateError) -> Status {
+    fn map_room_access_error(error: synctv_core::Error) -> Status {
         match error {
-            synctv_api::status::ServerStateError::InvalidSelection => {
-                Status::invalid_argument(error.to_string())
+            synctv_core::Error::Authorization(message) => {
+                Status::permission_denied(format!("Forbidden: {message}"))
             }
-            synctv_api::status::ServerStateError::ClusterUnavailable(_)
-            | synctv_api::status::ServerStateError::MissingClusterSecret
-            | synctv_api::status::ServerStateError::InvalidClusterSecret => {
-                Status::failed_precondition(error.to_string())
-            }
-            synctv_api::status::ServerStateError::Cluster(_)
-            | synctv_api::status::ServerStateError::RemoteRequest { .. }
-            | synctv_api::status::ServerStateError::RemoteDecode { .. } => {
-                Status::unavailable(error.to_string())
-            }
+            other => map_core_error(other),
         }
-    }
-
-    fn server_state_to_management(
-        response: synctv_api::status::ServerStateResponse,
-    ) -> GetServerStateResponse {
-        GetServerStateResponse {
-            scope: response.scope.as_str().to_string(),
-            summary: Some(ServerStateSummary {
-                status: Self::node_status_to_management(response.summary.status),
-                healthy_nodes: response.summary.healthy_nodes,
-                degraded_nodes: response.summary.degraded_nodes,
-                unhealthy_nodes: response.summary.unhealthy_nodes,
-                failed_nodes: response.summary.failed_nodes,
-            }),
-            nodes: response
-                .nodes
-                .into_iter()
-                .map(Self::server_state_node_to_management)
-                .collect(),
-            failures: response
-                .failures
-                .into_iter()
-                .map(|failure| ServerStateNodeFailure {
-                    node_id: failure.node_id,
-                    error: failure.error,
-                })
-                .collect(),
-        }
-    }
-
-    fn server_state_node_to_management(
-        node: synctv_api::status::ServerStateNode,
-    ) -> ServerStateNode {
-        ServerStateNode {
-            node_id: node.node_id,
-            status: Self::node_status_to_management(node.status),
-            updated_at: node.updated_at,
-            version: node.version,
-            api_address: node.api_address,
-            realtime: Some(ServerStateRealtime {
-                distributed_enabled: node.realtime.distributed_enabled,
-                connection_count: node.realtime.connection_count,
-            }),
-            database: Some(ServerStateDatabase {
-                status: Self::database_status_to_management(node.database.status),
-                host: node.database.host,
-                port: node.database.port,
-                database: node.database.database,
-                max_connections: node.database.max_connections,
-                min_connections: node.database.min_connections,
-                connect_timeout_seconds: node.database.connect_timeout_seconds,
-                idle_timeout_seconds: node.database.idle_timeout_seconds,
-                max_lifetime_seconds: node.database.max_lifetime_seconds,
-                primary_pool: Some(Self::server_state_database_pool_to_management(
-                    &node.database.primary_pool,
-                )),
-                read_pool_enabled: node.database.read_pool_enabled,
-                read_host: node.database.read_host,
-                read_port: node.database.read_port,
-                read_pool: Some(Self::server_state_database_pool_to_management(
-                    &node.database.read_pool,
-                )),
-                message: node.database.message.unwrap_or_default(),
-            }),
-            redis: Some(ServerStateRedis {
-                status: Self::redis_status_to_management(node.redis.status),
-                configured: node.redis.configured,
-                deployment_mode: node.redis.deployment_mode,
-                database: node.redis.database,
-                key_prefix: node.redis.key_prefix,
-                connect_timeout_seconds: node.redis.connect_timeout_seconds,
-                response_timeout_seconds: node.redis.response_timeout_seconds,
-                pipeline_buffer_size: node.redis.pipeline_buffer_size,
-                sentinel_master_name: node.redis.sentinel_master_name,
-                sentinel_node_count: node.redis.sentinel_node_count,
-                ping_latency_ms: node.redis.ping_latency_ms,
-                message: node.redis.message.unwrap_or_default(),
-            }),
-            cluster: Some(ServerStateCluster {
-                status: Self::cluster_status_to_management(node.cluster.status),
-                enabled: node.cluster.enabled,
-                discovery_mode: node.cluster.discovery_mode,
-                distributed_realtime_enabled: node.cluster.distributed_realtime_enabled,
-                node_id_empty: node.cluster.node_id_empty,
-                routable_node_count: node.cluster.routable_node_count,
-                nodes: node
-                    .cluster
-                    .nodes
-                    .into_iter()
-                    .map(|cluster_node| ServerStateClusterNode {
-                        node_id: cluster_node.node_id,
-                        api_address: cluster_node.api_address,
-                        last_heartbeat: cluster_node.last_heartbeat,
-                        epoch: cluster_node.epoch,
-                    })
-                    .collect(),
-                message: node.cluster.message.unwrap_or_default(),
-            }),
-            ws_ticket: Some(ServerStateWsTicket {
-                status: Self::ws_ticket_status_to_management(node.ws_ticket.status),
-                cross_node_capable: node.ws_ticket.cross_node_capable,
-                message: node.ws_ticket.message.unwrap_or_default(),
-            }),
-            email: Some(ServerStateEmail {
-                status: Self::email_status_to_management(node.email.status),
-                configured: node.email.configured,
-            }),
-            livestream: Some(ServerStateLivestream {
-                status: Self::livestream_status_to_management(node.livestream.status),
-                configured: node.livestream.configured,
-                active_publisher_count: node.livestream.active_publisher_count,
-                active_room_count: node.livestream.active_room_count,
-                rtmp_port: node.livestream.rtmp_port,
-                public_rtmp_host: node.livestream.public_rtmp_host,
-                gop_cache_size: node.livestream.gop_cache_size,
-                gop_cache_max_memory_mb: node.livestream.gop_cache_max_memory_mb,
-                stream_timeout_seconds: node.livestream.stream_timeout_seconds,
-                hls_storage_backend: node.livestream.hls_storage_backend,
-                hls_storage_path: node.livestream.hls_storage_path,
-                hls_memory_max_mb: node.livestream.hls_memory_max_mb,
-            }),
-            memory: Some(ServerStateMemory {
-                status: Self::memory_status_to_management(node.memory.status),
-                used_bytes: node.memory.used_bytes,
-                total_bytes: node.memory.total_bytes,
-                available_bytes: node.memory.available_bytes,
-                usage_percent: node.memory.usage_percent,
-            }),
-            webrtc: Some(ServerStateWebRtc {
-                status: Self::webrtc_status_to_management(node.webrtc.status),
-                mode: node.webrtc.mode,
-                builtin_stun_configured: node.webrtc.builtin_stun_configured,
-                builtin_stun_state: node.webrtc.builtin_stun_state,
-                reason: node.webrtc.reason,
-                local_addr: node.webrtc.local_addr,
-                external_addr: node.webrtc.external_addr,
-                message: node.webrtc.message.unwrap_or_default(),
-            }),
-            cpu: Some(ServerStateCpu {
-                status: Self::cpu_status_to_management(node.cpu.status),
-                available_parallelism: node.cpu.available_parallelism,
-                current_load_1m: node.cpu.current_load_1m,
-                load_ratio_1m: node.cpu.load_ratio_1m,
-                load_average_1m: node.cpu.load_average_1m,
-                load_average_5m: node.cpu.load_average_5m,
-                load_average_15m: node.cpu.load_average_15m,
-            }),
-            slice_cache: Some(ServerStateSliceCache {
-                status: Self::slice_cache_status_to_management(node.slice_cache.status),
-                engine_enabled: node.slice_cache.engine_enabled,
-                backend: node.slice_cache.backend,
-                file_cache_dir: node.slice_cache.file_cache_dir,
-                slice_size: node.slice_cache.slice_size,
-                max_cache_size: node.slice_cache.max_cache_size,
-                segment_ttl_secs: node.slice_cache.segment_ttl_secs,
-                stale_max_age_secs: node.slice_cache.stale_max_age_secs,
-                stale_while_revalidate: node.slice_cache.stale_while_revalidate,
-                eviction_interval_secs: node.slice_cache.eviction_interval_secs,
-                watermark_ratio: node.slice_cache.watermark_ratio,
-                current_size_bytes: node.slice_cache.current_size_bytes,
-                entry_count: node.slice_cache.entry_count,
-                metadata_entries: node.slice_cache.metadata_entries,
-                updating_entries: node.slice_cache.updating_entries,
-                lock_count: node.slice_cache.lock_count,
-                usage_ratio: node.slice_cache.usage_ratio,
-            }),
-        }
-    }
-
-    fn server_state_database_pool_to_management(
-        pool: &synctv_api::status::DatabasePoolStatus,
-    ) -> ServerStateDatabasePool {
-        ServerStateDatabasePool {
-            size: pool.size,
-            idle_connections: pool.idle_connections,
-            active_connections: pool.active_connections,
-        }
-    }
-
-    fn node_status_to_management(status: synctv_api::status::ServerStateNodeStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateNodeStatus::Healthy => ProtoNodeStatus::Healthy,
-            synctv_api::status::ServerStateNodeStatus::Degraded => ProtoNodeStatus::Degraded,
-            synctv_api::status::ServerStateNodeStatus::Unhealthy => ProtoNodeStatus::Unhealthy,
-        }
-        .into()
-    }
-
-    fn database_status_to_management(status: synctv_api::status::ServerStateDatabaseStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateDatabaseStatus::Healthy => ProtoDatabaseStatus::Healthy,
-            synctv_api::status::ServerStateDatabaseStatus::Unhealthy => {
-                ProtoDatabaseStatus::Unhealthy
-            }
-        }
-        .into()
-    }
-
-    fn redis_status_to_management(status: synctv_api::status::ServerStateRedisStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateRedisStatus::Healthy => ProtoRedisStatus::Healthy,
-            synctv_api::status::ServerStateRedisStatus::NotConfigured => {
-                ProtoRedisStatus::NotConfigured
-            }
-            synctv_api::status::ServerStateRedisStatus::Unhealthy => ProtoRedisStatus::Unhealthy,
-        }
-        .into()
-    }
-
-    fn cluster_status_to_management(status: synctv_api::status::ServerStateClusterStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateClusterStatus::Healthy => ProtoClusterStatus::Healthy,
-            synctv_api::status::ServerStateClusterStatus::Unhealthy => {
-                ProtoClusterStatus::Unhealthy
-            }
-            synctv_api::status::ServerStateClusterStatus::Disabled => ProtoClusterStatus::Disabled,
-        }
-        .into()
-    }
-
-    fn ws_ticket_status_to_management(
-        status: synctv_api::status::ServerStateWsTicketStatus,
-    ) -> i32 {
-        match status {
-            synctv_api::status::ServerStateWsTicketStatus::Healthy => ProtoWsTicketStatus::Healthy,
-            synctv_api::status::ServerStateWsTicketStatus::Unhealthy => {
-                ProtoWsTicketStatus::Unhealthy
-            }
-        }
-        .into()
-    }
-
-    fn email_status_to_management(status: synctv_api::status::ServerStateEmailStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateEmailStatus::Configured => ProtoEmailStatus::Configured,
-            synctv_api::status::ServerStateEmailStatus::NotConfigured => {
-                ProtoEmailStatus::NotConfigured
-            }
-        }
-        .into()
-    }
-
-    fn livestream_status_to_management(
-        status: synctv_api::status::ServerStateLivestreamStatus,
-    ) -> i32 {
-        match status {
-            synctv_api::status::ServerStateLivestreamStatus::Configured => {
-                ProtoLivestreamStatus::Configured
-            }
-            synctv_api::status::ServerStateLivestreamStatus::NotConfigured => {
-                ProtoLivestreamStatus::NotConfigured
-            }
-        }
-        .into()
-    }
-
-    fn memory_status_to_management(status: synctv_api::status::ServerStateMemoryStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateMemoryStatus::Healthy => ProtoMemoryStatus::Healthy,
-            synctv_api::status::ServerStateMemoryStatus::Unhealthy => ProtoMemoryStatus::Unhealthy,
-            synctv_api::status::ServerStateMemoryStatus::Unknown => ProtoMemoryStatus::Unknown,
-        }
-        .into()
-    }
-
-    fn webrtc_status_to_management(status: synctv_api::status::ServerStateWebRtcStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateWebRtcStatus::Healthy => ProtoWebRtcStatus::Healthy,
-            synctv_api::status::ServerStateWebRtcStatus::Degraded => ProtoWebRtcStatus::Degraded,
-            synctv_api::status::ServerStateWebRtcStatus::Disabled => ProtoWebRtcStatus::Disabled,
-        }
-        .into()
-    }
-
-    fn cpu_status_to_management(status: synctv_api::status::ServerStateCpuStatus) -> i32 {
-        match status {
-            synctv_api::status::ServerStateCpuStatus::Healthy => ProtoCpuStatus::Healthy,
-            synctv_api::status::ServerStateCpuStatus::Degraded => ProtoCpuStatus::Degraded,
-            synctv_api::status::ServerStateCpuStatus::Unhealthy => ProtoCpuStatus::Unhealthy,
-            synctv_api::status::ServerStateCpuStatus::Unknown => ProtoCpuStatus::Unknown,
-        }
-        .into()
-    }
-
-    fn slice_cache_status_to_management(
-        status: synctv_api::status::ServerStateSliceCacheStatus,
-    ) -> i32 {
-        match status {
-            synctv_api::status::ServerStateSliceCacheStatus::Healthy => {
-                ProtoSliceCacheStatus::Healthy
-            }
-            synctv_api::status::ServerStateSliceCacheStatus::Disabled => {
-                ProtoSliceCacheStatus::Disabled
-            }
-        }
-        .into()
-    }
-
-    fn map_slice_cache_error(error: &synctv_api::status::SliceCacheManagementError) -> Status {
-        match error {
-            synctv_api::status::SliceCacheManagementError::InvalidSelection => {
-                Status::invalid_argument(error.to_string())
-            }
-            synctv_api::status::SliceCacheManagementError::ClusterUnavailable(_)
-            | synctv_api::status::SliceCacheManagementError::MissingClusterSecret
-            | synctv_api::status::SliceCacheManagementError::InvalidClusterSecret => {
-                Status::failed_precondition(error.to_string())
-            }
-            synctv_api::status::SliceCacheManagementError::Cluster(_)
-            | synctv_api::status::SliceCacheManagementError::RemoteRequest { .. } => {
-                Status::unavailable(error.to_string())
-            }
-        }
-    }
-
-    fn slice_cache_selection(
-        node_id: String,
-        all_nodes: bool,
-    ) -> synctv_api::status::SliceCacheSelection {
-        synctv_api::status::SliceCacheSelection {
-            node_id: (!node_id.trim().is_empty()).then_some(node_id),
-            all_nodes,
-        }
-    }
-
-    fn slice_cache_config_to_management(
-        config: synctv_api::status::SliceCacheConfigInfo,
-    ) -> admin_proto::SliceCacheConfigInfo {
-        admin_proto::SliceCacheConfigInfo {
-            engine_enabled: config.engine_enabled,
-            backend: config.backend,
-            file_cache_dir: config.file_cache_dir,
-            slice_size: config.slice_size,
-            max_cache_size: config.max_cache_size,
-            segment_ttl_secs: config.segment_ttl_secs,
-            stale_max_age_secs: config.stale_max_age_secs,
-            stale_while_revalidate: config.stale_while_revalidate,
-            eviction_interval_secs: config.eviction_interval_secs,
-            watermark_ratio: config.watermark_ratio,
-        }
-    }
-
-    fn slice_cache_stats_node_to_management(
-        stats: synctv_api::status::SliceCacheStatsNode,
-    ) -> admin_proto::SliceCacheStatsNode {
-        admin_proto::SliceCacheStatsNode {
-            node_id: stats.node_id,
-            config: Some(Self::slice_cache_config_to_management(stats.config)),
-            current_size_bytes: stats.current_size_bytes,
-            entry_count: stats.entry_count,
-            metadata_entries: stats.metadata_entries,
-            updating_entries: stats.updating_entries,
-            lock_count: stats.lock_count,
-            usage_ratio: stats.usage_ratio,
-        }
-    }
-
-    fn slice_cache_failure_to_management(
-        failure: synctv_api::status::SliceCacheNodeFailure,
-    ) -> admin_proto::SliceCacheNodeFailure {
-        admin_proto::SliceCacheNodeFailure {
-            node_id: failure.node_id,
-            error: failure.error,
-        }
-    }
-
-    fn get_slice_cache_stats_to_management(
-        response: synctv_api::status::SliceCacheStatsResponse,
-    ) -> admin_proto::GetSliceCacheStatsResponse {
-        admin_proto::GetSliceCacheStatsResponse {
-            nodes: response
-                .nodes
-                .into_iter()
-                .map(Self::slice_cache_stats_node_to_management)
-                .collect(),
-            failures: response
-                .failures
-                .into_iter()
-                .map(Self::slice_cache_failure_to_management)
-                .collect(),
-        }
-    }
-
-    fn purge_slice_cache_node_to_management(
-        response: synctv_api::status::SliceCachePurgeNodeResult,
-    ) -> admin_proto::PurgeSliceCacheNodeResult {
-        admin_proto::PurgeSliceCacheNodeResult {
-            node_id: response.node_id,
-            success: response.success,
-            removed_entries: response.removed_entries,
-            freed_bytes: response.freed_bytes,
-            stats: response
-                .stats
-                .map(Self::slice_cache_stats_node_to_management),
-        }
-    }
-
-    fn purge_slice_cache_to_management(
-        response: synctv_api::status::SliceCachePurgeResponse,
-    ) -> admin_proto::PurgeSliceCacheResponse {
-        admin_proto::PurgeSliceCacheResponse {
-            success: response.success,
-            removed_entries: response.removed_entries,
-            freed_bytes: response.freed_bytes,
-            stats: response
-                .stats
-                .map(Self::slice_cache_stats_node_to_management),
-            nodes: response
-                .nodes
-                .into_iter()
-                .map(Self::purge_slice_cache_node_to_management)
-                .collect(),
-            failures: response
-                .failures
-                .into_iter()
-                .map(Self::slice_cache_failure_to_management)
-                .collect(),
-        }
-    }
-
-    fn evict_expired_slice_cache_node_to_management(
-        response: synctv_api::status::SliceCacheEvictExpiredNodeResult,
-    ) -> admin_proto::EvictExpiredSliceCacheNodeResult {
-        admin_proto::EvictExpiredSliceCacheNodeResult {
-            node_id: response.node_id,
-            success: response.success,
-            removed_expired_entries: response.removed_expired_entries,
-            stats: response
-                .stats
-                .map(Self::slice_cache_stats_node_to_management),
-        }
-    }
-
-    fn evict_expired_slice_cache_to_management(
-        response: synctv_api::status::SliceCacheEvictExpiredResponse,
-    ) -> admin_proto::EvictExpiredSliceCacheResponse {
-        admin_proto::EvictExpiredSliceCacheResponse {
-            success: response.success,
-            removed_expired_entries: response.removed_expired_entries,
-            stats: response
-                .stats
-                .map(Self::slice_cache_stats_node_to_management),
-            nodes: response
-                .nodes
-                .into_iter()
-                .map(Self::evict_expired_slice_cache_node_to_management)
-                .collect(),
-            failures: response
-                .failures
-                .into_iter()
-                .map(Self::slice_cache_failure_to_management)
-                .collect(),
-        }
-    }
-
-    fn map_api_result<T>(result: Result<T, ApiError>) -> Result<T, Status> {
-        result.map_err(map_api_error)
-    }
-
-    fn map_into_api_result<T, E>(result: Result<T, E>) -> Result<T, Status>
-    where
-        ApiError: From<E>,
-    {
-        result.map_err(map_api_error)
     }
 }
 
@@ -1020,21 +961,21 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .list_users(admin_proto::ListUsersRequest {
+            .list_users(ListUsersQuery {
                 page: req.page,
                 page_size: req.page_size,
-                status: map_user_status(req.status)?,
-                role: map_user_role(req.role)?,
+                status: map_user_status_filter(req.status)?,
+                role: map_user_role_filter(req.role)?,
                 search: req.search,
-                sort_by: map_user_list_sort_by(req.sort_by)?,
+                sort_by: map_management_user_list_sort_by(req.sort_by)?,
                 is_banned: req.is_banned,
-                sort_direction: map_sort_direction(
+                sort_direction: map_management_sort_direction(
                     req.sort_direction,
-                    admin_proto::SortDirection::Desc,
+                    AdminSortDirection::Desc,
                 )?,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1049,9 +990,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .get_user(admin_proto::GetUserRequest { user_id })
+            .get_user(GetUserQuery { user_id })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1066,9 +1007,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .get_user_preferences(admin_proto::GetUserPreferencesRequest { user_id })
+            .get_user_preferences(GetUserPreferencesQuery { user_id })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1085,16 +1026,18 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_user_preferences(
-                admin_proto::UpdateUserPreferencesRequest {
+                UpdateUserPreferencesCommand {
                     user_id,
                     two_factor_enabled: req.two_factor_enabled,
-                    notifications: req.notifications,
+                    notifications: req
+                        .notifications
+                        .map(user_notification_preferences_from_client_proto),
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1110,13 +1053,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .add_admin(
-                admin_proto::AddAdminRequest { user_id },
-                &validated.user_id,
-                &ctx,
-            )
+            .add_admin(AddAdminCommand { user_id }, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1132,13 +1071,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .remove_admin(
-                admin_proto::RemoveAdminRequest { user_id },
-                &validated.user_id,
-                &ctx,
-            )
+            .remove_admin(RemoveAdminCommand { user_id }, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1150,15 +1085,18 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .list_admins(admin_proto::ListAdminsRequest {
+            .list_admins(ListAdminsQuery {
                 page: req.page,
                 page_size: req.page_size,
                 search: req.search,
-                sort_by: req.sort_by,
-                sort_direction: req.sort_direction,
+                sort_by: map_management_user_list_sort_by(req.sort_by)?,
+                sort_direction: map_management_sort_direction(
+                    req.sort_direction,
+                    AdminSortDirection::Desc,
+                )?,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1172,11 +1110,11 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .create_user(
-                admin_proto::CreateUserRequest {
+                CreateUserCommand {
                     username: req.username,
                     email: req.email,
-                    role: map_user_role(req.role)?,
-                    status: map_user_status(req.status)?,
+                    role: map_required_user_role(req.role)?,
+                    status: map_required_user_status(req.status)?,
                     password: req.password,
                 },
                 validated.role,
@@ -1184,7 +1122,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1200,13 +1138,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .delete_user(
-                admin_proto::DeleteUserRequest { user_id },
-                &validated.user_id,
-                &ctx,
-            )
+            .delete_user(DeleteUserCommand { user_id }, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1223,7 +1157,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .ban_user(
-                admin_proto::BanUserRequest {
+                BanUserCommand {
                     user_id,
                     reason: req.reason,
                 },
@@ -1232,7 +1166,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1248,13 +1182,9 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .unban_user(
-                admin_proto::UnbanUserRequest { user_id },
-                &validated.user_id,
-                &ctx,
-            )
+            .unban_user(UnbanUserCommand { user_id }, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1267,16 +1197,16 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_user_registration_reviews(
-                admin_proto::ListUserRegistrationReviewsRequest {
+                ListUserRegistrationReviewsQuery {
                     page: req.page,
                     page_size: req.page_size,
-                    status: req.status,
+                    status: map_review_status_filter(req.status)?,
                     search: req.search,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1290,14 +1220,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .approve_user_registration_review(
-                admin_proto::ApproveUserRegistrationReviewRequest {
+                ApproveUserRegistrationReviewCommand {
                     request_id: req.request_id,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1310,14 +1240,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .reject_user_registration_review(
-                admin_proto::RejectUserRegistrationReviewRequest {
+                RejectUserRegistrationReviewCommand {
                     request_id: req.request_id,
                     reason: req.reason,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1330,17 +1260,17 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_room_creation_reviews(
-                admin_proto::ListRoomCreationReviewsRequest {
+                ListRoomCreationReviewsQuery {
                     page: req.page,
                     page_size: req.page_size,
-                    status: req.status,
+                    status: map_review_status_filter(req.status)?,
                     requested_by: req.requested_by,
                     search: req.search,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1354,14 +1284,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .approve_room_creation_review(
-                admin_proto::ApproveRoomCreationReviewRequest {
+                ApproveRoomCreationReviewCommand {
                     request_id: req.request_id,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1374,14 +1304,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .reject_room_creation_review(
-                admin_proto::RejectRoomCreationReviewRequest {
+                RejectRoomCreationReviewCommand {
                     request_id: req.request_id,
                     reason: req.reason,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1394,17 +1324,17 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_room_join_reviews(
-                admin_proto::ListRoomJoinReviewsRequest {
+                ListRoomJoinReviewsQuery {
                     page: req.page,
                     page_size: req.page_size,
-                    status: req.status,
+                    status: map_review_status_filter(req.status)?,
                     room_id: req.room_id,
                     user_id: req.user_id,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1418,14 +1348,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .approve_room_join_review(
-                admin_proto::ApproveRoomJoinReviewRequest {
+                ApproveRoomJoinReviewCommand {
                     request_id: req.request_id,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1439,7 +1369,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .reject_room_join_review(
-                admin_proto::RejectRoomJoinReviewRequest {
+                RejectRoomJoinReviewCommand {
                     request_id: req.request_id,
                     reason: req.reason,
                 },
@@ -1447,7 +1377,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1460,10 +1390,10 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_ban_records(
-                admin_proto::ListBanRecordsRequest {
+                ListBanRecordsQuery {
                     page: req.page,
                     page_size: req.page_size,
-                    target_type: req.target_type,
+                    target_type: map_ban_record_target_type_filter(req.target_type)?,
                     active: req.active,
                     user_id: req.user_id,
                     room_id: req.room_id,
@@ -1471,7 +1401,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1488,16 +1418,16 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_user_role(
-                admin_proto::UpdateUserRoleRequest {
+                UpdateUserRoleCommand {
                     user_id,
-                    role: map_user_role(req.role)?,
+                    role: map_required_user_role(req.role)?,
                 },
                 &validated.user_id,
                 validated.role,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1514,7 +1444,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .set_user_password(
-                admin_proto::SetUserPasswordRequest {
+                SetUserPasswordCommand {
                     user_id,
                     password: req.password,
                     reason: req.reason,
@@ -1524,7 +1454,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1541,7 +1471,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_user_username(
-                admin_proto::UpdateUserUsernameRequest {
+                UpdateUserUsernameCommand {
                     user_id,
                     new_username: req.new_username,
                 },
@@ -1549,7 +1479,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1564,21 +1494,21 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .get_user_rooms(admin_proto::GetUserRoomsRequest {
+            .get_user_rooms(GetUserRoomsQuery {
                 user_id,
                 page: req.page,
                 page_size: req.page_size,
-                status: map_room_status(req.status)?,
+                status: map_room_status_filter(req.status)?,
                 search: req.search,
                 is_banned: req.is_banned,
-                sort_by: map_room_list_sort_by(req.sort_by)?,
-                sort_direction: map_sort_direction(
+                sort_by: map_management_room_list_sort_by(req.sort_by)?,
+                sort_direction: map_management_core_sort_direction(
                     req.sort_direction,
-                    admin_proto::SortDirection::Desc,
+                    synctv_core::models::SortDirection::Desc,
                 )?,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1596,7 +1526,7 @@ impl ManagementService for ManagementServiceImpl {
             let mut response = self
                 .admin_api
                 .batch_ban_users(
-                    admin_proto::BatchBanUsersRequest {
+                    BatchBanUsersCommand {
                         user_ids: resolved.user_ids,
                         reason: req.reason,
                     },
@@ -1605,7 +1535,7 @@ impl ManagementService for ManagementServiceImpl {
                     &ctx,
                 )
                 .await
-                .map_err(map_api_error)?;
+                .map_err(|error| map_api_error(&error))?;
             Self::append_batch_user_ref_failures(
                 &mut response.results,
                 &mut response.failed,
@@ -1631,7 +1561,7 @@ impl ManagementService for ManagementServiceImpl {
             let mut response = self
                 .admin_api
                 .batch_delete_users(
-                    admin_proto::BatchDeleteUsersRequest {
+                    BatchDeleteUsersCommand {
                         user_ids: resolved.user_ids,
                     },
                     &validated.user_id,
@@ -1639,7 +1569,7 @@ impl ManagementService for ManagementServiceImpl {
                     &ctx,
                 )
                 .await
-                .map_err(map_api_error)?;
+                .map_err(|error| map_api_error(&error))?;
             Self::append_batch_user_ref_failures(
                 &mut response.results,
                 &mut response.failed,
@@ -1658,19 +1588,86 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
-        let response = Box::pin(self.client_api.create_room(
-            &actor_user_id,
-            client_proto::CreateRoomRequest {
-                name: req.name,
-                settings: req.settings,
-                description: req.description,
-                password: req.password,
-                category_id: req.category_id,
-                label_ids: req.label_ids,
-            },
-        ))
-        .await
-        .map_err(map_api_error)?;
+        let mut client_request = client_proto::CreateRoomRequest {
+            name: req.name,
+            settings: req.settings,
+            description: req.description,
+            password: req.password,
+            category_id: req.category_id,
+            label_ids: req.label_ids,
+        };
+
+        client_request.name =
+            synctv_core::validation::validate_room_name_input(&client_request.name)
+                .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        if !client_request.description.is_empty() {
+            client_request.description = synctv_core::validation::validate_room_description_input(
+                &client_request.description,
+            )
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        }
+        synctv_proto::validate(&client_request)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+
+        let settings = client_request
+            .settings
+            .map(room_settings_from_client_proto)
+            .transpose()?;
+        let response_settings = settings.clone().unwrap_or_default();
+        let password = (!client_request.password.is_empty()).then_some(client_request.password);
+        let category_id = optional_room_category_id_from_public(
+            &client_request.category_id,
+            &self.public_id_codec,
+        )?;
+        let label_ids =
+            room_label_ids_from_public(&client_request.label_ids, &self.public_id_codec)?;
+        let clock = self.clock.clone();
+        let prepared_outbox_fanout =
+            PreparedOutboxFanout::new(self.realtime_fanout.clone(), move |room: &Room| {
+                RealtimeEvent::RoomCreated {
+                    event_id: synctv_common::snanoid!(16),
+                    room_id: room.id,
+                    room_name: room.name.clone(),
+                    creator_id: actor_user_id,
+                    timestamp: clock.now(),
+                }
+            });
+
+        let (room, _member) = self
+            .room_service
+            .create_room_with_taxonomy_outbox(
+                synctv_core::service::CreateRoomWithTaxonomyRequest {
+                    name: client_request.name,
+                    description: client_request.description,
+                    created_by: actor_user_id,
+                    password,
+                    settings,
+                    category_id,
+                    label_ids,
+                },
+                Some(prepared_outbox_fanout.outbox_factory()),
+            )
+            .await
+            .map_err(map_core_error)?;
+        prepared_outbox_fanout.publish_after_outbox_commit();
+
+        let member_count = self
+            .room_service
+            .get_member_count(&room.id)
+            .await
+            .map_err(map_core_error)?;
+        let creator = self
+            .user_service
+            .get_user(&room.created_by)
+            .await
+            .map_err(map_core_error)?;
+        let response = created_room_to_client_proto(
+            &room,
+            &response_settings,
+            member_count,
+            &creator,
+            &self.public_id_codec,
+        )?;
         Ok(Response::new(response))
     }
 
@@ -1685,23 +1682,23 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .list_rooms(admin_proto::ListRoomsRequest {
+            .list_rooms(ListRoomsQuery {
                 page: req.page,
                 page_size: req.page_size,
-                status: map_room_status(req.status)?,
+                status: map_room_status_filter(req.status)?,
                 search: req.search,
                 creator_id,
                 is_banned: req.is_banned,
-                sort_by: map_room_list_sort_by(req.sort_by)?,
-                sort_direction: map_sort_direction(
+                sort_by: map_management_room_list_sort_by(req.sort_by)?,
+                sort_direction: map_management_core_sort_direction(
                     req.sort_direction,
-                    admin_proto::SortDirection::Desc,
+                    synctv_core::models::SortDirection::Desc,
                 )?,
                 category_id: req.category_id,
                 label_ids: req.label_ids,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1710,11 +1707,14 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::ListRoomCategoriesRequest>,
     ) -> Result<Response<admin_proto::ListRoomCategoriesResponse>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .list_room_categories(request.into_inner())
+            .list_room_categories(ListRoomCategoriesQuery {
+                include_disabled: req.include_disabled,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn upsert_room_category(
@@ -1722,11 +1722,18 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::UpsertRoomCategoryRequest>,
     ) -> Result<Response<client_proto::RoomCategory>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .upsert_room_category(request.into_inner())
+            .upsert_room_category(UpsertRoomCategoryCommand {
+                key: req.key,
+                name: req.name,
+                description: req.description,
+                sort_order: req.sort_order,
+                is_enabled: req.is_enabled,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn delete_room_category(
@@ -1734,11 +1741,14 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::DeleteRoomCategoryRequest>,
     ) -> Result<Response<admin_proto::DeleteRoomCategoryResponse>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .delete_room_category(request.into_inner())
+            .delete_room_category(DeleteRoomCategoryCommand {
+                category_id: req.category_id,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn list_room_labels(
@@ -1746,11 +1756,15 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::ListRoomLabelsRequest>,
     ) -> Result<Response<admin_proto::ListRoomLabelsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .list_room_labels(request.into_inner())
+            .list_room_labels(ListRoomLabelsQuery {
+                include_disabled: req.include_disabled,
+                category_id: req.category_id,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn upsert_room_label(
@@ -1758,11 +1772,20 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::UpsertRoomLabelRequest>,
     ) -> Result<Response<client_proto::RoomLabel>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .upsert_room_label(request.into_inner())
+            .upsert_room_label(UpsertRoomLabelCommand {
+                key: req.key,
+                name: req.name,
+                description: req.description,
+                color: req.color,
+                category_id: req.category_id,
+                sort_order: req.sort_order,
+                is_enabled: req.is_enabled,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn delete_room_label(
@@ -1770,11 +1793,14 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::DeleteRoomLabelRequest>,
     ) -> Result<Response<admin_proto::DeleteRoomLabelResponse>, Status> {
         self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .delete_room_label(request.into_inner())
+            .delete_room_label(DeleteRoomLabelCommand {
+                label_id: req.label_id,
+            })
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn update_room_taxonomy(
@@ -1782,11 +1808,20 @@ impl ManagementService for ManagementServiceImpl {
         request: Request<admin_proto::UpdateRoomTaxonomyRequest>,
     ) -> Result<Response<admin_proto::Room>, Status> {
         let validated = self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
         self.admin_api
-            .update_room_taxonomy(request.into_inner(), &validated.user_id)
+            .update_room_taxonomy(
+                UpdateRoomTaxonomyCommand {
+                    room_id: req.room_id,
+                    category_id: req.category_id,
+                    label_ids: req.label_ids,
+                    clear_category: req.clear_category,
+                },
+                &validated.user_id,
+            )
             .await
             .map(Response::new)
-            .map_err(map_api_error)
+            .map_err(|error| map_api_error(&error))
     }
 
     async fn get_room(
@@ -1797,11 +1832,11 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .get_room(admin_proto::GetRoomRequest {
+            .get_room(GetRoomQuery {
                 room_id: req.room_id,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1813,20 +1848,20 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .get_room_members(admin_proto::GetRoomMembersRequest {
+            .get_room_members(GetRoomMembersQuery {
                 room_id: req.room_id,
                 page: req.page,
                 page_size: req.page_size,
                 search: req.search,
                 role: req.role,
                 sort_by: map_room_member_list_sort_by(req.sort_by)?,
-                sort_direction: map_sort_direction(
+                sort_direction: map_management_sort_direction(
                     req.sort_direction,
-                    admin_proto::SortDirection::Asc,
+                    AdminSortDirection::Asc,
                 )?,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1837,18 +1872,13 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
-        let actor = self
-            .client_api
-            .room_actor_for_user(&actor_user_id, &req.room_id)
-            .await
-            .map_err(map_api_error)?;
         let user_id = self
             .resolve_optional_user_selector(&req.user_id, &req.username, "user")
             .await?;
         let response = self
-            .client_api
             .search_chat_messages_for_actor(
-                &actor,
+                actor_user_id,
+                &req.room_id,
                 client_proto::SearchChatMessagesRequest {
                     query: req.query,
                     cursor: req.cursor,
@@ -1857,8 +1887,7 @@ impl ManagementService for ManagementServiceImpl {
                     user_id,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -1875,7 +1904,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .add_member(
-                admin_proto::AddMemberRequest {
+                AddMemberCommand {
                     room_id: req.room_id,
                     user_id,
                     role: req.role,
@@ -1887,7 +1916,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1904,7 +1933,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_member_remark_name(
-                admin_proto::UpdateMemberRemarkNameRequest {
+                UpdateMemberRemarkNameCommand {
                     room_id: req.room_id,
                     user_id,
                     remark_name: req.remark_name,
@@ -1913,7 +1942,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1930,7 +1959,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_member_display_tag(
-                admin_proto::UpdateMemberDisplayTagRequest {
+                UpdateMemberDisplayTagCommand {
                     room_id: req.room_id,
                     user_id,
                     display_tag: req.display_tag,
@@ -1939,7 +1968,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1956,7 +1985,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_member_permissions(
-                admin_proto::UpdateMemberPermissionsRequest {
+                UpdateMemberPermissionsCommand {
                     room_id: req.room_id,
                     user_id,
                     role: req.role,
@@ -1969,7 +1998,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -1986,7 +2015,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .kick_member(
-                admin_proto::KickMemberRequest {
+                KickMemberCommand {
                     room_id: req.room_id,
                     user_id,
                     kick_cooldown_seconds: req.kick_cooldown_seconds,
@@ -1995,7 +2024,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(client_proto::KickMemberResponse {
             success: response.success,
         }))
@@ -2009,11 +2038,11 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .get_room_settings(admin_proto::GetRoomSettingsRequest {
+            .get_room_settings(GetRoomSettingsQuery {
                 room_id: req.room_id,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2025,9 +2054,26 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .update_room_settings(req, &validated.user_id)
+            .update_room_settings(
+                UpdateRoomSettingsCommand {
+                    room_id: req.room_id,
+                    allow_guest_join: req.allow_guest_join,
+                    max_members: req.max_members,
+                    require_approval: req.require_approval,
+                    allow_auto_join: req.allow_auto_join,
+                    chat_enabled: req.chat_enabled,
+                    auto_play: req.auto_play,
+                    admin_added_permissions: req.admin_added_permissions,
+                    admin_removed_permissions: req.admin_removed_permissions,
+                    member_added_permissions: req.member_added_permissions,
+                    member_removed_permissions: req.member_removed_permissions,
+                    guest_added_permissions: req.guest_added_permissions,
+                    guest_removed_permissions: req.guest_removed_permissions,
+                },
+                &validated.user_id,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2040,13 +2086,13 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .reset_room_settings(
-                admin_proto::ResetRoomSettingsRequest {
+                ResetRoomSettingsCommand {
                     room_id: req.room_id,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2061,14 +2107,12 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_required_user_ref(req.new_owner, "new_owner")
             .await?;
         let response = self
-            .client_api
-            .transfer_room_ownership(
-                &actor_user_id,
+            .transfer_room_ownership_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::TransferRoomOwnershipRequest { new_owner_user_id },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2096,7 +2140,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_room_password(
-                admin_proto::UpdateRoomPasswordRequest {
+                UpdateRoomPasswordCommand {
                     room_id: req.room_id,
                     new_password,
                 },
@@ -2104,7 +2148,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2118,7 +2162,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .ban_room(
-                admin_proto::BanRoomRequest {
+                BanRoomCommand {
                     room_id: req.room_id,
                     reason: req.reason,
                 },
@@ -2126,7 +2170,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2140,14 +2184,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .unban_room(
-                admin_proto::UnbanRoomRequest {
+                UnbanRoomCommand {
                     room_id: req.room_id,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2161,14 +2205,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .delete_room(
-                admin_proto::DeleteRoomRequest {
+                DeleteRoomCommand {
                     room_id: req.room_id,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2182,7 +2226,7 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .batch_ban_rooms(
-                admin_proto::BatchBanRoomsRequest {
+                BatchBanRoomsCommand {
                     room_ids: req.room_ids,
                     reason: req.reason,
                 },
@@ -2190,7 +2234,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2204,14 +2248,14 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .batch_delete_rooms(
-                admin_proto::BatchDeleteRoomsRequest {
+                BatchDeleteRoomsCommand {
                     room_ids: req.room_ids,
                 },
                 &validated.user_id,
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2225,8 +2269,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .start_playback(
-                &req.room_id,
-                client_proto::StartPlaybackRequest {
+                StartPlaybackCommand {
+                    room_id: req.room_id,
                     media_id: req.media_id,
                     playlist_id: req.playlist_id,
                     target: req.target,
@@ -2235,7 +2279,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2250,7 +2294,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .stop_playback(&req.room_id, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2268,7 +2312,7 @@ impl ManagementService for ManagementServiceImpl {
                 req.playback_client_profile,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2282,9 +2326,9 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_playback_state(
-                &req.room_id,
-                client_proto::UpdatePlaybackStateRequest {
-                    r#type: req.r#type,
+                UpdatePlaybackStateCommand {
+                    room_id: req.room_id,
+                    update_type: req.r#type,
                     playing: req.playing,
                     position: req.position,
                     speed: req.speed,
@@ -2297,7 +2341,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2319,7 +2363,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2333,7 +2377,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_stream_info(&req.room_id, &req.media_id)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2345,21 +2389,16 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .list_room_streams(
-                &req.room_id,
-                client_proto::ListRoomStreamsRequest {
-                    page: req.page,
-                    page_size: req.page_size,
-                    search: req.search,
-                    sort_by: map_room_stream_list_sort_by(req.sort_by)?,
-                    sort_direction: map_client_sort_direction(
-                        req.sort_direction,
-                        client_proto::SortDirection::Unspecified,
-                    )?,
-                },
-            )
+            .list_room_streams(ListRoomStreamsQuery {
+                room_id: req.room_id,
+                page: req.page,
+                page_size: req.page_size,
+                search: req.search,
+                sort_by: map_room_stream_list_sort_by(req.sort_by)?,
+                sort_direction: map_optional_management_sort_direction(req.sort_direction)?,
+            })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2372,7 +2411,7 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         self.admin_api
             .kick_stream(
-                admin_proto::KickStreamRequest {
+                KickStreamCommand {
                     room_id: req.room_id,
                     media_id: req.media_id,
                     reason: req.reason,
@@ -2381,7 +2420,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(client_proto::KickRoomStreamResponse {}))
     }
 
@@ -2394,8 +2433,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_playlists(
-                &req.room_id,
-                client_proto::ListPlaylistsRequest {
+                ListPlaylistsQuery {
+                    room_id: req.room_id,
                     parent_id: req.parent_id,
                     page: req.page,
                     page_size: req.page_size,
@@ -2410,7 +2449,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2424,7 +2463,7 @@ impl ManagementService for ManagementServiceImpl {
             .admin_api
             .get_playlist(&req.room_id, &req.playlist_id, &validated.user_id)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2436,9 +2475,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .create_playlist(
-                &actor_user_id,
+            .create_playlist_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
@@ -2449,8 +2487,7 @@ impl ManagementService for ManagementServiceImpl {
                     provider_instance_name: req.provider_instance_name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2462,9 +2499,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .create_playlist(
-                &actor_user_id,
+            .create_playlist_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
@@ -2479,8 +2515,7 @@ impl ManagementService for ManagementServiceImpl {
                     provider_instance_name: req.provider_instance_name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2492,9 +2527,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .create_playlist(
-                &actor_user_id,
+            .create_playlist_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::CreatePlaylistRequest {
                     name: req.name,
@@ -2505,8 +2539,7 @@ impl ManagementService for ManagementServiceImpl {
                     provider_instance_name: req.provider_instance_name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2522,8 +2555,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .update_playlist(
-                &req.room_id,
-                client_proto::UpdatePlaylistRequest {
+                UpdatePlaylistCommand {
+                    room_id: req.room_id,
                     playlist_id: req.playlist_id,
                     name,
                     description: String::new(),
@@ -2531,7 +2564,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2544,22 +2577,26 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .move_playlist(
-                &req.room_id,
-                client_proto::MovePlaylistRequest {
+                MovePlaylistCommand {
+                    room_id: req.room_id,
                     playlist_id: req.playlist_id,
-                    anchor: req.anchor.map(|anchor| match anchor {
+                    before_playlist_id: req.anchor.as_ref().and_then(|anchor| match anchor {
                         crate::proto::move_playlist_request::Anchor::BeforePlaylistId(id) => {
-                            client_proto::move_playlist_request::Anchor::BeforePlaylistId(id)
+                            Some(id.clone())
                         }
+                        crate::proto::move_playlist_request::Anchor::AfterPlaylistId(_) => None,
+                    }),
+                    after_playlist_id: req.anchor.and_then(|anchor| match anchor {
+                        crate::proto::move_playlist_request::Anchor::BeforePlaylistId(_) => None,
                         crate::proto::move_playlist_request::Anchor::AfterPlaylistId(id) => {
-                            client_proto::move_playlist_request::Anchor::AfterPlaylistId(id)
+                            Some(id)
                         }
                     }),
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2572,15 +2609,15 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .delete_playlist(
-                &req.room_id,
-                client_proto::DeletePlaylistRequest {
+                DeletePlaylistCommand {
+                    room_id: req.room_id,
                     playlist_id: req.playlist_id,
                     force: req.force,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2593,8 +2630,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .list_media(
-                &req.room_id,
-                client_proto::ListPlaylistItemsRequest {
+                ListMediaQuery {
+                    room_id: req.room_id,
                     playlist_id: req.playlist_id,
                     target: req.target,
                     page: req.page,
@@ -2610,7 +2647,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2622,9 +2659,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2634,8 +2670,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2647,9 +2682,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2662,8 +2696,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2675,9 +2708,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2691,8 +2723,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2704,9 +2735,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2716,8 +2746,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2729,9 +2758,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2743,8 +2771,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2756,9 +2783,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2768,8 +2794,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2781,9 +2806,8 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let actor_user_id = self.resolve_client_actor_user_id(req.actor).await?;
         let response = self
-            .client_api
-            .add_media(
-                &actor_user_id,
+            .add_media_for_actor(
+                actor_user_id,
                 &req.room_id,
                 client_proto::AddMediaRequest {
                     playlist_id: (!req.playlist_id.is_empty()).then_some(req.playlist_id),
@@ -2793,8 +2817,7 @@ impl ManagementService for ManagementServiceImpl {
                     name: req.name,
                 },
             )
-            .await
-            .map_err(map_api_error)?;
+            .await?;
         Ok(Response::new(response))
     }
 
@@ -2807,8 +2830,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .edit_media(
-                &req.room_id,
-                client_proto::EditMediaRequest {
+                EditMediaCommand {
+                    room_id: req.room_id,
                     media_id: req.media_id,
                     name: req.name,
                     description: String::new(),
@@ -2816,7 +2839,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2829,15 +2852,15 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .delete_media(
-                &req.room_id,
-                client_proto::DeleteMediaRequest {
+                DeleteMediaCommand {
+                    room_id: req.room_id,
                     media_id: req.media_id,
                     force: req.force,
                 },
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2850,8 +2873,8 @@ impl ManagementService for ManagementServiceImpl {
         let response = self
             .admin_api
             .move_media(
-                &req.room_id,
-                client_proto::MoveMediaRequest {
+                MoveMediaCommand {
+                    room_id: req.room_id,
                     media_ids: req.media_ids,
                     source_playlist_id: req.source_playlist_id,
                     target_playlist_id: req.target_playlist_id,
@@ -2870,7 +2893,7 @@ impl ManagementService for ManagementServiceImpl {
                 &validated.user_id,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -2884,13 +2907,12 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.alist_api
-                .login_with_context(
+                .login(
                     &actor_user_id,
-                    provider_request,
+                    Self::alist_login_command(provider_request),
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -2907,13 +2929,19 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.alist_api
-                .list_with_context(
+                .list(
                     &actor_user_id,
-                    provider_request,
+                    AlistListQuery {
+                        server_id: provider_request.server_id,
+                        path: provider_request.path,
+                        password: provider_request.password,
+                        page: provider_request.page,
+                        per_page: provider_request.per_page,
+                        refresh: provider_request.refresh,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -2930,13 +2958,20 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.alist_api
-                .search_with_context(
+                .search(
                     &actor_user_id,
-                    provider_request,
+                    AlistSearchQuery {
+                        server_id: provider_request.server_id,
+                        parent: provider_request.parent,
+                        keywords: provider_request.keywords,
+                        scope: provider_request.scope,
+                        page: provider_request.page,
+                        per_page: provider_request.per_page,
+                        password: provider_request.password,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -2953,13 +2988,14 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.alist_api
-                .get_me_with_context(
+                .get_me(
                     &actor_user_id,
-                    provider_request,
+                    ProviderCredentialServerQuery {
+                        server_id: provider_request.server_id,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -2975,9 +3011,14 @@ impl ManagementService for ManagementServiceImpl {
         let (actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.alist_api
-                .logout(&actor_user_id, provider_request)
+                .logout(
+                    &actor_user_id,
+                    ProviderCredentialServerQuery {
+                        server_id: provider_request.server_id,
+                    },
+                )
                 .await,
         )?;
         Ok(Response::new(response))
@@ -2993,7 +3034,7 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_api_result(
+        let response = map_api_result(
             self.alist_api
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
@@ -3011,13 +3052,12 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.emby_api
-                .login_with_context(
+                .login(
                     &actor_user_id,
-                    provider_request,
+                    Self::emby_login_command(provider_request),
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3034,13 +3074,18 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.emby_api
-                .list_with_context(
+                .list(
                     &actor_user_id,
-                    provider_request,
+                    EmbyListQuery {
+                        server_id: provider_request.server_id,
+                        path: provider_request.path,
+                        start_index: provider_request.start_index,
+                        limit: provider_request.limit,
+                        search_term: provider_request.search_term,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3057,13 +3102,14 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.emby_api
-                .get_me_with_context(
+                .get_me(
                     &actor_user_id,
-                    provider_request,
+                    ProviderCredentialServerQuery {
+                        server_id: provider_request.server_id,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3079,8 +3125,15 @@ impl ManagementService for ManagementServiceImpl {
         let (actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response = Self::map_into_api_result(
-            self.emby_api.logout(&actor_user_id, provider_request).await,
+        let response = map_classified_result(
+            self.emby_api
+                .logout(
+                    &actor_user_id,
+                    ProviderCredentialServerQuery {
+                        server_id: provider_request.server_id,
+                    },
+                )
+                .await,
         )?;
         Ok(Response::new(response))
     }
@@ -3095,7 +3148,7 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_api_result(
+        let response = map_api_result(
             self.emby_api
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
@@ -3113,13 +3166,14 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .parse_with_context(
+                .parse(
                     &actor_user_id,
-                    provider_request,
+                    BilibiliParseQuery {
+                        url: provider_request.url,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3136,9 +3190,9 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .login_qr_with_context(provider_request, instance_name.as_deref(), None)
+                .login_qr(BilibiliLoginQrCommand, instance_name.as_deref())
                 .await,
         )?;
         Ok(Response::new(response))
@@ -3154,13 +3208,14 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .check_qr_with_context(
+                .check_qr(
                     &actor_user_id,
-                    provider_request,
+                    BilibiliCheckQrQuery {
+                        key: provider_request.key,
+                    },
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3177,9 +3232,9 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .start_sms_login_with_context(provider_request, instance_name.as_deref(), None)
+                .start_sms_login(BilibiliStartSmsLoginCommand, instance_name.as_deref())
                 .await,
         )?;
         Ok(Response::new(response))
@@ -3194,9 +3249,13 @@ impl ManagementService for ManagementServiceImpl {
         let (_actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .send_sms_with_context(provider_request, None, None)
+                .send_sms(BilibiliSendSmsCommand {
+                    session_token: provider_request.session_token,
+                    phone: provider_request.phone,
+                    validate: provider_request.validate,
+                })
                 .await,
         )?;
         Ok(Response::new(response))
@@ -3211,9 +3270,15 @@ impl ManagementService for ManagementServiceImpl {
         let (actor_user_id, provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .login_sms_with_context(&actor_user_id, provider_request, None, None)
+                .login_sms(
+                    &actor_user_id,
+                    BilibiliLoginSmsCommand {
+                        session_token: provider_request.session_token,
+                        code: provider_request.code,
+                    },
+                )
                 .await,
         )?;
         Ok(Response::new(response))
@@ -3229,13 +3294,12 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .get_user_info_with_context(
+                .get_user_info(
                     &actor_user_id,
-                    provider_request,
+                    BilibiliUserInfoQuery,
                     instance_name.as_deref(),
-                    None,
                 )
                 .await,
         )?;
@@ -3248,12 +3312,12 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<bilibili_proto::LogoutResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let (actor_user_id, provider_request) = self
+        let (actor_user_id, _provider_request) = self
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
-        let response = Self::map_into_api_result(
+        let response = map_classified_result(
             self.bilibili_api
-                .logout(&actor_user_id, provider_request)
+                .logout(&actor_user_id, BilibiliLogoutCommand)
                 .await,
         )?;
         Ok(Response::new(response))
@@ -3269,7 +3333,7 @@ impl ManagementService for ManagementServiceImpl {
             .resolve_client_actor_and_request(req.actor, req.request)
             .await?;
         let instance_name = Self::optional_instance_name(&provider_request.instance_name);
-        let response = Self::map_api_result(
+        let response = map_api_result(
             self.bilibili_api
                 .get_binds(&actor_user_id, instance_name.as_deref())
                 .await,
@@ -3285,9 +3349,11 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .list_available_provider_instances(req)
+            .list_available_provider_instances(ListAvailableProviderInstancesQuery {
+                provider_type: source_provider_from_proto_filter(req.provider_type)?,
+            })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3297,11 +3363,13 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<provider_common_proto::ProviderBackendsResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
+        let provider_type = source_provider_from_proto_filter(req.provider_type)?
+            .ok_or_else(|| Status::invalid_argument("provider_type is required"))?;
         let response = self
             .provider_common_api
-            .list_provider_backends(req)
+            .list_provider_backends(ListProviderBackendsQuery { provider_type })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3313,9 +3381,20 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .list_provider_instances(req)
+            .list_provider_instances(ProviderInstanceListQuery {
+                pagination: PageParams::new(
+                    defaultable_page_i32_to_u32(req.page),
+                    defaultable_page_size_i32_to_u32(req.page_size, 100),
+                ),
+                provider_type: source_provider_from_proto_filter(req.provider_type)?,
+                search: (!req.search.trim().is_empty()).then(|| req.search.trim().to_string()),
+                enabled: req.enabled,
+                tls: req.tls,
+                sort_by: map_provider_instance_list_sort_by(req.sort_by)?,
+                sort_direction: map_provider_instance_sort_direction(req.sort_direction)?,
+            })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3328,9 +3407,23 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .add_provider_instance(req, &validated.user_id, &ctx, None)
+            .add_provider_instance(
+                AddProviderInstanceCommand {
+                    name: req.name,
+                    endpoint: req.endpoint,
+                    comment: req.comment,
+                    timeout_seconds: req.timeout_seconds,
+                    tls: req.tls,
+                    insecure_tls: req.insecure_tls,
+                    providers: req.providers,
+                    jwt_secret: req.jwt_secret,
+                    custom_ca: req.custom_ca,
+                },
+                &validated.user_id,
+                &ctx,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3343,9 +3436,26 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .update_provider_instance(req, &validated.user_id, &ctx, None)
+            .update_provider_instance(
+                UpdateProviderInstanceCommand {
+                    name: req.name,
+                    endpoint: req.endpoint,
+                    comment: req.comment,
+                    timeout_seconds: req.timeout_seconds,
+                    tls: req.tls,
+                    insecure_tls: req.insecure_tls,
+                    providers: req.providers,
+                    jwt_secret: req.jwt_secret,
+                    custom_ca: req.custom_ca,
+                    clear_comment: req.clear_comment,
+                    clear_jwt_secret: req.clear_jwt_secret,
+                    clear_custom_ca: req.clear_custom_ca,
+                },
+                &validated.user_id,
+                &ctx,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3358,9 +3468,13 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .delete_provider_instance(req, &validated.user_id, &ctx)
+            .delete_provider_instance(
+                ProviderInstanceNameCommand { name: req.name },
+                &validated.user_id,
+                &ctx,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3373,9 +3487,13 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .reconnect_provider_instance(req, &validated.user_id, &ctx, None)
+            .reconnect_provider_instance(
+                ProviderInstanceNameCommand { name: req.name },
+                &validated.user_id,
+                &ctx,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3387,9 +3505,9 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .enable_provider_instance(req, None)
+            .enable_provider_instance(ProviderInstanceNameCommand { name: req.name })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3401,9 +3519,9 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .provider_common_api
-            .disable_provider_instance(req, None)
+            .disable_provider_instance(ProviderInstanceNameCommand { name: req.name })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3415,9 +3533,9 @@ impl ManagementService for ManagementServiceImpl {
         let ctx = self.grpc_request_context(&request);
         let response = self
             .admin_api
-            .get_settings(admin_proto::GetSettingsRequest {}, &validated.user_id, &ctx)
+            .get_settings(GetSettingsQuery, &validated.user_id, &ctx)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3430,9 +3548,25 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .update_settings(req, &validated.user_id, &ctx)
+            .update_settings(
+                UpdateSettingsCommand {
+                    room_defaults: req.room_defaults,
+                    permissions: req.permissions,
+                    room_creation: req.room_creation,
+                    user: req.user,
+                    oauth2: req.oauth2,
+                    proxy: req.proxy,
+                    rtmp: req.rtmp,
+                    email: req.email,
+                    webrtc: req.webrtc,
+                    chat: req.chat,
+                    cors: req.cors,
+                },
+                &validated.user_id,
+                &ctx,
+            )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3444,9 +3578,9 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .admin_api
-            .send_test_email(admin_proto::SendTestEmailRequest { to: req.to })
+            .send_test_email(SendTestEmailCommand { to: req.to })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3457,9 +3591,9 @@ impl ManagementService for ManagementServiceImpl {
         self.check_admin_get_validated(&request)?;
         let response = self
             .admin_api
-            .get_service_state(admin_proto::GetServiceStateRequest {})
+            .get_service_state(GetServiceStateQuery)
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3469,9 +3603,11 @@ impl ManagementService for ManagementServiceImpl {
     ) -> Result<Response<GetServerStateResponse>, Status> {
         self.check_admin_get_validated(&request)?;
         let req = request.into_inner();
-        let target_node_id =
-            synctv_api::status::validate_server_state_selection(Some(&req.node_id), req.all_nodes)
-                .map_err(|error| Self::map_server_state_error(&error))?;
+        let target_node_id = synctv_core::service::validate_server_state_selection(
+            Some(&req.node_id),
+            req.all_nodes,
+        )
+        .map_err(|error| map_server_state_error(&error))?;
         Ok(Response::new(
             self.collect_server_state_response(target_node_id, req.all_nodes)
                 .await?,
@@ -3486,12 +3622,10 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .slice_cache_runtime
-            .get_stats(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .get_stats(slice_cache_selection(req.node_id, req.all_nodes))
             .await
-            .map_err(|error| Self::map_slice_cache_error(&error))?;
-        Ok(Response::new(Self::get_slice_cache_stats_to_management(
-            response,
-        )))
+            .map_err(|error| map_slice_cache_error(&error))?;
+        Ok(Response::new(get_slice_cache_stats_to_management(response)))
     }
 
     async fn purge_slice_cache(
@@ -3502,12 +3636,10 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .slice_cache_runtime
-            .purge(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .purge(slice_cache_selection(req.node_id, req.all_nodes))
             .await
-            .map_err(|error| Self::map_slice_cache_error(&error))?;
-        Ok(Response::new(Self::purge_slice_cache_to_management(
-            response,
-        )))
+            .map_err(|error| map_slice_cache_error(&error))?;
+        Ok(Response::new(purge_slice_cache_to_management(response)))
     }
 
     async fn evict_expired_slice_cache(
@@ -3518,12 +3650,12 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         let response = self
             .slice_cache_runtime
-            .evict_expired(Self::slice_cache_selection(req.node_id, req.all_nodes))
+            .evict_expired(slice_cache_selection(req.node_id, req.all_nodes))
             .await
-            .map_err(|error| Self::map_slice_cache_error(&error))?;
-        Ok(Response::new(
-            Self::evict_expired_slice_cache_to_management(response),
-        ))
+            .map_err(|error| map_slice_cache_error(&error))?;
+        Ok(Response::new(evict_expired_slice_cache_to_management(
+            response,
+        )))
     }
 
     async fn list_active_streams(
@@ -3537,7 +3669,7 @@ impl ManagementService for ManagementServiceImpl {
             .await?;
         let response = self
             .admin_api
-            .list_active_streams(admin_proto::ListActiveStreamsRequest {
+            .list_active_streams(ListActiveStreamsQuery {
                 page: req.page,
                 page_size: req.page_size,
                 room_id: req.room_id,
@@ -3548,7 +3680,7 @@ impl ManagementService for ManagementServiceImpl {
                 sort_direction: req.sort_direction,
             })
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(response))
     }
 
@@ -3561,7 +3693,7 @@ impl ManagementService for ManagementServiceImpl {
         let req = request.into_inner();
         self.admin_api
             .kick_stream(
-                admin_proto::KickStreamRequest {
+                KickStreamCommand {
                     room_id: req.room_id,
                     media_id: req.media_id,
                     reason: req.reason,
@@ -3570,7 +3702,7 @@ impl ManagementService for ManagementServiceImpl {
                 &ctx,
             )
             .await
-            .map_err(map_api_error)?;
+            .map_err(|error| map_api_error(&error))?;
         Ok(Response::new(admin_proto::KickStreamResponse {}))
     }
 

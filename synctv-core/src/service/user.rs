@@ -7,7 +7,6 @@ use crate::{
         CacheInvalidationRuntime, ConsistencyCoordinator, KeyBuilder, UsernameCache,
         VersionFenceStore,
     },
-    config::PasswordComplexityConfig,
     repository::{
         realtime_outbox::RealtimeOutboxRepository, EmailBindRepository,
         EmailRegistrationTokenRepository, UserEmailRepository, UserPasswordRepository,
@@ -17,6 +16,7 @@ use crate::{
     service::{
         BruteForceProtectionService, JwtService, OpaquePasswordService, TokenBlacklistStore,
     },
+    validation::PasswordComplexityOptions,
 };
 
 const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
@@ -60,7 +60,7 @@ pub struct UserService {
     realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
     runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
     password_registration_policy_override: Option<RegistrationPolicy>,
-    password_complexity: PasswordComplexityConfig,
+    password_complexity: PasswordComplexityOptions,
     opaque_password_service: Arc<OpaquePasswordService>,
     opaque_login_session_store: Arc<dyn OpaqueLoginSessionStore>,
     opaque_registration_session_store: Arc<dyn OpaqueRegistrationSessionStore>,
@@ -127,7 +127,7 @@ pub struct UserServiceDependencies {
     pub token_blacklist: Arc<dyn TokenBlacklistStore>,
     pub key_builder: KeyBuilder,
     pub brute_force: Arc<dyn BruteForceProtectionService>,
-    pub password_complexity: PasswordComplexityConfig,
+    pub password_complexity: PasswordComplexityOptions,
 }
 
 impl std::fmt::Debug for UserService {
@@ -170,12 +170,11 @@ pub use session_types::{
     SensitiveVerificationOutcome, SensitiveVerificationSession,
 };
 mod tokens;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use session_stores::{
+pub use session_stores::{
     local_mfa_session_store, local_opaque_login_session_store,
     local_opaque_registration_session_store, local_sensitive_verification_session_store,
 };
-pub(crate) use session_stores::{
+pub use session_stores::{
     mfa_session_store_from_shared_state_profile,
     opaque_login_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,

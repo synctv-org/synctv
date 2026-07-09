@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::service::{EmailService, UserService, WebRtcRuntimeStatus, WebSocketTicketService};
-use crate::{Config, RedisConnectionRuntime};
+use crate::{RedisConnectionRuntime, RedisDeploymentMode};
 
 const SERVER_STATE_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_STATE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -426,8 +426,104 @@ pub trait ServerStateSliceCacheRuntime: Send + Sync {
     fn snapshot(&self) -> ServerStateSliceCache;
 }
 
+#[derive(Debug, Clone)]
+pub struct ServerStateRuntimeParams {
+    pub cluster_enabled: bool,
+    pub advertise_api_address: String,
+    pub cluster: ServerStateClusterOptions,
+    pub database: ServerStateDatabaseOptions,
+    pub redis: ServerStateRedisOptions,
+    pub livestream: ServerStateLivestreamOptions,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerStateClusterOptions {
+    pub discovery_mode: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerStateDatabaseOptions {
+    pub host: String,
+    pub port: u16,
+    pub name: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub connect_timeout_seconds: u64,
+    pub idle_timeout_seconds: u64,
+    pub max_lifetime_seconds: u64,
+    pub read_url: String,
+    pub read_host: String,
+    pub read_port: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerStateRedisOptions {
+    pub deployment_mode: RedisDeploymentMode,
+    pub database: i64,
+    pub key_prefix: String,
+    pub connect_timeout_seconds: u64,
+    pub response_timeout_seconds: u64,
+    pub pipeline_buffer_size: usize,
+    pub sentinel_master_name: Option<String>,
+    pub sentinel_addresses: Vec<String>,
+}
+
+impl Default for ServerStateRedisOptions {
+    fn default() -> Self {
+        Self {
+            deployment_mode: RedisDeploymentMode::Standalone,
+            database: 0,
+            key_prefix: "synctv:".to_string(),
+            connect_timeout_seconds: 5,
+            response_timeout_seconds: 5,
+            pipeline_buffer_size: 512,
+            sentinel_master_name: None,
+            sentinel_addresses: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ServerStateHlsStorageBackend {
+    #[default]
+    Memory,
+    File,
+    SharedFile,
+    Oss,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerStateHlsStorageOptions {
+    pub backend: ServerStateHlsStorageBackend,
+    pub path: String,
+    pub memory_max_mb: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerStateLivestreamOptions {
+    pub rtmp_port: u16,
+    pub public_rtmp_host: String,
+    pub gop_cache_size: u32,
+    pub stream_timeout_seconds: u64,
+    pub gop_cache_max_memory_mb: u64,
+    pub hls_storage: ServerStateHlsStorageOptions,
+}
+
+impl Default for ServerStateLivestreamOptions {
+    fn default() -> Self {
+        Self {
+            rtmp_port: 1935,
+            public_rtmp_host: String::new(),
+            gop_cache_size: 2,
+            stream_timeout_seconds: 300,
+            gop_cache_max_memory_mb: 100,
+            hls_storage: ServerStateHlsStorageOptions::default(),
+        }
+    }
+}
+
 pub struct ServerStateServiceDependencies {
-    pub config: Arc<Config>,
+    pub runtime_params: Arc<ServerStateRuntimeParams>,
     pub user_service: Arc<UserService>,
     pub realtime_runtime: Arc<dyn ServerStateRealtimeRuntime>,
     pub ws_ticket_service: Arc<dyn WebSocketTicketService>,
@@ -443,7 +539,7 @@ pub struct ServerStateServiceDependencies {
 
 #[derive(Clone)]
 pub struct ServerStateService {
-    config: Arc<Config>,
+    runtime_params: Arc<ServerStateRuntimeParams>,
     user_service: Arc<UserService>,
     realtime_runtime: Arc<dyn ServerStateRealtimeRuntime>,
     ws_ticket_service: Arc<dyn WebSocketTicketService>,
@@ -462,7 +558,7 @@ impl ServerStateService {
     #[must_use]
     pub fn new(deps: ServerStateServiceDependencies) -> Self {
         Self {
-            config: deps.config,
+            runtime_params: deps.runtime_params,
             user_service: deps.user_service,
             realtime_runtime: deps.realtime_runtime,
             ws_ticket_service: deps.ws_ticket_service,
@@ -552,7 +648,7 @@ impl ServerStateService {
     async fn collect_local_server_state_now(&self) -> ServerStateNode {
         let database = self.database_state().await;
         let redis = self.redis_state().await;
-        let cluster_enabled = self.config.cluster_runtime_enabled();
+        let cluster_enabled = self.runtime_params.cluster_enabled;
         let cluster = self.cluster_state(cluster_enabled).await;
         let ws_ticket = self.ws_ticket_state(cluster_enabled);
         let email = self.email_state();
@@ -580,7 +676,7 @@ impl ServerStateService {
             status,
             updated_at: unix_timestamp_secs(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            api_address: self.config.advertise_api_address(),
+            api_address: self.runtime_params.advertise_api_address.clone(),
             realtime,
             database,
             redis,
@@ -677,7 +773,7 @@ impl ServerStateService {
         ServerStateCluster {
             status,
             enabled: cluster_enabled,
-            discovery_mode: self.config.cluster.discovery_mode.to_string(),
+            discovery_mode: self.runtime_params.cluster.discovery_mode.clone(),
             distributed_realtime_enabled: metrics.distributed_enabled,
             node_id_empty,
             routable_node_count: saturating_u32(nodes.len()),
@@ -729,19 +825,19 @@ impl ServerStateService {
                 Ok(()) => ServerStateDatabaseStatus::Healthy,
                 Err(_) => ServerStateDatabaseStatus::Unhealthy,
             },
-            host: self.config.database.host.clone(),
-            port: u32::from(self.config.database.port),
-            database: self.config.database.name.clone(),
-            max_connections: self.config.database.max_connections,
-            min_connections: self.config.database.min_connections,
-            connect_timeout_seconds: self.config.database.connect_timeout_seconds,
-            idle_timeout_seconds: self.config.database.idle_timeout_seconds,
-            max_lifetime_seconds: self.config.database.max_lifetime_seconds,
+            host: self.runtime_params.database.host.clone(),
+            port: u32::from(self.runtime_params.database.port),
+            database: self.runtime_params.database.name.clone(),
+            max_connections: self.runtime_params.database.max_connections,
+            min_connections: self.runtime_params.database.min_connections,
+            connect_timeout_seconds: self.runtime_params.database.connect_timeout_seconds,
+            idle_timeout_seconds: self.runtime_params.database.idle_timeout_seconds,
+            max_lifetime_seconds: self.runtime_params.database.max_lifetime_seconds,
             primary_pool,
-            read_pool_enabled: !self.config.database.read_url.trim().is_empty()
-                || !self.config.database.read_host.trim().is_empty(),
-            read_host: self.config.database.read_host.clone(),
-            read_port: u32::from(self.config.database.read_port),
+            read_pool_enabled: !self.runtime_params.database.read_url.trim().is_empty()
+                || !self.runtime_params.database.read_host.trim().is_empty(),
+            read_host: self.runtime_params.database.read_host.clone(),
+            read_port: u32::from(self.runtime_params.database.read_port),
             read_pool,
             message: health.err(),
         }
@@ -761,20 +857,20 @@ impl ServerStateService {
         ServerStateRedis {
             status: state,
             configured,
-            deployment_mode: redis_deployment_mode_name(&self.config.redis.deployment_mode)
+            deployment_mode: redis_deployment_mode_name(&self.runtime_params.redis.deployment_mode)
                 .to_string(),
-            database: self.config.redis.database,
-            key_prefix: self.config.redis.key_prefix.clone(),
-            connect_timeout_seconds: self.config.redis.connect_timeout_seconds,
-            response_timeout_seconds: self.config.redis.response_timeout_seconds,
-            pipeline_buffer_size: saturating_u64(self.config.redis.pipeline_buffer_size),
+            database: self.runtime_params.redis.database,
+            key_prefix: self.runtime_params.redis.key_prefix.clone(),
+            connect_timeout_seconds: self.runtime_params.redis.connect_timeout_seconds,
+            response_timeout_seconds: self.runtime_params.redis.response_timeout_seconds,
+            pipeline_buffer_size: saturating_u64(self.runtime_params.redis.pipeline_buffer_size),
             sentinel_master_name: self
-                .config
+                .runtime_params
                 .redis
                 .sentinel_master_name
                 .clone()
                 .unwrap_or_default(),
-            sentinel_node_count: saturating_u32(self.config.redis.sentinel_addresses.len()),
+            sentinel_node_count: saturating_u32(self.runtime_params.redis.sentinel_addresses.len()),
             ping_latency_ms,
             message,
         }
@@ -810,7 +906,7 @@ impl ServerStateService {
     }
 
     async fn livestream_state(&self) -> ServerStateLivestream {
-        let hls_storage = &self.config.livestream.hls_storage;
+        let hls_storage = &self.runtime_params.livestream.hls_storage;
         let runtime = if let Some(runtime) = &self.livestream_runtime {
             runtime.snapshot().await
         } else {
@@ -825,14 +921,14 @@ impl ServerStateService {
             configured: self.live_streaming_configured,
             active_publisher_count: runtime.active_publisher_count,
             active_room_count: runtime.active_room_count,
-            rtmp_port: u32::from(self.config.livestream.rtmp_port),
-            public_rtmp_host: self.config.livestream.public_rtmp_host.clone(),
-            gop_cache_size: self.config.livestream.gop_cache_size,
-            gop_cache_max_memory_mb: self.config.livestream.gop_cache_max_memory_mb,
-            stream_timeout_seconds: self.config.livestream.stream_timeout_seconds,
-            hls_storage_backend: hls_storage_backend_name(hls_storage.backend()).to_string(),
-            hls_storage_path: hls_storage.path().to_string(),
-            hls_memory_max_mb: hls_storage.memory_max_mb(),
+            rtmp_port: u32::from(self.runtime_params.livestream.rtmp_port),
+            public_rtmp_host: self.runtime_params.livestream.public_rtmp_host.clone(),
+            gop_cache_size: self.runtime_params.livestream.gop_cache_size,
+            gop_cache_max_memory_mb: self.runtime_params.livestream.gop_cache_max_memory_mb,
+            stream_timeout_seconds: self.runtime_params.livestream.stream_timeout_seconds,
+            hls_storage_backend: hls_storage_backend_name(hls_storage.backend).to_string(),
+            hls_storage_path: hls_storage.path.clone(),
+            hls_memory_max_mb: hls_storage.memory_max_mb,
         }
     }
 
@@ -1414,19 +1510,19 @@ fn pool_state(pool: &sqlx::PgPool) -> ServerStateDatabasePool {
     }
 }
 
-fn redis_deployment_mode_name(mode: &crate::config::RedisDeploymentMode) -> &'static str {
+fn redis_deployment_mode_name(mode: &RedisDeploymentMode) -> &'static str {
     match mode {
-        crate::config::RedisDeploymentMode::Standalone => "standalone",
-        crate::config::RedisDeploymentMode::Sentinel => "sentinel",
+        RedisDeploymentMode::Standalone => "standalone",
+        RedisDeploymentMode::Sentinel => "sentinel",
     }
 }
 
-fn hls_storage_backend_name(backend: crate::config::HlsStorageBackend) -> &'static str {
+fn hls_storage_backend_name(backend: ServerStateHlsStorageBackend) -> &'static str {
     match backend {
-        crate::config::HlsStorageBackend::Memory => "memory",
-        crate::config::HlsStorageBackend::File => "file",
-        crate::config::HlsStorageBackend::SharedFile => "shared_file",
-        crate::config::HlsStorageBackend::Oss => "oss",
+        ServerStateHlsStorageBackend::Memory => "memory",
+        ServerStateHlsStorageBackend::File => "file",
+        ServerStateHlsStorageBackend::SharedFile => "shared_file",
+        ServerStateHlsStorageBackend::Oss => "oss",
     }
 }
 

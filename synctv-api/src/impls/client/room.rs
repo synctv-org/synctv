@@ -29,11 +29,12 @@ use super::{ClientApiImpl, GuestRoomAccess, RoomActor};
 
 mod support;
 use support::*;
-pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
 pub(crate) use support::{
-    parse_optional_room_category_id, parse_proto_chat_attachments, parse_required_room_category_id,
-    parse_room_label_ids,
+    build_search_chat_messages_query, parse_optional_room_category_id,
+    parse_proto_chat_attachments, parse_room_label_ids,
 };
+#[cfg(test)]
+pub(crate) use support::{chat_reaction_count, chat_reaction_summary_to_proto};
 
 fn required_room_availability(
     availability_map: &HashMap<synctv_core::models::RoomId, ClientResourceAvailability>,
@@ -310,13 +311,11 @@ impl ClientApiImpl {
         mut req: synctv_proto::client::CreateRoomRequest,
     ) -> Result<synctv_proto::client::Room, ApiError> {
         // Validate and sanitize room name
-        req.name = crate::impls::validation::validate_room_name(&req.name)
-            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        req.name = crate::impls::validate_room_name_input(&req.name)?;
 
         // Validate and sanitize room description against ROOM_DESCRIPTION_MAX
         if !req.description.is_empty() {
-            req.description = crate::impls::validation::validate_room_description(&req.description)
-                .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+            req.description = crate::impls::validate_room_description_input(&req.description)?;
         }
 
         crate::impls::validate_proto_request(&req)?;
@@ -808,18 +807,19 @@ impl ClientApiImpl {
                     .as_ref()
                     .map_or(0, |presence| presence.connection_count),
             );
-        let (room, member, members) = self
-            .room_service
-            .finish_room_opaque_password_login_with_outbox(
-                expected_room_id.as_ref(),
-                &req.session_id,
-                &uid,
-                req.credential_finalization,
-                parsed_client_ip,
-                Some(prepared_membership_fanout.outbox_factory()),
-            )
-            .await
-            .map_err(ApiError::from)?;
+        let (room, member, members) = Box::pin(
+            self.room_service
+                .finish_room_opaque_password_login_with_outbox(
+                    expected_room_id.as_ref(),
+                    &req.session_id,
+                    &uid,
+                    req.credential_finalization,
+                    parsed_client_ip,
+                    Some(prepared_membership_fanout.outbox_factory()),
+                ),
+        )
+        .await
+        .map_err(ApiError::from)?;
         prepared_membership_fanout.publish_after_outbox_commit();
 
         let rid = room.id;
@@ -1365,7 +1365,7 @@ impl ClientApiImpl {
 
         Ok(synctv_proto::client::GetServerInfoResponse {
             server_id,
-            server_name: self.config.webauthn.rp_name.clone(),
+            server_name: self.runtime_settings.webrtc.rp_name.clone(),
         })
     }
 
@@ -2435,7 +2435,7 @@ mod tests {
                 .expect("room service should build"),
         );
         super::ClientApiImpl::new_with_runtime(
-            crate::impls::ClientApiConfig {
+            crate::impls::ClientApiOptions {
                 read_pool: None,
                 user_service,
                 room_service,
@@ -2443,7 +2443,7 @@ mod tests {
                 connection_service: std::sync::Arc::new(
                     synctv_realtime::sync::ConnectionManager::default(),
                 ),
-                config: std::sync::Arc::new(synctv_core::Config::default()),
+                runtime_settings: std::sync::Arc::new(crate::ApiRuntimeSettings::default()),
                 publish_key_service: None,
                 jwt_service: synctv_core_testing::create_test_jwt_service(),
                 live_streaming_infrastructure: None,
@@ -2451,7 +2451,7 @@ mod tests {
                 provider_stores: std::sync::Arc::new(
                     synctv_core::provider::ProviderStoreRegistry::local_only("test:chat-pin-api:"),
                 ),
-                public_id_codec: std::sync::Arc::new(crate::public_id::PublicIdCodec::plain()),
+                public_id_codec: std::sync::Arc::new(synctv_adapter::PublicIdCodec::plain()),
                 email_api: None,
                 passkey_service: None,
             },
@@ -2461,7 +2461,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_maps_sorting_and_defaults() -> TestResult {
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let query = api_ok(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 0,
@@ -2573,7 +2573,7 @@ mod tests {
 
     #[test]
     fn room_list_query_builders_reject_unknown_sort_and_relation_enums() -> TestResult {
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let public_room_error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: 1,
@@ -2653,7 +2653,7 @@ mod tests {
 
     #[test]
     fn build_public_room_list_query_rejects_invalid_proto_request() -> TestResult {
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_public_room_list_query(
             synctv_proto::client::ListRoomsRequest {
                 page: -1,
@@ -2682,7 +2682,7 @@ mod tests {
 
     #[test]
     fn build_transfer_room_ownership_request_rejects_invalid_new_owner_user_id() -> TestResult {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_transfer_room_ownership_request(
             synctv_proto::client::TransferRoomOwnershipRequest {
                 new_owner_user_id: "bad-id".to_string(),
@@ -2701,7 +2701,7 @@ mod tests {
 
     #[test]
     fn build_check_room_request_rejects_invalid_room_id() -> TestResult {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_check_room_request(
             synctv_proto::client::CheckRoomRequest {
                 room_id: "bad-room".to_string(),
@@ -2720,7 +2720,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_rejects_invalid_room_id() -> TestResult {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "bad-room".to_string(),
@@ -2739,7 +2739,7 @@ mod tests {
 
     #[test]
     fn build_create_websocket_ticket_request_parses_proto_validated_room_id() -> TestResult {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let room_id = synctv_core::models::RoomId::expect_positive(123);
         let room_public_id = codec_ok(codec.encode_room_id(room_id))?;
         let parsed = api_ok(build_create_websocket_ticket_request(
@@ -2756,7 +2756,7 @@ mod tests {
     #[test]
     fn build_create_websocket_ticket_request_rejects_proto_valid_but_undecodable_room_id(
     ) -> TestResult {
-        let codec = crate::public_id::PublicIdCodec::plain();
+        let codec = synctv_adapter::PublicIdCodec::plain();
         let error = api_err(build_create_websocket_ticket_request(
             &synctv_proto::client::CreateWebSocketTicketRequest {
                 room_id: "room_abc".to_string(),

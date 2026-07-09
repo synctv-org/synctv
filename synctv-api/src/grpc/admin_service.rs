@@ -5,7 +5,6 @@ use std::{future::Future, sync::Arc};
 use tonic::{Request, Response, Status};
 
 use crate::impls::admin::RequestContext;
-use synctv_core::Config;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use synctv_proto::admin::admin_service_server::AdminService;
@@ -53,9 +52,9 @@ use super::map_api_error;
 /// Extract IP address and User-Agent from a gRPC request for audit logging.
 fn grpc_request_context<T: std::fmt::Debug>(
     request: &Request<T>,
-    config: &Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
 ) -> Result<RequestContext, Status> {
-    let ip_address = super::extract_client_ip(request, config)?.map(|ip| ip.to_string());
+    let ip_address = super::extract_client_ip(request, runtime_settings)?.map(|ip| ip.to_string());
     let user_agent = super::request_user_agent(request)?;
     Ok(RequestContext {
         ip_address,
@@ -87,7 +86,7 @@ fn map_slice_cache_error(
 #[derive(Clone)]
 pub struct AdminServiceImpl {
     admin_api: Arc<AdminApiImpl>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     slice_cache_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
 }
 
@@ -95,12 +94,12 @@ impl AdminServiceImpl {
     #[must_use]
     pub const fn new(
         admin_api: Arc<AdminApiImpl>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
         slice_cache_runtime: Arc<crate::status::SliceCacheManagementRuntime>,
     ) -> Self {
         Self {
             admin_api,
-            config,
+            runtime_settings,
             slice_cache_runtime,
         }
     }
@@ -111,7 +110,7 @@ impl AdminServiceImpl {
     ) -> Result<crate::impls::RequestMetadata, Status> {
         super::request_metadata(
             request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )
     }
@@ -137,7 +136,7 @@ impl AdminServiceImpl {
     {
         async move {
             let metadata = self.request_metadata(&request)?;
-            let ctx = grpc_request_context(&request, &self.config)?;
+            let ctx = grpc_request_context(&request, &self.runtime_settings)?;
             let api = self.admin_api.clone();
             let executor = api.clone();
             let req = request.into_inner();
@@ -216,8 +215,8 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<synctv_proto::admin::RuntimeSettings>, Status> {
-        self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
-            api.get_settings(req, &validated.user_id, &ctx).await
+        self.execute_admin_rpc(request, move |api, validated, ctx, _| async move {
+            api.get_settings(&validated.user_id, &ctx).await
         })
         .await
     }
@@ -227,6 +226,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<synctv_proto::admin::RuntimeSettings>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_settings(req, &validated.user_id, &ctx).await
         })
         .await
@@ -243,6 +243,7 @@ impl AdminService for AdminServiceImpl {
 
         let response = executor
             .execute_admin_endpoint_with_control(&metadata, move |request_control, _| async move {
+                crate::impls::validate_proto_request(&req)?;
                 api.send_test_email_with_control(req, Some(&request_control))
                     .await
             })
@@ -263,6 +264,7 @@ impl AdminService for AdminServiceImpl {
             request,
             require_root,
             move |api, validated, ctx, req| async move {
+                crate::impls::validate_proto_request(&req)?;
                 api.create_user(req, validated.role, &validated.user_id, &ctx)
                     .await
             },
@@ -275,6 +277,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<DeleteUserRequest>,
     ) -> Result<Response<DeleteUserResponse>, Status> {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.delete_user(req, &validated.user_id, &ctx).await
         })
         .await
@@ -285,6 +288,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListUsersRequest>,
     ) -> Result<Response<ListUsersResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_users(req).await
         })
         .await
@@ -295,6 +299,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetUserRequest>,
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_user(req).await
         })
         .await
@@ -305,6 +310,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetUserPreferencesRequest>,
     ) -> Result<Response<GetUserPreferencesResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_user_preferences(req).await
         })
         .await
@@ -315,6 +321,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateUserPreferencesRequest>,
     ) -> Result<Response<UpdateUserPreferencesResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_user_preferences(req, &validated.user_id, &ctx)
                 .await
         })
@@ -326,6 +333,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<SetUserPasswordRequest>,
     ) -> Result<Response<SetUserPasswordResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.set_user_password(req, validated.user_id, validated.role, &ctx)
                 .await
         })
@@ -337,6 +345,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateUserUsernameRequest>,
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_user_username(req, &validated.user_id, &ctx)
                 .await
         })
@@ -352,6 +361,7 @@ impl AdminService for AdminServiceImpl {
             request,
             require_root,
             move |api, validated, ctx, req| async move {
+                crate::impls::validate_proto_request(&req)?;
                 api.update_user_role(req, &validated.user_id, validated.role, &ctx)
                     .await
             },
@@ -364,6 +374,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<BanUserRequest>,
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.ban_user(req, &validated.user_id, validated.role, &ctx)
                 .await
         })
@@ -375,6 +386,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UnbanUserRequest>,
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.unban_user(req, &validated.user_id, &ctx).await
         })
         .await
@@ -385,6 +397,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetUserRoomsRequest>,
     ) -> Result<Response<GetUserRoomsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_user_rooms(req).await
         })
         .await
@@ -397,6 +410,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<BatchBanUsersRequest>,
     ) -> Result<Response<BatchBanUsersResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.batch_ban_users(req, &validated.user_id, validated.role, &ctx)
                 .await
         })
@@ -408,6 +422,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<BatchDeleteUsersRequest>,
     ) -> Result<Response<BatchDeleteUsersResponse>, Status> {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.batch_delete_users(req, &validated.user_id, validated.role, &ctx)
                 .await
         })
@@ -419,6 +434,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<BatchBanRoomsRequest>,
     ) -> Result<Response<BatchBanRoomsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.batch_ban_rooms(req, &validated.user_id, &ctx).await
         })
         .await
@@ -429,6 +445,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<BatchDeleteRoomsRequest>,
     ) -> Result<Response<BatchDeleteRoomsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.batch_delete_rooms(req, &validated.user_id, &ctx).await
         })
         .await
@@ -441,6 +458,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListRoomsRequest>,
     ) -> Result<Response<ListRoomsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_rooms(req).await
         })
         .await
@@ -448,6 +466,7 @@ impl AdminService for AdminServiceImpl {
 
     async fn get_room(&self, request: Request<GetRoomRequest>) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_room(req).await
         })
         .await
@@ -458,6 +477,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListRoomCategoriesRequest>,
     ) -> Result<Response<ListRoomCategoriesResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_categories(req).await
         })
         .await
@@ -468,6 +488,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpsertRoomCategoryRequest>,
     ) -> Result<Response<RoomCategory>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.upsert_room_category(req).await
         })
         .await
@@ -478,6 +499,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<DeleteRoomCategoryRequest>,
     ) -> Result<Response<DeleteRoomCategoryResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.delete_room_category(req).await
         })
         .await
@@ -488,6 +510,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListRoomLabelsRequest>,
     ) -> Result<Response<ListRoomLabelsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_labels(req).await
         })
         .await
@@ -498,6 +521,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpsertRoomLabelRequest>,
     ) -> Result<Response<RoomLabel>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.upsert_room_label(req).await
         })
         .await
@@ -508,6 +532,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<DeleteRoomLabelRequest>,
     ) -> Result<Response<DeleteRoomLabelResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.delete_room_label(req).await
         })
         .await
@@ -518,6 +543,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateRoomTaxonomyRequest>,
     ) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_room_taxonomy(req, &validated.user_id).await
         })
         .await
@@ -566,6 +592,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetRoomMembersRequest>,
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_room_members(req).await
         })
         .await
@@ -631,6 +658,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<AddAdminRequest>,
     ) -> Result<Response<AdminUser>, Status> {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.add_admin(req, &validated.user_id, &ctx).await
         })
         .await
@@ -641,6 +669,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<RemoveAdminRequest>,
     ) -> Result<Response<RemoveAdminResponse>, Status> {
         self.execute_root_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.remove_admin(req, &validated.user_id, &ctx).await
         })
         .await
@@ -651,6 +680,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListAdminsRequest>,
     ) -> Result<Response<ListAdminsResponse>, Status> {
         self.execute_root_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_admins(req).await
         })
         .await
@@ -662,8 +692,8 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetServiceStateRequest>,
     ) -> Result<Response<GetServiceStateResponse>, Status> {
-        self.execute_admin_rpc(request, move |api, _, _, req| async move {
-            api.get_service_state(req).await
+        self.execute_admin_rpc(request, move |api, _, _, _| async move {
+            api.get_service_state().await
         })
         .await
     }
@@ -687,7 +717,7 @@ impl AdminService for AdminServiceImpl {
                         all_nodes: req.all_nodes,
                     })
                     .await
-                    .map(crate::status::slice_cache_stats_to_admin_proto)
+                    .map(crate::impls::admin::slice_cache_stats_to_admin_proto)
                     .map_err(|error| map_slice_cache_error(&error))
             })
             .await
@@ -712,7 +742,7 @@ impl AdminService for AdminServiceImpl {
                         all_nodes: req.all_nodes,
                     })
                     .await
-                    .map(crate::status::slice_cache_purge_to_admin_proto)
+                    .map(crate::impls::admin::slice_cache_purge_to_admin_proto)
                     .map_err(|error| map_slice_cache_error(&error))
             })
             .await
@@ -737,7 +767,7 @@ impl AdminService for AdminServiceImpl {
                         all_nodes: req.all_nodes,
                     })
                     .await
-                    .map(crate::status::slice_cache_evict_expired_to_admin_proto)
+                    .map(crate::impls::admin::slice_cache_evict_expired_to_admin_proto)
                     .map_err(|error| map_slice_cache_error(&error))
             })
             .await
@@ -752,6 +782,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetRoomSettingsRequest>,
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_room_settings(req).await
         })
         .await
@@ -762,6 +793,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateRoomSettingsRequest>,
     ) -> Result<Response<synctv_proto::admin::Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_room_settings(req, &validated.user_id).await
         })
         .await
@@ -772,6 +804,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ResetRoomSettingsRequest>,
     ) -> Result<Response<Room>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reset_room_settings(req, &validated.user_id).await
         })
         .await
@@ -784,6 +817,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListActiveStreamsRequest>,
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, _, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_active_streams(req).await
         })
         .await
@@ -794,6 +828,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<KickStreamRequest>,
     ) -> Result<Response<KickStreamResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.kick_stream(req, &validated.user_id, &ctx)
                 .await
                 .map(|()| KickStreamResponse {})
@@ -806,6 +841,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListUserRegistrationReviewsRequest>,
     ) -> Result<Response<ListUserRegistrationReviewsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_user_registration_reviews(req, &validated.user_id)
                 .await
         })
@@ -817,6 +853,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ApproveUserRegistrationReviewRequest>,
     ) -> Result<Response<ApproveUserRegistrationReviewResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_user_registration_review(req, &validated.user_id, &ctx)
                 .await
         })
@@ -828,6 +865,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<RejectUserRegistrationReviewRequest>,
     ) -> Result<Response<UserRegistrationReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_user_registration_review(req, &validated.user_id)
                 .await
         })
@@ -839,6 +877,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListRoomCreationReviewsRequest>,
     ) -> Result<Response<ListRoomCreationReviewsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_creation_reviews(req, &validated.user_id)
                 .await
         })
@@ -850,6 +889,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ApproveRoomCreationReviewRequest>,
     ) -> Result<Response<ApproveRoomCreationReviewResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_room_creation_review(req, &validated.user_id, &ctx)
                 .await
         })
@@ -861,6 +901,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<RejectRoomCreationReviewRequest>,
     ) -> Result<Response<RoomCreationReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_room_creation_review(req, &validated.user_id)
                 .await
         })
@@ -872,6 +913,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListRoomJoinReviewsRequest>,
     ) -> Result<Response<ListRoomJoinReviewsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_room_join_reviews(req, &validated.user_id).await
         })
         .await
@@ -882,6 +924,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ApproveRoomJoinReviewRequest>,
     ) -> Result<Response<ApproveRoomJoinReviewResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.approve_room_join_review(req, &validated.user_id, &ctx)
                 .await
         })
@@ -893,6 +936,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<RejectRoomJoinReviewRequest>,
     ) -> Result<Response<RoomJoinReview>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.reject_room_join_review(req, &validated.user_id, &ctx)
                 .await
         })
@@ -914,6 +958,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<ListContentReportsRequest>,
     ) -> Result<Response<ListContentReportsResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.list_content_reports(req, &validated.user_id).await
         })
         .await
@@ -924,6 +969,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<GetContentReportRequest>,
     ) -> Result<Response<ContentReport>, Status> {
         self.execute_admin_rpc(request, move |api, validated, _, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.get_content_report(req, &validated.user_id).await
         })
         .await
@@ -934,6 +980,7 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateContentReportStatusRequest>,
     ) -> Result<Response<UpdateContentReportStatusResponse>, Status> {
         self.execute_admin_rpc(request, move |api, validated, ctx, req| async move {
+            crate::impls::validate_proto_request(&req)?;
             api.update_content_report_status(req, &validated.user_id, &ctx)
                 .await
         })

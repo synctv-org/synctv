@@ -4,7 +4,7 @@
 //! Both gRPC server and local usage call this service.
 
 use super::{AlistClient, AlistError};
-use crate::grpc::alist::{
+use crate::transport_dto::alist::{
     FsGetReq, FsGetResp, FsListReq, FsListResp, FsOtherReq, FsOtherResp, FsSearchReq, FsSearchResp,
     LoginReq, MeReq, MeResp,
 };
@@ -23,8 +23,8 @@ fn opt_str(s: &str) -> Option<&str> {
 
 /// Unified Alist service interface
 ///
-/// This trait defines all Alist operations using proto request/response types.
-/// This eliminates manual parameter binding - just pass proto requests directly.
+/// This trait defines all Alist operations using provider transport DTOs.
+/// Local and remote clients share this boundary.
 #[async_trait]
 pub trait AlistInterface: Send + Sync {
     async fn fs_get(&self, request: FsGetReq) -> Result<FsGetResp, AlistError>;
@@ -134,7 +134,7 @@ impl AlistInterface for AlistService {
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
         let mut client = self.anonymous_client(&request.host)?;
         match request.credential {
-            Some(crate::grpc::alist::login_req::Credential::Password(password)) => {
+            Some(crate::transport_dto::alist::login_req::Credential::Password(password)) => {
                 client
                     .login_with_otp(
                         &request.username,
@@ -144,7 +144,9 @@ impl AlistInterface for AlistService {
                     )
                     .await
             }
-            Some(crate::grpc::alist::login_req::Credential::HashedPassword(hashed_password)) => {
+            Some(crate::transport_dto::alist::login_req::Credential::HashedPassword(
+                hashed_password,
+            )) => {
                 client
                     .login_with_otp(
                         &request.username,

@@ -5,14 +5,15 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-#[cfg(feature = "k8s")]
-use synctv_cluster::discovery::K8sDnsDiscovery;
 use synctv_cluster::discovery::{
     health_monitor::HealthProbeConfig, ClusterHealthRuntime, ClusterNodeDirectory,
     ClusterNodeDirectoryFactory, HealthMonitor, StaticDiscovery, StaticDiscoveryConfig,
     StaticPeerConfig,
 };
-use synctv_core::{config::ClusterDiscoveryMode, Config};
+#[cfg(feature = "k8s")]
+use synctv_cluster::discovery::{K8sDnsDiscovery, K8sDnsDiscoveryOptions};
+
+use crate::app_config::{AppConfig as Config, ClusterDiscoveryMode};
 use synctv_realtime::sync::{ConnectionRuntime, RealtimeManager, RealtimeMessageTransportFactory};
 
 #[async_trait]
@@ -194,7 +195,8 @@ impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
         registry: Arc<dyn ClusterNodeDirectory>,
     ) -> Result<Vec<ClusterDiscoveryTask>, anyhow::Error> {
         info!("Using K8s DNS discovery mode");
-        let discovery = K8sDnsDiscovery::from_env(self.api_port).map_err(|e| {
+        let discovery_options = k8s_dns_discovery_options_from_env(self.api_port)?;
+        let discovery = K8sDnsDiscovery::from_options(&discovery_options).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to initialize K8s DNS discovery: {e}. \
                  Ensure HEADLESS_SERVICE_NAME, POD_NAMESPACE, and POD_IP env vars are set."
@@ -219,6 +221,31 @@ impl ClusterPeerDiscoveryDriver for K8sClusterPeerDiscoveryDriver {
             discovery.start_refresh_loop(10, self.shutdown_token),
         )])
     }
+}
+
+#[cfg(feature = "k8s")]
+fn k8s_dns_discovery_options_from_env(
+    api_port: u16,
+) -> Result<K8sDnsDiscoveryOptions, anyhow::Error> {
+    Ok(K8sDnsDiscoveryOptions {
+        service_name: required_env("HEADLESS_SERVICE_NAME", "cluster.discovery_mode='k8s_dns'")?,
+        namespace: required_env("POD_NAMESPACE", "cluster.discovery_mode='k8s_dns'")?,
+        self_ip: required_env("POD_IP", "cluster.discovery_mode='k8s_dns'")?,
+        api_port,
+    })
+}
+
+#[cfg(feature = "k8s")]
+fn required_env(name: &str, owner: &str) -> Result<String, anyhow::Error> {
+    let value =
+        std::env::var(name).map_err(|_| anyhow::anyhow!("{owner} requires {name} to be set"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(anyhow::anyhow!(
+            "{owner} requires {name} to contain a value"
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(feature = "k8s")]
@@ -389,6 +416,7 @@ pub async fn init_cluster_discovery(
 
 #[cfg(test)]
 mod tests {
+    use crate::app_config::ClusterDiscoveryMode;
     use crate::bootstrap::cluster::{
         build_cluster_coordination_provider, init_cluster_components, init_cluster_discovery,
     };
@@ -396,7 +424,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_cluster::discovery::{ClusterNodeDirectory, ClusterNodeDirectoryFactory};
-    use synctv_core::{config::ClusterDiscoveryMode, Config};
+
+    use crate::app_config::AppConfig as Config;
     use synctv_realtime::sync::{
         build_room_message_runtime, ConnectionLimits, ConnectionManager, RealtimeConfig,
         RealtimeManager, RealtimeManagerRuntime,

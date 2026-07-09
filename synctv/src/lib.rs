@@ -5,11 +5,17 @@
 
 pub(crate) mod admin_client;
 mod app;
+pub mod app_config;
 mod bootstrap;
 pub mod cli;
+mod config_env;
+mod config_loader;
+mod management_runtime;
 mod migrations;
+mod path_util;
 mod realtime_bridge;
 mod realtime_outbox_dispatcher;
+mod resource_options;
 mod rtmp_auth;
 mod server;
 mod shutdown;

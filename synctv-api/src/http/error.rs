@@ -158,6 +158,9 @@ impl AppError {
 pub fn map_auth_authorization_error(err: &synctv_core::Error) -> AppError {
     match err {
         synctv_core::Error::Authorization(message) => AppError::forbidden(message.clone()),
+        synctv_core::Error::KickCooldownDenied => {
+            AppError::forbidden(synctv_core::Error::kick_cooldown_denied_message())
+        }
         other => {
             tracing::error!(error = %other, "Unexpected authorization-classified auth error");
             AppError::forbidden("You do not have permission to perform this action")
@@ -647,6 +650,17 @@ mod tests {
         let core_err = synctv_core::Error::Authorization("denied".to_string());
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_from_core_kick_cooldown_denied() {
+        let app_err = AppError::from(synctv_core::Error::kick_cooldown_denied());
+
+        assert_eq!(app_err.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            app_err.message(),
+            synctv_core::Error::kick_cooldown_denied_message()
+        );
     }
 
     #[test]

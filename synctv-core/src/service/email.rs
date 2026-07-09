@@ -580,7 +580,7 @@ impl EmailService {
             .ok_or_else(|| EmailError::SendError("No recipients in email envelope".to_string()))?
             .clone();
 
-        let transport = self.smtp_transport_for_config(config)?;
+        let transport = self.smtp_transport_for_settings(config)?;
 
         Self::run_with_control(control, async {
             transport
@@ -600,7 +600,7 @@ impl EmailService {
         Ok(())
     }
 
-    fn smtp_transport_for_config(
+    fn smtp_transport_for_settings(
         &self,
         config: &EmailConfig,
     ) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
@@ -747,7 +747,7 @@ mod tests {
             use_tls: false,
         };
         ok(
-            service.smtp_transport_for_config(&first),
+            service.smtp_transport_for_settings(&first),
             "first SMTP transport should build",
         );
         assert_eq!(
@@ -772,7 +772,7 @@ mod tests {
             use_tls: false,
         };
         ok(
-            service.smtp_transport_for_config(&second),
+            service.smtp_transport_for_settings(&second),
             "second SMTP transport should build",
         );
         assert_eq!(

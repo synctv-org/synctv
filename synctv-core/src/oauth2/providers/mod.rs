@@ -51,17 +51,15 @@ impl<'c> AsyncHttpClient<'c> for OAuth2HttpClient {
                 .await
                 .map_err(Box::new)?;
 
-            let mut builder = http::Response::builder()
-                .status(response.status())
-                .version(response.version());
-
-            for (name, value) in response.headers() {
-                builder = builder.header(name, value);
-            }
-
-            builder
-                .body(response.bytes().await.map_err(Box::new)?.to_vec())
-                .map_err(HttpClientError::Http)
+            let status = response.status();
+            let version = response.version();
+            let headers = response.headers().clone();
+            let body = response.bytes().await.map_err(Box::new)?.to_vec();
+            let mut response = HttpResponse::new(body);
+            *response.status_mut() = status;
+            *response.version_mut() = version;
+            *response.headers_mut() = headers;
+            Ok(response)
         })
     }
 }

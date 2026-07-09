@@ -6,8 +6,8 @@ use crate::{
 };
 
 impl PlaybackService {
-    #[cfg(test)]
-    pub(crate) fn has_l2_cache(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_l2_cache(&self) -> bool {
         self.l2_cache.read().is_some()
     }
 

@@ -16,13 +16,19 @@ use super::{
 #[derive(Clone)]
 pub struct LiveProxyPlaybackProviderGrpcService {
     state: Arc<PlaybackProviderGrpcState>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl LiveProxyPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
-        Self { state, config }
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
     }
 }
 
@@ -37,7 +43,7 @@ impl LiveProxyPlaybackProviderService for LiveProxyPlaybackProviderGrpcService {
         &self,
         request: Request<GetLiveProxyFlvStreamRequest>,
     ) -> Result<Response<Self::GetFlvStreamStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -59,7 +65,7 @@ impl LiveProxyPlaybackProviderService for LiveProxyPlaybackProviderGrpcService {
         &self,
         request: Request<GetLiveProxyHlsPlaylistRequest>,
     ) -> Result<Response<Self::GetHlsPlaylistStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -81,7 +87,7 @@ impl LiveProxyPlaybackProviderService for LiveProxyPlaybackProviderGrpcService {
         &self,
         request: Request<GetLiveProxyHlsSegmentRequest>,
     ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 

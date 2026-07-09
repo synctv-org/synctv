@@ -2,17 +2,35 @@ use super::{parse_shutdown_mode, stop_server_event_stream};
 use crate::lifecycle::{LifecycleStage, ManagementLifecycleController, ShutdownMode};
 use crate::proto::ShutdownMode as ProtoShutdownMode;
 use futures::TryStreamExt;
+use std::borrow::Cow;
+use synctv_adapter::error::{ClassifiedError, ErrorKind};
 use synctv_core::service::{
     evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
     SliceCacheEvictExpiredNodeResult, SliceCacheNodeFailure, SliceCachePurgeNodeResult,
 };
 use tonic::Code;
 
+struct TestRuntimeError {
+    kind: ErrorKind,
+    message: &'static str,
+}
+
+impl ClassifiedError for TestRuntimeError {
+    fn classify(&self) -> ErrorKind {
+        self.kind
+    }
+
+    fn message(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.message)
+    }
+}
+
 #[test]
 fn map_api_error_preserves_service_unavailable() {
-    let status = super::map_api_error(synctv_api::ApiError::ServiceUnavailable(
-        "live streaming backend unavailable".to_string(),
-    ));
+    let status = super::map_api_error(&TestRuntimeError {
+        kind: ErrorKind::ServiceUnavailable,
+        message: "live streaming backend unavailable",
+    });
 
     assert_eq!(status.code(), tonic::Code::Unavailable);
     assert_eq!(status.message(), "live streaming backend unavailable");
@@ -20,9 +38,10 @@ fn map_api_error_preserves_service_unavailable() {
 
 #[test]
 fn map_api_error_hides_internal_details() {
-    let status = super::map_api_error(synctv_api::ApiError::Internal(
-        "redis://user:secret@localhost:6379 failure".to_string(),
-    ));
+    let status = super::map_api_error(&TestRuntimeError {
+        kind: ErrorKind::Internal,
+        message: "redis://user:secret@localhost:6379 failure",
+    });
 
     assert_eq!(status.code(), tonic::Code::Internal);
     assert_eq!(status.message(), "Internal error");

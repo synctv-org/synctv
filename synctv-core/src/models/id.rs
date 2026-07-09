@@ -168,6 +168,7 @@ macro_rules! numeric_id_type {
 }
 
 numeric_id_type!(UserId, "UserId", USER_ID_COUNTER);
+pub const LOCAL_MANAGEMENT_ACTOR_USER_ID: UserId = UserId::MAX;
 numeric_id_type!(RoomId, "RoomId", ROOM_ID_COUNTER);
 numeric_id_type!(RoomCategoryId, "RoomCategoryId", ROOM_CATEGORY_ID_COUNTER);
 numeric_id_type!(RoomLabelId, "RoomLabelId", ROOM_LABEL_ID_COUNTER);

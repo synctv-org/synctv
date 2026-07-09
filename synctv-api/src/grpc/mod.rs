@@ -31,7 +31,7 @@ pub(crate) mod playback_provider;
 pub(crate) mod providers;
 
 pub use admin_service::AdminServiceImpl;
-pub use client_service::{ClientServiceConfig, ClientServiceImpl};
+pub use client_service::{ClientServiceImpl, ClientServiceOptions};
 pub(crate) use notification_service::NotificationServiceImpl;
 pub use synctv_cluster::grpc::ClusterAuthInterceptor;
 
@@ -132,31 +132,39 @@ impl_grpc_service_ext!(<T> synctv_realtime::grpc::RealtimePresenceServiceServer<
 impl_grpc_service_ext!(<T> synctv_proxy::grpc::ProxySliceCacheServiceServer<T>);
 
 const fn should_register_cluster_grpc_service(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     node_registry_available: bool,
 ) -> bool {
-    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty() && node_registry_available
+    runtime_settings.cluster_runtime_enabled()
+        && !runtime_settings.cluster.secret.is_empty()
+        && node_registry_available
 }
 
 const fn should_register_livestream_relay_service(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     live_streaming_infrastructure_available: bool,
 ) -> bool {
-    config.cluster_runtime_enabled()
-        && !config.cluster.secret.is_empty()
+    runtime_settings.cluster_runtime_enabled()
+        && !runtime_settings.cluster.secret.is_empty()
         && live_streaming_infrastructure_available
 }
 
-const fn should_register_proxy_slice_cache_service(config: &synctv_core::Config) -> bool {
-    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
+const fn should_register_proxy_slice_cache_service(
+    runtime_settings: &crate::ApiRuntimeSettings,
+) -> bool {
+    runtime_settings.cluster_runtime_enabled() && !runtime_settings.cluster.secret.is_empty()
 }
 
-const fn should_register_server_state_service(config: &synctv_core::Config) -> bool {
-    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
+const fn should_register_server_state_service(
+    runtime_settings: &crate::ApiRuntimeSettings,
+) -> bool {
+    runtime_settings.cluster_runtime_enabled() && !runtime_settings.cluster.secret.is_empty()
 }
 
-const fn should_register_realtime_presence_service(config: &synctv_core::Config) -> bool {
-    config.cluster_runtime_enabled() && !config.cluster.secret.is_empty()
+const fn should_register_realtime_presence_service(
+    runtime_settings: &crate::ApiRuntimeSettings,
+) -> bool {
+    runtime_settings.cluster_runtime_enabled() && !runtime_settings.cluster.secret.is_empty()
 }
 
 const fn should_register_email_service(email_available: bool, email_token_available: bool) -> bool {
@@ -201,11 +209,11 @@ struct GrpcOptionalRegistrations {
 }
 
 const fn grpc_service_registration_plan(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     optional: GrpcOptionalRegistrations,
 ) -> GrpcServiceRegistrationPlan {
     GrpcServiceRegistrationPlan {
-        reflection_enabled: config.server.enable_reflection,
+        reflection_enabled: runtime_settings.server.enable_reflection,
         health_state: GrpcHealthRegistrationState {
             auth_registered: true,
             user_registered: true,
@@ -448,16 +456,16 @@ struct BuiltGrpcRouter {
 }
 
 fn validate_cluster_grpc_runtime_requirements(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     node_registry_available: bool,
 ) -> anyhow::Result<()> {
-    if config.cluster_runtime_enabled() && config.cluster.secret.is_empty() {
+    if runtime_settings.cluster_runtime_enabled() && runtime_settings.cluster.secret.is_empty() {
         return Err(anyhow::anyhow!(
             "cluster.enabled=true requires cluster.secret before starting the gRPC server; refusing to start with unauthenticated cluster endpoints"
         ));
     }
 
-    if config.cluster_runtime_enabled() && !node_registry_available {
+    if runtime_settings.cluster_runtime_enabled() && !node_registry_available {
         return Err(anyhow::anyhow!(
             "cluster.enabled=true requires NodeRegistry before starting the gRPC server; refusing to start with cluster gRPC disabled"
         ));
@@ -467,16 +475,13 @@ fn validate_cluster_grpc_runtime_requirements(
 }
 
 // Use synctv_proto for all server traits and message types (single source of truth)
-use crate::realtime_fanout::RealtimeFanoutService;
-use crate::runtime::{RealtimeDeliveryRequirement, RealtimeEventService};
 use std::sync::Arc;
 use synctv_core::service::JwtService;
 use synctv_core::service::{
     ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig,
-    RemoteProviderManager, RequestRateLimiterService, RoomService as CoreRoomService,
-    RuntimeSettingsStore, SettingsService, UserService as CoreUserService,
+    RequestRateLimiterService, RoomService as CoreRoomService, RuntimeSettingsStore,
+    SettingsService, UserService as CoreUserService,
 };
-use synctv_core::Config;
 use synctv_proto::admin::admin_service_server::AdminServiceServer;
 use synctv_proto::client::{
     auth_service_server::AuthServiceServer, email_service_server::EmailServiceServer,
@@ -484,11 +489,14 @@ use synctv_proto::client::{
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
 };
+use synctv_realtime::fanout::{
+    RealtimeDeliveryRequirement, RealtimeEventService, RealtimeFanoutService,
+};
 use synctv_realtime::sync::ConnectionRuntime;
 
-/// Configuration for the gRPC server
-pub struct GrpcServerConfig<'a> {
-    pub config: &'a Config,
+/// Options for gRPC server construction
+pub struct GrpcServerOptions<'a> {
+    pub runtime_settings: &'a crate::ApiRuntimeSettings,
     pub jwt_service: JwtService,
     pub user_service: Arc<CoreUserService>,
     pub read_pool: Option<sqlx::PgPool>,
@@ -503,7 +511,7 @@ pub struct GrpcServerConfig<'a> {
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub request_executor: Arc<crate::impls::RequestExecutor>,
     pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
@@ -512,11 +520,7 @@ pub struct GrpcServerConfig<'a> {
     pub notification_api: Option<Arc<crate::impls::NotificationApiImpl>>,
     pub oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     pub providers_manager: Option<Arc<ProvidersManager>>,
-    pub provider_instance_manager: Arc<RemoteProviderManager>,
-    pub user_provider_credential_repository:
-        Arc<synctv_core::repository::UserProviderCredentialRepository>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    pub providers: synctv_core::provider::ProviderSet,
     pub settings_service: Arc<SettingsService>,
     pub runtime_settings_store: Option<Arc<RuntimeSettingsStore>>,
     pub email_service: Option<Arc<EmailService>>,
@@ -580,13 +584,13 @@ struct FallbackHttpAppStateDeps {
     event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn ConnectionRuntime>,
     presence_service: Arc<synctv_core::service::OnlinePresenceService>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     content_filter: ContentFilter,
     publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     jwt_service: JwtService,
     jwt_validator: Arc<synctv_core::service::JwtValidator>,
     security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     request_executor: Arc<crate::impls::RequestExecutor>,
     metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
     client_api: Arc<crate::impls::ClientApiImpl>,
@@ -596,8 +600,6 @@ struct FallbackHttpAppStateDeps {
     oauth2_api: Option<Arc<crate::impls::OAuth2ApiImpl>>,
     live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     providers_manager: Arc<ProvidersManager>,
-    provider_instance_manager: Arc<RemoteProviderManager>,
-    providers: synctv_core::provider::ProviderSet,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     chat_service: Option<Arc<synctv_core::service::ChatService>>,
     oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
@@ -612,7 +614,6 @@ struct FallbackHttpAppStateDeps {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     messaging_rate_limit_config: RateLimitConfig,
     credential_encryption: Option<synctv_core::credential_encryption::CredentialEncryption>,
-    credential_repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
     provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     proxy_signing_key: Arc<crate::proxy_signature::ProxySigningKey>,
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
@@ -644,18 +645,15 @@ fn cluster_node_id(event_service: &Arc<dyn RealtimeEventService>) -> String {
 fn build_fallback_http_app_state(
     deps: FallbackHttpAppStateDeps,
 ) -> anyhow::Result<Arc<crate::http::AppState>> {
-    Ok(Arc::new(crate::http::create_app_state_from_config(
-        crate::http::RouterConfig {
-            config: deps.config,
+    Ok(Arc::new(crate::http::create_app_state_from_options(
+        crate::http::RouterOptions {
+            runtime_settings: deps.runtime_settings,
             user_service: deps.user_service,
             read_pool: deps.read_pool,
             user_cache: deps.user_cache,
             room_service: deps.room_service,
             content_filter: deps.content_filter,
-            provider_instance_manager: deps.provider_instance_manager,
-            user_provider_credential_repository: deps.credential_repo,
             provider_access_service: deps.provider_access_service,
-            providers: deps.providers,
             event_service: deps.event_service,
             connection_manager: deps.connection_service,
             presence_service: deps.presence_service,
@@ -714,10 +712,10 @@ fn build_fallback_http_app_state(
 }
 
 async fn build_axum_router_with_health(
-    grpc_config: GrpcServerConfig<'_>,
+    grpc_options: GrpcServerOptions<'_>,
 ) -> anyhow::Result<BuiltGrpcRouter> {
-    let GrpcServerConfig {
-        config,
+    let GrpcServerOptions {
+        runtime_settings,
         jwt_service,
         user_service,
         read_pool,
@@ -741,10 +739,7 @@ async fn build_axum_router_with_health(
         notification_api,
         oauth2_api,
         providers_manager,
-        provider_instance_manager,
-        user_provider_credential_repository,
         provider_access_service,
-        providers,
         settings_service,
         runtime_settings_store,
         email_service,
@@ -781,8 +776,8 @@ async fn build_axum_router_with_health(
         webrtc_status,
         credential_encryption,
         grpc_listener: _,
-    } = grpc_config;
-    validate_cluster_grpc_runtime_requirements(config, node_registry.is_some())?;
+    } = grpc_options;
+    validate_cluster_grpc_runtime_requirements(runtime_settings, node_registry.is_some())?;
 
     let shared_http_app_state = if let Some(state) = shared_http_app_state {
         state
@@ -798,7 +793,7 @@ async fn build_axum_router_with_health(
             event_service: event_service.clone(),
             connection_service: connection_service.clone(),
             presence_service: presence_service.clone(),
-            config: Arc::new(config.clone()),
+            runtime_settings: Arc::new(runtime_settings.clone()),
             content_filter: content_filter.clone(),
             publish_key_service: publish_key_service.clone(),
             jwt_service: jwt_service.clone(),
@@ -814,8 +809,6 @@ async fn build_axum_router_with_health(
             oauth2_api: oauth2_api.clone(),
             live_streaming_infrastructure: live_streaming_infrastructure.clone(),
             providers_manager: fallback_providers_manager,
-            provider_instance_manager: provider_instance_manager.clone(),
-            providers: providers.clone(),
             notification_service: notification_service.clone(),
             chat_service: chat_service.clone(),
             oauth2_service: oauth2_service.clone(),
@@ -830,7 +823,6 @@ async fn build_axum_router_with_health(
             rate_limiter: rate_limiter.clone(),
             messaging_rate_limit_config: rate_limit_config.clone(),
             credential_encryption: credential_encryption.clone(),
-            credential_repo: user_provider_credential_repository.clone(),
             provider_access_service: provider_access_service.clone(),
             proxy_signing_key: proxy_signing_key.clone(),
             provider_stores: provider_stores.clone(),
@@ -854,7 +846,10 @@ async fn build_axum_router_with_health(
         })?
     };
 
-    tracing::info!("Building gRPC router for {}", config.api_address());
+    tracing::info!(
+        "Building gRPC router for {}",
+        runtime_settings.api_address()
+    );
 
     let user_service_clone = user_service.as_ref().clone();
     let room_service_clone = room_service.as_ref().clone();
@@ -867,7 +862,7 @@ async fn build_axum_router_with_health(
     let shared_api_runtime = shared_http_app_state.shared_api_runtime.clone();
     let playback_provider_state = Arc::new(playback_provider::PlaybackProviderGrpcState {
         shared_api_runtime: shared_api_runtime.clone(),
-        config: shared_http_app_state.config.clone(),
+        runtime_settings: shared_http_app_state.runtime_settings.clone(),
         connection_manager: shared_http_app_state.connection_manager.clone(),
         runtime_settings_store: shared_http_app_state.runtime_settings_store.clone(),
         live_streaming_infrastructure: shared_http_app_state.live_streaming_infrastructure.clone(),
@@ -884,7 +879,7 @@ async fn build_axum_router_with_health(
              Ensure chat_service is initialized before starting the gRPC server."
         )
     })?;
-    let client_service = ClientServiceImpl::new(ClientServiceConfig {
+    let client_service = ClientServiceImpl::new(ClientServiceOptions {
         user_service: user_service_clone,
         room_service: room_service_clone,
         chat_service,
@@ -895,7 +890,7 @@ async fn build_axum_router_with_health(
         connection_service: connection_service.clone(),
         presence_service: presence_service.clone(),
         email_api,
-        config: Arc::new(config.clone()),
+        runtime_settings: Arc::new(runtime_settings.clone()),
         client_api: client_api.clone(),
         notification_service: notification_service.clone(),
         heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
@@ -908,7 +903,7 @@ async fn build_axum_router_with_health(
 
     let admin_service = AdminServiceImpl::new(
         admin_api.clone(),
-        Arc::new(config.clone()),
+        Arc::new(runtime_settings.clone()),
         shared_api_runtime.slice_cache_management_runtime.clone(),
     );
 
@@ -919,7 +914,7 @@ async fn build_axum_router_with_health(
     );
 
     // Get the configured max message size (prevents OOM from oversized messages)
-    let max_message_size = config.server.grpc_max_message_size_bytes;
+    let max_message_size = runtime_settings.server.grpc_max_message_size_bytes;
     tracing::info!(
         max_message_size_bytes = max_message_size,
         max_message_size_mb = max_message_size / (1024 * 1024),
@@ -936,20 +931,24 @@ async fn build_axum_router_with_health(
     let oauth2_service_registered = oauth2_service.is_some();
     let provider_services_registered = providers_manager.is_some();
     let cluster_service_registered =
-        should_register_cluster_grpc_service(config, node_registry.is_some());
+        should_register_cluster_grpc_service(runtime_settings, node_registry.is_some());
     let grpc_registration_plan = grpc_service_registration_plan(
-        config,
+        runtime_settings,
         GrpcOptionalRegistrations {
             email_registered: email_service_registered,
             notification_registered: notification_service_registered,
             oauth2_registered: oauth2_service_registered,
             provider_services_registered,
             cluster_service_registered,
-            server_state_registered: should_register_server_state_service(config),
-            realtime_presence_registered: should_register_realtime_presence_service(config),
-            proxy_slice_cache_registered: should_register_proxy_slice_cache_service(config),
+            server_state_registered: should_register_server_state_service(runtime_settings),
+            realtime_presence_registered: should_register_realtime_presence_service(
+                runtime_settings,
+            ),
+            proxy_slice_cache_registered: should_register_proxy_slice_cache_service(
+                runtime_settings,
+            ),
             livestream_relay_registered: should_register_livestream_relay_service(
-                config,
+                runtime_settings,
                 live_streaming_infrastructure.is_some(),
             ),
         },
@@ -958,43 +957,55 @@ async fn build_axum_router_with_health(
     let mut routes = tonic::service::Routes::builder();
     if grpc_registration_plan.health_state.auth_registered {
         routes.add_service(
-            AuthServiceServer::new(client_service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            AuthServiceServer::new(client_service).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
     if grpc_registration_plan.health_state.user_registered {
         routes.add_service(
-            UserServiceServer::new(client_service_clone1)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            UserServiceServer::new(client_service_clone1).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
     if grpc_registration_plan.health_state.room_registered {
         routes.add_service(
-            RoomServiceServer::new(client_service_clone2)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            RoomServiceServer::new(client_service_clone2).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
     if grpc_registration_plan.health_state.public_registered {
         routes.add_service(
-            PublicServiceServer::new(client_service_clone3)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            PublicServiceServer::new(client_service_clone3).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
     if grpc_registration_plan.health_state.admin_registered {
         routes.add_service(
-            AdminServiceServer::new(admin_service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            AdminServiceServer::new(admin_service).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
     if grpc_registration_plan.health_state.email_registered {
         routes.add_service(
-            EmailServiceServer::new(client_service_clone4)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            EmailServiceServer::new(client_service_clone4).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
@@ -1011,11 +1022,13 @@ async fn build_axum_router_with_health(
         let notif_impl = NotificationServiceImpl::new(
             notification_api,
             shared_api_runtime.request_executor.clone(),
-            Arc::new(config.clone()),
+            Arc::new(runtime_settings.clone()),
         );
         routes.add_service(
-            NotificationServiceServer::new(notif_impl)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            NotificationServiceServer::new(notif_impl).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         tracing::info!("NotificationService gRPC registered");
 
@@ -1115,14 +1128,16 @@ async fn build_axum_router_with_health(
         })?;
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(
             oauth2_api,
-            Arc::new(config.clone()),
+            Arc::new(runtime_settings.clone()),
             shared_api_runtime.request_executor.clone(),
         );
         // Public endpoints are unauthenticated; private endpoints invoke the
         // shared impl-level auth pipeline inline.
         routes.add_service(
-            OAuth2ServiceServer::new(oauth2_impl)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            OAuth2ServiceServer::new(oauth2_impl).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
     }
@@ -1146,97 +1161,130 @@ async fn build_axum_router_with_health(
         routes.add_service(
             ProviderCommonServiceServer::new(providers::common::ProviderCommonGrpcService::new(
                 &shared_api_runtime,
-                Arc::new(config.clone()),
+                Arc::new(runtime_settings.clone()),
             ))
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
                 &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
-                Arc::new(config.clone()),
+                Arc::new(runtime_settings.clone()),
             ))
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             BilibiliProviderServiceServer::new(
                 providers::bilibili::BilibiliProviderGrpcService::new(
                     &shared_api_runtime,
                     shared_api_runtime.request_executor.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
                 &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
-                Arc::new(config.clone()),
+                Arc::new(runtime_settings.clone()),
             ))
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             RtmpProviderServiceServer::new(providers::rtmp::RtmpProviderGrpcService::new(
                 &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
-                Arc::new(config.clone()),
+                Arc::new(runtime_settings.clone()),
             ))
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             DirectUrlPlaybackProviderServiceServer::new(
                 playback_provider::direct_url::DirectUrlPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             AlistPlaybackProviderServiceServer::new(
                 playback_provider::alist::AlistPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             EmbyPlaybackProviderServiceServer::new(
                 playback_provider::emby::EmbyPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             BilibiliPlaybackProviderServiceServer::new(
                 playback_provider::bilibili::BilibiliPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             RtmpPlaybackProviderServiceServer::new(
                 playback_provider::rtmp::RtmpPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         routes.add_service(
             LiveProxyPlaybackProviderServiceServer::new(
                 playback_provider::live_proxy::LiveProxyPlaybackProviderGrpcService::new(
                     playback_provider_state.clone(),
-                    Arc::new(config.clone()),
+                    Arc::new(runtime_settings.clone()),
                 ),
             )
-            .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
     }
 
@@ -1245,27 +1293,30 @@ async fn build_axum_router_with_health(
         .health_state
         .cluster_service_registered
     {
-        if config.cluster_runtime_enabled() {
+        if runtime_settings.cluster_runtime_enabled() {
             tracing::info!("Cluster gRPC service hidden by gRPC exposure profile");
         } else {
             tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
         }
-    } else if !config.cluster_runtime_enabled() {
+    } else if !runtime_settings.cluster_runtime_enabled() {
         tracing::info!("Cluster mode disabled — cluster gRPC service will not be registered");
-    } else if config.cluster.secret.is_empty() {
+    } else if runtime_settings.cluster.secret.is_empty() {
         tracing::error!(
             "cluster.secret is empty — cluster gRPC service will NOT be registered. \
              Cluster coordination will be disabled. Set cluster.secret or SYNCTV_CLUSTER_SECRET to enable."
         );
-    } else if should_register_cluster_grpc_service(config, node_registry.is_some()) {
+    } else if should_register_cluster_grpc_service(runtime_settings, node_registry.is_some()) {
         let nr = node_registry
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("cluster gRPC registration requires node_registry"))?;
         let cluster_server = synctv_cluster::grpc::ClusterServer::from_runtime(nr.clone())
-            .with_cluster_secret(config.cluster.secret.clone());
+            .with_cluster_secret(runtime_settings.cluster.secret.clone());
         routes.add_service(
             synctv_cluster::grpc::ClusterServiceServer::new(cluster_server)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
         );
         tracing::info!("Cluster node-discovery gRPC service registered with shared-secret auth");
     } else {
@@ -1278,11 +1329,13 @@ async fn build_axum_router_with_health(
                 .shared_api_runtime
                 .server_state_runtime
                 .clone(),
-            config.cluster.secret.clone(),
+            runtime_settings.cluster.secret.clone(),
         );
         routes.add_service(
-            synctv_cluster::grpc::ServerStateServiceServer::new(service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            synctv_cluster::grpc::ServerStateServiceServer::new(service).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         tracing::info!("Server-state gRPC service registered with shared-secret auth");
     }
@@ -1295,10 +1348,12 @@ async fn build_axum_router_with_health(
             connection_service.clone(),
             cluster_node_id.clone(),
         )
-        .with_cluster_secret(config.cluster.secret.clone());
+        .with_cluster_secret(runtime_settings.cluster.secret.clone());
         routes.add_service(
-            RealtimePresenceServiceServer::new(service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            RealtimePresenceServiceServer::new(service).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         tracing::info!("Realtime presence gRPC service registered with shared-secret auth");
     }
@@ -1311,10 +1366,12 @@ async fn build_axum_router_with_health(
             shared_http_app_state.proxy_slice_cache.clone(),
             cluster_node_id.clone(),
         )
-        .with_cluster_secret(config.cluster.secret.clone());
+        .with_cluster_secret(runtime_settings.cluster.secret.clone());
         routes.add_service(
-            synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+            synctv_proxy::grpc::ProxySliceCacheServiceServer::new(service).with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
         );
         tracing::info!("Proxy slice-cache gRPC service registered with shared-secret auth");
     }
@@ -1330,18 +1387,22 @@ async fn build_axum_router_with_health(
         })?;
         let relay_service = live_infra.relay_service(
             cluster_node_id.clone(),
-            config.cluster.secret.clone(),
+            runtime_settings.cluster.secret.clone(),
             tokio_util::sync::CancellationToken::new(),
         );
 
-        let relay_interceptor = ClusterAuthInterceptor::new(config.cluster.secret.clone());
+        let relay_interceptor =
+            ClusterAuthInterceptor::new(runtime_settings.cluster.secret.clone());
         routes.add_service(tonic::codegen::InterceptedService::new(
             synctv_livestream::StreamRelayServiceServer::new(relay_service)
-                .with_transport_settings(max_message_size, config.server.grpc_compression_enabled),
+                .with_transport_settings(
+                    max_message_size,
+                    runtime_settings.server.grpc_compression_enabled,
+                ),
             move |req| relay_interceptor.validate(req),
         ));
         tracing::info!("Livestream relay gRPC service registered with shared-secret auth");
-    } else if config.cluster_runtime_enabled() {
+    } else if runtime_settings.cluster_runtime_enabled() {
         tracing::warn!(
             "Cluster mode enabled but livestream relay gRPC service not registered because livestream infrastructure is unavailable"
         );
@@ -1382,8 +1443,10 @@ async fn build_axum_router_with_health(
     })
 }
 
-pub async fn build_axum_router(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<axum::Router> {
-    Ok(build_axum_router_with_health(grpc_config).await?.router)
+pub async fn build_axum_router(
+    grpc_options: GrpcServerOptions<'_>,
+) -> anyhow::Result<axum::Router> {
+    Ok(build_axum_router_with_health(grpc_options).await?.router)
 }
 
 async fn wait_for_grpc_shutdown(
@@ -1405,11 +1468,20 @@ async fn wait_for_grpc_shutdown(
 }
 
 /// Build and start the gRPC server
-pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
-    let shutdown_rx = grpc_config.shutdown_rx.clone();
-    let grpc_listener = grpc_config.grpc_listener.take();
-    let addr: std::net::SocketAddr = grpc_config.config.api_address().parse()?;
-    let built = build_axum_router_with_health(grpc_config).await?;
+pub async fn serve(mut grpc_options: GrpcServerOptions<'_>) -> anyhow::Result<()> {
+    let shutdown_rx = grpc_options.shutdown_rx.clone();
+    let grpc_listener = grpc_options.grpc_listener.take();
+    let addr = if grpc_listener.is_some() {
+        None
+    } else {
+        Some(
+            grpc_options
+                .runtime_settings
+                .api_address()
+                .parse::<std::net::SocketAddr>()?,
+        )
+    };
+    let built = build_axum_router_with_health(grpc_options).await?;
 
     if let Some(listener) = grpc_listener {
         let shutdown = wait_for_grpc_shutdown(
@@ -1427,6 +1499,7 @@ pub async fn serve(mut grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> 
         .await
         .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
     } else {
+        let addr = addr.expect("gRPC bind address is parsed when no listener is supplied");
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind API address {addr}: {e}"))?;
@@ -1459,15 +1532,12 @@ mod tests {
         should_register_livestream_relay_service, validate_cluster_grpc_runtime_requirements,
         wait_for_grpc_shutdown, FallbackHttpAppStateDeps, GrpcHealthRegistrationState,
     };
-    use crate::grpc::{ClientServiceConfig, ClientServiceImpl};
+    use crate::grpc::{ClientServiceImpl, ClientServiceOptions};
     use crate::impls::{
-        client::RoomActor, AdminApiConfig, AdminApiImpl, AdminApiRuntime, AlistApiImpl,
-        BilibiliApiImpl, ClientApiConfig, ClientApiImpl, ClientApiRuntime,
+        client::RoomActor, AdminApiImpl, AdminApiOptions, AdminApiRuntime, AlistApiImpl,
+        BilibiliApiImpl, ClientApiImpl, ClientApiOptions, ClientApiRuntime,
         ClientApiRuntimeServices, EmbyApiImpl, ProviderApiRuntime, ProviderCommonApiImpl,
         ProviderCommonApiRuntime, RequestExecutor,
-    };
-    use crate::runtime::{
-        RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics,
     };
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -1489,6 +1559,9 @@ mod tests {
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
     };
     use synctv_proto::client::room_service_server::RoomService as GrpcRoomService;
+    use synctv_realtime::fanout::{
+        RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics,
+    };
     use synctv_realtime::sync::ConnectionRuntime;
     use synctv_realtime::sync::{ConnectionLimits, ConnectionManager, RealtimeManager};
     use tokio_stream::StreamExt;
@@ -1597,7 +1670,7 @@ mod tests {
             },
         );
         let request_executor = Arc::new(RequestExecutor::new(
-            Arc::new(synctv_core::Config::default()),
+            Arc::new(crate::ApiRuntimeSettings::default()),
             Arc::new(JwtValidator::new(Arc::new(JwtService::new(
                 "test-secret-key-for-grpc-chat-watch-minimum-32-chars",
             )?))),
@@ -1605,19 +1678,19 @@ mod tests {
             Arc::new(RateLimiter::local_only("test:grpc-chat:".to_string())),
         ));
         Ok(ClientApiImpl::new_with_runtime(
-            crate::impls::ClientApiConfig {
+            crate::impls::ClientApiOptions {
                 read_pool: None,
                 user_service,
                 room_service,
                 connection_service: connection_manager,
-                config: Arc::new(synctv_core::Config::default()),
+                runtime_settings: Arc::new(crate::ApiRuntimeSettings::default()),
                 publish_key_service: None,
                 jwt_service: JwtService::new(
                     "test-secret-key-for-grpc-chat-watch-minimum-32-chars",
                 )?,
                 live_streaming_infrastructure: None,
                 runtime_settings_store: None,
-                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
                 chat_service: Some(chat_service),
                 provider_stores: Arc::new(
                     synctv_core::provider::ProviderStoreRegistry::local_only("test:provider:"),
@@ -1654,7 +1727,7 @@ mod tests {
 
     struct FallbackGrpcTestContext {
         _postgres: synctv_core_testing::TestContainer,
-        config: Arc<synctv_core::Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
         jwt_service: JwtService,
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
@@ -1668,7 +1741,7 @@ mod tests {
 
     async fn fallback_grpc_test_context() -> TestResult<FallbackGrpcTestContext> {
         let (postgres, pool) = synctv_core_testing::create_test_pool().await;
-        let config = Arc::new(synctv_core::Config::default());
+        let config = Arc::new(crate::ApiRuntimeSettings::default());
         let jwt_service =
             JwtService::new("test-secret-key-for-grpc-router-tests-minimum-32-chars")?;
         let username_cache = UsernameCache::local_only("test:username:".to_string(), 128, 60);
@@ -1680,7 +1753,7 @@ mod tests {
                 token_blacklist: create_test_token_blacklist_store_service(),
                 key_builder: synctv_core::cache::KeyBuilder::new("test"),
                 brute_force: create_test_brute_force_protection_service(),
-                password_complexity: synctv_core::config::PasswordComplexityConfig::default(),
+                password_complexity: synctv_core::validation::PasswordComplexityOptions::default(),
             },
             UserServiceRuntimeOptions::test_defaults(),
         ));
@@ -1706,7 +1779,7 @@ mod tests {
 
         Ok(FallbackGrpcTestContext {
             _postgres: postgres,
-            config,
+            runtime_settings: config,
             jwt_service,
             user_service,
             room_service,
@@ -1878,11 +1951,11 @@ mod tests {
         );
         let provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver> =
             Arc::new(synctv_core::provider::ProviderStoreRegistry::local_only(
-                context.config.redis.key_prefix.clone(),
+                context.runtime_settings.redis.key_prefix.clone(),
             ));
         let providers_for_access = synctv_core::provider::ProviderSet::new_with_ssrf_guard(
             context.provider_instance_manager.clone(),
-            context.config.security.ssrf_guard(),
+            synctv_common::ssrf::SsrfGuard::strict_policy(),
         )?;
         let provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService> =
             Arc::new(
@@ -1948,7 +2021,7 @@ mod tests {
         ));
         let rate_limiter: Arc<dyn RequestRateLimiterService> =
             Arc::new(RateLimiter::local_only("test:".to_string()));
-        let mut fallback_config = context.config.as_ref().clone();
+        let mut fallback_config = context.runtime_settings.as_ref().clone();
         fallback_config.proxy_slice_cache.enabled = false;
         fallback_config.proxy_slice_cache.slice_size_bytes = 4 * 1024 * 1024;
         fallback_config.proxy_slice_cache.max_cache_size_bytes = 1024 * 1024 * 1024;
@@ -1958,11 +2031,11 @@ mod tests {
         fallback_config.proxy_slice_cache.eviction_interval_seconds = 30;
         fallback_config.proxy_slice_cache.watermark_ratio = 0.75;
         let fallback_config = Arc::new(fallback_config);
-        let ssrf_guard = fallback_config.security.ssrf_guard();
+        let ssrf_guard = synctv_common::ssrf::SsrfGuard::strict_policy();
         let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())
             .map_err(|error| test_error(error.to_string()))?;
         let proxy_slice_cache_config =
-            crate::config_adapters::proxy_slice_cache_config_from_app_config(
+            crate::runtime_adapters::proxy_slice_cache_options_from_runtime_settings(
                 fallback_config.as_ref(),
             );
         let proxy_slice_cache = Arc::new(
@@ -1984,9 +2057,10 @@ mod tests {
         ));
         let jwt_validator = Arc::new(JwtValidator::new(Arc::new(context.jwt_service.clone())));
         let public_id_codec = Arc::new(
-            crate::public_id::PublicIdCodec::from_config(&fallback_config.external_ids).map_err(
-                |error| test_error(format!("invalid fallback public id config: {error}")),
-            )?,
+            synctv_adapter::PublicIdCodec::from_config(&synctv_adapter::PublicIdConfig::default())
+                .map_err(|error| {
+                    test_error(format!("invalid fallback public id config: {error}"))
+                })?,
         );
         let request_executor = Arc::new(RequestExecutor::new(
             fallback_config.clone(),
@@ -2010,34 +2084,33 @@ mod tests {
             access_service: provider_access_service.clone(),
             event_service: event_service.clone(),
         };
+        let credential_backed_providers =
+            providers_for_access.with_credential_repo(context.credential_repo.clone());
         let bilibili_api = Arc::new(
             BilibiliApiImpl::new_with_runtime(
-                &providers_for_access.bilibili,
-                context.credential_repo.clone(),
+                credential_backed_providers.bilibili.clone(),
                 b"test-secret-key-for-grpc-router-tests-minimum-32-chars",
                 provider_api_runtime.clone(),
             )
             .map_err(|error| test_error(error.to_string()))?,
         );
         let alist_api = Arc::new(AlistApiImpl::new_with_runtime(
-            &providers_for_access.alist,
-            context.credential_repo.clone(),
+            credential_backed_providers.alist.clone(),
             provider_api_runtime.clone(),
         ));
         let emby_api = Arc::new(EmbyApiImpl::new_with_runtime(
-            &providers_for_access.emby,
-            context.credential_repo.clone(),
+            credential_backed_providers.emby.clone(),
             provider_api_runtime,
         ));
         let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
         let client_api = Arc::new(ClientApiImpl::new_with_runtime(
-            ClientApiConfig {
+            ClientApiOptions {
                 user_service: context.user_service.clone(),
                 read_pool: None,
                 room_service: context.room_service.clone(),
                 chat_service: None,
                 connection_service: connection_service.clone(),
-                config: fallback_config.clone(),
+                runtime_settings: fallback_config.clone(),
                 publish_key_service: None,
                 jwt_service: context.jwt_service.clone(),
                 live_streaming_infrastructure: None,
@@ -2065,7 +2138,7 @@ mod tests {
             }),
         ));
         let admin_api = Arc::new(AdminApiImpl::new_with_runtime(
-            AdminApiConfig {
+            AdminApiOptions {
                 room_service: context.room_service.clone(),
                 user_service: context.user_service.clone(),
                 read_services: crate::test_support::admin_read_services(
@@ -2078,7 +2151,7 @@ mod tests {
                 provider_instance_manager: context.provider_instance_manager.clone(),
                 live_streaming_infrastructure: None,
                 publish_key_service: None,
-                config: fallback_config.clone(),
+                runtime_settings: fallback_config.clone(),
                 audit_service: context.audit_service.clone(),
                 public_id_codec: public_id_codec.clone(),
             },
@@ -2103,7 +2176,7 @@ mod tests {
                 event_service: event_service.clone(),
                 connection_service: connection_service.clone(),
                 presence_service,
-                config: fallback_config.clone(),
+                runtime_settings: fallback_config.clone(),
                 content_filter: content_filter.clone(),
                 publish_key_service: None,
                 jwt_service: context.jwt_service,
@@ -2120,8 +2193,6 @@ mod tests {
                 notification_api: None,
                 oauth2_api: None,
                 live_streaming_infrastructure: None,
-                provider_instance_manager: context.provider_instance_manager,
-                providers: providers_for_access.clone(),
                 notification_service: None,
                 chat_service: None,
                 oauth2_service: None,
@@ -2136,7 +2207,6 @@ mod tests {
                 rate_limiter,
                 messaging_rate_limit_config: messaging_rate_limit_config.clone(),
                 credential_encryption: None,
-                credential_repo: context.credential_repo,
                 provider_access_service: provider_access_service.clone(),
                 proxy_signing_key: proxy_signing_key.clone(),
                 provider_stores: provider_stores.clone(),
@@ -2371,7 +2441,7 @@ mod tests {
             chat_service.clone(),
             event_service.clone(),
         )?);
-        let client_service = ClientServiceImpl::new(ClientServiceConfig {
+        let client_service = ClientServiceImpl::new(ClientServiceOptions {
             user_service: (*user_service).clone(),
             room_service: (*room_service).clone(),
             chat_service: chat_service.clone(),
@@ -2382,7 +2452,7 @@ mod tests {
             connection_service: Arc::new(ConnectionManager::new(ConnectionLimits::default())),
             presence_service: Arc::new(synctv_core::service::OnlinePresenceService::local()),
             email_api: None,
-            config: Arc::new(synctv_core::Config::default()),
+            runtime_settings: Arc::new(crate::ApiRuntimeSettings::default()),
             client_api: client_api.clone(),
             notification_service: None,
             heartbeat_schedule: crate::impls::HeartbeatSchedule::production(),
@@ -2505,40 +2575,40 @@ mod tests {
 
     #[test]
     fn test_cluster_grpc_service_requires_cluster_mode() {
-        let mut config = synctv_core::Config::default();
-        config.cluster.secret = "shared-secret".to_string();
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
+        runtime_settings.cluster.secret = "shared-secret".to_string();
 
         assert!(
-            !should_register_cluster_grpc_service(&config, true),
+            !should_register_cluster_grpc_service(&runtime_settings, true),
             "cluster.secret alone must not enable cluster gRPC"
         );
 
-        config.cluster.enabled = true;
+        runtime_settings.cluster_enabled = true;
         assert!(
-            should_register_cluster_grpc_service(&config, true),
+            should_register_cluster_grpc_service(&runtime_settings, true),
             "cluster-enabled deployments with a secret and registry should expose cluster gRPC"
         );
     }
 
     #[test]
     fn test_cluster_grpc_service_requires_node_registry() {
-        let mut config = synctv_core::Config::default();
-        config.cluster.enabled = true;
-        config.cluster.secret = "shared-secret".to_string();
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
+        runtime_settings.cluster_enabled = true;
+        runtime_settings.cluster.secret = "shared-secret".to_string();
 
         assert!(
-            !should_register_cluster_grpc_service(&config, false),
+            !should_register_cluster_grpc_service(&runtime_settings, false),
             "cluster gRPC must not be registered before NodeRegistry is ready"
         );
     }
 
     #[test]
     fn test_cluster_grpc_runtime_requires_node_registry() {
-        let mut config = synctv_core::Config::default();
-        config.cluster.enabled = true;
-        config.cluster.secret = "shared-secret".to_string();
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
+        runtime_settings.cluster_enabled = true;
+        runtime_settings.cluster.secret = "shared-secret".to_string();
 
-        let err = validate_cluster_grpc_runtime_requirements(&config, false)
+        let err = validate_cluster_grpc_runtime_requirements(&runtime_settings, false)
             .expect_err("realtime runtime must fail closed without NodeRegistry");
 
         assert!(
@@ -2549,8 +2619,8 @@ mod tests {
 
     #[test]
     fn test_cluster_grpc_runtime_requires_cluster_secret() {
-        let mut config = synctv_core::Config::default();
-        config.cluster.enabled = true;
+        let mut config = crate::ApiRuntimeSettings::default();
+        config.cluster_enabled = true;
 
         let err = validate_cluster_grpc_runtime_requirements(&config, true)
             .expect_err("realtime runtime must fail closed without cluster.secret");
@@ -2563,7 +2633,7 @@ mod tests {
 
     #[test]
     fn test_standalone_grpc_runtime_allows_missing_node_registry() -> TestResult {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
 
         validate_cluster_grpc_runtime_requirements(&config, false)?;
         Ok(())
@@ -2598,7 +2668,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_uses_x_forwarded_for_from_trusted_proxy() -> TestResult {
-        let mut config = synctv_core::Config::default();
+        let mut config = crate::ApiRuntimeSettings::default();
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let request = request_with_peer_and_headers(
@@ -2615,7 +2685,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_ignores_headers_from_untrusted_peer() -> TestResult {
-        let mut config = synctv_core::Config::default();
+        let mut config = crate::ApiRuntimeSettings::default();
         config.server.trusted_proxies = vec!["127.0.0.1".to_string()];
 
         let request = request_with_peer_and_headers(
@@ -2635,7 +2705,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_rejects_invalid_forwarded_for() -> TestResult {
-        let mut config = synctv_core::Config::default();
+        let mut config = crate::ApiRuntimeSettings::default();
         config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
 
         let request = request_with_peer_and_headers(
@@ -2655,7 +2725,7 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_uses_x_real_ip_when_forwarded_for_absent() -> TestResult {
-        let mut config = synctv_core::Config::default();
+        let mut config = crate::ApiRuntimeSettings::default();
         config.server.trusted_proxies = vec!["10.0.0.0/8".to_string()];
 
         let request = request_with_peer_and_headers(
@@ -2672,34 +2742,34 @@ mod tests {
 
     #[test]
     fn test_livestream_relay_service_requires_cluster_mode_secret_and_infra() {
-        let mut config = synctv_core::Config::default();
+        let mut runtime_settings = crate::ApiRuntimeSettings::default();
 
         assert!(
-            !should_register_livestream_relay_service(&config, true),
+            !should_register_livestream_relay_service(&runtime_settings, true),
             "standalone mode must not expose livestream relay gRPC service"
         );
 
-        config.cluster.enabled = true;
+        runtime_settings.cluster_enabled = true;
         assert!(
-            !should_register_livestream_relay_service(&config, true),
+            !should_register_livestream_relay_service(&runtime_settings, true),
             "distributed mode without a secret must fail closed"
         );
 
-        config.cluster.secret = "shared-secret".to_string();
+        runtime_settings.cluster.secret = "shared-secret".to_string();
         assert!(
-            !should_register_livestream_relay_service(&config, false),
+            !should_register_livestream_relay_service(&runtime_settings, false),
             "relay service must not be registered before livestream infra is ready"
         );
 
         assert!(
-            should_register_livestream_relay_service(&config, true),
+            should_register_livestream_relay_service(&runtime_settings, true),
             "distributed mode with secret and livestream infra should register relay service"
         );
     }
 
     #[test]
     fn test_public_grpc_registration_plan_preserves_optional_service_registration() {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
 
         let plan = grpc_service_registration_plan(
             &config,

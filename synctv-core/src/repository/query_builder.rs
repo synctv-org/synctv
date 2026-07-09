@@ -11,7 +11,7 @@
 
 use crate::{Error, Result};
 
-pub(crate) fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+pub fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(sql)
 }
 

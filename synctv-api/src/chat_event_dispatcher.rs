@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use synctv_core::models::{ChatMessageEvent, ChatPinEvent};
+use synctv_realtime::fanout::{RealtimeDeliveryOutcome, RealtimeEventService};
 use synctv_realtime::sync::RealtimeEvent;
-
-use crate::runtime::{RealtimeDeliveryOutcome, RealtimeEventService};
 
 pub trait ChatEventDispatcher: Send + Sync {
     fn dispatch(&self, event: &ChatMessageEvent) -> RealtimeDeliveryOutcome;

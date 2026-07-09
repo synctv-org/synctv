@@ -1,10 +1,3 @@
-use async_trait::async_trait;
-use synctv_core::models::{RoomId, UserId};
-use synctv_realtime::sync::{
-    BroadcastResult, ConnectionId, RealtimeEvent, RealtimeManager, SharedRealtimeEvent,
-};
-use tokio::sync::{broadcast, mpsc};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RealtimeAdmissionError {
     Capacity(String),
@@ -35,259 +28,14 @@ impl RealtimeAdmissionError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RealtimeMetrics {
-    pub distributed_enabled: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RealtimeDeliveryRequirement {
-    DistributedWhenAvailable,
-    DistributedIfAvailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RealtimeDeliveryOutcome {
-    local_delivered: bool,
-    distributed_delivered: bool,
-    distributed_available: bool,
-}
-
-impl RealtimeDeliveryOutcome {
-    #[must_use]
-    pub const fn from_broadcast(result: &BroadcastResult, metrics: RealtimeMetrics) -> Self {
-        Self {
-            local_delivered: result.local_sent > 0,
-            distributed_delivered: result.redis_sent,
-            distributed_available: metrics.distributed_enabled,
-        }
-    }
-
-    #[must_use]
-    pub const fn from_publish_only(distributed_delivered: bool, metrics: RealtimeMetrics) -> Self {
-        Self {
-            local_delivered: false,
-            distributed_delivered,
-            distributed_available: metrics.distributed_enabled,
-        }
-    }
-
-    #[must_use]
-    pub const fn local_delivered(self) -> bool {
-        self.local_delivered
-    }
-
-    #[must_use]
-    pub const fn distributed_available(self) -> bool {
-        self.distributed_available
-    }
-
-    #[must_use]
-    pub const fn distributed_delivered(self) -> bool {
-        self.distributed_delivered
-    }
-
-    #[must_use]
-    pub const fn delivered_to_any(self) -> bool {
-        self.local_delivered || self.distributed_delivered
-    }
-
-    #[must_use]
-    pub const fn distributed_delivery_missed(self) -> bool {
-        self.distributed_available && !self.distributed_delivered
-    }
-
-    #[must_use]
-    pub const fn satisfies(self, requirement: RealtimeDeliveryRequirement) -> bool {
-        match requirement {
-            RealtimeDeliveryRequirement::DistributedWhenAvailable => {
-                if self.distributed_available {
-                    self.distributed_delivered
-                } else {
-                    self.delivered_to_any()
-                }
-            }
-            RealtimeDeliveryRequirement::DistributedIfAvailable => {
-                !self.distributed_available || self.distributed_delivered
-            }
-        }
-    }
-}
-
-#[async_trait]
-pub trait RealtimeEventService: Send + Sync {
-    async fn subscribe_with_id(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)>;
-
-    fn unsubscribe(&self, connection_id: &str);
-
-    fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult;
-
-    fn publish_only(&self, event: RealtimeEvent) -> bool;
-
-    fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize;
-
-    fn broadcast_admin_local(&self, _event: &RealtimeEvent) -> usize {
-        0
-    }
-
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent>;
-
-    fn subscribe_lifecycle_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-        self.subscribe_admin_events()
-    }
-
-    fn metrics(&self) -> RealtimeMetrics;
-
-    fn broadcast_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
-        let result = self.broadcast(event);
-        RealtimeDeliveryOutcome::from_broadcast(&result, self.metrics())
-    }
-
-    fn publish_only_outcome(&self, event: RealtimeEvent) -> RealtimeDeliveryOutcome {
-        RealtimeDeliveryOutcome::from_publish_only(self.publish_only(event), self.metrics())
-    }
-
-    fn node_id(&self) -> &str;
-
-    async fn shutdown(&self);
-}
-
-pub struct LocalNoopRealtimeEventService {
-    admin_tx: broadcast::Sender<RealtimeEvent>,
-}
-
-impl LocalNoopRealtimeEventService {
-    #[must_use]
-    pub fn new() -> Self {
-        let (admin_tx, _) = broadcast::channel(16);
-        Self { admin_tx }
-    }
-}
-
-impl Default for LocalNoopRealtimeEventService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl RealtimeEventService for LocalNoopRealtimeEventService {
-    async fn subscribe_with_id(
-        &self,
-        _room_id: RoomId,
-        _user_id: UserId,
-        connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
-        let (_tx, rx) = mpsc::channel(16);
-        Ok((rx, connection_id))
-    }
-
-    fn unsubscribe(&self, _connection_id: &str) {}
-
-    fn broadcast(&self, _event: RealtimeEvent) -> BroadcastResult {
-        BroadcastResult {
-            local_sent: 0,
-            redis_sent: false,
-        }
-    }
-
-    fn publish_only(&self, _event: RealtimeEvent) -> bool {
-        false
-    }
-
-    fn broadcast_local(&self, _room_id: &RoomId, _event: &RealtimeEvent) -> usize {
-        0
-    }
-
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-        self.admin_tx.subscribe()
-    }
-
-    fn metrics(&self) -> RealtimeMetrics {
-        RealtimeMetrics {
-            distributed_enabled: false,
-        }
-    }
-
-    fn node_id(&self) -> &'static str {
-        "local-noop"
-    }
-
-    async fn shutdown(&self) {}
-}
-
-#[async_trait]
-impl RealtimeEventService for RealtimeManager {
-    async fn subscribe_with_id(
-        &self,
-        room_id: RoomId,
-        user_id: UserId,
-        connection_id: ConnectionId,
-    ) -> synctv_realtime::Result<(mpsc::Receiver<SharedRealtimeEvent>, ConnectionId)> {
-        RealtimeManager::subscribe_with_id(self, room_id, user_id, connection_id).await
-    }
-
-    fn unsubscribe(&self, connection_id: &str) {
-        RealtimeManager::unsubscribe(self, connection_id);
-    }
-
-    fn broadcast(&self, event: RealtimeEvent) -> BroadcastResult {
-        RealtimeManager::broadcast(self, event)
-    }
-
-    fn publish_only(&self, event: RealtimeEvent) -> bool {
-        RealtimeManager::publish_only(self, event)
-    }
-
-    fn broadcast_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
-        RealtimeManager::message_hub(self).broadcast(room_id, event)
-    }
-
-    fn broadcast_admin_local(&self, event: &RealtimeEvent) -> usize {
-        match RealtimeManager::admin_event_tx(self).send(event.clone()) {
-            Ok(subscriber_count) => subscriber_count,
-            Err(error) => {
-                tracing::warn!(%error, "failed to broadcast admin realtime event");
-                0
-            }
-        }
-    }
-
-    fn subscribe_admin_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-        RealtimeManager::subscribe_admin_events(self)
-    }
-
-    fn subscribe_lifecycle_events(&self) -> broadcast::Receiver<RealtimeEvent> {
-        RealtimeManager::subscribe_lifecycle_events(self)
-    }
-
-    fn metrics(&self) -> RealtimeMetrics {
-        let metrics = RealtimeManager::metrics(self);
-        RealtimeMetrics {
-            distributed_enabled: metrics.distributed_enabled,
-        }
-    }
-
-    fn node_id(&self) -> &str {
-        RealtimeManager::node_id(self)
-    }
-
-    async fn shutdown(&self) {
-        RealtimeManager::shutdown(self).await;
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use synctv_realtime::fanout::{
+        RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService, RealtimeMetrics,
+    };
     use synctv_realtime::sync::ConnectionId;
     use synctv_realtime::sync::ConnectionRuntime;
 
-    use super::{RealtimeDeliveryOutcome, RealtimeDeliveryRequirement, RealtimeEventService};
     use std::sync::Arc;
     use std::time::Duration;
     use synctv_core::models::{RoomId, UserId};
@@ -413,7 +161,7 @@ mod tests {
 
     #[test]
     fn test_publish_only_delivery_requirement_allows_standalone_without_distributed_backend() {
-        let metrics = super::RealtimeMetrics {
+        let metrics = RealtimeMetrics {
             distributed_enabled: false,
         };
 
@@ -424,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_broadcast_delivery_requirement_prefers_distributed_when_available() {
-        let metrics = super::RealtimeMetrics {
+        let metrics = RealtimeMetrics {
             distributed_enabled: true,
         };
         let outcome = RealtimeDeliveryOutcome::from_broadcast(

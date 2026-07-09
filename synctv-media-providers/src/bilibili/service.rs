@@ -5,7 +5,7 @@
 
 use super::{client::BilibiliClient, BilibiliError};
 use super::{DanmakuMessage, HeartbeatConfig, ReconnectConfig, ReconnectResult};
-use crate::grpc::bilibili::{
+use crate::transport_dto::bilibili::{
     Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq, GetDashVideoUrlResp,
     GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq, GetLiveStreamsResp, GetPgcurlReq,
     GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq, LoginWithQrCodeReq, LoginWithQrCodeResp,
@@ -26,15 +26,19 @@ pub const BILIBILI_LIVE_DANMAKU_FORMAT: &str = "synctv-bilibili-live";
 
 pub type BilibiliLiveDanmakuStream = Pin<
     Box<
-        dyn Stream<Item = Result<crate::grpc::bilibili::BilibiliLiveDanmakuEvent, BilibiliError>>
-            + Send
+        dyn Stream<
+                Item = Result<
+                    crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent,
+                    BilibiliError,
+                >,
+            > + Send
             + 'static,
     >,
 >;
 
 /// Unified Bilibili service interface
 ///
-/// This trait defines all Bilibili operations using proto request/response types.
+/// This trait defines all Bilibili operations using provider transport DTOs.
 #[async_trait]
 pub trait BilibiliInterface: Send + Sync {
     async fn new_qr_code(&self, request: Empty) -> Result<NewQrCodeResp, BilibiliError>;
@@ -178,55 +182,59 @@ fn client_from_cookies_and_state(
 
 fn live_danmaku_event_from_message(
     message: DanmakuMessage,
-) -> crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+) -> crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
     match message {
         DanmakuMessage::Chat {
             user,
             message,
             timestamp,
-        } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+        } => crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
             format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
             event_type: "chat".to_string(),
-            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Chat as i32,
+            r#type: crate::transport_dto::bilibili::BilibiliLiveDanmakuEventType::Chat as i32,
             user,
             message,
             timestamp,
-            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+            ..crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent::default()
         },
-        DanmakuMessage::UserEnter { user } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
-            format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
-            event_type: "user_enter".to_string(),
-            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::UserEnter as i32,
-            user,
-            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
-        },
+        DanmakuMessage::UserEnter { user } => {
+            crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
+                format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
+                event_type: "user_enter".to_string(),
+                r#type: crate::transport_dto::bilibili::BilibiliLiveDanmakuEventType::UserEnter
+                    as i32,
+                user,
+                ..crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent::default()
+            }
+        }
         DanmakuMessage::Gift {
             user,
             gift_name,
             count,
-        } => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+        } => crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
             format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
             event_type: "gift".to_string(),
-            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Gift as i32,
+            r#type: crate::transport_dto::bilibili::BilibiliLiveDanmakuEventType::Gift as i32,
             user,
             gift_name,
             gift_count: count,
-            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+            ..crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent::default()
         },
         DanmakuMessage::Heartbeat { online_count } => {
-            crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+            crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
                 format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
                 event_type: "heartbeat".to_string(),
-                r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Heartbeat as i32,
+                r#type: crate::transport_dto::bilibili::BilibiliLiveDanmakuEventType::Heartbeat
+                    as i32,
                 online_count,
-                ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+                ..crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent::default()
             }
         }
-        DanmakuMessage::Unknown => crate::grpc::bilibili::BilibiliLiveDanmakuEvent {
+        DanmakuMessage::Unknown => crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent {
             format: BILIBILI_LIVE_DANMAKU_FORMAT.to_string(),
             event_type: "unknown".to_string(),
-            r#type: crate::grpc::bilibili::BilibiliLiveDanmakuEventType::Unknown as i32,
-            ..crate::grpc::bilibili::BilibiliLiveDanmakuEvent::default()
+            r#type: crate::transport_dto::bilibili::BilibiliLiveDanmakuEventType::Unknown as i32,
+            ..crate::transport_dto::bilibili::BilibiliLiveDanmakuEvent::default()
         },
     }
 }
@@ -529,7 +537,7 @@ impl BilibiliInterface for BilibiliService {
         Ok(GetLiveStreamsResp {
             live_streams: streams
                 .into_iter()
-                .map(|s| crate::grpc::bilibili::LiveStream {
+                .map(|s| crate::transport_dto::bilibili::LiveStream {
                     quality: u64::from(s.quality),
                     urls: s.urls,
                     desc: s.desc,
@@ -569,12 +577,14 @@ impl BilibiliInterface for BilibiliService {
             host_list: danmu_info
                 .host_list
                 .into_iter()
-                .map(|h| crate::grpc::bilibili::get_live_danmu_info_resp::Host {
-                    host: h.host,
-                    port: h.port,
-                    wss_port: h.wss_port,
-                    ws_port: h.ws_port,
-                })
+                .map(
+                    |h| crate::transport_dto::bilibili::get_live_danmu_info_resp::Host {
+                        host: h.host,
+                        port: h.port,
+                        wss_port: h.wss_port,
+                        ws_port: h.ws_port,
+                    },
+                )
                 .collect(),
         })
     }
@@ -655,7 +665,7 @@ pub(crate) const fn map_qr_status(raw: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grpc::bilibili::QrCodeStatus;
+    use crate::transport_dto::bilibili::QrCodeStatus;
 
     #[test]
     fn test_qr_status_success() {

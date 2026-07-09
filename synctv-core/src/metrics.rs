@@ -83,7 +83,7 @@ fn histogram_vec(opts: HistogramOpts, labels: &[&str]) -> HistogramVec {
     register_metric(metric, &metric_name)
 }
 
-/// HTTP and WebSocket metrics
+/// HTTP and WebSocket transport metrics.
 pub mod http {
     use super::*;
 
@@ -151,27 +151,6 @@ pub mod http {
             )
         });
 
-    /// Number of active rooms.
-    pub static ROOMS_ACTIVE: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| int_gauge("rooms_active", "Number of currently active rooms"));
-
-    /// Number of online users.
-    pub static USERS_ONLINE: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| int_gauge("users_online", "Number of currently online users"));
-
-    /// Number of active live streams.
-    pub static STREAMS_ACTIVE: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| int_gauge("streams_active", "Number of active live streams"));
-
-    /// Number of active WebRTC peer connections.
-    pub static WEBRTC_PEERS_ACTIVE: std::sync::LazyLock<IntGauge> =
-        std::sync::LazyLock::new(|| {
-            int_gauge(
-                "webrtc_peers_active",
-                "Number of active WebRTC peer connections",
-            )
-        });
-
     /// Total WebSocket messages processed, labeled by direction (inbound/outbound) and type (text/binary/ping/pong).
     pub static WEBSOCKET_MESSAGES_TOTAL: std::sync::LazyLock<IntCounterVec> =
         std::sync::LazyLock::new(|| {
@@ -204,6 +183,32 @@ pub mod http {
                     1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0,
                 ]),
                 &[],
+            )
+        });
+}
+
+/// Application runtime metrics shared by core services and transport adapters.
+pub mod application {
+    use super::*;
+
+    /// Number of active rooms.
+    pub static ROOMS_ACTIVE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("rooms_active", "Number of currently active rooms"));
+
+    /// Number of online users.
+    pub static USERS_ONLINE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("users_online", "Number of currently online users"));
+
+    /// Number of active live streams.
+    pub static STREAMS_ACTIVE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| int_gauge("streams_active", "Number of active live streams"));
+
+    /// Number of active WebRTC peer connections.
+    pub static WEBRTC_PEERS_ACTIVE: std::sync::LazyLock<IntGauge> =
+        std::sync::LazyLock::new(|| {
+            int_gauge(
+                "webrtc_peers_active",
+                "Number of active WebRTC peer connections",
             )
         });
 
@@ -1264,32 +1269,32 @@ mod tests {
     #[test]
     fn test_room_and_user_metrics() {
         // Verify gauges respond correctly to inc/dec (relative assertions).
-        let rooms_before = http::ROOMS_ACTIVE.get();
-        http::ROOMS_ACTIVE.inc();
-        http::ROOMS_ACTIVE.inc();
-        http::ROOMS_ACTIVE.dec();
-        assert_eq!(http::ROOMS_ACTIVE.get(), rooms_before + 1);
+        let rooms_before = application::ROOMS_ACTIVE.get();
+        application::ROOMS_ACTIVE.inc();
+        application::ROOMS_ACTIVE.inc();
+        application::ROOMS_ACTIVE.dec();
+        assert_eq!(application::ROOMS_ACTIVE.get(), rooms_before + 1);
 
-        let users_before = http::USERS_ONLINE.get();
-        http::USERS_ONLINE.inc();
-        http::USERS_ONLINE.inc();
-        http::USERS_ONLINE.dec();
-        assert_eq!(http::USERS_ONLINE.get(), users_before + 1);
+        let users_before = application::USERS_ONLINE.get();
+        application::USERS_ONLINE.inc();
+        application::USERS_ONLINE.inc();
+        application::USERS_ONLINE.dec();
+        assert_eq!(application::USERS_ONLINE.get(), users_before + 1);
     }
 
     #[test]
     fn test_stream_and_webrtc_metrics() {
-        let streams_before = http::STREAMS_ACTIVE.get();
-        http::STREAMS_ACTIVE.inc();
-        assert_eq!(http::STREAMS_ACTIVE.get(), streams_before + 1);
-        http::STREAMS_ACTIVE.dec();
-        assert_eq!(http::STREAMS_ACTIVE.get(), streams_before);
+        let streams_before = application::STREAMS_ACTIVE.get();
+        application::STREAMS_ACTIVE.inc();
+        assert_eq!(application::STREAMS_ACTIVE.get(), streams_before + 1);
+        application::STREAMS_ACTIVE.dec();
+        assert_eq!(application::STREAMS_ACTIVE.get(), streams_before);
 
-        let rtc_before = http::WEBRTC_PEERS_ACTIVE.get();
-        http::WEBRTC_PEERS_ACTIVE.inc();
-        assert_eq!(http::WEBRTC_PEERS_ACTIVE.get(), rtc_before + 1);
-        http::WEBRTC_PEERS_ACTIVE.dec();
-        assert_eq!(http::WEBRTC_PEERS_ACTIVE.get(), rtc_before);
+        let rtc_before = application::WEBRTC_PEERS_ACTIVE.get();
+        application::WEBRTC_PEERS_ACTIVE.inc();
+        assert_eq!(application::WEBRTC_PEERS_ACTIVE.get(), rtc_before + 1);
+        application::WEBRTC_PEERS_ACTIVE.dec();
+        assert_eq!(application::WEBRTC_PEERS_ACTIVE.get(), rtc_before);
     }
 
     #[test]
@@ -1464,28 +1469,28 @@ mod tests {
     #[test]
     fn test_business_metrics() {
         // Test playlist items counter
-        let before_playlist = http::PLAYLIST_ITEMS_TOTAL
+        let before_playlist = application::PLAYLIST_ITEMS_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        http::PLAYLIST_ITEMS_TOTAL
+        application::PLAYLIST_ITEMS_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
         assert_eq!(
-            http::PLAYLIST_ITEMS_TOTAL
+            application::PLAYLIST_ITEMS_TOTAL
                 .with_label_values(&[] as &[&str])
                 .get(),
             before_playlist + 1
         );
 
         // Test chat messages counter
-        let before_chat = http::CHAT_MESSAGES_TOTAL
+        let before_chat = application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        http::CHAT_MESSAGES_TOTAL
+        application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
         assert_eq!(
-            http::CHAT_MESSAGES_TOTAL
+            application::CHAT_MESSAGES_TOTAL
                 .with_label_values(&[] as &[&str])
                 .get(),
             before_chat + 1
@@ -1645,14 +1650,14 @@ mod tests {
         http::WEBSOCKET_CONNECTION_DURATION_SECONDS
             .with_label_values(&[] as &[&str])
             .observe(1.0);
-        http::ROOMS_ACTIVE.set(0);
-        http::USERS_ONLINE.set(0);
-        http::STREAMS_ACTIVE.set(0);
-        http::WEBRTC_PEERS_ACTIVE.set(0);
-        http::PLAYLIST_ITEMS_TOTAL
+        application::ROOMS_ACTIVE.set(0);
+        application::USERS_ONLINE.set(0);
+        application::STREAMS_ACTIVE.set(0);
+        application::WEBRTC_PEERS_ACTIVE.set(0);
+        application::PLAYLIST_ITEMS_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
-        http::CHAT_MESSAGES_TOTAL
+        application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
         database::DB_CONNECTIONS_ACTIVE.set(0);

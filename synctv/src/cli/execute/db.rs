@@ -4,11 +4,16 @@ pub(super) async fn execute_db(db_command: DbCommand) -> Result<()> {
     let context = CliConfigContext::new(db_command.global.clone());
     let config = context.validated_config()?;
     crate::install_panic_hook(config.logging.backtrace);
-    let _log_guard = synctv_core::logging::init_logging(&config.logging)?;
+    let _log_guard =
+        synctv_core::logging::init_logging(&crate::resource_options::logging_options(&config))?;
 
     match db_command.command {
         DbSubcommand::Migrate(args) => {
-            let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
+            let pool = crate::bootstrap::init_database(
+                &crate::resource_options::database_init_options(&config),
+            )
+            .await?
+            .pool;
 
             crate::migrations::run_migrations(&pool).await?;
 
@@ -19,7 +24,11 @@ pub(super) async fn execute_db(db_command: DbCommand) -> Result<()> {
             Ok(())
         }
         DbSubcommand::Status(args) => {
-            let pool = synctv_core::bootstrap::init_database(&config).await?.pool;
+            let pool = crate::bootstrap::init_database(
+                &crate::resource_options::database_init_options(&config),
+            )
+            .await?
+            .pool;
             sqlx::query!("SELECT 1 AS ok").fetch_one(&pool).await?;
             let migrations_status = crate::migrations::inspect_embedded_migrations(&pool).await?;
             let output = DatabaseCliOutput::status(&config, &migrations_status);
@@ -52,14 +61,14 @@ pub(in crate::cli) struct DatabaseCliOutput {
 
 impl DatabaseCliOutput {
     pub(in crate::cli) fn status(
-        config: &synctv_core::Config,
+        config: &crate::app_config::AppConfig,
         migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
     ) -> Self {
         Self::new(DatabaseCliAction::Status, config, migrations_status)
     }
 
     fn migrate(
-        config: &synctv_core::Config,
+        config: &crate::app_config::AppConfig,
         migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
     ) -> Self {
         Self::new(DatabaseCliAction::Migrate, config, migrations_status)
@@ -67,7 +76,7 @@ impl DatabaseCliOutput {
 
     fn new(
         action: DatabaseCliAction,
-        config: &synctv_core::Config,
+        config: &crate::app_config::AppConfig,
         migrations_status: &crate::migrations::EmbeddedMigrationsStatus,
     ) -> Self {
         Self {

@@ -106,8 +106,8 @@ impl AdminApiImpl {
         let Some(file_reference_id) = file_reference_id else {
             return Ok(None);
         };
-        synctv_core::repository::FileStorageRepository::new(self.user_service.pool().clone())
-            .get_reference_by_id(file_reference_id)
+        self.user_service
+            .get_stored_file_reference(file_reference_id)
             .await
             .map_err(ApiError::from)
     }

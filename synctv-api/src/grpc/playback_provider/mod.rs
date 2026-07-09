@@ -44,7 +44,7 @@ pub(crate) fn live_playback_api_runtime(
         proxy_signing_key: &state.shared_api_runtime.proxy_signing_key,
         live_streaming_infrastructure: state.live_streaming_infrastructure.as_ref(),
         connection_runtime: state.connection_manager.as_ref(),
-        livestream_config: &state.config.livestream,
+        livestream_config: &state.runtime_settings.livestream,
         runtime_settings_store: state.runtime_settings_store.as_deref(),
     }
 }
@@ -54,7 +54,7 @@ pub type GrpcResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + 
 #[derive(Clone)]
 pub(crate) struct PlaybackProviderGrpcState {
     pub shared_api_runtime: Arc<SharedApiRuntime>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub connection_manager: Arc<dyn synctv_realtime::sync::ConnectionRuntime>,
     pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
@@ -93,7 +93,7 @@ where
 
 pub(crate) fn grpc_request_metadata<T>(
     request: &Request<T>,
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
 ) -> Result<crate::impls::RequestMetadata, Status> {
-    crate::grpc::request_metadata(request, config, None)
+    crate::grpc::request_metadata(request, runtime_settings, None)
 }

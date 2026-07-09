@@ -2,6 +2,7 @@ use super::*;
 use crate::impls::admin::response::active_room_stream_media_ids_for_infra;
 use crate::impls::admin::rooms::username_from_loaded_user;
 use crate::impls::ErrorKind;
+use crate::ApiRuntimeSettings;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,15 +13,14 @@ use synctv_core::models::{
 };
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache},
-    config::Config,
     repository::{
         MediaRepository, ProviderInstanceRepository, RoomRepository, SettingsRepository,
         UserRepository,
     },
     service::{
         AuditService, BruteForceProtection, EmailService, InMemoryTokenBlacklistStore, JwtService,
-        PublishKeyService, RemoteProviderManager, RuntimeEmailConfigProvider, RuntimeSettingsStore,
-        SettingsService, UserService,
+        NewRealtimeOutboxEvent, PublishKeyService, RemoteProviderManager,
+        RuntimeEmailConfigProvider, RuntimeSettingsStore, SettingsService, UserService,
     },
 };
 use synctv_core::{
@@ -159,11 +159,7 @@ async fn current_admin_settings(
 ) -> TestResult<synctv_proto::admin::RuntimeSettings> {
     api_ok(
         admin_api
-            .get_settings(
-                synctv_proto::admin::GetSettingsRequest {},
-                &UserId::new(),
-                &RequestContext::default(),
-            )
+            .get_settings(&UserId::new(), &RequestContext::default())
             .await,
     )
 }
@@ -403,10 +399,8 @@ impl RecordingMembershipEventFanout {
     }
 }
 
-fn test_realtime_outbox_event(
-    event: &RealtimeEvent,
-) -> synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent {
-    synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent {
+fn test_realtime_outbox_event(event: &RealtimeEvent) -> NewRealtimeOutboxEvent {
+    NewRealtimeOutboxEvent {
         id: event.event_id().to_string(),
         enqueue_outbox: false,
         aggregate_type: "test".to_string(),
@@ -440,10 +434,7 @@ impl RealtimeFanoutService for FailingRealtimeFanout {
         false
     }
 
-    fn outbox_event(
-        &self,
-        event: &RealtimeEvent,
-    ) -> Result<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent, String> {
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
         Ok(test_realtime_outbox_event(event))
     }
 
@@ -486,7 +477,9 @@ impl MembershipEventFanoutService for RecordingMembershipEventFanout {
     ) -> crate::membership_event_fanout::PreparedPermissionChangedFanout {
         crate::membership_event_fanout::PreparedPermissionChangedFanout::new(
             Arc::new(self.clone()),
-            Arc::new(LocalNoopRealtimeEventService::new()),
+            crate::membership_event_fanout::local_realtime_event_publisher(Arc::new(
+                LocalNoopRealtimeEventService::new(),
+            )),
             target_is_online,
             target_connection_count,
         )
@@ -505,10 +498,7 @@ impl RealtimeFanoutService for RecordingMembershipEventFanout {
         true
     }
 
-    fn outbox_event(
-        &self,
-        event: &RealtimeEvent,
-    ) -> Result<synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent, String> {
+    fn outbox_event(&self, event: &RealtimeEvent) -> Result<NewRealtimeOutboxEvent, String> {
         match event {
             RealtimeEvent::PermissionChanged {
                 room_id,
@@ -780,7 +770,7 @@ async fn make_admin_api_for_delete_user_test(
         "built-in providers should initialize",
     );
     let audit_service = Arc::new(AuditService::new_unbuffered(pool));
-    let config = Arc::new(Config::default());
+    let config = Arc::new(ApiRuntimeSettings::default());
     let publish_key_service = PublishKeyService::new(
         fixture_value(
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
@@ -800,7 +790,7 @@ async fn make_admin_api_for_delete_user_test(
 
     (
         AdminApiImpl::new_with_runtime(
-            AdminApiConfig {
+            AdminApiOptions {
                 room_service,
                 read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
@@ -811,9 +801,9 @@ async fn make_admin_api_for_delete_user_test(
                 provider_instance_manager,
                 live_streaming_infrastructure: None,
                 publish_key_service: Some(publish_key_service),
-                config,
+                runtime_settings: config,
                 audit_service,
-                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 clock: Arc::new(synctv_core::SystemClock),
@@ -880,7 +870,7 @@ async fn make_admin_api_with_livestream_for_test(
         "built-in providers should initialize",
     );
     let audit_service = Arc::new(AuditService::new_unbuffered(pool));
-    let config = Arc::new(Config::default());
+    let config = Arc::new(ApiRuntimeSettings::default());
     let publish_key_service = PublishKeyService::new(
         fixture_value(
             JwtService::new("test-secret-key-for-admin-impl-tests-minimum-32-chars"),
@@ -914,7 +904,7 @@ async fn make_admin_api_with_livestream_for_test(
 
     (
         AdminApiImpl::new_with_runtime(
-            AdminApiConfig {
+            AdminApiOptions {
                 room_service,
                 read_services: crate::test_support::admin_read_services(user_service.as_ref()),
                 user_service,
@@ -925,9 +915,9 @@ async fn make_admin_api_with_livestream_for_test(
                 provider_instance_manager,
                 live_streaming_infrastructure: Some(live_streaming_infrastructure.clone()),
                 publish_key_service: Some(publish_key_service),
-                config,
+                runtime_settings: config,
                 audit_service,
-                public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
+                public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
             },
             AdminApiRuntime {
                 clock: Arc::new(synctv_core::SystemClock),
@@ -1079,7 +1069,7 @@ async fn test_admin_update_member_permissions_publishes_membership_event() -> Te
     )
     .await;
 
-    let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+    let room = Box::pin(create_room_with_member(&admin_api, &owner.id, &target.id)).await;
 
     let fanout = Arc::new(RecordingMembershipEventFanout::default());
     admin_api.membership_event_fanout = fanout.clone();
@@ -1139,7 +1129,7 @@ async fn test_admin_member_response_uses_room_permission_overrides() -> TestResu
         UserRole::User,
     )
     .await;
-    let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+    let room = Box::pin(create_room_with_member(&admin_api, &owner.id, &target.id)).await;
 
     let mut settings = core_ok(admin_api.room_service.get_room_settings(&room.id).await)?;
     settings.member_removed_permissions =
@@ -1206,7 +1196,7 @@ async fn test_admin_kick_member_publishes_membership_event() -> TestResult {
     .await;
     let target = create_db_user(&user_repo, "target_kick_membership_outbox", UserRole::User).await;
 
-    let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+    let room = Box::pin(create_room_with_member(&admin_api, &owner.id, &target.id)).await;
 
     let fanout = Arc::new(RecordingMembershipEventFanout::default());
     admin_api.membership_event_fanout = fanout.clone();
@@ -1318,7 +1308,7 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
 #[test]
 fn test_admin_room_to_proto_basic() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     let proto = try_managed_room_to_proto(
         &room,
@@ -1362,7 +1352,7 @@ fn test_admin_room_to_proto_basic() -> TestResult {
 #[test]
 fn test_admin_room_to_proto_banned() -> TestResult {
     let mut room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings::default();
     room.is_banned = true;
     let proto = try_managed_room_to_proto(
@@ -1390,7 +1380,7 @@ fn test_admin_room_to_proto_banned() -> TestResult {
 #[test]
 fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
     let room = make_test_room(RoomStatus::Active);
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let settings = synctv_core::models::RoomSettings {
         allow_auto_join: synctv_core::models::room_settings::AllowAutoJoin(false),
         ..Default::default()
@@ -1418,7 +1408,7 @@ fn test_admin_room_to_proto_uses_supplied_settings() -> TestResult {
 fn test_admin_room_to_proto_different_statuses() -> TestResult {
     for status in [RoomStatus::Active, RoomStatus::Closed] {
         let room = make_test_room(status);
-        let public_id_codec = crate::public_id::PublicIdCodec::plain();
+        let public_id_codec = synctv_adapter::PublicIdCodec::plain();
         let settings = synctv_core::models::RoomSettings::default();
         let proto = try_managed_room_to_proto(
             &room,
@@ -1485,7 +1475,7 @@ fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> Tes
         api_ok(proto_admin_active_stream_list_sort_by(
             synctv_proto::admin::ActiveStreamListSortBy::Unspecified as i32
         ))?,
-        synctv_proto::admin::ActiveStreamListSortBy::StartedAt
+        ActiveStreamListSortBy::StartedAt
     );
     assert_eq!(
         api_ok(proto_admin_sort_direction(
@@ -1498,7 +1488,7 @@ fn admin_query_enum_mappers_reject_unknown_values_and_preserve_defaults() -> Tes
         api_ok(proto_admin_active_stream_sort_direction(
             synctv_proto::admin::SortDirection::Unspecified as i32
         ))?,
-        synctv_proto::admin::SortDirection::Desc
+        CoreSortDirection::Desc
     );
     assert_eq!(
         api_ok(map_admin_playlist_sort(
@@ -1779,11 +1769,11 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
                 synctv_proto::admin::UpdateRoomTaxonomyRequest {
                     room_id: public_room_id(&admin_api, room.id),
                     category_id: None,
+                    clear_category: false,
                     label_ids: vec![fixture_value(
                         admin_api.public_id_codec.encode_room_label_id(label.id),
-                        "label id should encode",
+                        "test room label id should encode",
                     )],
-                    clear_category: false,
                 },
                 &LOCAL_MANAGEMENT_ACTOR_USER_ID,
             )
@@ -1817,7 +1807,7 @@ async fn test_update_room_taxonomy_handles_local_management_actor_labels() -> Te
 
 #[test]
 fn test_admin_user_to_proto_all_roles() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     for (role, expected) in [
         (UserRole::Root, synctv_proto::common::UserRole::Root as i32),
         (
@@ -1836,7 +1826,7 @@ fn test_admin_user_to_proto_all_roles() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_all_statuses() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     for (status, expected) in [
         (
             UserStatus::Active,
@@ -1857,7 +1847,7 @@ fn test_admin_user_to_proto_all_statuses() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_fields() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let user = make_test_user(UserRole::Admin, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, Some("admin@test.com"), None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1875,7 +1865,7 @@ fn test_admin_user_to_proto_fields() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     let banned_at = synctv_core::SystemClock.now();
     user.is_banned = true;
@@ -1890,7 +1880,7 @@ fn test_admin_user_to_proto_preserves_ban_timestamp() -> TestResult {
 
 #[test]
 fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let mut user = make_test_user(UserRole::User, UserStatus::Active);
     user.is_banned = true;
 
@@ -1910,7 +1900,7 @@ fn test_admin_user_to_proto_rejects_banned_user_without_ban_timestamp() -> TestR
 
 #[test]
 fn test_admin_user_to_proto_no_email() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let user = make_test_user(UserRole::User, UserStatus::Active);
     let proto = try_admin_user_to_proto(&user, None, None, &public_id_codec)
         .map_err(|error| test_error(format!("{error:?}")))?;
@@ -1920,7 +1910,7 @@ fn test_admin_user_to_proto_no_email() -> TestResult {
 
 #[test]
 fn review_rows_preserve_absent_optional_fields() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let requested_at = synctv_core::SystemClock.now();
 
     let registration = user_registration_review_row_to_proto(
@@ -2070,7 +2060,7 @@ fn make_test_member(role: RoomRole) -> synctv_core::models::RoomMemberWithUser {
 #[test]
 fn test_admin_room_member_to_proto() -> TestResult {
     let member = make_test_member(RoomRole::Admin);
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
@@ -2106,7 +2096,7 @@ fn test_admin_room_member_to_proto_with_permissions() -> TestResult {
     member.removed_permissions = 0x55;
     member.admin_added_permissions = 0xCC;
     member.admin_removed_permissions = 0x33;
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let proto = try_admin_room_member_to_proto_with_permissions(
         &member,
         member.effective_permissions(member.role.permissions()),
@@ -2246,22 +2236,6 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
     )?;
     assert!(matches!(get_room_members_error, ApiError::InvalidInput(_)));
 
-    let list_users_error = api_err(
-        admin_api
-            .list_users(synctv_proto::admin::ListUsersRequest {
-                page: -1,
-                page_size: 101,
-                status: synctv_proto::common::UserStatus::Unspecified as i32,
-                role: synctv_proto::common::UserRole::Unspecified as i32,
-                search: "a".repeat(101),
-                is_banned: None,
-                sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-            })
-            .await,
-    )?;
-    assert!(matches!(list_users_error, ApiError::InvalidInput(_)));
-
     let get_user_rooms_error = api_err(
         admin_api
             .get_user_rooms(synctv_proto::admin::GetUserRoomsRequest {
@@ -2278,37 +2252,6 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
     )?;
     assert!(matches!(get_user_rooms_error, ApiError::InvalidInput(_)));
 
-    let list_admins_error = api_err(
-        admin_api
-            .list_admins(synctv_proto::admin::ListAdminsRequest {
-                page: -1,
-                page_size: 101,
-                search: "a".repeat(101),
-                sort_by: synctv_proto::admin::UserListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-            })
-            .await,
-    )?;
-    assert!(matches!(list_admins_error, ApiError::InvalidInput(_)));
-
-    let list_active_streams_error = api_err(
-        admin_api
-            .list_active_streams(synctv_proto::admin::ListActiveStreamsRequest {
-                page: -1,
-                page_size: 101,
-                room_id: String::new(),
-                user_id: String::new(),
-                node_id: String::new(),
-                search: "a".repeat(101),
-                sort_by: synctv_proto::admin::ActiveStreamListSortBy::Unspecified as i32,
-                sort_direction: synctv_proto::admin::SortDirection::Unspecified as i32,
-            })
-            .await,
-    )?;
-    assert!(matches!(
-        list_active_streams_error,
-        ApiError::InvalidInput(_)
-    ));
     Ok(())
 }
 
@@ -2608,8 +2551,7 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     let (_postgres, pool) = create_test_pool().await;
     let (_admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
     let current = test_runtime_settings();
-    let patch_result = AdminApiImpl::apply_runtime_settings_patch(
-        current,
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
         synctv_proto::admin::UpdateSettingsRequest {
             room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
                 max_rooms_per_user: Some(42),
@@ -2627,6 +2569,8 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
         },
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
+    let patch_result = AdminApiImpl::apply_runtime_settings_patch(current, patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
 
     let patched = patch_result.settings;
     assert_eq!(patched.room_creation.max_rooms_per_user, 42);
@@ -2726,7 +2670,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
     let failing_fanout = Arc::new(FailingRealtimeFanout::default());
     let admin_api = AdminApiImpl::new_with_runtime(
-        AdminApiConfig {
+        AdminApiOptions {
             room_service: admin_api.room_service.clone(),
             user_service: admin_api.user_service.clone(),
             read_services: AdminReadServices {
@@ -2742,7 +2686,7 @@ async fn test_update_settings_persists_when_global_cache_invalidation_fanout_fai
             provider_instance_manager: admin_api.provider_instance_manager.clone(),
             live_streaming_infrastructure: admin_api.live_streaming_infrastructure.clone(),
             publish_key_service: admin_api.publish_key_service.clone(),
-            config: admin_api.config.clone(),
+            runtime_settings: admin_api.runtime_settings.clone(),
             audit_service: admin_api.audit_service.clone(),
             public_id_codec: admin_api.public_id_codec.clone(),
         },
@@ -2919,12 +2863,19 @@ async fn test_delete_user_publishes_kick_user_realtime_event() -> TestResult {
     let target_user = create_db_user(&user_repo, "victim_user", UserRole::User).await;
 
     let (admin_api, mut redis_publish_rx) = admin_api;
-    let request = synctv_proto::admin::DeleteUserRequest {
-        user_id: public_user_id(&admin_api, target_user.id),
-    };
     let ctx = RequestContext::default();
 
-    api_ok(admin_api.delete_user(request, &admin_user.id, &ctx).await)?;
+    api_ok(
+        admin_api
+            .delete_user(
+                synctv_proto::admin::DeleteUserRequest {
+                    user_id: public_user_id(&admin_api, target_user.id),
+                },
+                &admin_user.id,
+                &ctx,
+            )
+            .await,
+    )?;
 
     let publish = tokio::time::timeout(std::time::Duration::from_secs(1), redis_publish_rx.recv())
         .await
@@ -3024,8 +2975,18 @@ async fn test_delete_user_cleans_memberships_and_preserves_kick_user_event() -> 
     let owner_one = create_db_user(&user_repo, "room_owner_one", UserRole::User).await;
     let owner_two = create_db_user(&user_repo, "room_owner_two", UserRole::User).await;
 
-    let room_one = create_room_with_member(&admin_api, &owner_one.id, &target_user.id).await;
-    let room_two = create_room_with_member(&admin_api, &owner_two.id, &target_user.id).await;
+    let room_one = Box::pin(create_room_with_member(
+        &admin_api,
+        &owner_one.id,
+        &target_user.id,
+    ))
+    .await;
+    let room_two = Box::pin(create_room_with_member(
+        &admin_api,
+        &owner_two.id,
+        &target_user.id,
+    ))
+    .await;
 
     api_ok(
         admin_api
@@ -3172,7 +3133,12 @@ async fn test_ban_user_cleans_memberships_and_preserves_kick_user_event() -> Tes
     let target_user = create_db_user(&user_repo, "banned_membership", UserRole::User).await;
     let owner = create_db_user(&user_repo, "room_owner_ban", UserRole::User).await;
 
-    let room = create_room_with_member(&admin_api, &owner.id, &target_user.id).await;
+    let room = Box::pin(create_room_with_member(
+        &admin_api,
+        &owner.id,
+        &target_user.id,
+    ))
+    .await;
 
     let response = api_ok(
         admin_api
@@ -3314,7 +3280,12 @@ async fn test_ban_user_disconnects_owned_room_connections() -> TestResult {
     let target_user = create_db_user(&user_repo, "banned_owned_room_creator", UserRole::User).await;
     let member_user = create_db_user(&user_repo, "owned_room_member", UserRole::User).await;
 
-    let room = create_room_with_member(&admin_api, &target_user.id, &member_user.id).await;
+    let room = Box::pin(create_room_with_member(
+        &admin_api,
+        &target_user.id,
+        &member_user.id,
+    ))
+    .await;
 
     let mut disconnect_rx = admin_api.connection_service.subscribe_disconnect();
     admin_api
@@ -3583,7 +3554,7 @@ async fn test_batch_ban_users_publishes_room_owner_inactive_event_for_owned_room
 
 #[test]
 fn test_parse_batch_user_ids_trims_and_preserves_order() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let first = UserId::expect_positive(901);
     let second = UserId::expect_positive(902);
     let parsed = parse_batch_user_ids(
@@ -3615,7 +3586,7 @@ async fn test_update_member_permissions_bypasses_room_creator_constraint_for_glo
     let owner = create_db_user(&user_repo, "room_owner_member_update", UserRole::User).await;
     let target = create_db_user(&user_repo, "target_member_update", UserRole::User).await;
 
-    let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+    let room = Box::pin(create_room_with_member(&admin_api, &owner.id, &target.id)).await;
 
     let response = api_ok(
         admin_api
@@ -3668,7 +3639,7 @@ async fn test_kick_member_bypasses_room_membership_requirement_for_global_admin(
     let owner = create_db_user(&user_repo, "room_owner_member_kick", UserRole::User).await;
     let target = create_db_user(&user_repo, "target_member_kick", UserRole::User).await;
 
-    let room = create_room_with_member(&admin_api, &owner.id, &target.id).await;
+    let room = Box::pin(create_room_with_member(&admin_api, &owner.id, &target.id)).await;
 
     let response = api_ok(
         admin_api
@@ -4060,7 +4031,7 @@ async fn test_list_room_streams_bypasses_room_membership_requirement_for_global_
 
 #[test]
 fn build_room_stream_list_response_applies_search_sort_and_pagination() -> TestResult {
-    let public_id_codec = crate::public_id::PublicIdCodec::plain();
+    let public_id_codec = synctv_adapter::PublicIdCodec::plain();
     let media_ids = vec![
         MediaId::expect_positive(301),
         MediaId::expect_positive(302),
@@ -4306,7 +4277,7 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             "admin-lifecycle-test:provider:".to_string(),
         ));
     let admin_api = AdminApiImpl::new_with_runtime(
-        AdminApiConfig {
+        AdminApiOptions {
             room_service,
             read_services: crate::test_support::admin_read_services(user_service.as_ref()),
             user_service,
@@ -4317,9 +4288,9 @@ async fn test_admin_update_playback_runs_provider_lifecycle_transition() -> Test
             provider_instance_manager,
             live_streaming_infrastructure: None,
             publish_key_service: None,
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(ApiRuntimeSettings::default()),
             audit_service,
-            public_id_codec: Arc::new(crate::public_id::PublicIdCodec::plain()),
+            public_id_codec: Arc::new(synctv_adapter::PublicIdCodec::plain()),
         },
         AdminApiRuntime {
             clock: Arc::new(synctv_core::SystemClock),

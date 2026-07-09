@@ -715,10 +715,8 @@ pub struct BilibiliLiveDanmakuRequest<'a> {
 
 fn membership_error_to_provider_error(error: crate::Error) -> ProviderError {
     match error {
-        crate::Error::Authorization(message)
-            if message == crate::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE =>
-        {
-            ProviderError::Authentication(message)
+        crate::Error::KickCooldownDenied => {
+            ProviderError::Authentication(crate::Error::kick_cooldown_denied_message().to_string())
         }
         crate::Error::Authorization(_) => ProviderError::Authentication(
             synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
@@ -729,6 +727,9 @@ fn membership_error_to_provider_error(error: crate::Error) -> ProviderError {
 
 fn core_error_to_provider_error(error: crate::Error) -> ProviderError {
     match error {
+        crate::Error::KickCooldownDenied => {
+            ProviderError::Authentication(crate::Error::kick_cooldown_denied_message().to_string())
+        }
         crate::Error::Authentication(message) | crate::Error::Authorization(message) => {
             ProviderError::Authentication(message)
         }

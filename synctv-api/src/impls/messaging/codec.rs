@@ -1,9 +1,8 @@
 use prost::Message;
 use synctv_core::models::{
-    ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageStatus, ChatMessageType,
-    ChatMessageWithAttachments, ChatMetadata, ChatPinEvent, ChatPinEventKind,
-    ChatPlaybackMetadata as CoreChatPlaybackMetadata, ChatPresentationMetadata, ProviderTarget,
-    RoomPlaybackState,
+    ChatEventKind, ChatMessageEvent, ChatMessagePin, ChatMessageWithAttachments, ChatMetadata,
+    ChatPinEvent, ChatPinEventKind, ChatPlaybackMetadata as CoreChatPlaybackMetadata,
+    ChatPresentationMetadata, ProviderTarget, RoomPlaybackState,
 };
 
 use synctv_proto::client::{ClientMessage, ServerMessage};
@@ -43,7 +42,7 @@ fn optional_realtime_text(value: &str, field_name: &str, max_len: usize) -> Resu
 
 pub(crate) fn room_member_event_to_proto(
     event: &synctv_realtime::sync::RealtimeEvent,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     sequence: i64,
 ) -> Result<Option<synctv_proto::client::RoomMemberEvent>, String> {
     use synctv_proto::client::RoomMemberEventKind;
@@ -295,7 +294,7 @@ pub(crate) fn room_member_event_to_proto(
 
 pub(crate) fn online_event_to_proto(
     event: &synctv_realtime::sync::RealtimeEvent,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<synctv_proto::client::OnlineEvent>, String> {
     use synctv_proto::client::OnlineEventKind;
     use synctv_realtime::sync::RealtimeEvent;
@@ -365,17 +364,6 @@ pub(crate) fn chat_event_kind_to_proto(
     }
 }
 
-pub(crate) fn chat_message_type_to_proto(
-    message_type: ChatMessageType,
-) -> synctv_proto::client::ChatMessageType {
-    match message_type {
-        ChatMessageType::User => synctv_proto::client::ChatMessageType::User,
-        ChatMessageType::SystemMemberJoined => {
-            synctv_proto::client::ChatMessageType::SystemMemberJoined
-        }
-    }
-}
-
 pub(crate) fn chat_pin_event_kind_to_proto(
     kind: ChatPinEventKind,
 ) -> synctv_proto::client::ChatPinEventKind {
@@ -387,140 +375,56 @@ pub(crate) fn chat_pin_event_kind_to_proto(
     }
 }
 
-pub(crate) fn chat_status_to_proto(
-    status: ChatMessageStatus,
-) -> synctv_proto::client::ChatMessageStatus {
-    match status {
-        ChatMessageStatus::Active => synctv_proto::client::ChatMessageStatus::Active,
-        ChatMessageStatus::Edited => synctv_proto::client::ChatMessageStatus::Edited,
-        ChatMessageStatus::Deleted => synctv_proto::client::ChatMessageStatus::Deleted,
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn chat_display_position_from_metadata(
     metadata: Option<&ChatMetadata>,
 ) -> Result<String, String> {
-    chat_presentation_text_from_metadata(
-        metadata
-            .and_then(ChatMetadata::user)
-            .and_then(|metadata| metadata.presentation.as_ref())
-            .and_then(|presentation| presentation.display_position.as_deref()),
-        "display position",
-        64,
-    )
+    synctv_adapter::chat::chat_display_position_from_metadata(metadata)
+        .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn chat_display_color_from_metadata(
     metadata: Option<&ChatMetadata>,
 ) -> Result<String, String> {
-    chat_presentation_text_from_metadata(
-        metadata
-            .and_then(ChatMetadata::user)
-            .and_then(|metadata| metadata.presentation.as_ref())
-            .and_then(|presentation| presentation.display_color.as_deref()),
-        "display color",
-        64,
-    )
+    synctv_adapter::chat::chat_display_color_from_metadata(metadata)
+        .map_err(|error| error.to_string())
 }
 
-fn chat_presentation_text_from_metadata(
-    value: Option<&str>,
-    field_name: &'static str,
-    max_len: usize,
-) -> Result<String, String> {
-    value
-        .map(|raw| validate_chat_metadata_text(raw, field_name, max_len))
-        .transpose()
-        .map(|value| value.flatten().unwrap_or_default())
-}
-
+#[cfg(test)]
 pub(crate) fn chat_playback_media_id_from_metadata(
     metadata: Option<&ChatMetadata>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<String, String> {
-    let Some(id) = metadata
-        .and_then(ChatMetadata::user)
-        .and_then(|metadata| metadata.playback.as_ref())
-        .and_then(|playback| playback.media_id)
-    else {
-        return Ok(String::new());
-    };
-    public_id_codec
-        .encode_media_id(id)
-        .map_err(|error| format!("Failed to encode chat playback media id: {error}"))
+    synctv_adapter::chat::chat_playback_media_id_from_metadata(metadata, public_id_codec)
+        .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn chat_playback_playlist_id_from_metadata(
     metadata: Option<&ChatMetadata>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<String, String> {
-    let Some(id) = metadata
-        .and_then(ChatMetadata::user)
-        .and_then(|metadata| metadata.playback.as_ref())
-        .and_then(|playback| playback.playlist_id)
-    else {
-        return Ok(String::new());
-    };
-    public_id_codec
-        .encode_playlist_id(id)
-        .map_err(|error| format!("Failed to encode chat playback playlist id: {error}"))
+    synctv_adapter::chat::chat_playback_playlist_id_from_metadata(metadata, public_id_codec)
+        .map_err(|error| error.to_string())
 }
 
-pub(crate) struct ChatPlaybackMetadata {
-    pub media_id: String,
-    pub playlist_id: String,
-    pub target: Option<synctv_proto::client::ProviderTarget>,
-    pub target_hash: String,
-    pub position_seconds: Option<f64>,
-}
-
+#[cfg(test)]
 pub(crate) fn chat_playback_metadata_from_metadata(
     metadata: Option<&ChatMetadata>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
-) -> Result<ChatPlaybackMetadata, String> {
-    let target = chat_playback_target_from_metadata(metadata)?;
-    let target_hash = target
-        .as_ref()
-        .map(chat_playback_target_hash)
-        .transpose()?
-        .unwrap_or_default();
-
-    Ok(ChatPlaybackMetadata {
-        media_id: chat_playback_media_id_from_metadata(metadata, public_id_codec)?,
-        playlist_id: chat_playback_playlist_id_from_metadata(metadata, public_id_codec)?,
-        target: target
-            .as_ref()
-            .map(crate::impls::client::convert::provider_target_to_proto),
-        target_hash,
-        position_seconds: chat_playback_position_seconds_from_metadata(metadata)?,
-    })
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<synctv_adapter::chat::ChatPlaybackMetadata, String> {
+    synctv_adapter::chat::chat_playback_metadata_from_metadata(metadata, public_id_codec)
+        .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn chat_playback_target_from_metadata(
     metadata: Option<&ChatMetadata>,
 ) -> Result<Option<ProviderTarget>, String> {
-    Ok(metadata
-        .and_then(ChatMetadata::user)
-        .and_then(|metadata| metadata.playback.as_ref())
-        .and_then(|playback| playback.target.clone()))
-}
-
-pub(crate) fn chat_playback_position_seconds_from_metadata(
-    metadata: Option<&ChatMetadata>,
-) -> Result<Option<f64>, String> {
-    let Some(seconds) = metadata
-        .and_then(ChatMetadata::user)
-        .and_then(|metadata| metadata.playback.as_ref())
-        .and_then(|playback| playback.position_seconds)
-    else {
-        return Ok(None);
-    };
-    if !seconds.is_finite() || seconds < 0.0 {
-        return Err(
-            "Chat playback position_seconds must be a finite non-negative number".to_string(),
-        );
-    }
-    Ok(Some(seconds))
+    Ok(synctv_adapter::chat::chat_playback_target_from_metadata(
+        metadata,
+    ))
 }
 
 fn validate_chat_metadata_text(
@@ -590,7 +494,7 @@ pub(crate) fn chat_metadata_for_send(
 
 pub(crate) fn chat_message_event_to_proto(
     event: &ChatMessageEvent,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessageEvent, String> {
     let room_id = public_id_codec
         .encode_room_id(event.room_id)
@@ -611,7 +515,7 @@ pub(crate) fn chat_message_event_to_proto(
 
 pub(crate) fn chat_pin_event_to_proto(
     event: &ChatPinEvent,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatPinEvent, String> {
     let room_id = public_id_codec
         .encode_room_id(event.room_id)
@@ -637,217 +541,27 @@ pub(crate) fn chat_pin_event_to_proto(
 
 pub(crate) fn chat_message_pin_to_proto(
     pin: &ChatMessagePin,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::client::ChatMessagePin, String> {
-    Ok(synctv_proto::client::ChatMessagePin {
-        pinned_by_user_id: pin
-            .pinned_by
-            .map(|id| {
-                public_id_codec
-                    .encode_user_id(id)
-                    .map_err(|error| format!("Failed to encode pinned_by user id: {error}"))
-            })
-            .transpose()?
-            .unwrap_or_default(),
-        pinned_by_username: pin.pinned_by_username.clone().unwrap_or_default(),
-        note: pin.note.clone().unwrap_or_default(),
-        pinned_at: pin.pinned_at.timestamp(),
-    })
+    synctv_adapter::chat::chat_message_pin_to_proto(pin, public_id_codec)
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn chat_message_receive_to_proto(
     value: &ChatMessageWithAttachments,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     username: String,
 ) -> Result<synctv_proto::client::ChatMessageReceive, String> {
-    let message = &value.message;
-    let room_id = public_id_codec
-        .encode_room_id(message.room_id)
-        .map_err(|error| format!("Failed to encode chat message room id: {error}"))?;
-    let user_id = message
-        .user_id
-        .map(|id| {
-            public_id_codec
-                .encode_user_id(id)
-                .map_err(|error| format!("Failed to encode chat message user id: {error}"))
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let deleted_by_user_id = message
-        .deleted_by
-        .map(|id| {
-            public_id_codec.encode_user_id(id).map_err(|error| {
-                format!("Failed to encode chat message deleted_by user id: {error}")
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-    let reactions = value
-        .reactions
-        .iter()
-        .map(crate::impls::client::chat_reaction_summary_to_proto)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    let reaction_count =
-        crate::impls::client::chat_reaction_count(&reactions).map_err(|e| e.to_string())?;
-    let mentions = value
-        .mentions
-        .iter()
-        .map(|mention| {
-            Ok(synctv_proto::client::ChatMention {
-                user_id: public_id_codec
-                    .encode_user_id(mention.mentioned_user_id)
-                    .map_err(|error| format!("Failed to encode mention user id: {error}"))?,
-                username: mention.username.clone().unwrap_or_default(),
-                start: mention.start,
-                length: mention.length,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let playback =
-        chat_playback_metadata_from_metadata(message.metadata.as_ref(), public_id_codec)?;
-    Ok(synctv_proto::client::ChatMessageReceive {
-        id: message.id.to_string(),
-        room_id,
-        user_id,
-        username,
-        content: message.content.clone(),
-        timestamp: message.created_at.timestamp(),
-        display_position: chat_display_position_from_metadata(message.metadata.as_ref())?,
-        display_color: chat_display_color_from_metadata(message.metadata.as_ref())?,
-        client_message_id: message.client_message_id.clone().unwrap_or_default(),
-        status: chat_status_to_proto(message.status) as i32,
-        version: message.version,
-        edited_at: message.edited_at.map_or(0, |ts| ts.timestamp()),
-        deleted_at: message.deleted_at.map_or(0, |ts| ts.timestamp()),
-        reply_to_message_id: message
-            .reply_to_message_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        attachments: value
-            .attachments
-            .iter()
-            .map(core_chat_attachment_to_proto)
-            .collect::<Result<Vec<_>, _>>()?,
-        deleted_by_user_id,
-        delete_reason: message.delete_reason.clone().unwrap_or_default(),
-        playback_media_id: playback.media_id,
-        playback_playlist_id: playback.playlist_id,
-        playback_target: playback.target,
-        playback_target_hash: playback.target_hash,
-        playback_position_seconds: playback.position_seconds,
-        reactions,
-        reaction_count,
-        metadata: crate::impls::client::convert::chat_metadata_to_proto(
-            message.metadata.as_ref(),
-            public_id_codec,
-        )
-        .map_err(|error| error.to_string())?,
-        mentions,
-        pin: value
-            .pin
-            .as_ref()
-            .map(|pin| chat_message_pin_to_proto(pin, public_id_codec))
-            .transpose()?,
-        message_type: chat_message_type_to_proto(message.message_type) as i32,
-    })
+    synctv_adapter::chat::chat_message_receive_to_proto(value, public_id_codec, username)
+        .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn core_chat_attachment_to_proto(
     attachment: &synctv_core::models::ChatAttachment,
 ) -> Result<synctv_proto::client::ChatAttachment, String> {
-    Ok(synctv_proto::client::ChatAttachment {
-        id: attachment.id.clone(),
-        url: chat_attachment_url_field(attachment)?,
-        object_access: attachment
-            .object_access
-            .as_ref()
-            .map(crate::impls::stored_files::file_object_access_to_proto),
-        mime_type: required_chat_attachment_mime_type(attachment)?,
-        size_bytes: required_chat_attachment_size_bytes(attachment)?,
-        width: attachment.width.unwrap_or_default(),
-        height: attachment.height.unwrap_or_default(),
-        metadata: crate::impls::client::convert::file_metadata_to_proto(&attachment.metadata)
-            .map_err(|error| error.to_string())?,
-        filename: attachment.filename.clone().unwrap_or_default(),
-        kind: chat_attachment_kind_to_proto(attachment.kind) as i32,
-        reuse_token: attachment.reuse_token.clone().unwrap_or_default(),
-        reuse_expires_at: attachment
-            .reuse_expires_at
-            .map(|expires_at| expires_at.timestamp()),
-        variants: crate::impls::client::convert::file_object_variants_from_metadata(
-            &attachment.metadata,
-            "chat attachment",
-        )
-        .map_err(|error| error.to_string())?,
-    })
-}
-
-fn chat_attachment_url_field(
-    attachment: &synctv_core::models::ChatAttachment,
-) -> Result<String, String> {
-    let url = attachment
-        .url
-        .as_deref()
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| {
-            attachment
-                .object_access
-                .as_ref()
-                .and_then(crate::impls::stored_files::render_file_object_access_url)
-        })
-        .ok_or_else(|| "chat attachment url is missing".to_string())?;
-    if url.is_empty() {
-        return Err("chat attachment url is empty".to_string());
-    }
-    Ok(url)
-}
-
-fn required_chat_attachment_mime_type(
-    attachment: &synctv_core::models::ChatAttachment,
-) -> Result<String, String> {
-    let mime_type = attachment
-        .mime_type
-        .as_deref()
-        .map(str::trim)
-        .ok_or_else(|| format!("chat attachment {} is missing mime_type", attachment.id))?;
-    if mime_type.is_empty() {
-        return Err(format!(
-            "chat attachment {} has empty mime_type",
-            attachment.id
-        ));
-    }
-    Ok(mime_type.to_string())
-}
-
-fn required_chat_attachment_size_bytes(
-    attachment: &synctv_core::models::ChatAttachment,
-) -> Result<i64, String> {
-    match attachment.size_bytes {
-        Some(size_bytes) if size_bytes > 0 => Ok(size_bytes),
-        _ => Err(format!(
-            "chat attachment {} is missing valid size_bytes",
-            attachment.id
-        )),
-    }
-}
-
-pub(crate) fn chat_attachment_kind_to_proto(
-    kind: synctv_core::models::ChatAttachmentKind,
-) -> synctv_proto::client::ChatAttachmentKind {
-    match kind {
-        synctv_core::models::ChatAttachmentKind::File => {
-            synctv_proto::client::ChatAttachmentKind::File
-        }
-        synctv_core::models::ChatAttachmentKind::Image => {
-            synctv_proto::client::ChatAttachmentKind::Image
-        }
-        synctv_core::models::ChatAttachmentKind::Audio => {
-            synctv_proto::client::ChatAttachmentKind::Audio
-        }
-    }
+    synctv_adapter::chat::core_chat_attachment_to_proto(attachment)
+        .map_err(|error| error.to_string())
 }
 
 /// Binary codec for proto messages

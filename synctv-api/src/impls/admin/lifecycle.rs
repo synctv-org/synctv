@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use synctv_core::models::{RoomId, UserId, UserRole};
+use synctv_core::service::NewRealtimeOutboxEvent;
 
 use crate::impls::pagination::paginate_all;
 use crate::realtime_lifecycle::DeletedRoomAfterCommitFanout;
@@ -20,7 +21,7 @@ impl AdminApiImpl {
         deleted_by: &UserId,
     ) -> Result<
         (
-            HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
+            HashMap<RoomId, NewRealtimeOutboxEvent>,
             Vec<DeletedRoomAfterCommitFanout>,
         ),
         ApiError,

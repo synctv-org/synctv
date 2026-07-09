@@ -235,7 +235,7 @@ impl WsTicketService {
         Self::with_memory(ticket_ttl_secs)
     }
 
-    pub(crate) fn from_shared_state_profile(
+    pub fn from_shared_state_profile(
         profile: &SharedStateProfile,
         ticket_ttl_secs: Option<u64>,
     ) -> Result<Self> {

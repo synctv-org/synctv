@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use synctv_core::models::{RoomId, RoomSettings, UserId};
 use synctv_core::service::RealtimeOutboxSettingsEventFactory;
+use synctv_realtime::fanout::RealtimeFanoutService;
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::{PreparedRealtimeFanoutPlan, RealtimeFanoutService};
+use crate::realtime_fanout::PreparedRealtimeFanoutPlan;
 
 #[derive(Clone)]
 pub struct PreparedRoomSettingsFanout {

@@ -284,7 +284,7 @@ pub fn create_test_user_service(pool: sqlx::PgPool) -> UserService {
             token_blacklist: create_test_token_blacklist_store_service(),
             key_builder: KeyBuilder::new("test"),
             brute_force: create_test_brute_force_protection_service(),
-            password_complexity: synctv_core::config::PasswordComplexityConfig::default(),
+            password_complexity: synctv_core::validation::PasswordComplexityOptions::default(),
         },
         UserServiceRuntimeOptions {
             password_registration_policy_override: Some(synctv_core::service::RegistrationPolicy {

@@ -169,11 +169,14 @@ pub(super) async fn message_stream(
             presence_service: service.presence_service.clone(),
             notification_service: service.notification_service.clone(),
             ws_message_rate_limit: service
-                .config
+                .runtime_settings
                 .connection_limits
                 .ws_message_rate_limit_per_second,
             heartbeat_schedule: service.heartbeat_schedule,
-            filter_private_ice_candidates: service.config.webrtc.filter_private_ice_candidates,
+            filter_private_ice_candidates: service
+                .runtime_settings
+                .webrtc
+                .filter_private_ice_candidates,
         },
     );
 

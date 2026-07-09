@@ -73,7 +73,7 @@ impl MemoryBackend {
                 // delegates entirely to the listener via `run_pending_tasks`.
                 let size = value.data_size();
                 if total_bytes_clone
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                         Some(cur.saturating_sub(size))
                     })
                     .is_err()

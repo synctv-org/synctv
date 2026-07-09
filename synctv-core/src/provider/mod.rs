@@ -19,8 +19,6 @@ pub(crate) mod error;
 pub(crate) mod playback_profile;
 pub(crate) mod playback_transport;
 pub(crate) mod provider_client;
-pub(crate) mod remote_provider_clients;
-pub(crate) mod remote_transport;
 pub(crate) mod store;
 pub(crate) mod traits;
 pub(crate) mod upstream_transport;
@@ -36,7 +34,7 @@ mod emby;
 mod live_proxy;
 mod rtmp;
 
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 pub use access::{
     AlistAccess, AlistBinding, BilibiliAccess, CachedProviderAccessService, EmbyAccess,
@@ -197,6 +195,21 @@ impl ProviderSet {
             )),
             rtmp: std::sync::Arc::new(RtmpProvider::new()),
             live_proxy: std::sync::Arc::new(LiveProxyProvider::new_with_ssrf_guard(ssrf_guard)),
+        }
+    }
+
+    #[must_use]
+    pub fn with_credential_repo(
+        &self,
+        credential_repo: Arc<crate::repository::UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            alist: Arc::new(self.alist.with_credential_repo(credential_repo.clone())),
+            bilibili: Arc::new(self.bilibili.with_credential_repo(credential_repo.clone())),
+            emby: Arc::new(self.emby.with_credential_repo(credential_repo)),
+            direct_url: self.direct_url.clone(),
+            rtmp: self.rtmp.clone(),
+            live_proxy: self.live_proxy.clone(),
         }
     }
 }

@@ -6,8 +6,9 @@ use std::time::Duration;
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{ChatMessageSelection, RoomId, UserId},
-    repository::{RoomResourceEventPayload, RoomResourceEventRepository, RoomResourceKind},
-    service::{ChatService, OnlinePresenceService, RoomService},
+    service::{
+        ChatService, OnlinePresenceService, RoomResourceEventPayload, RoomResourceKind, RoomService,
+    },
 };
 use synctv_realtime::sync::{CacheTarget, RealtimeEvent};
 
@@ -299,7 +300,7 @@ struct CompletedMediaResourceRefresh {
 
 pub(super) struct MediaResourceHub {
     room_id: RoomId,
-    pool: sqlx::PgPool,
+    room_service: Arc<RoomService>,
     state: tokio::sync::Mutex<MediaResourceHubState>,
 }
 
@@ -318,7 +319,7 @@ fn media_resource_hub(room_id: RoomId, room_service: &Arc<RoomService>) -> Arc<M
     }
     let hub = Arc::new(MediaResourceHub {
         room_id,
-        pool: room_service.pool().clone(),
+        room_service: Arc::clone(room_service),
         state: tokio::sync::Mutex::new(MediaResourceHubState::default()),
     });
     hubs.insert(key, Arc::downgrade(&hub));
@@ -500,7 +501,7 @@ pub(super) struct ResourceObserver {
     chat_service: Option<Arc<ChatService>>,
     clock: Arc<dyn synctv_core::Clock>,
     presence_service: Arc<OnlinePresenceService>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     pub(super) room_hub: Arc<MediaResourceHub>,
     playback_service: Arc<dyn PlaybackService>,
@@ -520,7 +521,7 @@ pub(super) struct ResourceObserverParams {
     pub(super) chat_service: Option<Arc<ChatService>>,
     pub(super) clock: Arc<dyn synctv_core::Clock>,
     pub(super) presence_service: Arc<OnlinePresenceService>,
-    pub(super) public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub(super) public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub(super) sender: Arc<dyn MessageSender>,
     pub(super) playback_service: Arc<dyn PlaybackService>,
     pub(super) playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -879,8 +880,9 @@ impl ResourceObserver {
         if resource_types.is_empty() {
             return Ok(None);
         }
-        let cursor = RoomResourceEventRepository::new(self.room_service.pool().clone())
-            .latest_room_event_cursor_for_resource_types(&self.room_id, resource_types)
+        let cursor = self
+            .room_service
+            .latest_room_resource_event_cursor_for_resource_types(&self.room_id, resource_types)
             .await
             .map_err(|error| error.to_string())?;
         Ok(Some(synctv_proto::client::EventCursor {
@@ -974,8 +976,9 @@ impl MediaResourceHub {
         if !self.has_subscriptions().await {
             return Ok(());
         }
-        let event_cursor = match RoomResourceEventRepository::new(self.pool.clone())
-            .room_event_cursor_by_event_id(&self.room_id, event.event_id())
+        let event_cursor = match self
+            .room_service
+            .room_resource_event_cursor_by_event_id(&self.room_id, event.event_id())
             .await
         {
             Ok(cursor) => cursor.map(proto_event_cursor),
@@ -2474,9 +2477,9 @@ impl ResourceObserver {
             return Ok(());
         }
 
-        let repository = RoomResourceEventRepository::new(self.room_service.pool().clone());
-        if !repository
-            .is_room_event_sequence_retained_for_resource_types(
+        if !self
+            .room_service
+            .is_room_resource_event_sequence_retained_for_resource_types(
                 &self.room_id,
                 resource_types,
                 after_event_sequence,
@@ -2493,8 +2496,9 @@ impl ResourceObserver {
         }
 
         loop {
-            let events = repository
-                .list_room_events_after_sequence_for_resource_types(
+            let events = self
+                .room_service
+                .list_room_resource_events_after_sequence_for_resource_types(
                     &self.room_id,
                     resource_types,
                     after_event_sequence,

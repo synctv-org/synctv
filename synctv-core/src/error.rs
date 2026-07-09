@@ -1,6 +1,9 @@
 use synctv_common::ExecutionControlError;
 use thiserror::Error;
 
+const KICK_COOLDOWN_DENIED_MESSAGE: &str =
+    "User was recently kicked from this room and cannot access it yet";
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Database error: {0}")]
@@ -20,6 +23,11 @@ pub enum Error {
 
     #[error("Authorization error: {0}")]
     Authorization(String),
+
+    #[error(
+        "Authorization error: User was recently kicked from this room and cannot access it yet"
+    )]
+    KickCooldownDenied,
 
     #[error("Not found: {0}")]
     NotFound(String),
@@ -53,6 +61,23 @@ pub enum Error {
 
     #[error("Operation timeout: {0}")]
     Timeout(String),
+}
+
+impl Error {
+    #[must_use]
+    pub fn kick_cooldown_denied() -> Self {
+        Self::KickCooldownDenied
+    }
+
+    #[must_use]
+    pub const fn kick_cooldown_denied_message() -> &'static str {
+        KICK_COOLDOWN_DENIED_MESSAGE
+    }
+
+    #[must_use]
+    pub fn is_kick_cooldown_denied(&self) -> bool {
+        matches!(self, Self::KickCooldownDenied)
+    }
 }
 
 impl From<sqlx::Error> for Error {
@@ -262,6 +287,18 @@ impl<T, E: std::fmt::Display> InternalExt<T> for std::result::Result<T, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_kick_cooldown_error_is_structured() {
+        let error = Error::kick_cooldown_denied();
+
+        assert!(matches!(error, Error::KickCooldownDenied));
+        assert!(error.is_kick_cooldown_denied());
+        assert_eq!(
+            Error::kick_cooldown_denied_message(),
+            "User was recently kicked from this room and cannot access it yet"
+        );
+    }
 
     // Helper to create a sqlx::Error from a DatabaseError with a specific code and optional constraint
     fn make_db_error(code: &str, message: &str) -> sqlx::Error {

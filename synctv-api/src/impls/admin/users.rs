@@ -1,15 +1,64 @@
-use synctv_core::models::{
-    AuditDetails, AuditUpdatedFields, SortDirection as CoreSortDirection, UserId, UserRole,
-    UserStatus,
-};
+use synctv_core::models::{AuditDetails, AuditUpdatedFields, UserId, UserRole, UserStatus};
 
 use super::{
-    auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, proto_admin_sort_direction,
-    proto_admin_user_list_sort_by, proto_user_role_filter, proto_user_status_filter,
-    user_preferences_to_proto, AdminApiImpl, ApiError, RequestContext,
-    LOCAL_MANAGEMENT_ACTOR_USER_ID,
+    auth_factors_to_proto, check_role_hierarchy, i64_to_i32_api, user_preferences_to_proto,
+    AdminApiImpl, ApiError, RequestContext, LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
-use crate::impls::client::user_preferences_update_from_proto;
+
+fn optional_trimmed(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn create_user_role(value: i32) -> Result<Option<UserRole>, ApiError> {
+    if value == synctv_proto::common::UserRole::Unspecified as i32
+        || value == synctv_proto::common::UserRole::User as i32
+    {
+        return Ok(None);
+    }
+    crate::impls::client::proto_role_to_user_role(value).map(Some)
+}
+
+fn user_status_filter(value: i32) -> Result<Option<UserStatus>, ApiError> {
+    if value == synctv_proto::common::UserStatus::Unspecified as i32 {
+        return Ok(None);
+    }
+    UserStatus::try_from(value)
+        .map(Some)
+        .map_err(|_| ApiError::InvalidInput("Unsupported user status".to_string()))
+}
+
+fn list_users_query(
+    req: &synctv_proto::admin::ListUsersRequest,
+) -> Result<synctv_core::models::UserListQuery, ApiError> {
+    Ok(synctv_core::models::UserListQuery {
+        pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+        search: optional_trimmed(&req.search),
+        status: super::proto_user_status_filter(req.status)?,
+        role: super::proto_user_role_filter(req.role)?,
+        is_banned: req.is_banned,
+        sort_by: super::proto_admin_user_list_sort_by(req.sort_by)?,
+        sort_direction: super::proto_admin_sort_direction(
+            req.sort_direction,
+            synctv_core::models::SortDirection::Desc,
+        )?,
+    })
+}
+
+fn list_admins_query(
+    req: &synctv_proto::admin::ListAdminsRequest,
+) -> Result<synctv_core::models::UserListQuery, ApiError> {
+    Ok(synctv_core::models::UserListQuery {
+        pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+        search: optional_trimmed(&req.search),
+        sort_by: super::proto_admin_user_list_sort_by(req.sort_by)?,
+        sort_direction: super::proto_admin_sort_direction(
+            req.sort_direction,
+            synctv_core::models::SortDirection::Desc,
+        )?,
+        ..Default::default()
+    })
+}
 
 impl AdminApiImpl {
     pub async fn create_user(
@@ -20,56 +69,30 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let email = match req.email.trim() {
-            "" => None,
-            value => Some(value.to_string()),
-        };
-        let password = match req.password.as_str() {
-            "" => None,
-            value => Some(value.to_string()),
-        };
-
-        // Validate role BEFORE registration to fail fast
-        let target_role = if req.role != synctv_proto::common::UserRole::Unspecified as i32
-            && req.role != synctv_proto::common::UserRole::User as i32
+        let role = create_user_role(req.role)?;
+        let status = user_status_filter(req.status)?;
+        let password = (!req.password.is_empty()).then_some(req.password);
+        if role == Some(synctv_core::models::UserRole::Root)
+            && caller_role != synctv_core::models::UserRole::Root
         {
-            let new_role = crate::impls::client::proto_role_to_user_role(req.role)?;
-            // Only root can create root users
-            if new_role == synctv_core::models::UserRole::Root
-                && caller_role != synctv_core::models::UserRole::Root
-            {
-                return Err(ApiError::Authorization(
-                    "Only root users can create root users".to_string(),
-                ));
-            }
-            Some(new_role)
-        } else {
-            None
-        };
-
-        let target_status = if req.status == synctv_proto::common::UserStatus::Unspecified as i32 {
-            None
-        } else {
-            Some(
-                UserStatus::try_from(req.status)
-                    .map_err(|_| ApiError::InvalidInput("Unsupported user status".to_string()))?,
-            )
-        };
+            return Err(ApiError::Authorization(
+                "Only root users can create root users".to_string(),
+            ));
+        }
 
         // Delegate to UserService which handles validation, creation, and
         // username cache population atomically.
-        let initial_banned_by = (target_status == Some(UserStatus::Banned)
+        let initial_banned_by = (status == Some(UserStatus::Banned)
             && *admin_user_id != LOCAL_MANAGEMENT_ACTOR_USER_ID)
             .then_some(admin_user_id);
         let user = self
             .user_service
             .create_user_with_optional_direct_password(
-                req.username.clone(),
-                email,
+                req.username,
+                optional_trimmed(&req.email),
                 password,
-                target_role,
-                target_status,
+                role,
+                status,
                 initial_banned_by,
             )
             .await
@@ -143,9 +166,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let uid =
-            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
 
         let user = self
             .user_service
@@ -186,8 +207,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid =
-            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let reason = req.reason.trim();
         let reason = (!reason.is_empty()).then(|| reason.to_string());
         let updated = self
@@ -261,28 +281,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::ListUsersRequest,
     ) -> Result<synctv_proto::admin::ListUsersResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let status = proto_user_status_filter(req.status)?;
-        let role = proto_user_role_filter(req.role)?;
-        let search = if req.search.is_empty() {
-            None
-        } else {
-            Some(req.search)
-        };
-        let sort_by = proto_admin_user_list_sort_by(req.sort_by)?;
-        let sort_direction =
-            proto_admin_sort_direction(req.sort_direction, CoreSortDirection::Desc)?;
-
-        let query = synctv_core::models::UserListQuery {
-            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
-            search,
-            status,
-            role,
-            is_banned: req.is_banned,
-            sort_by,
-            sort_direction,
-        };
-
+        let query = list_users_query(&req)?;
         let (users, total) = self
             .user_service
             .list_users_eventually_consistent(&query)
@@ -305,10 +304,10 @@ impl AdminApiImpl {
         req: synctv_proto::admin::GetUserRequest,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
+        let user_id = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
-            .get_user(&uid)
+            .get_user(&user_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -320,15 +319,15 @@ impl AdminApiImpl {
         req: synctv_proto::admin::GetUserPreferencesRequest,
     ) -> Result<synctv_proto::admin::GetUserPreferencesResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
+        let user_id = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
-            .get_user(&uid)
+            .get_user(&user_id)
             .await
             .map_err(ApiError::from)?;
         let (preferences, auth_factors) = self
             .user_service
-            .get_user_preferences(&uid)
+            .get_user_preferences(&user_id)
             .await
             .map_err(ApiError::from)?;
 
@@ -348,7 +347,7 @@ impl AdminApiImpl {
         crate::impls::validate_proto_request(&req)?;
         let uid =
             crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
-        let update = user_preferences_update_from_proto(
+        let update = crate::impls::client::user_preferences_update_from_proto(
             synctv_proto::client::UpdateUserPreferencesRequest {
                 two_factor_enabled: req.two_factor_enabled,
                 notifications: req.notifications,
@@ -407,8 +406,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-        let uid =
-            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
         let user = self
             .user_service
             .get_user(&uid)
@@ -475,9 +473,7 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<synctv_proto::admin::SetUserPasswordResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let uid =
-            crate::impls::proto_validated_user_id(req.user_id.clone(), &self.public_id_codec)?;
+        let uid = crate::impls::proto_validated_user_id(req.user_id, &self.public_id_codec)?;
 
         let target_user = self
             .user_service
@@ -627,18 +623,7 @@ impl AdminApiImpl {
         req: synctv_proto::admin::ListAdminsRequest,
     ) -> Result<synctv_proto::admin::ListAdminsResponse, ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let query = synctv_core::models::UserListQuery {
-            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
-            search: (!req.search.is_empty()).then_some(req.search),
-            sort_by: proto_admin_user_list_sort_by(req.sort_by)?,
-            sort_direction: proto_admin_sort_direction(
-                req.sort_direction,
-                CoreSortDirection::Desc,
-            )?,
-            ..Default::default()
-        };
-
+        let query = list_admins_query(&req)?;
         let (users, total) = self
             .user_service
             .list_admins_eventually_consistent(&query)

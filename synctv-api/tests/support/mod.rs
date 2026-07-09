@@ -26,7 +26,7 @@ pub fn local_request_executor() -> RequestExecutor {
         BruteForceProtection::in_memory("test:request-executor:brute:".to_string()),
     ));
     RequestExecutor::new(
-        Arc::new(synctv_core::Config::default()),
+        Arc::new(synctv_api::ApiRuntimeSettings::default()),
         Arc::new(JwtValidator::new(Arc::new(jwt_service))),
         Arc::new(SecurityPipeline::new(&user_service)),
         Arc::new(RateLimiter::local_only(

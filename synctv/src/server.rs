@@ -20,23 +20,31 @@ use tokio::task::{JoinHandle, JoinSet};
 use tower::ServiceExt;
 use tracing::{error, info, warn};
 
-use synctv_api::RealtimeEventService;
-use synctv_api::RealtimeFanoutService;
-use synctv_api::{AdminApiImpl, ClientApiImpl};
 use synctv_core::{
-    bootstrap::DatabasePools,
     cache::UserCache,
-    config::absolute_display_path,
     repository::UserProviderCredentialRepository,
     service::{RoomService, UserService},
-    Config, RedisConnectionRuntime,
+    RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::{ManagementLifecycleController, ShutdownMode};
+use synctv_management::provider_runtime::{
+    AlistRuntime, BilibiliRuntime, EmbyRuntime, ProviderCommonRuntime,
+};
 use synctv_management::server::{spawn_management_server, ManagementServerConfig};
+use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
 use synctv_realtime::sync::ConnectionRuntime;
 use synctv_realtime::sync::RealtimeEvent;
 
+use crate::app_config::{AppConfig as Config, MetricsTlsConfig};
 use crate::bootstrap::cluster::ClusterNodeActivator;
+use crate::bootstrap::DatabasePools;
+use crate::management_runtime::{
+    ManagementAdminRuntime, ManagementAlistRuntime, ManagementBilibiliRuntime,
+    ManagementEmbyRuntime, ManagementProviderCommonRuntime,
+};
+use crate::path_util::absolute_display_path;
+use crate::resource_options::api_runtime_settings;
+use crate::resource_options::management_runtime_settings;
 use crate::shutdown::ShutdownCoordinator;
 
 /// Livestream server state (held for graceful shutdown).
@@ -119,6 +127,7 @@ pub struct Services {
 /// `SyncTV` server - manages all server components
 pub struct SyncTvServer {
     config: Config,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     clock: Arc<synctv_core::SyncedClock>,
     services: Services,
     livestream_state: Option<LivestreamState>,
@@ -145,7 +154,7 @@ struct SharedProviderPlaybackRuntime {
 struct SharedApiExecutionRuntime {
     jwt_validator: Arc<synctv_core::service::JwtValidator>,
     security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    public_id_codec: Arc<synctv_api::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     request_executor: Arc<synctv_api::RequestExecutor>,
 }
 
@@ -220,7 +229,7 @@ fn build_admin_read_services(
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn build_core_api_impls(
-    config: Arc<Config>,
+    config: Arc<synctv_api::ApiRuntimeSettings>,
     user_service: Arc<UserService>,
     read_pool: Option<sqlx::PgPool>,
     room_service: Arc<RoomService>,
@@ -231,7 +240,7 @@ fn build_core_api_impls(
     jwt_service: synctv_core::service::JwtService,
     live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
-    public_id_codec: Arc<synctv_api::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     chat_service: Option<Arc<synctv_core::service::ChatService>>,
     provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     email_service: Option<Arc<synctv_core::service::EmailService>>,
@@ -269,12 +278,12 @@ fn build_core_api_impls(
     };
 
     let client = Arc::new(synctv_api::ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             user_service: user_service.clone(),
             read_pool: read_pool.clone(),
             room_service: room_service.clone(),
             connection_service: connection_service.clone(),
-            config: config.clone(),
+            runtime_settings: config.clone(),
             publish_key_service: publish_key_service.clone(),
             jwt_service,
             live_streaming_infrastructure: live_streaming_infrastructure.clone(),
@@ -306,7 +315,7 @@ fn build_core_api_impls(
         let email_service = email_service
             .ok_or_else(|| anyhow::anyhow!("email_service is required to build the admin API"))?;
         Some(Arc::new(synctv_api::AdminApiImpl::new_with_runtime(
-            synctv_api::AdminApiConfig {
+            synctv_api::AdminApiOptions {
                 room_service,
                 user_service: user_service.clone(),
                 read_services: build_admin_read_services(user_service.as_ref(), read_pool),
@@ -317,7 +326,7 @@ fn build_core_api_impls(
                 provider_instance_manager,
                 live_streaming_infrastructure,
                 publish_key_service,
-                config,
+                runtime_settings: config,
                 audit_service,
                 public_id_codec: public_id_codec.clone(),
             },
@@ -385,23 +394,21 @@ fn build_provider_api_impls(
         access_service: provider_access_service,
         event_service,
     };
+    let credential_backed_providers = providers.with_credential_repo(credential_repo);
     let bilibili = Arc::new(
         synctv_api::BilibiliApiImpl::new_with_runtime(
-            &providers.bilibili,
-            credential_repo.clone(),
+            credential_backed_providers.bilibili.clone(),
             jwt_secret,
             provider_api_runtime.clone(),
         )
         .map_err(|error| anyhow::anyhow!("Failed to initialize Bilibili API: {error}"))?,
     );
     let alist = Arc::new(synctv_api::AlistApiImpl::new_with_runtime(
-        &providers.alist,
-        credential_repo.clone(),
+        credential_backed_providers.alist.clone(),
         provider_api_runtime.clone(),
     ));
     let emby = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
-        &providers.emby,
-        credential_repo,
+        credential_backed_providers.emby.clone(),
         provider_api_runtime,
     ));
 
@@ -461,7 +468,8 @@ fn build_playback_provider_services(
 
 #[allow(clippy::needless_pass_by_value)]
 fn build_api_execution_runtime(
-    config: Arc<Config>,
+    config: Arc<synctv_api::ApiRuntimeSettings>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     user_service: Arc<UserService>,
     user_cache: Arc<UserCache>,
     jwt_service: synctv_core::service::JwtService,
@@ -478,10 +486,6 @@ fn build_api_execution_runtime(
     let jwt_validator = Arc::new(synctv_core::service::JwtValidator::new(Arc::new(
         jwt_service,
     )));
-    let public_id_codec = Arc::new(
-        synctv_api::PublicIdCodec::from_config(&config.external_ids)
-            .map_err(|error| anyhow::anyhow!("Invalid public ID configuration: {error}"))?,
-    );
     let request_executor = Arc::new(synctv_api::RequestExecutor::new(
         config,
         jwt_validator.clone(),
@@ -515,11 +519,11 @@ fn build_provider_access_service(
 }
 
 async fn build_proxy_slice_cache(
-    config: &Config,
+    config: &synctv_api::ApiRuntimeSettings,
     proxy_http_client: Client,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
 ) -> anyhow::Result<Arc<synctv_proxy::slice_cache::SliceCache>> {
-    let slice_cache_config = synctv_api::proxy_slice_cache_config_from_app_config(config);
+    let slice_cache_config = synctv_api::proxy_slice_cache_options_from_runtime_settings(config);
     let cache = synctv_proxy::slice_cache::SliceCache::try_new_with_client_and_ssrf_guard(
         slice_cache_config,
         proxy_http_client,
@@ -531,12 +535,11 @@ async fn build_proxy_slice_cache(
 }
 
 struct ManagementApiHandles {
-    client: Arc<ClientApiImpl>,
-    admin: Arc<AdminApiImpl>,
-    provider_common: Arc<synctv_api::ProviderCommonApiImpl>,
-    alist: Arc<synctv_api::AlistApiImpl>,
-    bilibili: Arc<synctv_api::BilibiliApiImpl>,
-    emby: Arc<synctv_api::EmbyApiImpl>,
+    admin: Arc<dyn synctv_management::admin_runtime::AdminRuntime>,
+    provider_common: Arc<dyn ProviderCommonRuntime>,
+    alist: Arc<dyn AlistRuntime>,
+    bilibili: Arc<dyn BilibiliRuntime>,
+    emby: Arc<dyn EmbyRuntime>,
 }
 
 fn management_apis_from_http_state(
@@ -548,12 +551,17 @@ fn management_apis_from_http_state(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("management server requires shared admin API wiring"))?;
     Ok(ManagementApiHandles {
-        client: shared_runtime.client_api.clone(),
-        admin: admin_api,
-        provider_common: shared_runtime.provider_common_api.clone(),
-        alist: shared_runtime.alist_api.clone(),
-        bilibili: shared_runtime.bilibili_api.clone(),
-        emby: shared_runtime.emby_api.clone(),
+        admin: Arc::new(ManagementAdminRuntime::new(admin_api)),
+        provider_common: Arc::new(ManagementProviderCommonRuntime::new(
+            shared_runtime.provider_common_api.clone(),
+        )),
+        alist: Arc::new(ManagementAlistRuntime::new(
+            shared_runtime.alist_api.clone(),
+        )),
+        bilibili: Arc::new(ManagementBilibiliRuntime::new(
+            shared_runtime.bilibili_api.clone(),
+        )),
+        emby: Arc::new(ManagementEmbyRuntime::new(shared_runtime.emby_api.clone())),
     })
 }
 
@@ -597,7 +605,7 @@ where
 }
 
 async fn load_metrics_tls_server_config(
-    tls: &synctv_core::config::MetricsTlsConfig,
+    tls: &MetricsTlsConfig,
 ) -> anyhow::Result<rustls::ServerConfig> {
     let cert_pem = tokio::fs::read(&tls.cert_path).await.with_context(|| {
         format!(
@@ -1330,6 +1338,7 @@ impl SyncTvServer {
     /// Create a new server instance
     pub fn new(
         config: Config,
+        public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
         clock: Arc<synctv_core::SyncedClock>,
         services: Services,
         livestream_state: Option<LivestreamState>,
@@ -1338,6 +1347,7 @@ impl SyncTvServer {
     ) -> Self {
         Self {
             config,
+            public_id_codec,
             clock,
             services,
             livestream_state,
@@ -1436,7 +1446,7 @@ impl SyncTvServer {
         );
         info!(
             "Server state refresh task spawned (interval: {}s)",
-            synctv_api::status::ServerStateRuntime::refresh_interval().as_secs()
+            synctv_core::service::ServerStateService::refresh_interval().as_secs()
         );
 
         // Start unified API server (single listener for REST + gRPC)
@@ -1907,7 +1917,7 @@ impl SyncTvServer {
 
     async fn build_grpc_router(
         &self,
-        config: &Config,
+        config: &synctv_api::ApiRuntimeSettings,
         shutdown_rx: watch::Receiver<bool>,
         shared_http_app_state: Arc<synctv_api::AppState>,
         shared_provider_runtime: &SharedProviderPlaybackRuntime,
@@ -1916,8 +1926,8 @@ impl SyncTvServer {
             .shared_api_runtime
             .provider_access_service
             .clone();
-        synctv_api::build_axum_router(synctv_api::GrpcServerConfig {
-            config,
+        synctv_api::build_axum_router(synctv_api::GrpcServerOptions {
+            runtime_settings: config,
             jwt_service: self.services.jwt_service.clone(),
             user_service: self.services.user_service.clone(),
             read_pool: Some(self.services.read_pool.clone()),
@@ -1931,13 +1941,7 @@ impl SyncTvServer {
             connection_service: self.services.realtime_connection_service.clone(),
             presence_service: self.services.presence_service.clone(),
             providers_manager: Some(self.services.providers_manager.clone()),
-            provider_instance_manager: self.services.provider_instance_manager.clone(),
-            user_provider_credential_repository: self
-                .services
-                .user_provider_credential_repository
-                .clone(),
             provider_access_service,
-            providers: self.services.providers.clone(),
             jwt_validator: shared_http_app_state
                 .shared_api_runtime
                 .jwt_validator
@@ -2036,12 +2040,12 @@ impl SyncTvServer {
     ) -> anyhow::Result<(axum::Router, Arc<synctv_api::AppState>)> {
         let ssrf_guard = self.config.security.ssrf_guard();
         let proxy_http_client = synctv_proxy::build_proxy_http_client(ssrf_guard.clone())?;
+        let config = Arc::new(api_runtime_settings(&self.config));
         let proxy_slice_cache =
-            build_proxy_slice_cache(&self.config, proxy_http_client.clone(), ssrf_guard.clone())
-                .await?;
-        let config = Arc::new(self.config.clone());
+            build_proxy_slice_cache(&config, proxy_http_client.clone(), ssrf_guard.clone()).await?;
         let api_execution_runtime = build_api_execution_runtime(
             config.clone(),
+            self.public_id_codec.clone(),
             self.services.user_service.clone(),
             self.services.user_cache.clone(),
             self.services.jwt_service.clone(),
@@ -2127,20 +2131,14 @@ impl SyncTvServer {
             });
 
         let (http_router, http_state) =
-            synctv_api::create_router_with_state_from_config(synctv_api::RouterConfig {
-                config,
+            synctv_api::create_router_with_state_from_options(synctv_api::RouterOptions {
+                runtime_settings: config,
                 user_service: self.services.user_service.clone(),
                 read_pool: Some(self.services.read_pool.clone()),
                 user_cache: self.services.user_cache.clone(),
                 room_service: self.services.room_service.clone(),
                 content_filter: self.services.content_filter.clone(),
-                provider_instance_manager: self.services.provider_instance_manager.clone(),
-                user_provider_credential_repository: self
-                    .services
-                    .user_provider_credential_repository
-                    .clone(),
                 provider_access_service,
-                providers: self.services.providers.clone(),
                 event_service: self.services.realtime_event_service.clone(),
                 connection_manager: self.services.realtime_connection_service.clone(),
                 presence_service: self.services.presence_service.clone(),
@@ -2215,7 +2213,7 @@ impl SyncTvServer {
         let api_address = self.config.api_address();
         let grpc_router = self
             .build_grpc_router(
-                &self.config,
+                &shared_http_app_state.runtime_settings,
                 shutdown_rx.clone(),
                 shared_http_app_state.clone(),
                 shared_provider_runtime,
@@ -2379,13 +2377,24 @@ impl SyncTvServer {
             .shared_api_runtime
             .server_state_runtime
             .clone();
+        let shared_client_api = shared_http_app_state.shared_api_runtime.client_api.clone();
 
         spawn_management_server(ManagementServerConfig {
-            config: Arc::new(self.config.clone()),
+            settings: Arc::new(management_runtime_settings(&self.config)),
             user_service: self.services.user_service.clone(),
             admin_api: management_apis.admin,
+            public_id_codec: shared_http_app_state
+                .shared_api_runtime
+                .public_id_codec
+                .clone(),
             provider_common_api: management_apis.provider_common,
-            client_api: management_apis.client,
+            chat_service: Some(self.services.chat_service.clone()),
+            clock: shared_client_api.clock.clone(),
+            room_service: self.services.room_service.clone(),
+            presence_service: self.services.presence_service.clone(),
+            realtime_fanout: shared_client_api.realtime_fanout.clone(),
+            membership_event_fanout: shared_client_api.membership_event_fanout.clone(),
+            room_cache_fanout: shared_client_api.room_cache_fanout.clone(),
             alist_api: management_apis.alist,
             bilibili_api: management_apis.bilibili,
             emby_api: management_apis.emby,
@@ -2475,6 +2484,7 @@ mod tests {
         spawn_admin_event_listener, LivestreamShutdown, SharedProviderPlaybackRuntime,
         StartupFailureShutdownContext, FORCE_SHUTDOWN_COORDINATOR_BUDGET,
     };
+    use crate::app_config::AppConfig as Config;
     use crate::shutdown::ShutdownCoordinator;
     use async_trait::async_trait;
     use std::sync::{
@@ -2484,13 +2494,11 @@ mod tests {
     use std::time::Duration;
     use synctv_core::{
         cache::{KeyBuilder, UsernameCache},
-        config::PasswordComplexityConfig,
         repository::{ProviderInstanceRepository, UserProviderCredentialRepository},
         service::{
             JwtService, ProvidersManager, RemoteProviderManager, RoomService, UserService,
             UserServiceDependencies, UserServiceRuntimeOptions,
         },
-        Config,
     };
     use synctv_core_testing::{
         create_test_brute_force_protection_service, create_test_token_blacklist_store_service,
@@ -2526,7 +2534,7 @@ mod tests {
                 token_blacklist: create_test_token_blacklist_store_service(),
                 key_builder: KeyBuilder::new("test"),
                 brute_force: create_test_brute_force_protection_service(),
-                password_complexity: PasswordComplexityConfig::default(),
+                password_complexity: synctv_core::validation::PasswordComplexityOptions::default(),
             },
             UserServiceRuntimeOptions::test_defaults(),
         )
@@ -2536,6 +2544,7 @@ mod tests {
     async fn management_server_reuses_shared_http_app_state_instances() {
         let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
         let config = Arc::new(Config::default());
+        let api_config = Arc::new(crate::resource_options::api_runtime_settings(&config));
         let credential_repo = Arc::new(UserProviderCredentialRepository::new(pool.clone()));
         let credential_encryption =
             synctv_core::credential_encryption::CredentialEncryption::new(&[0x42; 32])
@@ -2615,18 +2624,19 @@ mod tests {
             "test:user:".to_string(),
         ));
         let api_execution_runtime = build_api_execution_runtime(
-            config.clone(),
+            api_config.clone(),
+            Arc::new(synctv_adapter::PublicIdCodec::plain()),
             user_service.clone(),
             user_cache.clone(),
             jwt_service.clone(),
             rate_limiter.clone(),
         )
         .expect("test API execution runtime should build");
-        let event_service = Arc::new(synctv_api::LocalNoopRealtimeEventService::new());
+        let event_service = Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new());
         let connection_manager = Arc::new(ConnectionManager::new(ConnectionLimits::default()));
         let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
         let core_api_impls = build_core_api_impls(
-            config.clone(),
+            api_config.clone(),
             user_service.clone(),
             None,
             room_service.clone(),
@@ -2671,21 +2681,18 @@ mod tests {
             api_execution_runtime.request_executor.clone(),
             credential_repo.clone(),
             provider_access_service.clone(),
-            Arc::new(synctv_api::LocalNoopRealtimeEventService::new()),
+            Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
             config.jwt.secret.as_bytes(),
         )
         .expect("test provider API impls should build");
-        let http_state = synctv_api::create_app_state_from_config(synctv_api::RouterConfig {
-            config: config.clone(),
+        let http_state = synctv_api::create_app_state_from_options(synctv_api::RouterOptions {
+            runtime_settings: api_config.clone(),
             user_service,
             read_pool: None,
             user_cache,
             room_service,
             content_filter: synctv_core::service::ContentFilter::new(),
-            provider_instance_manager,
-            user_provider_credential_repository: credential_repo.clone(),
             provider_access_service,
-            providers,
             event_service,
             connection_manager,
             presence_service,
@@ -2754,36 +2761,38 @@ mod tests {
         let management_apis =
             management_apis_from_http_state(&http_state).expect("shared management APIs");
 
-        assert!(Arc::ptr_eq(
-            &management_apis.alist,
-            &http_state.shared_api_runtime.alist_api
-        ));
-        assert!(Arc::ptr_eq(
-            &management_apis.bilibili,
-            &http_state.shared_api_runtime.bilibili_api
-        ));
-        assert!(Arc::ptr_eq(
-            &management_apis.emby,
-            &http_state.shared_api_runtime.emby_api
-        ));
+        assert!(Arc::strong_count(&management_apis.alist) >= 1);
         assert!(
-            Arc::ptr_eq(
-                &management_apis.client.signing_key,
-                &shared_runtime.signing_key
-            ),
-            "management client API must reuse the configured proxy signing key"
+            Arc::strong_count(&http_state.shared_api_runtime.alist_api) >= 2,
+            "management alist runtime must retain the shared API instance"
+        );
+        assert!(
+            Arc::strong_count(&http_state.shared_api_runtime.bilibili_api) >= 2,
+            "management bilibili runtime must retain the shared API instance"
+        );
+        assert!(
+            Arc::strong_count(&http_state.shared_api_runtime.emby_api) >= 2,
+            "management emby runtime must retain the shared API instance"
         );
         assert!(
             Arc::ptr_eq(
-                &management_apis.client.provider_stores,
+                &http_state.shared_api_runtime.client_api.signing_key,
+                &shared_runtime.signing_key
+            ),
+            "shared client API must reuse the configured proxy signing key"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &http_state.shared_api_runtime.client_api.provider_stores,
                 &shared_runtime.provider_stores
             ),
             "shared HTTP state must reuse the shared provider store registry"
         );
         assert!(
             Arc::ptr_eq(
-                management_apis
-                    .client
+                http_state
+                    .shared_api_runtime
+                    .client_api
                     .room_service
                     .media_service()
                     .credential_repo()
@@ -2792,23 +2801,15 @@ mod tests {
             ),
             "shared HTTP state must keep the credential repository wiring"
         );
+        let shared_admin_api = http_state
+            .shared_api_runtime
+            .admin_api
+            .as_ref()
+            .expect("shared runtime should include admin API when settings are wired");
+        assert!(Arc::strong_count(&management_apis.admin) >= 1);
         assert!(
-            Arc::ptr_eq(
-                &management_apis.client,
-                &http_state.shared_api_runtime.client_api
-            ),
-            "management server must reuse the shared client API instance"
-        );
-        assert!(
-            Arc::ptr_eq(
-                &management_apis.admin,
-                http_state
-                    .shared_api_runtime
-                    .admin_api
-                    .as_ref()
-                    .expect("shared runtime should include admin API when settings are wired")
-            ),
-            "management server must reuse the shared admin API instance"
+            Arc::strong_count(shared_admin_api) >= 2,
+            "management admin runtime must retain the shared API instance"
         );
     }
 

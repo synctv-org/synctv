@@ -282,26 +282,26 @@ pub fn default_device_profile() -> Value {
 
 #[must_use]
 pub fn device_profile_from_playback_client_profile(
-    profile: Option<&crate::grpc::emby::PlaybackInfoDeviceProfile>,
+    profile: Option<&crate::transport_dto::emby::PlaybackInfoDeviceProfile>,
 ) -> Value {
     let default_subtitle_profiles = || {
         ["srt", "vtt", "ass"]
             .into_iter()
-            .map(|format| crate::grpc::emby::SubtitleProfileHint {
+            .map(|format| crate::transport_dto::emby::SubtitleProfileHint {
                 format: format.to_string(),
-                method: crate::grpc::emby::SubtitleDeliveryMethod::External as i32,
+                method: crate::transport_dto::emby::SubtitleDeliveryMethod::External as i32,
             })
             .collect()
     };
 
-    let default_profile = crate::grpc::emby::PlaybackInfoDeviceProfile {
+    let default_profile = crate::transport_dto::emby::PlaybackInfoDeviceProfile {
         direct_play_profiles: vec![
-            crate::grpc::emby::DirectPlayProfileHint {
+            crate::transport_dto::emby::DirectPlayProfileHint {
                 container: "webm".to_string(),
                 video_codecs: vec!["vp9".to_string(), "av1".to_string()],
                 audio_codecs: vec!["vorbis".to_string(), "opus".to_string()],
             },
-            crate::grpc::emby::DirectPlayProfileHint {
+            crate::transport_dto::emby::DirectPlayProfileHint {
                 container: "mp4,m4v".to_string(),
                 video_codecs: vec![
                     "h264".to_string(),
@@ -318,7 +318,7 @@ pub fn device_profile_from_playback_client_profile(
                     "alac".to_string(),
                 ],
             },
-            crate::grpc::emby::DirectPlayProfileHint {
+            crate::transport_dto::emby::DirectPlayProfileHint {
                 container: "mkv".to_string(),
                 video_codecs: vec![
                     "h264".to_string(),
@@ -382,18 +382,22 @@ pub fn device_profile_from_playback_client_profile(
                 .iter()
                 .filter(|hint| !hint.format.is_empty())
                 .filter_map(|hint| {
-                    crate::grpc::emby::SubtitleDeliveryMethod::try_from(hint.method)
+                    crate::transport_dto::emby::SubtitleDeliveryMethod::try_from(hint.method)
                         .ok()
                         .map(|method| (hint.format.as_str(), method))
                 })
                 .filter_map(|(format, method)| {
                     let method = match method {
-                        crate::grpc::emby::SubtitleDeliveryMethod::Encode => "Encode",
-                        crate::grpc::emby::SubtitleDeliveryMethod::Embed => "Embed",
-                        crate::grpc::emby::SubtitleDeliveryMethod::External => "External",
-                        crate::grpc::emby::SubtitleDeliveryMethod::Hls => "Hls",
-                        crate::grpc::emby::SubtitleDeliveryMethod::VideoSideData => "VideoSideData",
-                        crate::grpc::emby::SubtitleDeliveryMethod::Unspecified => return None,
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::Encode => "Encode",
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::Embed => "Embed",
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::External => "External",
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::Hls => "Hls",
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::VideoSideData => {
+                            "VideoSideData"
+                        }
+                        crate::transport_dto::emby::SubtitleDeliveryMethod::Unspecified => {
+                            return None
+                        }
                     };
                     Some(serde_json::json!({
                         "Format": format,
@@ -413,7 +417,7 @@ pub fn device_profile_from_playback_client_profile(
 
 // From trait implementations for proto conversion
 
-impl From<MediaStream> for crate::grpc::emby::MediaStreamInfo {
+impl From<MediaStream> for crate::transport_dto::emby::MediaStreamInfo {
     fn from(stream: MediaStream) -> Self {
         Self {
             codec: stream.codec,
@@ -429,7 +433,7 @@ impl From<MediaStream> for crate::grpc::emby::MediaStreamInfo {
     }
 }
 
-impl From<MediaSource> for crate::grpc::emby::MediaSourceInfo {
+impl From<MediaSource> for crate::transport_dto::emby::MediaSourceInfo {
     fn from(source: MediaSource) -> Self {
         Self {
             id: source.id,
@@ -459,7 +463,7 @@ fn runtime_ticks_to_seconds(ticks: u64) -> Option<f64> {
         .filter(|duration| *duration > 0.0)
 }
 
-impl From<Item> for crate::grpc::emby::Item {
+impl From<Item> for crate::transport_dto::emby::Item {
     fn from(item: Item) -> Self {
         Self {
             name: item.name,
@@ -488,7 +492,7 @@ impl From<Item> for crate::grpc::emby::Item {
     }
 }
 
-impl From<PathInfo> for crate::grpc::emby::Path {
+impl From<PathInfo> for crate::transport_dto::emby::Path {
     fn from(path: PathInfo) -> Self {
         Self {
             name: path.name,
@@ -497,7 +501,7 @@ impl From<PathInfo> for crate::grpc::emby::Path {
     }
 }
 
-impl From<SystemInfo> for crate::grpc::emby::SystemInfoResp {
+impl From<SystemInfo> for crate::transport_dto::emby::SystemInfoResp {
     fn from(info: SystemInfo) -> Self {
         Self {
             system_update_level: info.system_update_level,
@@ -532,7 +536,7 @@ impl From<SystemInfo> for crate::grpc::emby::SystemInfoResp {
     }
 }
 
-impl From<UserPolicy> for crate::grpc::emby::UserPolicy {
+impl From<UserPolicy> for crate::transport_dto::emby::UserPolicy {
     fn from(policy: UserPolicy) -> Self {
         Self {
             is_administrator: policy.is_administrator,
@@ -543,7 +547,7 @@ impl From<UserPolicy> for crate::grpc::emby::UserPolicy {
     }
 }
 
-impl From<UserInfo> for crate::grpc::emby::MeResp {
+impl From<UserInfo> for crate::transport_dto::emby::MeResp {
     fn from(user_info: UserInfo) -> Self {
         Self {
             id: user_info.id,
@@ -554,7 +558,7 @@ impl From<UserInfo> for crate::grpc::emby::MeResp {
     }
 }
 
-impl From<FsListResponse> for crate::grpc::emby::FsListResp {
+impl From<FsListResponse> for crate::transport_dto::emby::FsListResp {
     fn from(response: FsListResponse) -> Self {
         Self {
             paths: response
@@ -572,7 +576,7 @@ impl From<FsListResponse> for crate::grpc::emby::FsListResp {
     }
 }
 
-impl From<ItemsResponse> for crate::grpc::emby::GetItemsResp {
+impl From<ItemsResponse> for crate::transport_dto::emby::GetItemsResp {
     fn from(response: ItemsResponse) -> Self {
         Self {
             items: response
@@ -585,7 +589,7 @@ impl From<ItemsResponse> for crate::grpc::emby::GetItemsResp {
     }
 }
 
-impl From<PlaybackInfoResponse> for crate::grpc::emby::PlaybackInfoResp {
+impl From<PlaybackInfoResponse> for crate::transport_dto::emby::PlaybackInfoResp {
     fn from(response: PlaybackInfoResponse) -> Self {
         Self {
             play_session_id: response.play_session_id,

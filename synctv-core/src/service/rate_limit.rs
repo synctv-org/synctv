@@ -366,7 +366,7 @@ impl RateLimiter {
         }
     }
 
-    pub(crate) fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
+    pub fn from_shared_state_profile(profile: &SharedStateProfile) -> Result<Self> {
         match profile.state_mode() {
             SharedStateMode::SharedRequired => Ok(Self::from_redis_runtime(
                 Some(profile.require_shared_runtime("rate-limit state")?),

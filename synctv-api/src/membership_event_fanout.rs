@@ -1,142 +1,39 @@
 use std::sync::Arc;
-use synctv_core::service::{
-    PermissionChangedOutboxSnapshot, RealtimeOutboxPermissionChangedEventFactory,
-    RealtimeOutboxUserLeftEventFactory, UserLeftOutboxSnapshot,
+use synctv_core::models::RoomId;
+use synctv_realtime::fanout::{
+    LocalRealtimeEventPublisher, RealtimeEventService, RealtimeFanoutService,
 };
 use synctv_realtime::sync::RealtimeEvent;
 
-use crate::realtime_fanout::RealtimeFanoutService;
-use crate::runtime::RealtimeEventService;
+pub use synctv_realtime::fanout::{
+    MembershipEventFanoutService, PreparedPermissionChangedFanout, PreparedUserLeftFanout,
+};
 
-pub trait MembershipEventFanoutService: Send + Sync {
-    fn prepare_permission_changed_outbox_fanout(
-        &self,
-        target_is_online: bool,
-        target_connection_count: usize,
-    ) -> PreparedPermissionChangedFanout;
-
-    fn prepare_user_left_outbox_fanout(&self) -> PreparedUserLeftFanout;
-}
-
-#[derive(Clone)]
-pub struct PreparedPermissionChangedFanout {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
+struct RealtimeEventServiceLocalPublisher {
     event_service: Arc<dyn RealtimeEventService>,
-    events: Arc<parking_lot::Mutex<Vec<RealtimeEvent>>>,
-    target_is_online: bool,
-    target_connection_count: usize,
 }
 
-impl PreparedPermissionChangedFanout {
-    #[doc(hidden)]
-    #[must_use]
-    pub fn new(
-        realtime_fanout: Arc<dyn RealtimeFanoutService>,
-        event_service: Arc<dyn RealtimeEventService>,
-        target_is_online: bool,
-        target_connection_count: usize,
-    ) -> Self {
-        Self {
-            realtime_fanout,
-            event_service,
-            events: Arc::new(parking_lot::Mutex::new(Vec::new())),
-            target_is_online,
-            target_connection_count,
-        }
-    }
-
-    #[must_use]
-    pub fn outbox_factory(&self) -> RealtimeOutboxPermissionChangedEventFactory {
-        let prepared = self.clone();
-        Arc::new(move |snapshot: &PermissionChangedOutboxSnapshot| {
-            let event = RealtimeEvent::PermissionChanged {
-                event_id: synctv_common::snanoid!(16),
-                room_id: snapshot.room_id,
-                target_user_id: snapshot.target_user_id,
-                target_username: snapshot.target_username.clone(),
-                target_remark_name: snapshot.target_remark_name.clone(),
-                target_display_tag: snapshot.target_display_tag.clone(),
-                changed_by: snapshot.changed_by,
-                changed_by_username: snapshot.changed_by_username.clone(),
-                role_changed: snapshot.role_changed,
-                new_permissions: snapshot.new_permissions,
-                role: snapshot.role,
-                added_permissions: snapshot.added_permissions,
-                removed_permissions: snapshot.removed_permissions,
-                admin_added_permissions: snapshot.admin_added_permissions,
-                admin_removed_permissions: snapshot.admin_removed_permissions,
-                target_is_online: prepared.target_is_online,
-                target_connection_count: prepared.target_connection_count,
-                timestamp: synctv_core::SystemClock.now(),
-            };
-            prepared.events.lock().push(event.clone());
-            prepared
-                .realtime_fanout
-                .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
-        })
-    }
-
-    pub fn publish_after_outbox_commit(&self) {
-        let events = std::mem::take(&mut *self.events.lock());
-        for event in events {
-            if self.realtime_fanout.is_distributed_enabled() {
-                self.realtime_fanout.publish_after_outbox_commit(event);
-            } else if let Some(room_id) = event.room_id() {
-                self.event_service.broadcast_local(room_id, &event);
-            }
-        }
+impl RealtimeEventServiceLocalPublisher {
+    fn new(event_service: Arc<dyn RealtimeEventService>) -> Self {
+        Self { event_service }
     }
 }
 
-#[derive(Clone)]
-pub struct PreparedUserLeftFanout {
-    realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event: Arc<parking_lot::Mutex<Option<RealtimeEvent>>>,
+impl LocalRealtimeEventPublisher for RealtimeEventServiceLocalPublisher {
+    fn broadcast_room_local(&self, room_id: &RoomId, event: &RealtimeEvent) -> usize {
+        self.event_service.broadcast_local(room_id, event)
+    }
 }
 
-impl PreparedUserLeftFanout {
-    #[doc(hidden)]
-    #[must_use]
-    pub fn new(realtime_fanout: Arc<dyn RealtimeFanoutService>) -> Self {
-        Self {
-            realtime_fanout,
-            event: Arc::new(parking_lot::Mutex::new(None)),
-        }
-    }
-
-    #[must_use]
-    pub fn outbox_factory(&self) -> RealtimeOutboxUserLeftEventFactory {
-        let prepared = self.clone();
-        Arc::new(move |snapshot: &UserLeftOutboxSnapshot| {
-            let event = RealtimeEvent::UserLeft {
-                event_id: synctv_common::snanoid!(16),
-                room_id: snapshot.room_id,
-                user_id: snapshot.user_id,
-                username: snapshot.username.clone(),
-                remark_name: snapshot.remark_name.clone(),
-                display_tag: snapshot.display_tag.clone(),
-                role: snapshot.role,
-                timestamp: synctv_core::SystemClock.now(),
-            };
-            *prepared.event.lock() = Some(event.clone());
-            prepared
-                .realtime_fanout
-                .outbox_event(&event)
-                .map_err(synctv_core::Error::Internal)
-        })
-    }
-
-    pub fn publish_after_outbox_commit(&self) {
-        if let Some(event) = self.event.lock().take() {
-            self.realtime_fanout.publish_after_outbox_commit(event);
-        }
-    }
+pub(crate) fn local_realtime_event_publisher(
+    event_service: Arc<dyn RealtimeEventService>,
+) -> Arc<dyn LocalRealtimeEventPublisher> {
+    Arc::new(RealtimeEventServiceLocalPublisher::new(event_service))
 }
 
 pub struct DefaultMembershipEventFanoutService {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,
-    event_service: Arc<dyn RealtimeEventService>,
+    local_event_publisher: Arc<dyn LocalRealtimeEventPublisher>,
 }
 
 impl DefaultMembershipEventFanoutService {
@@ -147,7 +44,7 @@ impl DefaultMembershipEventFanoutService {
     ) -> Self {
         Self {
             realtime_fanout,
-            event_service,
+            local_event_publisher: local_realtime_event_publisher(event_service),
         }
     }
 }
@@ -171,7 +68,7 @@ impl MembershipEventFanoutService for DefaultMembershipEventFanoutService {
     ) -> PreparedPermissionChangedFanout {
         PreparedPermissionChangedFanout::new(
             self.realtime_fanout.clone(),
-            self.event_service.clone(),
+            self.local_event_publisher.clone(),
             target_is_online,
             target_connection_count,
         )
@@ -201,6 +98,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
     use synctv_core::models::{RoomId, UserId};
+    use synctv_core::service::{PermissionChangedOutboxSnapshot, UserLeftOutboxSnapshot};
     use synctv_realtime::sync::RealtimeEvent;
 
     fn room_id() -> RoomId {
@@ -269,7 +167,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let prepared = PreparedPermissionChangedFanout::new(
             channel_realtime_fanout_service(tx),
-            Arc::new(RecordingRealtimeEventService::default()),
+            local_realtime_event_publisher(Arc::new(RecordingRealtimeEventService::default())),
             false,
             0,
         );

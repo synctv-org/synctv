@@ -275,11 +275,11 @@ pub(crate) async fn playback_provider_options_preflight(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    playback_provider_options_preflight_for_server(&state.config.server, &headers)
+    playback_provider_options_preflight_for_server(&state.runtime_settings.server, &headers)
 }
 
 fn playback_provider_options_preflight_for_server(
-    server: &synctv_core::config::ServerConfig,
+    server: &crate::ApiServerSettings,
     headers: &HeaderMap,
 ) -> axum::response::Response {
     let origin = match headers.get(axum::http::header::ORIGIN) {
@@ -944,9 +944,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_options_preflight_uses_configured_origin_allowlist() -> TestResult {
-        let server = synctv_core::config::ServerConfig {
+        let server = crate::ApiServerSettings {
             cors_allowed_origins: vec!["https://app.example.com".to_string()],
-            ..synctv_core::config::ServerConfig::default()
+            ..crate::ApiServerSettings::default()
         };
 
         let mut headers = HeaderMap::new();
@@ -980,9 +980,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_options_preflight_rejects_unconfigured_origin() -> TestResult {
-        let server = synctv_core::config::ServerConfig {
+        let server = crate::ApiServerSettings {
             cors_allowed_origins: vec!["https://app.example.com".to_string()],
-            ..synctv_core::config::ServerConfig::default()
+            ..crate::ApiServerSettings::default()
         };
 
         let mut headers = HeaderMap::new();
@@ -1002,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_options_preflight_rejects_non_utf8_origin() -> TestResult {
-        let server = synctv_core::config::ServerConfig::default();
+        let server = crate::ApiServerSettings::default();
 
         let mut headers = HeaderMap::new();
         headers.insert(

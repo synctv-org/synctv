@@ -90,7 +90,7 @@ pub struct PlaybackInfoRequest<'a> {
     pub enable_direct_play: Option<bool>,
     pub enable_direct_stream: Option<bool>,
     pub enable_transcoding: Option<bool>,
-    pub device_profile: Option<&'a crate::grpc::emby::PlaybackInfoDeviceProfile>,
+    pub device_profile: Option<&'a crate::transport_dto::emby::PlaybackInfoDeviceProfile>,
 }
 
 impl EmbyClient {

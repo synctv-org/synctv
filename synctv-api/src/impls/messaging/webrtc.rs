@@ -1,13 +1,12 @@
 use synctv_core::models::RoomPermission;
 use synctv_proto::client::web_rtc_command::Command;
+use synctv_realtime::fanout::RealtimeDeliveryRequirement;
 use synctv_realtime::sync::{RealtimeEvent, WebRTCSignalKind};
 
 use super::{
     is_private_ice_candidate_ip, should_transition_webrtc_membership, StreamMessageHandler,
     MAX_ICE_CANDIDATE_SIZE, MAX_SDP_SIZE,
 };
-use crate::runtime::RealtimeDeliveryRequirement;
-
 impl StreamMessageHandler {
     pub(crate) async fn handle_webrtc_command(
         &self,
@@ -259,7 +258,7 @@ impl StreamMessageHandler {
         // Order matters: increment metric FIRST, then set the flag.
         // This prevents race condition where cleanup() sees the flag but metric
         // hasn't been incremented yet, which would cause undercount on dec().
-        synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.inc();
+        synctv_core::metrics::application::WEBRTC_PEERS_ACTIVE.inc();
         self.has_webrtc_session
             .store(true, std::sync::atomic::Ordering::Release);
 
@@ -319,7 +318,7 @@ impl StreamMessageHandler {
         // after we've already decremented, which would cause undercount.
         self.has_webrtc_session
             .store(false, std::sync::atomic::Ordering::Release);
-        synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
+        synctv_core::metrics::application::WEBRTC_PEERS_ACTIVE.dec();
 
         // Broadcast Leave event to all RTC-joined users in the room
         let event = RealtimeEvent::WebRTCLeave {

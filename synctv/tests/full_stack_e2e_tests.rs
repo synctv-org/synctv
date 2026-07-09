@@ -20,8 +20,10 @@ use reqwest::StatusCode;
 use serde::Serialize;
 use serde_json::Value;
 use sha2_010::Sha512;
-use synctv::{Application, ApplicationBuildOptions};
-use synctv_core::config::Config;
+use synctv::{
+    app_config::{AppConfig as Config, ManagementTransport},
+    Application, ApplicationBuildOptions,
+};
 use synctv_core_testing::{
     connect_test_pool_url, create_test_database_url_with_label,
     postgres_connection_url_with_credentials, start_redis_url_with_label, test_redis_key_prefix,
@@ -368,7 +370,7 @@ fn test_config(
     config.server.advertise_host = "127.0.0.1".to_string();
     config.server.shutdown_drain_timeout_seconds = 3;
     config.management.enabled = true;
-    config.management.transport = synctv_core::config::ManagementTransport::Tcp;
+    config.management.transport = ManagementTransport::Tcp;
     config.management.port = management_port;
     config.management.auth_token = MANAGEMENT_E2E_AUTH_TOKEN.to_string();
     config.management.enable_reflection = false;
@@ -410,7 +412,7 @@ fn write_cli_test_config(path: &std::path::Path, config: &Config) {
 
 #[cfg(unix)]
 fn configure_management_unix_socket(config: &mut Config, socket_path: &std::path::Path) {
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
+    config.management.transport = ManagementTransport::Unix;
     config.management.unix_socket_path = socket_path.display().to_string();
     config.management.auth_token.clear();
 }
@@ -421,7 +423,7 @@ fn configure_management_unix_socket_with_auth_token(
     socket_path: &std::path::Path,
     auth_token: &str,
 ) {
-    config.management.transport = synctv_core::config::ManagementTransport::Unix;
+    config.management.transport = ManagementTransport::Unix;
     config.management.unix_socket_path = socket_path.display().to_string();
     config.management.auth_token = auth_token.to_string();
 }
@@ -464,7 +466,7 @@ static TEST_LOGGING: Once = Once::new();
 
 fn ensure_test_logging() {
     TEST_LOGGING.call_once(|| {
-        let logging = synctv_core::config::LoggingConfig {
+        let logging = synctv_core::logging::LoggingOptions {
             level: "debug".to_string(),
             filter: Some("debug,synctv=debug,synctv_core=debug".to_string()),
             ..Default::default()
@@ -568,6 +570,7 @@ async fn start_test_server() -> TestServer {
                     TEST_CREDENTIAL_ENCRYPTION_KEY.to_string(),
                 ),
                 allow_password_registration: true,
+                ..ApplicationBuildOptions::default()
             },
         ))
         .await

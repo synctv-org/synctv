@@ -36,7 +36,7 @@ pub(crate) fn live_playback_api_runtime(
         proxy_signing_key: &state.shared_api_runtime.proxy_signing_key,
         live_streaming_infrastructure: state.live_streaming_infrastructure.as_ref(),
         connection_runtime: state.connection_manager.as_ref(),
-        livestream_config: &state.config.livestream,
+        livestream_config: &state.runtime_settings.livestream,
         runtime_settings_store: state.runtime_settings_store.as_deref(),
     }
 }

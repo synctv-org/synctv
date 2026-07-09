@@ -56,14 +56,12 @@ pub(crate) struct StartPlaybackTarget {
 }
 
 #[derive(Debug)]
-pub(crate) enum PlaybackStateUpdateCommand {
-    Patch {
-        playing: Option<bool>,
-        position: Option<f64>,
-        speed: Option<f64>,
-        version: Option<i64>,
-        expected_source: Option<PlaybackSourceExpectation>,
-    },
+pub(crate) struct PlaybackStateUpdateParts {
+    pub(crate) playing: Option<bool>,
+    pub(crate) position: Option<f64>,
+    pub(crate) speed: Option<f64>,
+    pub(crate) version: Option<i64>,
+    pub(crate) expected_source: Option<PlaybackSourceExpectation>,
 }
 
 struct DynamicPlaylistPlaybackRequest<'a> {
@@ -144,7 +142,7 @@ fn apply_static_direct_url_thumbnail(
 
 pub(crate) fn build_start_playback_request(
     req: synctv_proto::client::StartPlaybackRequest,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<StartPlaybackTarget, ApiError> {
     crate::impls::validate_proto_request(&req)?;
     let synctv_proto::client::StartPlaybackRequest {
@@ -166,8 +164,8 @@ pub(crate) fn build_start_playback_request(
 
 pub(crate) fn build_playback_state_update(
     update: synctv_proto::client::UpdatePlaybackStateRequest,
-    public_id_codec: &crate::public_id::PublicIdCodec,
-) -> Result<PlaybackStateUpdateCommand, ApiError> {
+    public_id_codec: &synctv_adapter::PublicIdCodec,
+) -> Result<PlaybackStateUpdateParts, ApiError> {
     crate::impls::validate_proto_request(&update)?;
     let synctv_proto::client::UpdatePlaybackStateRequest {
         r#type,
@@ -239,7 +237,7 @@ pub(crate) fn build_playback_state_update(
         public_id_codec,
     )?;
 
-    Ok(PlaybackStateUpdateCommand::Patch {
+    Ok(PlaybackStateUpdateParts {
         playing,
         position,
         speed,
@@ -252,7 +250,7 @@ pub(crate) fn build_playback_source_expectation(
     expected_media_id: Option<String>,
     expected_playlist_id: Option<String>,
     expected_target_hash: Option<String>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Option<PlaybackSourceExpectation>, ApiError> {
     if expected_media_id.is_none()
         && expected_playlist_id.is_none()
@@ -306,8 +304,7 @@ impl ClientApiImpl {
         let metadata = self
             .room_service
             .playback_service()
-            .source_metadata_repository()
-            .get(&identity)
+            .get_playback_source_metadata(&identity)
             .await
             .map_err(ApiError::from)?;
 
@@ -362,13 +359,10 @@ impl ClientApiImpl {
         {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
-        if let Some(repo) = self.room_service.media_service().credential_repo() {
-            ctx = ctx.with_credential_repo(repo.as_ref());
-        }
-        if let Some(enc) = self.room_service.media_service().credential_encryption() {
-            ctx = ctx.with_credential_encryption(enc);
-        }
-        ctx = ctx.with_provider_access_service(self.provider_access_service.clone());
+        ctx = self
+            .room_service
+            .media_service()
+            .attach_provider_credential_context(ctx);
         Ok(ctx)
     }
 
@@ -989,35 +983,26 @@ impl ClientApiImpl {
     ) -> Result<synctv_proto::client::PlaybackState, ApiError> {
         let uid = *user_id;
         let rid = self.parse_room_id(room_id)?;
-        let command = build_playback_state_update(req, &self.public_id_codec)?;
+        let update = build_playback_state_update(req, &self.public_id_codec)?;
         let previous_state = self.state_before_playback_state_update(&rid).await?;
         let prepared_fanout = self.prepare_playback_state_changed(uid).await?;
 
-        let state = match command {
-            PlaybackStateUpdateCommand::Patch {
-                playing,
-                position,
-                speed,
-                version,
-                expected_source,
-            } => {
-                let mut request = PlaybackStateUpdateRequest::new(
-                    rid,
-                    uid,
-                    PlaybackStatePatch::new(playing, position, speed),
-                )
-                .with_expected_version(version)
-                .with_outbox(Some(prepared_fanout.outbox_factory()));
-                if let Some(expected_source) = expected_source {
-                    request = request.with_expected_source(expected_source);
-                }
-                self.room_service
-                    .playback_service()
-                    .update_playback_state(request)
-                    .await
-                    .map_err(ApiError::from)?
-            }
-        };
+        let mut request = PlaybackStateUpdateRequest::new(
+            rid,
+            uid,
+            PlaybackStatePatch::new(update.playing, update.position, update.speed),
+        )
+        .with_expected_version(update.version)
+        .with_outbox(Some(prepared_fanout.outbox_factory()));
+        if let Some(expected_source) = update.expected_source {
+            request = request.with_expected_source(expected_source);
+        }
+        let state = self
+            .room_service
+            .playback_service()
+            .update_playback_state(request)
+            .await
+            .map_err(ApiError::from)?;
         prepared_fanout.publish_after_outbox_commit();
         self.handle_provider_lifecycle_transition_after_commit(Some(&previous_state), &state)
             .await;
@@ -1229,8 +1214,7 @@ impl crate::impls::playback::PlaybackService for ClientApiImpl {
                     if let Err(error) = self
                         .room_service
                         .playback_service()
-                        .source_metadata_repository()
-                        .mark_probeable_unknown_if_absent(&identity)
+                        .mark_probeable_playback_source_metadata_unknown_if_absent(&identity)
                         .await
                     {
                         tracing::warn!(

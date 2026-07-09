@@ -10,8 +10,8 @@ use synctv_core::models::{
 };
 use synctv_core::provider::{ProviderStore, ProviderStoreResolver, StoreError, StoreLockGuard};
 
-fn test_public_id_codec() -> crate::public_id::PublicIdCodec {
-    crate::public_id::PublicIdCodec::plain()
+fn test_public_id_codec() -> synctv_adapter::PublicIdCodec {
+    synctv_adapter::PublicIdCodec::plain()
 }
 
 type TestResult<T = ()> = anyhow::Result<T>;

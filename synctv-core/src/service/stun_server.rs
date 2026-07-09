@@ -206,97 +206,6 @@ const fn is_unusable_external_ip(ip: &IpAddr) -> bool {
     }
 }
 
-pub async fn resolve_external_ip() -> Option<IpAddr> {
-    if let Some(ip) = ip_from_env("STUN_EXTERNAL_IP") {
-        tracing::info!(ip = %ip, "Resolved external IP from STUN_EXTERNAL_IP env var");
-        return Some(ip);
-    }
-
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .connect_timeout(std::time::Duration::from_secs(1))
-        .build()
-    else {
-        return None;
-    };
-
-    if let Some(ip) = try_aws_metadata(&client).await {
-        tracing::info!(ip = %ip, "Resolved external IP from AWS EC2 metadata");
-        return Some(ip);
-    }
-
-    if let Some(ip) = try_gcp_metadata(&client).await {
-        tracing::info!(ip = %ip, "Resolved external IP from GCP metadata");
-        return Some(ip);
-    }
-
-    if let Some(ip) = try_azure_metadata(&client).await {
-        tracing::info!(ip = %ip, "Resolved external IP from Azure IMDS");
-        return Some(ip);
-    }
-
-    None
-}
-
-fn ip_from_env(var: &str) -> Option<IpAddr> {
-    std::env::var(var)
-        .ok()
-        .and_then(|s| s.trim().parse::<IpAddr>().ok())
-        .filter(|ip| !ip.is_unspecified())
-}
-
-async fn try_aws_metadata(client: &reqwest::Client) -> Option<IpAddr> {
-    let token = client
-        .put("http://169.254.169.254/latest/api/token")
-        .header("X-aws-ec2-metadata-token-ttl-seconds", "30")
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-
-    let ip_str = client
-        .get("http://169.254.169.254/latest/meta-data/public-ipv4")
-        .header("X-aws-ec2-metadata-token", token.trim())
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-
-    ip_str.trim().parse::<IpAddr>().ok()
-}
-
-async fn try_gcp_metadata(client: &reqwest::Client) -> Option<IpAddr> {
-    let ip_str = client
-        .get("http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip")
-        .header("Metadata-Flavor", "Google")
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-
-    ip_str.trim().parse::<IpAddr>().ok()
-}
-
-async fn try_azure_metadata(client: &reqwest::Client) -> Option<IpAddr> {
-    let resp = client
-        .get("http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text")
-        .header("Metadata", "true")
-        .send()
-        .await
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-
-    resp.trim().parse::<IpAddr>().ok()
-}
-
 pub fn validate_external_addr(addr: &str) -> Result<(), String> {
     let sock: SocketAddr = addr
         .parse()
@@ -305,8 +214,7 @@ pub fn validate_external_addr(addr: &str) -> Result<(), String> {
     if is_unusable_external_ip(&sock.ip()) {
         return Err(format!(
             "STUN external address '{addr}' is not routable (unspecified, loopback, or private). \
-             Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a public IP or DNS name, \
-             or set STUN_EXTERNAL_IP to a public IP. In Kubernetes, use a LoadBalancer IP, \
+             Provide a public IP or DNS name. In Kubernetes, use a LoadBalancer IP, \
              a node public IP, or a public DNS name; do not use a Pod IP or ClusterIP Service IP."
         ));
     }

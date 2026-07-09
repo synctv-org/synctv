@@ -258,7 +258,7 @@ impl PublishKeyService {
         Ok(Self::from_store(jwt_service, clock, token_ttl_hours, store))
     }
 
-    pub(crate) fn from_shared_state_profile(
+    pub fn from_shared_state_profile(
         jwt_service: JwtService,
         clock: Arc<dyn Clock>,
         token_ttl_hours: i64,

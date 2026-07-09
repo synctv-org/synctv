@@ -74,10 +74,8 @@ fn default_jwt_crypto_provider() -> &'static jsonwebtoken::crypto::CryptoProvide
     }
 }
 
-pub mod bootstrap;
 pub mod cache;
 pub mod clock;
-pub mod config;
 pub mod credential_encryption;
 pub mod error;
 pub mod logging;
@@ -88,7 +86,6 @@ pub mod provider;
 pub mod redis_runtime;
 pub mod repository;
 pub mod resilience;
-pub mod secrets;
 pub mod service;
 pub mod shared_state;
 pub mod spawn;
@@ -99,21 +96,19 @@ pub mod validation;
 pub(crate) mod test_helpers;
 
 pub use cache::KeyBuilder;
-pub use clock::{Clock, SyncedClock, SyncedClockStatus, SystemClock};
-pub use config::{
-    ChatConfig, Config, FileStorageBackendConfig, FileStorageConfig,
-    FileStorageDatabaseCompression, FileStorageDatabaseConfig, FileStorageS3Config,
-    RateLimitScopeRule, RateLimitScopeStrategy, RequestRateLimitConfig,
+pub use clock::{
+    Clock, ClockSyncOptions, ClockSyncProvider, ClockSyncSntpProviderOptions, SyncedClock,
+    SyncedClockStatus, SystemClock, TimeOptions,
 };
 pub use error::{Error, InternalExt, Result};
 pub use redis_runtime::{
-    coordination_runtime_from_client, coordination_runtime_from_client_with_config,
-    coordination_runtime_from_client_with_config_and_operation_timeout, direct_runtime,
+    coordination_runtime_from_client, coordination_runtime_from_client_with_connection_options,
+    coordination_runtime_from_client_with_connection_options_and_operation_timeout, direct_runtime,
     direct_runtime_from_conn, direct_runtime_with_operation_timeout,
-    redis_connection_manager_config, redis_operation_timeout_from_config, redis_runtime_snapshot,
-    shared_runtime, shared_runtime_from_conn, shared_runtime_with_operation_timeout,
-    DirectRedisConnectionRuntime, ManagedRedisRuntime, OnDemandRedisRuntime,
-    RedisConnectionRuntime, RedisCoordinationRuntime, SharedRedisConnectionRuntime,
+    redis_connection_manager_options, redis_runtime_snapshot, shared_runtime,
+    shared_runtime_from_conn, shared_runtime_with_operation_timeout, DirectRedisConnectionRuntime,
+    ManagedRedisRuntime, OnDemandRedisRuntime, RedisConnectionRuntime, RedisCoordinationRuntime,
+    RedisDeploymentMode, SharedRedisConnectionRuntime,
 };
 pub use shared_state::{SharedStateMode, SharedStateProfile};
 pub use transaction::with_transaction;

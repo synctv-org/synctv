@@ -1,5 +1,5 @@
 use crate::{
-    cache::{CacheDomain, ConsistencyCoordinator, VersionFenceReservation},
+    cache::CacheDomain,
     models::{
         AuditAction, AuditDetails, AuditTargetType, RoomId, RoomSettings,
         SettingsValidationContext, UserId,
@@ -9,6 +9,13 @@ use crate::{
 };
 
 use super::{RealtimeOutboxSettingsEventFactory, RoomService};
+
+/// Maximum retry attempts for optimistic lock conflicts on settings updates.
+const SETTINGS_UPDATE_MAX_RETRIES: u32 = 3;
+/// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms).
+const SETTINGS_UPDATE_BACKOFF_BASE_MS: u64 = 5;
+/// Total timeout for settings updates with retries.
+const SETTINGS_UPDATE_TIMEOUT_SECS: u64 = 5;
 
 impl RoomService {
     /// Set room settings with optimistic locking (CAS).
@@ -46,9 +53,9 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock_timeout(
-                Self::MAX_RETRIES,
-                Self::BACKOFF_BASE_MS,
-                std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
+                SETTINGS_UPDATE_MAX_RETRIES,
+                SETTINGS_UPDATE_BACKOFF_BASE_MS,
+                std::time::Duration::from_secs(SETTINGS_UPDATE_TIMEOUT_SECS),
                 "Settings update failed after maximum retry attempts",
                 || {
                     let room_id = room_id_clone;
@@ -141,81 +148,6 @@ impl RoomService {
         Ok(snapshot)
     }
 
-    async fn begin_room_settings_write_with(
-        consistency: &ConsistencyCoordinator,
-        room_id: &RoomId,
-        db_version: i64,
-    ) -> Result<Option<VersionFenceReservation>> {
-        let domain = CacheDomain::RoomSettings { room_id: *room_id };
-        consistency.begin_observed_write(&domain, db_version).await
-    }
-
-    async fn commit_room_settings_write_with(
-        consistency: &ConsistencyCoordinator,
-        domain: &CacheDomain,
-        reservation: Option<&VersionFenceReservation>,
-        version: i64,
-    ) -> Result<()> {
-        consistency
-            .commit_reserved_write(domain, reservation, version)
-            .await?;
-        Ok(())
-    }
-
-    async fn abort_room_settings_write_with(
-        consistency: &ConsistencyCoordinator,
-        domain: &CacheDomain,
-        reservation: Option<&VersionFenceReservation>,
-    ) {
-        consistency.abort_reserved_write(domain, reservation).await;
-    }
-
-    async fn begin_room_settings_write(
-        &self,
-        room_id: &RoomId,
-        db_version: i64,
-    ) -> Result<Option<VersionFenceReservation>> {
-        Self::begin_room_settings_write_with(&self.consistency, room_id, db_version).await
-    }
-
-    async fn commit_room_settings_write(
-        &self,
-        domain: &CacheDomain,
-        reservation: Option<&VersionFenceReservation>,
-        version: i64,
-    ) -> Result<()> {
-        Self::commit_room_settings_write_with(&self.consistency, domain, reservation, version).await
-    }
-
-    async fn finalize_committed_room_settings_write_best_effort(
-        &self,
-        domain: &CacheDomain,
-        reservation: Option<&VersionFenceReservation>,
-        version: i64,
-        operation: &'static str,
-    ) {
-        if let Err(error) = self
-            .commit_room_settings_write(domain, reservation, version)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                domain = %domain,
-                version,
-                operation,
-                "Failed to finalize room settings fence after committed DB write"
-            );
-        }
-    }
-
-    async fn abort_room_settings_write(
-        &self,
-        domain: &CacheDomain,
-        reservation: Option<&VersionFenceReservation>,
-    ) {
-        Self::abort_room_settings_write_with(&self.consistency, domain, reservation).await;
-    }
-
     /// Set room settings (replace entire settings object) with optimistic locking.
     pub async fn set_room_settings(
         &self,
@@ -236,8 +168,8 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock(
-                Self::MAX_RETRIES,
-                Self::BACKOFF_BASE_MS,
+                SETTINGS_UPDATE_MAX_RETRIES,
+                SETTINGS_UPDATE_BACKOFF_BASE_MS,
                 "Settings update failed after maximum retry attempts",
                 || async {
                     let outbox_event_factory = outbox_event_factory.clone();
@@ -343,9 +275,9 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock_timeout(
-                Self::MAX_RETRIES,
-                Self::BACKOFF_BASE_MS,
-                std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
+                SETTINGS_UPDATE_MAX_RETRIES,
+                SETTINGS_UPDATE_BACKOFF_BASE_MS,
+                std::time::Duration::from_secs(SETTINGS_UPDATE_TIMEOUT_SECS),
                 "Settings update failed after maximum retry attempts",
                 || {
                     let settings = settings.clone();
@@ -450,67 +382,6 @@ impl RoomService {
         Ok(snapshot)
     }
 
-    async fn finalize_room_settings_update(
-        &self,
-        room_id: &RoomId,
-        previous_settings: &RoomSettings,
-        updated_settings: &RoomSettings,
-        version: i64,
-        actor_user_id: Option<&UserId>,
-        actor_username: &str,
-    ) -> Result<crate::cache::RoomSettingsSnapshot> {
-        self.run_post_apply_hooks_for_settings_update(room_id, previous_settings, updated_settings)
-            .await;
-        self.room_settings_service.invalidate_local(room_id).await;
-        self.permission_service.invalidate_room_cache(room_id).await;
-        self.notify_room_invalidation(room_id).await;
-        self.notify_room_settings_invalidation(room_id).await;
-
-        let subscriber_count = self.notification_service.notify_settings_updated(
-            room_id,
-            actor_user_id,
-            actor_username,
-            updated_settings.clone(),
-            version,
-        );
-        super::outbox::log_if_no_local_subscribers(
-            subscriber_count,
-            room_id,
-            "Room settings updated",
-        );
-
-        Ok(crate::cache::RoomSettingsSnapshot {
-            settings: updated_settings.clone(),
-            version,
-        })
-    }
-
-    async fn run_post_apply_hooks_for_settings_update(
-        &self,
-        room_id: &RoomId,
-        previous_settings: &RoomSettings,
-        updated_settings: &RoomSettings,
-    ) {
-        use crate::service::GuestKickReason;
-
-        let guest_kick_reason =
-            if previous_settings.allow_guest_join.0 && !updated_settings.allow_guest_join.0 {
-                Some(GuestKickReason::RoomGuestModeDisabled)
-            } else {
-                None
-            };
-
-        if let Some(reason) = guest_kick_reason {
-            if let Err(e) = self.revoke_all_guest_access(room_id, reason).await {
-                tracing::warn!(
-                    room_id = %room_id,
-                    error = %e,
-                    "Failed to revoke guest access after settings change"
-                );
-            }
-        }
-    }
-
     /// Reset room settings to default values with optimistic locking.
     pub async fn reset_room_settings(
         &self,
@@ -539,8 +410,8 @@ impl RoomService {
 
         let (previous_settings, updated_settings, updated_version) =
             optimistic_retry::retry_with_optimistic_lock(
-                Self::MAX_RETRIES,
-                Self::BACKOFF_BASE_MS,
+                SETTINGS_UPDATE_MAX_RETRIES,
+                SETTINGS_UPDATE_BACKOFF_BASE_MS,
                 "Settings reset failed after maximum retry attempts",
                 || async {
                     let outbox_event_factory = outbox_event_factory.clone();
@@ -622,18 +493,5 @@ impl RoomService {
             "",
         )
         .await
-    }
-}
-
-impl RoomService {
-    fn validate_settings(&self, settings: &RoomSettings) -> Result<()> {
-        if let Some(runtime_settings_store) = self.runtime_settings_store.as_ref() {
-            return settings.validate(&runtime_settings_store.validation_context());
-        }
-        SettingsValidationContext::with_strict_policy(|ctx| settings.validate(ctx))
-    }
-
-    pub(super) fn validate_room_settings(&self, settings: &RoomSettings) -> Result<()> {
-        self.validate_settings(settings)
     }
 }

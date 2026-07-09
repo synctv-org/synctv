@@ -195,6 +195,18 @@ impl MediaService {
         {
             ctx = ctx.with_provider_instance_name(provider_instance_name);
         }
+        let mut ctx = self.attach_provider_credential_context(ctx);
+        if let Some(provider_stores) = &self.provider_stores {
+            ctx = ctx.with_store(provider_stores.load(provider_name));
+        }
+        ctx
+    }
+
+    #[must_use]
+    pub fn attach_provider_credential_context<'a>(
+        &'a self,
+        mut ctx: ProviderContext<'a>,
+    ) -> ProviderContext<'a> {
         if let Some(ref enc) = self.credential_encryption {
             ctx = ctx.with_credential_encryption(enc);
         }
@@ -203,9 +215,6 @@ impl MediaService {
         }
         if let Some(service) = self.provider_access_service.clone() {
             ctx = ctx.with_provider_access_service(service);
-        }
-        if let Some(provider_stores) = &self.provider_stores {
-            ctx = ctx.with_store(provider_stores.load(provider_name));
         }
         ctx
     }
@@ -327,10 +336,11 @@ impl MediaService {
             let service = self.clone();
             async move {
                 validate_media_name(&item.name)?;
-                if item.description.chars().count() > 5000 {
+                if item.description.chars().count() > crate::validation::MEDIA_DESCRIPTION_MAX {
                     return Err(Error::InvalidInput(format!(
-                        "Media description for item '{}' cannot exceed 5000 characters",
-                        item.name
+                        "Media description for item '{}' cannot exceed {} characters",
+                        item.name,
+                        crate::validation::MEDIA_DESCRIPTION_MAX
                     )));
                 }
 
@@ -503,10 +513,11 @@ impl MediaService {
         outbox_event_factory: Option<RealtimeOutboxMediaEventFactory>,
     ) -> Result<Media> {
         validate_media_name(&request.name)?;
-        if request.description.chars().count() > 5000 {
-            return Err(Error::InvalidInput(
-                "Media description cannot exceed 5000 characters".to_string(),
-            ));
+        if request.description.chars().count() > crate::validation::MEDIA_DESCRIPTION_MAX {
+            return Err(Error::InvalidInput(format!(
+                "Media description cannot exceed {} characters",
+                crate::validation::MEDIA_DESCRIPTION_MAX
+            )));
         }
 
         // Check permission
@@ -822,10 +833,11 @@ impl MediaService {
                     media.name = name.clone();
                 }
                 if let Some(ref description) = request.description {
-                    if description.chars().count() > 5000 {
-                        return Err(Error::InvalidInput(
-                            "Media description cannot exceed 5000 characters".to_string(),
-                        ));
+                    if description.chars().count() > crate::validation::MEDIA_DESCRIPTION_MAX {
+                        return Err(Error::InvalidInput(format!(
+                            "Media description cannot exceed {} characters",
+                            crate::validation::MEDIA_DESCRIPTION_MAX
+                        )));
                     }
                     media.description = description.clone();
                 }

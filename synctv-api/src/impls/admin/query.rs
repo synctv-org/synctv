@@ -4,8 +4,11 @@ use synctv_core::models::{
     MediaListSortBy as CoreMediaListSortBy, PlaylistListSortBy as CorePlaylistListSortBy,
     RoomStatus, SortDirection as CoreSortDirection, UserRole, UserStatus,
 };
+use synctv_core::service::BanRecordTargetType;
 
 use crate::impls::ApiError;
+
+use super::ActiveStreamListSortBy;
 
 pub(in crate::impls::admin) fn page_i32_to_usize(value: i32) -> Result<usize, ApiError> {
     let normalized = if value > 0 { value.cast_unsigned() } else { 1 };
@@ -76,7 +79,7 @@ pub(in crate::impls::admin) fn page_offset_usize(
         .ok_or_else(|| ApiError::Internal(format!("{field} exceeds usize::MAX")))
 }
 
-pub(in crate::impls::admin) fn pagination_limit_offset_i64(
+pub(crate) fn pagination_limit_offset_i64(
     page: i32,
     page_size: i32,
     label: &'static str,
@@ -89,7 +92,7 @@ pub(in crate::impls::admin) fn pagination_limit_offset_i64(
     Ok((limit, offset))
 }
 
-pub(in crate::impls::admin) fn proto_review_status_filter(
+pub(crate) fn proto_review_status_filter(
     value: i32,
 ) -> Result<synctv_core::models::ReviewStatus, ApiError> {
     synctv_core::models::ReviewStatus::try_from(value)
@@ -107,9 +110,7 @@ pub(in crate::impls::admin) fn proto_room_status_filter(
         .map_err(|_| ApiError::InvalidInput("Unsupported room status".to_string()))
 }
 
-pub(in crate::impls::admin) fn proto_user_status_filter(
-    value: i32,
-) -> Result<Option<UserStatus>, ApiError> {
+pub(crate) fn proto_user_status_filter(value: i32) -> Result<Option<UserStatus>, ApiError> {
     if value == synctv_proto::common::UserStatus::Unspecified as i32 {
         return Ok(None);
     }
@@ -118,9 +119,7 @@ pub(in crate::impls::admin) fn proto_user_status_filter(
         .map_err(|_| ApiError::InvalidInput("Unsupported user status".to_string()))
 }
 
-pub(in crate::impls::admin) fn proto_user_role_filter(
-    value: i32,
-) -> Result<Option<UserRole>, ApiError> {
+pub(crate) fn proto_user_role_filter(value: i32) -> Result<Option<UserRole>, ApiError> {
     if value == synctv_proto::common::UserRole::Unspecified as i32 {
         return Ok(None);
     }
@@ -129,7 +128,20 @@ pub(in crate::impls::admin) fn proto_user_role_filter(
         .map_err(|_| ApiError::InvalidInput("Unsupported user role".to_string()))
 }
 
-pub(in crate::impls::admin) fn proto_admin_sort_direction(
+pub(crate) fn ban_record_target_type_from_proto(
+    value: i32,
+) -> Result<Option<BanRecordTargetType>, ApiError> {
+    match synctv_proto::admin::BanTargetType::try_from(value) {
+        Ok(synctv_proto::admin::BanTargetType::Unspecified) => Ok(None),
+        Ok(synctv_proto::admin::BanTargetType::User) => Ok(Some(BanRecordTargetType::User)),
+        Ok(synctv_proto::admin::BanTargetType::Room) => Ok(Some(BanRecordTargetType::Room)),
+        Err(_) => Err(ApiError::InvalidInput(
+            "Invalid ban record target type".to_string(),
+        )),
+    }
+}
+
+pub(crate) fn proto_admin_sort_direction(
     sort_direction: i32,
     default: CoreSortDirection,
 ) -> Result<CoreSortDirection, ApiError> {
@@ -142,7 +154,7 @@ pub(in crate::impls::admin) fn proto_admin_sort_direction(
     }
 }
 
-pub(in crate::impls::admin) fn proto_admin_user_list_sort_by(
+pub(crate) fn proto_admin_user_list_sort_by(
     sort_by: i32,
 ) -> Result<synctv_core::models::UserListSortBy, ApiError> {
     match synctv_proto::admin::UserListSortBy::try_from(sort_by)
@@ -207,40 +219,32 @@ pub(in crate::impls::admin) fn proto_admin_room_member_list_sort_by(
     }
 }
 
-pub(in crate::impls::admin) fn proto_admin_active_stream_list_sort_by(
+pub(crate) fn proto_admin_active_stream_list_sort_by(
     sort_by: i32,
-) -> Result<synctv_proto::admin::ActiveStreamListSortBy, ApiError> {
+) -> Result<ActiveStreamListSortBy, ApiError> {
     match synctv_proto::admin::ActiveStreamListSortBy::try_from(sort_by).map_err(|_| {
         ApiError::InvalidInput("Unsupported active stream list sort field".to_string())
     })? {
         synctv_proto::admin::ActiveStreamListSortBy::Unspecified
         | synctv_proto::admin::ActiveStreamListSortBy::StartedAt => {
-            Ok(synctv_proto::admin::ActiveStreamListSortBy::StartedAt)
+            Ok(ActiveStreamListSortBy::StartedAt)
         }
-        synctv_proto::admin::ActiveStreamListSortBy::RoomId => {
-            Ok(synctv_proto::admin::ActiveStreamListSortBy::RoomId)
-        }
-        synctv_proto::admin::ActiveStreamListSortBy::MediaId => {
-            Ok(synctv_proto::admin::ActiveStreamListSortBy::MediaId)
-        }
-        synctv_proto::admin::ActiveStreamListSortBy::UserId => {
-            Ok(synctv_proto::admin::ActiveStreamListSortBy::UserId)
-        }
-        synctv_proto::admin::ActiveStreamListSortBy::NodeId => {
-            Ok(synctv_proto::admin::ActiveStreamListSortBy::NodeId)
-        }
+        synctv_proto::admin::ActiveStreamListSortBy::RoomId => Ok(ActiveStreamListSortBy::RoomId),
+        synctv_proto::admin::ActiveStreamListSortBy::MediaId => Ok(ActiveStreamListSortBy::MediaId),
+        synctv_proto::admin::ActiveStreamListSortBy::UserId => Ok(ActiveStreamListSortBy::UserId),
+        synctv_proto::admin::ActiveStreamListSortBy::NodeId => Ok(ActiveStreamListSortBy::NodeId),
     }
 }
 
-pub(in crate::impls::admin) fn proto_admin_active_stream_sort_direction(
+pub(crate) fn proto_admin_active_stream_sort_direction(
     sort_direction: i32,
-) -> Result<synctv_proto::admin::SortDirection, ApiError> {
+) -> Result<CoreSortDirection, ApiError> {
     match synctv_proto::admin::SortDirection::try_from(sort_direction)
         .map_err(|_| ApiError::InvalidInput("Unsupported sort direction".to_string()))?
     {
         synctv_proto::admin::SortDirection::Unspecified
-        | synctv_proto::admin::SortDirection::Desc => Ok(synctv_proto::admin::SortDirection::Desc),
-        synctv_proto::admin::SortDirection::Asc => Ok(synctv_proto::admin::SortDirection::Asc),
+        | synctv_proto::admin::SortDirection::Desc => Ok(CoreSortDirection::Desc),
+        synctv_proto::admin::SortDirection::Asc => Ok(CoreSortDirection::Asc),
     }
 }
 
@@ -340,27 +344,27 @@ pub(in crate::impls::admin) fn paginate_vec<T>(
 pub(in crate::impls::admin) fn compare_active_streams(
     left: &synctv_proto::admin::ActiveStreamInfo,
     right: &synctv_proto::admin::ActiveStreamInfo,
-    sort_by: synctv_proto::admin::ActiveStreamListSortBy,
-    sort_direction: synctv_proto::admin::SortDirection,
+    sort_by: ActiveStreamListSortBy,
+    sort_direction: CoreSortDirection,
 ) -> Ordering {
     let ordering = match sort_by {
-        synctv_proto::admin::ActiveStreamListSortBy::RoomId => left
+        ActiveStreamListSortBy::RoomId => left
             .room_id
             .cmp(&right.room_id)
             .then_with(|| left.media_id.cmp(&right.media_id)),
-        synctv_proto::admin::ActiveStreamListSortBy::MediaId => left
+        ActiveStreamListSortBy::MediaId => left
             .media_id
             .cmp(&right.media_id)
             .then_with(|| left.room_id.cmp(&right.room_id)),
-        synctv_proto::admin::ActiveStreamListSortBy::UserId => left
+        ActiveStreamListSortBy::UserId => left
             .user_id
             .cmp(&right.user_id)
             .then_with(|| left.started_at.cmp(&right.started_at)),
-        synctv_proto::admin::ActiveStreamListSortBy::NodeId => left
+        ActiveStreamListSortBy::NodeId => left
             .node_id
             .cmp(&right.node_id)
             .then_with(|| left.started_at.cmp(&right.started_at)),
-        _ => left
+        ActiveStreamListSortBy::StartedAt => left
             .started_at
             .cmp(&right.started_at)
             .then_with(|| left.room_id.cmp(&right.room_id))
@@ -368,7 +372,7 @@ pub(in crate::impls::admin) fn compare_active_streams(
     };
 
     match sort_direction {
-        synctv_proto::admin::SortDirection::Asc => ordering,
-        _ => ordering.reverse(),
+        CoreSortDirection::Asc => ordering,
+        CoreSortDirection::Desc => ordering.reverse(),
     }
 }

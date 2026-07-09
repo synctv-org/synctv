@@ -2,11 +2,14 @@ use anyhow::Result;
 use std::sync::Arc;
 use tracing::info;
 
-use synctv_core::{Config, RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
+use synctv_adapter::PublicIdCodec;
+use synctv_core::{RedisConnectionRuntime, SharedStateMode, SharedStateProfile};
+
+use crate::app_config::AppConfig as Config;
+use crate::resource_options::{hls_oss_options, hls_storage_backend};
 
 use crate::rtmp_auth;
 use crate::server;
-use synctv_api::PublicIdCodec;
 
 struct LivestreamRuntimeBindings {
     publisher_registry: Arc<dyn synctv_livestream::StreamRegistryTrait>,
@@ -79,7 +82,8 @@ fn build_livestream_runtime_bindings(
 ///
 pub async fn init_livestream(
     config: &Config,
-    synctv_services: &synctv_core::bootstrap::Services,
+    public_id_codec: Arc<PublicIdCodec>,
+    synctv_services: &crate::bootstrap::Services,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
     hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
     node_id: &str,
@@ -142,14 +146,9 @@ pub async fn init_livestream(
             max_flv_tag_size_bytes: config.livestream.max_flv_tag_size_bytes,
             api_address: config.advertise_api_address(),
             hls_memory_max_mb: config.livestream.hls_storage.memory_max_mb(),
-            hls_storage_backend: config.livestream.hls_storage.backend(),
+            hls_storage_backend: hls_storage_backend(config.livestream.hls_storage.backend()),
             hls_storage_path: config.livestream.hls_storage.path().to_string(),
-            hls_oss: config
-                .livestream
-                .hls_storage
-                .oss()
-                .cloned()
-                .unwrap_or_default(),
+            hls_oss: hls_oss_options(&config.livestream.hls_storage),
             ssrf_guard: config.security.ssrf_guard(),
         },
         publisher_registry,
@@ -164,10 +163,7 @@ pub async fn init_livestream(
         registry: publisher_registry_for_auth,
         node_id: node_id.to_string(),
         api_address: config.advertise_api_address(),
-        public_id_codec: Arc::new(
-            PublicIdCodec::from_config(&config.external_ids)
-                .map_err(|error| anyhow::anyhow!("Invalid RTMP auth public ID config: {error}"))?,
-        ),
+        public_id_codec,
         stream_event_tx: Some(stream_lifecycle_tx),
         is_restarting: Some(livestream_server.restarting_flag()),
         user_stream_index,
@@ -299,13 +295,15 @@ mod tests {
     fn test_init_livestream_signature_uses_runtime_abstraction() {
         fn assert_signature(
             config: &Config,
-            services: &synctv_core::bootstrap::Services,
+            public_id_codec: Arc<PublicIdCodec>,
+            services: &crate::bootstrap::Services,
             runtime: Option<Arc<dyn RedisConnectionRuntime>>,
             hls_cleanup_leader: Arc<dyn synctv_core::service::LeaderCheck>,
             node_id: &str,
         ) {
             std::mem::drop(init_livestream(
                 config,
+                public_id_codec,
                 services,
                 runtime,
                 hls_cleanup_leader,

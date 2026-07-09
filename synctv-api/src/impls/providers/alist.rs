@@ -9,12 +9,12 @@ use synctv_core::provider::{
     AlistListRequest, AlistMeRequest, AlistProvider, AlistSearchRequest, ExecutionControl,
     ProviderAccessService,
 };
-use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_proto::providers::alist::{
     BindInfo, FileItem, GetBindsResponse, GetMeRequest, GetMeResponse, ListRequest, ListResponse,
     LoginRequest, LoginResponse, LogoutRequest, LogoutResponse, SearchItem, SearchRequest,
     SearchResponse,
 };
+use synctv_realtime::fanout::RealtimeEventService;
 
 use super::{
     provider_instance_name_for_response, publish_provider_credential_changed,
@@ -29,24 +29,20 @@ use super::{
 pub struct AlistApiImpl {
     provider: Arc<AlistProvider>,
     access_service: Arc<dyn ProviderAccessService>,
-    event_service: Arc<dyn crate::runtime::RealtimeEventService>,
+    event_service: Arc<dyn RealtimeEventService>,
 }
 
 #[derive(Clone)]
 pub struct ProviderApiRuntime {
     pub access_service: Arc<dyn ProviderAccessService>,
-    pub event_service: Arc<dyn crate::runtime::RealtimeEventService>,
+    pub event_service: Arc<dyn RealtimeEventService>,
 }
 
 impl AlistApiImpl {
     #[must_use]
-    pub fn new_with_runtime(
-        provider: &Arc<AlistProvider>,
-        credential_repo: Arc<UserProviderCredentialRepository>,
-        runtime: ProviderApiRuntime,
-    ) -> Self {
+    pub fn new_with_runtime(provider: Arc<AlistProvider>, runtime: ProviderApiRuntime) -> Self {
         Self {
-            provider: Arc::new(provider.with_credential_repo(credential_repo)),
+            provider,
             access_service: runtime.access_service,
             event_service: runtime.event_service,
         }
@@ -368,11 +364,10 @@ mod tests {
                 credential_repo.clone(),
                 provider.clone(),
             )),
-            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+            event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
         };
         Ok(AlistApiImpl::new_with_runtime(
-            &provider,
-            credential_repo,
+            Arc::new(provider.with_credential_repo(credential_repo)),
             runtime,
         ))
     }

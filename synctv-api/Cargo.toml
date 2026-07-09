@@ -71,6 +71,7 @@ tls-native-roots = [
 
 [dependencies]
 # Internal
+synctv-adapter = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false }
 synctv-proxy = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
@@ -99,7 +100,6 @@ tonic-types.workspace = true
 prost.workspace = true
 opaque-ke.workspace = true
 sha2_010.workspace = true
-sqids.workspace = true
 prost-types.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 pbjson-types.workspace = true
@@ -155,8 +155,6 @@ chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-# Configuration
-config.workspace = true
 clap.workspace = true
 regex.workspace = true
 ammonia.workspace = true

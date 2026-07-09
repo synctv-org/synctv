@@ -7,13 +7,13 @@ use crate::impls::messaging::{
     GuestRealtimeIdentity, MessageSender, RealtimeJoinError, RealtimePrincipal,
     ResourceWatchSession, ResourceWatchSessionConfig,
 };
-use crate::runtime::RealtimeEventService;
 use synctv_core::models::{Room, RoomId};
 use synctv_core::service::{
     ContentFilter, RateLimitConfig, RequestRateLimiterService, RoomService as CoreRoomService,
     UserService as CoreUserService,
 };
 use synctv_proto::client::ServerMessage;
+use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::ConnectionRuntime;
 
 use super::map_api_error;
@@ -75,9 +75,9 @@ struct GrpcRoomMetadata {
     room_id: RoomId,
 }
 
-/// Configuration for `ClientService`
+/// Options for `ClientService` construction
 #[derive(Clone)]
-pub struct ClientServiceConfig {
+pub struct ClientServiceOptions {
     pub user_service: CoreUserService,
     pub room_service: CoreRoomService,
     pub chat_service: Arc<synctv_core::service::ChatService>,
@@ -88,7 +88,7 @@ pub struct ClientServiceConfig {
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub heartbeat_schedule: crate::impls::HeartbeatSchedule,
@@ -108,7 +108,7 @@ pub struct ClientServiceImpl {
     presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     heartbeat_schedule: crate::impls::HeartbeatSchedule,
 }
@@ -121,7 +121,7 @@ impl ClientServiceImpl {
     }
 
     #[must_use]
-    pub fn new(config: ClientServiceConfig) -> Self {
+    pub fn new(config: ClientServiceOptions) -> Self {
         Self {
             user_service: Arc::new(config.user_service),
             room_service: Arc::new(config.room_service),
@@ -134,7 +134,7 @@ impl ClientServiceImpl {
             presence_service: config.presence_service,
             email_api: config.email_api,
             client_api: config.client_api,
-            config: config.config,
+            runtime_settings: config.runtime_settings,
             notification_service: config.notification_service,
             heartbeat_schedule: config.heartbeat_schedule,
         }
@@ -153,7 +153,7 @@ impl ClientServiceImpl {
     ) -> Result<crate::impls::RequestMetadata, Status> {
         super::request_metadata(
             request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )
     }

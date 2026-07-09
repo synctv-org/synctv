@@ -9,8 +9,6 @@
 //! - Consistent naming convention for easy debugging
 //! - Support for multi-environment isolation
 
-use crate::Config;
-
 /// Unified Redis Key Builder
 ///
 /// This struct provides a centralized way to generate all Redis keys,
@@ -34,12 +32,6 @@ impl KeyBuilder {
             prefix.pop();
         }
         Self { prefix }
-    }
-
-    /// Create `KeyBuilder` from configuration
-    #[must_use]
-    pub fn from_config(config: &Config) -> Self {
-        Self::new(config.redis.key_prefix.clone())
     }
 
     /// Sanitize a user-controlled key segment to prevent Redis key hierarchy
@@ -482,10 +474,8 @@ mod tests {
     }
 
     #[test]
-    fn test_key_builder_from_config_trims_trailing_colon_prefix() {
-        let mut config = Config::default();
-        config.redis.key_prefix = "tenant-a:".to_string();
-        let builder = KeyBuilder::from_config(&config);
+    fn test_key_builder_trims_configured_trailing_colon_prefix() {
+        let builder = KeyBuilder::new("tenant-a:");
 
         assert_eq!(builder.prefix(), "tenant-a");
     }

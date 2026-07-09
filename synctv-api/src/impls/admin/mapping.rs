@@ -15,6 +15,131 @@ pub(in crate::impls::admin) fn public_id_encode_error(kind: &str, error: &str) -
     ApiError::Internal(format!("Failed to encode {kind} public id: {error}"))
 }
 
+#[must_use]
+pub(crate) fn slice_cache_stats_to_admin_proto(
+    response: crate::status::SliceCacheStatsResponse,
+) -> synctv_proto::admin::GetSliceCacheStatsResponse {
+    synctv_proto::admin::GetSliceCacheStatsResponse {
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(slice_cache_stats_node_to_admin_proto)
+            .collect(),
+        failures: response
+            .failures
+            .into_iter()
+            .map(slice_cache_failure_to_admin_proto)
+            .collect(),
+    }
+}
+
+#[must_use]
+pub(crate) fn slice_cache_purge_to_admin_proto(
+    response: crate::status::SliceCachePurgeResponse,
+) -> synctv_proto::admin::PurgeSliceCacheResponse {
+    synctv_proto::admin::PurgeSliceCacheResponse {
+        success: response.success,
+        removed_entries: response.removed_entries,
+        freed_bytes: response.freed_bytes,
+        stats: response.stats.map(slice_cache_stats_node_to_admin_proto),
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(slice_cache_purge_node_to_admin_proto)
+            .collect(),
+        failures: response
+            .failures
+            .into_iter()
+            .map(slice_cache_failure_to_admin_proto)
+            .collect(),
+    }
+}
+
+#[must_use]
+pub(crate) fn slice_cache_evict_expired_to_admin_proto(
+    response: crate::status::SliceCacheEvictExpiredResponse,
+) -> synctv_proto::admin::EvictExpiredSliceCacheResponse {
+    synctv_proto::admin::EvictExpiredSliceCacheResponse {
+        success: response.success,
+        removed_expired_entries: response.removed_expired_entries,
+        stats: response.stats.map(slice_cache_stats_node_to_admin_proto),
+        nodes: response
+            .nodes
+            .into_iter()
+            .map(slice_cache_evict_expired_node_to_admin_proto)
+            .collect(),
+        failures: response
+            .failures
+            .into_iter()
+            .map(slice_cache_failure_to_admin_proto)
+            .collect(),
+    }
+}
+
+fn slice_cache_config_to_admin_proto(
+    config: crate::status::SliceCacheConfigInfo,
+) -> synctv_proto::admin::SliceCacheConfigInfo {
+    synctv_proto::admin::SliceCacheConfigInfo {
+        engine_enabled: config.engine_enabled,
+        backend: config.backend,
+        file_cache_dir: config.file_cache_dir,
+        slice_size: config.slice_size,
+        max_cache_size: config.max_cache_size,
+        segment_ttl_secs: config.segment_ttl_secs,
+        stale_max_age_secs: config.stale_max_age_secs,
+        stale_while_revalidate: config.stale_while_revalidate,
+        eviction_interval_secs: config.eviction_interval_secs,
+        watermark_ratio: config.watermark_ratio,
+    }
+}
+
+fn slice_cache_stats_node_to_admin_proto(
+    stats: crate::status::SliceCacheStatsNode,
+) -> synctv_proto::admin::SliceCacheStatsNode {
+    synctv_proto::admin::SliceCacheStatsNode {
+        node_id: stats.node_id,
+        config: Some(slice_cache_config_to_admin_proto(stats.config)),
+        current_size_bytes: stats.current_size_bytes,
+        entry_count: stats.entry_count,
+        metadata_entries: stats.metadata_entries,
+        updating_entries: stats.updating_entries,
+        lock_count: stats.lock_count,
+        usage_ratio: stats.usage_ratio,
+    }
+}
+
+fn slice_cache_failure_to_admin_proto(
+    failure: crate::status::SliceCacheNodeFailure,
+) -> synctv_proto::admin::SliceCacheNodeFailure {
+    synctv_proto::admin::SliceCacheNodeFailure {
+        node_id: failure.node_id,
+        error: failure.error,
+    }
+}
+
+fn slice_cache_purge_node_to_admin_proto(
+    response: crate::status::SliceCachePurgeNodeResult,
+) -> synctv_proto::admin::PurgeSliceCacheNodeResult {
+    synctv_proto::admin::PurgeSliceCacheNodeResult {
+        node_id: response.node_id,
+        success: response.success,
+        removed_entries: response.removed_entries,
+        freed_bytes: response.freed_bytes,
+        stats: response.stats.map(slice_cache_stats_node_to_admin_proto),
+    }
+}
+
+fn slice_cache_evict_expired_node_to_admin_proto(
+    response: crate::status::SliceCacheEvictExpiredNodeResult,
+) -> synctv_proto::admin::EvictExpiredSliceCacheNodeResult {
+    synctv_proto::admin::EvictExpiredSliceCacheNodeResult {
+        node_id: response.node_id,
+        success: response.success,
+        removed_expired_entries: response.removed_expired_entries,
+        stats: response.stats.map(slice_cache_stats_node_to_admin_proto),
+    }
+}
+
 pub(in crate::impls::admin) fn required_room_settings<'a>(
     settings: &'a std::collections::HashMap<RoomId, synctv_core::models::RoomSettings>,
     room_id: &RoomId,
@@ -41,14 +166,14 @@ fn required_banned_at(user: &synctv_core::models::User) -> Result<i64, ApiError>
 }
 
 fn encode_optional_user_id(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<String, ApiError> {
     encode_optional_user_id_option(public_id_codec, id).map(std::option::Option::unwrap_or_default)
 }
 
 fn encode_optional_user_id_option(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     id: Option<UserId>,
 ) -> Result<Option<String>, ApiError> {
     id.map(|id| {
@@ -60,7 +185,7 @@ fn encode_optional_user_id_option(
 }
 
 fn encode_optional_room_id(
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
     id: Option<RoomId>,
 ) -> Result<String, ApiError> {
     id.map(|id| {
@@ -100,7 +225,7 @@ fn content_report_status_to_proto(value: ContentReportStatus) -> i32 {
 
 pub(crate) fn content_report_row_to_proto(
     row: &ContentReportAdminRow,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::ContentReport, ApiError> {
     Ok(synctv_proto::admin::ContentReport {
         id: public_id_codec
@@ -139,7 +264,7 @@ pub(crate) fn content_report_row_to_proto(
 
 pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
     row: &UserRegistrationReviewRecord,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::UserRegistrationReview, ApiError> {
     let oauth2_provider = row.oauth2_provider.clone().map(|provider| {
         (match provider {
@@ -205,7 +330,7 @@ pub(in crate::impls::admin) fn user_registration_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
     row: &RoomCreationReviewRecord,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomCreationReview, ApiError> {
     Ok(synctv_proto::admin::RoomCreationReview {
         id: public_id_codec
@@ -237,7 +362,7 @@ pub(in crate::impls::admin) fn room_creation_review_row_to_proto(
 
 pub(in crate::impls::admin) fn room_join_review_row_to_proto(
     row: &RoomJoinReviewRecord,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::RoomJoinReview, ApiError> {
     Ok(synctv_proto::admin::RoomJoinReview {
         id: public_id_codec
@@ -262,7 +387,7 @@ pub(in crate::impls::admin) fn room_join_review_row_to_proto(
 
 pub(in crate::impls::admin) fn ban_row_to_proto(
     row: &BanRecordRow,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::BanRecord, ApiError> {
     Ok(synctv_proto::admin::BanRecord {
         id: public_id_codec
@@ -295,7 +420,7 @@ pub(in crate::impls::admin) fn try_managed_room_to_proto(
     cover: Option<&synctv_core::models::StoredFileReference>,
     cover_access: Option<&crate::impls::stored_files::StoredFileObjectAccess>,
     presence: Option<&synctv_core::service::OnlineRoomStats>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::Room, ApiError> {
     let room_settings = settings.ok_or_else(|| {
         ApiError::Internal(format!(
@@ -361,7 +486,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
     member: &synctv_core::models::RoomMemberWithUser,
     room_settings: &synctv_core::models::RoomSettings,
     permission_service: &synctv_core::service::PermissionService,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     let permissions =
         permission_service.effective_member_with_user_permissions(member, room_settings);
@@ -371,7 +496,7 @@ pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_settings(
 pub(in crate::impls::admin) fn try_admin_room_member_to_proto_with_permissions(
     member: &synctv_core::models::RoomMemberWithUser,
     permissions: synctv_core::models::RoomPermissionSet,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::common::RoomMember, ApiError> {
     Ok(synctv_proto::common::RoomMember {
         room_id: public_id_codec
@@ -403,7 +528,7 @@ pub(in crate::impls::admin) fn try_admin_user_to_proto(
     user: &synctv_core::models::User,
     email: Option<&str>,
     presence: Option<&synctv_core::service::OnlineUserStats>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<synctv_proto::admin::AdminUser, ApiError> {
     Ok(synctv_proto::admin::AdminUser {
         id: public_id_codec

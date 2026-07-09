@@ -1,4 +1,4 @@
-use synctv_core::models::UserId;
+use synctv_core::{models::UserId, service::WebAuthnCredential};
 
 use super::ClientApiImpl;
 use crate::impls::ApiError;
@@ -488,9 +488,7 @@ fn passkey_authentication_extensions_client_outputs_from_proto(
     }
 }
 
-pub(crate) fn passkey_credential_to_proto(
-    credential: &synctv_core::repository::WebAuthnCredential,
-) -> PasskeyCredential {
+pub(crate) fn passkey_credential_to_proto(credential: &WebAuthnCredential) -> PasskeyCredential {
     PasskeyCredential {
         credential_id: synctv_core::service::PasskeyService::encode_credential_id(
             &credential.credential_id,

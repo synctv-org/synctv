@@ -1,8 +1,8 @@
+use crate::api_runtime::{MetricsAuthMode, MetricsRuntimeSettings};
 use axum::http::HeaderMap;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use subtle::ConstantTimeEq;
-use synctv_core::config::{MetricsAuthMode, MetricsConfig};
 
 #[cfg(feature = "k8s")]
 use k8s_openapi::api::authentication::v1::{TokenReview, TokenReviewSpec};
@@ -46,7 +46,7 @@ impl MetricsAccessController {
     #[cfg(feature = "k8s")]
     pub async fn authorize(
         &self,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
         headers: &HeaderMap,
         path: &str,
         method: &str,
@@ -69,7 +69,7 @@ impl MetricsAccessController {
     #[cfg(not(feature = "k8s"))]
     pub fn authorize(
         &self,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
         headers: &HeaderMap,
         path: &str,
         method: &str,
@@ -84,7 +84,7 @@ impl MetricsAccessController {
     }
 
     fn authorize_bearer(
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
         headers: &HeaderMap,
     ) -> Result<(), MetricsAccessError> {
         let provided = extract_bearer_token_from_headers(headers)?;
@@ -97,7 +97,7 @@ impl MetricsAccessController {
     }
 
     fn authorize_basic(
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
         headers: &HeaderMap,
     ) -> Result<(), MetricsAccessError> {
         let credentials = extract_basic_credentials(headers)?;
@@ -117,7 +117,7 @@ impl MetricsAccessController {
     #[cfg(feature = "k8s")]
     async fn authorize_kubernetes(
         &self,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
         headers: &HeaderMap,
         path: &str,
         method: &str,
@@ -152,7 +152,7 @@ impl MetricsAccessController {
 
     #[cfg(not(feature = "k8s"))]
     fn authorize_kubernetes(
-        _metrics: &MetricsConfig,
+        _metrics: &MetricsRuntimeSettings,
         _headers: &HeaderMap,
         _path: &str,
         _method: &str,
@@ -223,7 +223,7 @@ struct KubernetesMetricsAuthorizer {
 
 #[cfg(feature = "k8s")]
 impl KubernetesMetricsAuthorizer {
-    async fn new(_metrics: &MetricsConfig) -> Result<Self, kube::Error> {
+    async fn new(_metrics: &MetricsRuntimeSettings) -> Result<Self, kube::Error> {
         let client = kube::Client::try_default().await?;
         Ok(Self {
             client,
@@ -241,7 +241,7 @@ impl KubernetesMetricsAuthorizer {
         token: &str,
         path: &str,
         method: &str,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
     ) -> Result<(), MetricsAccessError> {
         let user_info = self
             .authenticate(token, metrics)
@@ -263,7 +263,7 @@ impl KubernetesMetricsAuthorizer {
     async fn authenticate(
         &self,
         token: &str,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
     ) -> Result<k8s_openapi::api::authentication::v1::UserInfo, kube::Error> {
         let cache_key = hash_token(token);
         let now = Instant::now();
@@ -337,7 +337,7 @@ impl KubernetesMetricsAuthorizer {
         user_info: &k8s_openapi::api::authentication::v1::UserInfo,
         path: &str,
         method: &str,
-        metrics: &MetricsConfig,
+        metrics: &MetricsRuntimeSettings,
     ) -> Result<bool, kube::Error> {
         let cache_key = format!("{}:{path}:{method}", hash_token(token));
         let now = Instant::now();
@@ -412,28 +412,29 @@ mod tests {
     use axum::http::header::AUTHORIZATION;
     use axum::http::HeaderValue;
 
-    fn bearer_metrics_config(token: &str) -> MetricsConfig {
-        MetricsConfig {
+    fn bearer_metrics_config(token: &str) -> MetricsRuntimeSettings {
+        MetricsRuntimeSettings {
             enabled: true,
-            auth: synctv_core::config::MetricsAuthConfig {
+            auth: crate::api_runtime::MetricsAuthSettings {
                 mode: MetricsAuthMode::BearerToken,
                 bearer_token: token.to_string(),
-                ..Default::default()
+                basic_username: String::new(),
+                basic_password: String::new(),
+                kubernetes: crate::api_runtime::MetricsKubernetesAuthSettings::default(),
             },
-            ..Default::default()
         }
     }
 
-    fn basic_metrics_config(username: &str, password: &str) -> MetricsConfig {
-        MetricsConfig {
+    fn basic_metrics_config(username: &str, password: &str) -> MetricsRuntimeSettings {
+        MetricsRuntimeSettings {
             enabled: true,
-            auth: synctv_core::config::MetricsAuthConfig {
+            auth: crate::api_runtime::MetricsAuthSettings {
                 mode: MetricsAuthMode::Basic,
+                bearer_token: String::new(),
                 basic_username: username.to_string(),
                 basic_password: password.to_string(),
-                ..Default::default()
+                kubernetes: crate::api_runtime::MetricsKubernetesAuthSettings::default(),
             },
-            ..Default::default()
         }
     }
 

@@ -43,7 +43,6 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
 use std::sync::Arc;
-use synctv_core::Config;
 
 use super::map_api_error;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
@@ -61,7 +60,7 @@ fn map_oauth2_exchange_error(error: crate::impls::ApiError) -> Status {
 /// explicitly.
 pub struct OAuth2GrpcService {
     oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     request_executor: Arc<RequestExecutor>,
 }
 
@@ -69,12 +68,12 @@ impl OAuth2GrpcService {
     #[must_use]
     pub const fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
         request_executor: Arc<RequestExecutor>,
     ) -> Self {
         Self {
             oauth2_api,
-            config,
+            runtime_settings,
             request_executor,
         }
     }
@@ -89,7 +88,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<GetAuthorizationUrlResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -128,7 +127,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<GetAuthorizationUrlForBindResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -175,7 +174,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<ExchangeAuthorizationCodeResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let client_ip = metadata.client_ip;
@@ -219,7 +218,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<ListAvailableProvidersResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let oauth2_api = Arc::clone(&self.oauth2_api);
@@ -246,7 +245,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<UnlinkProviderResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -282,7 +281,7 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<GetLinkedProvidersResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
 

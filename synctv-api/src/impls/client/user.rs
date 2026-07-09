@@ -8,8 +8,8 @@ use synctv_core::models::{
     FileBlob, FileUploadSession, NewStoredFile, PageParams, RoomId, StoreFileUploadResult, UserId,
 };
 use synctv_core::service::{
-    AuthFactorMethod, SensitiveVerificationChallenge, SensitiveVerificationOutcome,
-    TokenAuthContext,
+    AuthFactorMethod, NewRealtimeOutboxEvent, SensitiveVerificationChallenge,
+    SensitiveVerificationOutcome, TokenAuthContext,
 };
 use synctv_core::validation::UsernameValidator;
 use synctv_proto::client::{
@@ -306,7 +306,7 @@ fn prepare_deleted_room_outbox_fanout(
     deleted_by: &UserId,
 ) -> Result<
     (
-        HashMap<RoomId, synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent>,
+        HashMap<RoomId, NewRealtimeOutboxEvent>,
         Vec<DeletedRoomAfterCommitFanout>,
     ),
     ApiError,

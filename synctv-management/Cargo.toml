@@ -8,28 +8,24 @@ license.workspace = true
 [features]
 default = []
 tls-aws-lc = [
-    "synctv-api/tls-aws-lc",
     "synctv-cluster/tls-aws-lc",
     "synctv-core/tls-aws-lc",
     "synctv-proto/tls-aws-lc",
     "tonic/tls-aws-lc",
 ]
 tls-ring = [
-    "synctv-api/tls-ring",
     "synctv-cluster/tls-ring",
     "synctv-core/tls-ring",
     "synctv-proto/tls-ring",
     "tonic/tls-ring",
 ]
 tls-webpki-roots = [
-    "synctv-api/tls-webpki-roots",
     "synctv-cluster/tls-webpki-roots",
     "synctv-core/tls-webpki-roots",
     "synctv-proto/tls-webpki-roots",
     "tonic/tls-webpki-roots",
 ]
 tls-native-roots = [
-    "synctv-api/tls-native-roots",
     "synctv-cluster/tls-native-roots",
     "synctv-core/tls-native-roots",
     "synctv-proto/tls-native-roots",
@@ -42,6 +38,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
+ipnet.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 pbjson.workspace = true
@@ -57,11 +54,13 @@ tonic-health.workspace = true
 tonic-prost.workspace = true
 tonic-reflection.workspace = true
 tracing.workspace = true
-synctv-api = { workspace = true, default-features = false }
+synctv-adapter = { workspace = true, default-features = false }
 synctv-cluster = { workspace = true, default-features = false }
+synctv-common = { workspace = true, default-features = false }
 synctv-core = { workspace = true, default-features = false }
 synctv-proxy = { workspace = true, default-features = false }
 synctv-proto = { workspace = true, default-features = false, features = ["main", "providers"] }
+synctv-realtime = { workspace = true, default-features = false }
 
 [build-dependencies]
 pbjson-build.workspace = true

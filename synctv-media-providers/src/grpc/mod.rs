@@ -40,3 +40,4 @@ mod emby_server;
 pub use alist_server::AlistService;
 pub use bilibili_server::BilibiliService;
 pub use emby_server::EmbyService;
+pub use error_mapper::{map_provider_error, map_remote_status};

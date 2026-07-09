@@ -1,8 +1,9 @@
 use crate::{
     models::{
-        CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileObjectDownload,
-        FileRangeRequest, FileUploadRange, FileUploadSessionCreateResult, GetFileObject, Room,
-        RoomId, StoreFileUpload, StoreFileUploadResult, SubmittedFileReference, UserId,
+        CompleteFileUploadSession, CompleteFileUploadSessionResult, FileBlob, FileMetadata,
+        FileObjectDownload, FileRangeRequest, FileUploadManifestPart, FileUploadRange,
+        FileUploadSessionCreateResult, GetFileObject, Room, RoomId, StoreFileUpload,
+        StoreFileUploadResult, SubmittedFileReference, UserId,
     },
     service::{
         file_storage::FileStorageContext, room_cover_upload_policy, FileStorageCleanupOrigin,
@@ -10,9 +11,22 @@ use crate::{
     Error, Result,
 };
 
-use super::{CreateRoomCoverUploadSession, RoomService};
+use super::RoomService;
 
 const ROOM_COVER_REFERENCE_KIND: &str = "room_cover";
+
+#[derive(Debug, Clone)]
+pub struct CreateRoomCoverUploadSession {
+    pub client_cover_id: Option<String>,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub duration_seconds: Option<i32>,
+    pub bitrate_bps: Option<i32>,
+    pub parts: Vec<FileUploadManifestPart>,
+    pub metadata: FileMetadata,
+}
 
 fn room_cover_storage_scope(room_id: RoomId) -> String {
     format!("rooms/{}/cover", room_id.as_i64())

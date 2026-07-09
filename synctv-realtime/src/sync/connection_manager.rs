@@ -22,7 +22,7 @@ use model::{
     ConnectionInfoPersistent, RoomTransition, TimeoutIndex,
 };
 mod config;
-pub use config::ConnectionLimits;
+pub use config::{ConnectionLimits, ConnectionLimitsOptions};
 mod metrics;
 pub use metrics::{ConnectionMetrics, ShutdownReport};
 mod disconnects;
@@ -896,7 +896,7 @@ impl ConnectionManager {
     pub fn release_room_reservation(&self, room_id: &RoomId) {
         let mut should_remove_entry = false;
         if let Some(counter) = self.pending_room_reservations.get(room_id) {
-            let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            let result = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current > 0 {
                     Some(current - 1)
                 } else {
@@ -958,7 +958,7 @@ impl ConnectionManager {
     pub fn release_user_reservation(&self, user_id: &UserId) {
         let mut should_remove_entry = false;
         if let Some(counter) = self.pending_user_reservations.get(user_id) {
-            let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            let result = counter.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current > 0 {
                     Some(current - 1)
                 } else {
@@ -1152,7 +1152,7 @@ impl ConnectionManager {
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
         synctv_core::metrics::ACTIVE_CONNECTIONS.inc();
         if is_first_connection_for_user {
-            synctv_core::metrics::http::USERS_ONLINE.inc();
+            synctv_core::metrics::application::USERS_ONLINE.inc();
             #[cfg(test)]
             self.users_online_metric_increments
                 .fetch_add(1, Ordering::Relaxed);
@@ -1437,7 +1437,7 @@ impl ConnectionManager {
         if let Some((conn_info, user_went_offline)) = removed {
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
             if user_went_offline {
-                synctv_core::metrics::http::USERS_ONLINE.dec();
+                synctv_core::metrics::application::USERS_ONLINE.dec();
                 #[cfg(test)]
                 self.users_online_metric_decrements
                     .fetch_add(1, Ordering::Relaxed);

@@ -4,11 +4,11 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use synctv_core::config::absolute_display_path;
 use synctv_management::proto as management_proto;
 
 use crate::admin_client::RemoteAdminSession;
 use crate::app::Application;
+use crate::path_util::absolute_display_path;
 
 use super::args::*;
 use super::commands::*;

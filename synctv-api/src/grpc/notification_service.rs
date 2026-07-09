@@ -6,8 +6,6 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use synctv_core::Config;
-
 use crate::impls::NotificationApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
 use synctv_proto::client::{
@@ -22,7 +20,7 @@ use synctv_proto::client::{
 pub struct NotificationServiceImpl {
     notification_api: Arc<NotificationApiImpl>,
     request_executor: Arc<RequestExecutor>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl NotificationServiceImpl {
@@ -30,12 +28,12 @@ impl NotificationServiceImpl {
     pub const fn new(
         notification_api: Arc<NotificationApiImpl>,
         request_executor: Arc<RequestExecutor>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
     ) -> Self {
         Self {
             notification_api,
             request_executor,
-            config,
+            runtime_settings,
         }
     }
 }
@@ -53,7 +51,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<ListNotificationsResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -81,7 +79,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<NotificationProto>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -110,7 +108,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<MarkAsReadResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -139,7 +137,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<MarkAllAsReadResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -168,7 +166,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<DeleteNotificationResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let req = request.into_inner();
@@ -197,7 +195,7 @@ impl NotificationService for NotificationServiceImpl {
     ) -> Result<Response<DeleteAllReadResponse>, Status> {
         let metadata = super::request_metadata(
             &request,
-            &self.config,
+            &self.runtime_settings,
             Some(super::grpc_unary_request_timeout()),
         )?;
         let notification_api = Arc::clone(&self.notification_api);

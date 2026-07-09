@@ -24,6 +24,9 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
         synctv_core::Error::Authorization(message) => {
             crate::impls::ApiError::Authorization(message.clone())
         }
+        synctv_core::Error::KickCooldownDenied => crate::impls::ApiError::Authorization(
+            synctv_core::Error::kick_cooldown_denied_message().to_string(),
+        ),
         other => {
             tracing::error!(error = %other, "Unexpected authorization-classified auth error");
             crate::impls::ApiError::Authorization(
@@ -40,46 +43,11 @@ pub fn map_auth_authorization_error(err: &synctv_core::Error) -> tonic::Status {
 /// a configured trusted proxy. Otherwise fall back to the socket peer address.
 pub fn extract_client_ip<T>(
     request: &tonic::Request<T>,
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
 ) -> Result<Option<std::net::IpAddr>, tonic::Status> {
-    let remote_addr = request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|info| info.0.ip())
-        .or_else(|| {
-            request
-                .extensions()
-                .get::<tonic::transport::server::TcpConnectInfo>()
-                .and_then(tonic::transport::server::TcpConnectInfo::remote_addr)
-                .map(|addr| addr.ip())
-        });
-
-    if let Some(peer_ip) = remote_addr {
-        let mut headers = axum::http::HeaderMap::new();
-        for header_name in ["x-forwarded-for", "x-real-ip"] {
-            if let Some(value) = request.metadata().get(header_name) {
-                let value = value
-                    .to_str()
-                    .map_err(|_| {
-                        tonic::Status::invalid_argument(format!(
-                            "{header_name} metadata must be valid ASCII"
-                        ))
-                    })?
-                    .parse::<axum::http::HeaderValue>()
-                    .map_err(|_| {
-                        tonic::Status::invalid_argument(format!(
-                            "{header_name} metadata must be a valid HTTP header value"
-                        ))
-                    })?;
-                headers.insert(header_name, value);
-            }
-        }
-        return crate::client_ip::extract_client_ip_from_headers(config, peer_ip, &headers)
-            .map(Some)
-            .map_err(|error| tonic::Status::invalid_argument(error.to_string()));
-    }
-
-    Ok(remote_addr)
+    synctv_adapter::grpc::extract_client_ip(request, |ip| {
+        runtime_settings.server.is_trusted_proxy(ip)
+    })
 }
 
 pub fn request_user_agent<T>(request: &tonic::Request<T>) -> Result<Option<String>, tonic::Status> {
@@ -96,7 +64,7 @@ pub fn request_user_agent<T>(request: &tonic::Request<T>) -> Result<Option<Strin
 
 pub fn request_metadata<T>(
     request: &tonic::Request<T>,
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     timeout: Option<std::time::Duration>,
 ) -> Result<crate::impls::RequestMetadata, tonic::Status> {
     let authorization = request
@@ -115,7 +83,7 @@ pub fn request_metadata<T>(
     Ok(
         crate::impls::RequestMetadata::new(crate::impls::TransportProtocol::Grpc)
             .with_authorization(authorization)
-            .with_client_ip(extract_client_ip(request, config)?)
+            .with_client_ip(extract_client_ip(request, runtime_settings)?)
             .with_user_agent(user_agent)
             .with_timeout(timeout),
     )
@@ -134,7 +102,7 @@ mod tests {
 
     #[test]
     fn request_metadata_extracts_ascii_authorization() -> TestResult {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert(
             "authorization",
@@ -150,7 +118,7 @@ mod tests {
 
     #[test]
     fn request_metadata_ignores_authorization_binary_metadata() -> TestResult {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert_bin(
             "authorization-bin",
@@ -165,7 +133,7 @@ mod tests {
 
     #[test]
     fn request_metadata_extracts_ascii_user_agent() -> TestResult {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
         let mut request = tonic::Request::new(());
         request.metadata_mut().insert(
             "user-agent",
@@ -180,7 +148,7 @@ mod tests {
 
     #[test]
     fn request_metadata_allows_missing_user_agent() -> TestResult {
-        let config = synctv_core::Config::default();
+        let config = crate::ApiRuntimeSettings::default();
         let request = tonic::Request::new(());
 
         let metadata = request_metadata(&request, &config, None)?;

@@ -536,7 +536,7 @@ async fn test_kick_member_cooldown_blocks_rejoin_until_expired() {
 
     let rejoin_during_cooldown = room_service.join_room(room.id, member.id, None).await;
     assert!(
-        matches!(rejoin_during_cooldown, Err(Error::Authorization(ref msg)) if msg.contains("recently kicked")),
+        matches!(rejoin_during_cooldown, Err(Error::KickCooldownDenied)),
         "Rejoin during kick cooldown should be denied, got {rejoin_during_cooldown:?}"
     );
 

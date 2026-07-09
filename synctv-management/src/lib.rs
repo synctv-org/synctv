@@ -2,8 +2,12 @@
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
 mod access;
+pub mod admin_runtime;
 pub mod lifecycle;
 mod mapping;
+pub mod provider_runtime;
+pub mod request_context;
+pub mod runtime_error;
 pub mod server;
 mod service;
 mod source_config;
@@ -175,5 +179,214 @@ mod tests {
             stale_files.is_empty(),
             "management must use synctv-proto extern_path for shared contracts; remove stale generated file(s): {stale_files:?}"
         );
+    }
+
+    #[test]
+    fn migrated_runtime_methods_use_management_query_models() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let admin_runtime = std::fs::read_to_string(manifest_dir.join("src/admin_runtime.rs"))
+            .expect("admin runtime source should be readable");
+        let provider_runtime =
+            std::fs::read_to_string(manifest_dir.join("src/provider_runtime.rs"))
+                .expect("provider runtime source should be readable");
+
+        assert!(admin_runtime.contains("query: ListUsersQuery"));
+        assert!(admin_runtime.contains("query: GetUserQuery"));
+        assert!(admin_runtime.contains("query: GetUserPreferencesQuery"));
+        assert!(admin_runtime.contains("command: UpdateUserPreferencesCommand"));
+        assert!(admin_runtime.contains("command: AddAdminCommand"));
+        assert!(admin_runtime.contains("command: RemoveAdminCommand"));
+        assert!(admin_runtime.contains("query: ListAdminsQuery"));
+        assert!(admin_runtime.contains("command: CreateUserCommand"));
+        assert!(admin_runtime.contains("command: DeleteUserCommand"));
+        assert!(admin_runtime.contains("command: BanUserCommand"));
+        assert!(admin_runtime.contains("command: UnbanUserCommand"));
+        assert!(admin_runtime.contains("query: ListUserRegistrationReviewsQuery"));
+        assert!(admin_runtime.contains("command: ApproveUserRegistrationReviewCommand"));
+        assert!(admin_runtime.contains("command: RejectUserRegistrationReviewCommand"));
+        assert!(admin_runtime.contains("query: ListRoomCreationReviewsQuery"));
+        assert!(admin_runtime.contains("command: ApproveRoomCreationReviewCommand"));
+        assert!(admin_runtime.contains("command: RejectRoomCreationReviewCommand"));
+        assert!(admin_runtime.contains("query: ListRoomJoinReviewsQuery"));
+        assert!(admin_runtime.contains("command: ApproveRoomJoinReviewCommand"));
+        assert!(admin_runtime.contains("command: RejectRoomJoinReviewCommand"));
+        assert!(admin_runtime.contains("query: ListBanRecordsQuery"));
+        assert!(admin_runtime.contains("command: UpdateUserRoleCommand"));
+        assert!(admin_runtime.contains("command: SetUserPasswordCommand"));
+        assert!(admin_runtime.contains("command: UpdateUserUsernameCommand"));
+        assert!(admin_runtime.contains("query: GetUserRoomsQuery"));
+        assert!(admin_runtime.contains("query: ListRoomsQuery"));
+        assert!(admin_runtime.contains("query: ListRoomCategoriesQuery"));
+        assert!(admin_runtime.contains("command: UpsertRoomCategoryCommand"));
+        assert!(admin_runtime.contains("command: DeleteRoomCategoryCommand"));
+        assert!(admin_runtime.contains("query: ListRoomLabelsQuery"));
+        assert!(admin_runtime.contains("command: UpsertRoomLabelCommand"));
+        assert!(admin_runtime.contains("command: DeleteRoomLabelCommand"));
+        assert!(admin_runtime.contains("command: UpdateRoomTaxonomyCommand"));
+        assert!(admin_runtime.contains("query: GetRoomQuery"));
+        assert!(admin_runtime.contains("query: GetRoomMembersQuery"));
+        assert!(admin_runtime.contains("command: AddMemberCommand"));
+        assert!(admin_runtime.contains("command: UpdateMemberRemarkNameCommand"));
+        assert!(admin_runtime.contains("command: UpdateMemberDisplayTagCommand"));
+        assert!(admin_runtime.contains("command: UpdateMemberPermissionsCommand"));
+        assert!(admin_runtime.contains("command: KickMemberCommand"));
+        assert!(admin_runtime.contains("query: GetRoomSettingsQuery"));
+        assert!(admin_runtime.contains("command: UpdateRoomSettingsCommand"));
+        assert!(admin_runtime.contains("command: ResetRoomSettingsCommand"));
+        assert!(admin_runtime.contains("command: UpdateRoomPasswordCommand"));
+        assert!(admin_runtime.contains("command: BanRoomCommand"));
+        assert!(admin_runtime.contains("command: UnbanRoomCommand"));
+        assert!(admin_runtime.contains("command: DeleteRoomCommand"));
+        assert!(admin_runtime.contains("command: BatchBanRoomsCommand"));
+        assert!(admin_runtime.contains("command: BatchDeleteRoomsCommand"));
+        assert!(admin_runtime.contains("command: StartPlaybackCommand"));
+        assert!(admin_runtime.contains("command: UpdatePlaybackStateCommand"));
+        assert!(admin_runtime.contains("query: ListRoomStreamsQuery"));
+        assert!(admin_runtime.contains("query: ListPlaylistsQuery"));
+        assert!(admin_runtime.contains("command: UpdatePlaylistCommand"));
+        assert!(admin_runtime.contains("command: MovePlaylistCommand"));
+        assert!(admin_runtime.contains("command: DeletePlaylistCommand"));
+        assert!(admin_runtime.contains("query: ListMediaQuery"));
+        assert!(admin_runtime.contains("command: EditMediaCommand"));
+        assert!(admin_runtime.contains("command: DeleteMediaCommand"));
+        assert!(admin_runtime.contains("command: MoveMediaCommand"));
+        assert!(admin_runtime.contains("command: KickStreamCommand"));
+        assert!(admin_runtime.contains("query: GetSettingsQuery"));
+        assert!(admin_runtime.contains("command: UpdateSettingsCommand"));
+        assert!(admin_runtime.contains("command: SendTestEmailCommand"));
+        assert!(admin_runtime.contains("query: GetServiceStateQuery"));
+        assert!(admin_runtime.contains("query: ListActiveStreamsQuery"));
+        assert!(admin_runtime.contains("command: BatchBanUsersCommand"));
+        assert!(admin_runtime.contains("command: BatchDeleteUsersCommand"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListUsersRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetUserRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetUserPreferencesRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateUserPreferencesRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::AddAdminRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::RemoveAdminRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListAdminsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::CreateUserRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::DeleteUserRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BanUserRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UnbanUserRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListUserRegistrationReviewsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ApproveUserRegistrationReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::RejectUserRegistrationReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListRoomCreationReviewsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ApproveRoomCreationReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::RejectRoomCreationReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListRoomJoinReviewsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ApproveRoomJoinReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::RejectRoomJoinReviewRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListBanRecordsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateUserRoleRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::SetUserPasswordRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateUserUsernameRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetUserRoomsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListRoomsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListRoomCategoriesRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpsertRoomCategoryRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::DeleteRoomCategoryRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListRoomLabelsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpsertRoomLabelRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::DeleteRoomLabelRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateRoomTaxonomyRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetRoomRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetRoomMembersRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::AddMemberRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateMemberRemarkNameRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateMemberDisplayTagRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateMemberPermissionsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::KickMemberRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetRoomSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateRoomSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ResetRoomSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateRoomPasswordRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BanRoomRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UnbanRoomRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::DeleteRoomRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BatchBanRoomsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BatchDeleteRoomsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::KickStreamRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::UpdateSettingsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::SendTestEmailRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::GetServiceStateRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::ListActiveStreamsRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BatchBanUsersRequest"));
+        assert!(!admin_runtime.contains("req: admin_proto::BatchDeleteUsersRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::StartPlaybackRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::UpdatePlaybackStateRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::ListRoomStreamsRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::ListPlaylistsRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::UpdatePlaylistRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::MovePlaylistRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::DeletePlaylistRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::ListPlaylistItemsRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::EditMediaRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::DeleteMediaRequest"));
+        assert!(!admin_runtime.contains("req: client_proto::MoveMediaRequest"));
+
+        assert!(provider_runtime.contains("query: ListAvailableProviderInstancesQuery"));
+        assert!(provider_runtime.contains("query: ListProviderBackendsQuery"));
+        assert!(provider_runtime.contains("query: ProviderInstanceListQuery"));
+        assert!(provider_runtime.contains("command: AddProviderInstanceCommand"));
+        assert!(provider_runtime.contains("command: UpdateProviderInstanceCommand"));
+        assert!(provider_runtime.contains("command: ProviderInstanceNameCommand"));
+        assert!(provider_runtime.contains("command: AlistLoginCommand"));
+        assert!(provider_runtime.contains("query: AlistListQuery"));
+        assert!(provider_runtime.contains("query: AlistSearchQuery"));
+        assert!(provider_runtime.contains("query: ProviderCredentialServerQuery"));
+        assert!(provider_runtime.contains("command: EmbyLoginCommand"));
+        assert!(provider_runtime.contains("query: EmbyListQuery"));
+        assert!(provider_runtime.contains("query: BilibiliParseQuery"));
+        assert!(provider_runtime.contains("command: BilibiliLoginQrCommand"));
+        assert!(provider_runtime.contains("query: BilibiliCheckQrQuery"));
+        assert!(provider_runtime.contains("command: BilibiliStartSmsLoginCommand"));
+        assert!(provider_runtime.contains("command: BilibiliSendSmsCommand"));
+        assert!(provider_runtime.contains("command: BilibiliLoginSmsCommand"));
+        assert!(provider_runtime.contains("query: BilibiliUserInfoQuery"));
+        assert!(provider_runtime.contains("command: BilibiliLogoutCommand"));
+        assert!(!provider_runtime
+            .contains("req: provider_common_proto::ListAvailableProviderInstancesRequest"));
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::ListProviderBackendsRequest")
+        );
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::ListProviderInstancesRequest")
+        );
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::AddProviderInstanceRequest")
+        );
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::UpdateProviderInstanceRequest")
+        );
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::DeleteProviderInstanceRequest")
+        );
+        assert!(!provider_runtime
+            .contains("req: provider_common_proto::ReconnectProviderInstanceRequest"));
+        assert!(
+            !provider_runtime.contains("req: provider_common_proto::EnableProviderInstanceRequest")
+        );
+        assert!(!provider_runtime
+            .contains("req: provider_common_proto::DisableProviderInstanceRequest"));
+        assert!(!provider_runtime.contains("req: alist_proto::LoginRequest"));
+        assert!(!provider_runtime.contains("req: alist_proto::ListRequest"));
+        assert!(!provider_runtime.contains("req: alist_proto::SearchRequest"));
+        assert!(!provider_runtime.contains("req: alist_proto::GetMeRequest"));
+        assert!(!provider_runtime.contains("req: alist_proto::LogoutRequest"));
+        assert!(!provider_runtime.contains("req: emby_proto::LoginRequest"));
+        assert!(!provider_runtime.contains("req: emby_proto::ListRequest"));
+        assert!(!provider_runtime.contains("req: emby_proto::GetMeRequest"));
+        assert!(!provider_runtime.contains("req: emby_proto::LogoutRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::ParseRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::LoginQrRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::CheckQrRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::StartSmsLoginRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::SendSmsRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::LoginSmsRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::UserInfoRequest"));
+        assert!(!provider_runtime.contains("req: bilibili_proto::LogoutRequest"));
     }
 }

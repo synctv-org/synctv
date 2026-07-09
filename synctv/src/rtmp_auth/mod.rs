@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use percent_encoding::percent_decode_str;
 use std::collections::VecDeque;
-use synctv_api::PublicIdCodec;
+use synctv_adapter::PublicIdCodec;
 use synctv_core::{
     models::{MediaId, Room, RoomId, RoomStatus, UserId, UserStatus},
     service::{RoomService, StreamingPublishKeyService, UserService},

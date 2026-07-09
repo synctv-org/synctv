@@ -2,6 +2,8 @@
 
 mod support;
 
+use synctv_api::ApiRuntimeSettings as Config;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -15,7 +17,6 @@ use synctv_core::{
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Config,
 };
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
 
@@ -62,12 +63,12 @@ fn make_client_api(
     runtime.presence_service = connection_manager.presence_service();
 
     synctv_api::ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager,
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,
@@ -93,12 +94,12 @@ fn make_client_api_with_connections(
     runtime.presence_service = connection_manager.presence_service();
 
     let client_api = synctv_api::ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             read_pool: None,
             user_service,
             room_service,
             connection_service: connection_manager.clone(),
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,

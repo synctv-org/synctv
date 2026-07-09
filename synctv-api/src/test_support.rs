@@ -16,8 +16,8 @@ use synctv_realtime::sync::{
 use tokio::sync::{broadcast, mpsc};
 
 use crate::impls::{AdminApiRuntime, AdminReadServices, ClientApiRuntime, RequestExecutor};
-use crate::realtime_fanout::{ChannelRealtimeFanoutService, RealtimeFanoutService};
-use crate::runtime::{RealtimeEventService, RealtimeMetrics};
+use crate::realtime_fanout::ChannelRealtimeFanoutService;
+use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService, RealtimeMetrics};
 
 fn lock_or_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -46,7 +46,7 @@ pub fn local_request_executor() -> RequestExecutor {
         BruteForceProtection::in_memory("test:request-executor:brute:".to_string()),
     ));
     RequestExecutor::new(
-        Arc::new(synctv_core::Config::default()),
+        Arc::new(crate::ApiRuntimeSettings::default()),
         Arc::new(JwtValidator::new(Arc::new(jwt_service))),
         Arc::new(SecurityPipeline::new(&user_service)),
         Arc::new(RateLimiter::local_only(

@@ -75,23 +75,22 @@ pub trait SensitiveVerificationSessionStore: Send + Sync {
 }
 
 #[must_use]
-pub(crate) fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
+pub fn local_opaque_login_session_store() -> Arc<dyn OpaqueLoginSessionStore> {
     Arc::new(InMemoryOpaqueLoginSessionStore::new())
 }
 
 #[must_use]
-pub(crate) fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
+pub fn local_opaque_registration_session_store() -> Arc<dyn OpaqueRegistrationSessionStore> {
     Arc::new(InMemoryOpaqueRegistrationSessionStore::new())
 }
 
 #[must_use]
-pub(crate) fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
+pub fn local_mfa_session_store() -> Arc<dyn MfaSessionStore> {
     Arc::new(InMemoryMfaSessionStore::new())
 }
 
 #[must_use]
-pub(crate) fn local_sensitive_verification_session_store(
-) -> Arc<dyn SensitiveVerificationSessionStore> {
+pub fn local_sensitive_verification_session_store() -> Arc<dyn SensitiveVerificationSessionStore> {
     Arc::new(InMemorySensitiveVerificationSessionStore::new())
 }
 
@@ -129,7 +128,7 @@ fn shared_sensitive_verification_session_store(
     ))
 }
 
-pub(crate) fn opaque_login_session_store_from_shared_state_profile(
+pub fn opaque_login_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OpaqueLoginSessionStore>> {
     match profile.state_mode() {
@@ -149,7 +148,7 @@ pub(crate) fn opaque_login_session_store_from_shared_state_profile(
     }
 }
 
-pub(crate) fn opaque_registration_session_store_from_shared_state_profile(
+pub fn opaque_registration_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn OpaqueRegistrationSessionStore>> {
     match profile.state_mode() {
@@ -169,7 +168,7 @@ pub(crate) fn opaque_registration_session_store_from_shared_state_profile(
     }
 }
 
-pub(crate) fn mfa_session_store_from_shared_state_profile(
+pub fn mfa_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn MfaSessionStore>> {
     match profile.state_mode() {
@@ -188,7 +187,7 @@ pub(crate) fn mfa_session_store_from_shared_state_profile(
     }
 }
 
-pub(crate) fn sensitive_verification_session_store_from_shared_state_profile(
+pub fn sensitive_verification_session_store_from_shared_state_profile(
     profile: &SharedStateProfile,
 ) -> Result<Arc<dyn SensitiveVerificationSessionStore>> {
     match profile.state_mode() {

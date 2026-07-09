@@ -59,8 +59,8 @@ use crate::playback_fanout::default_playback_fanout_service;
 use crate::playback_fanout::PlaybackFanoutService;
 #[cfg(test)]
 use crate::resource_change::ResourceInvalidation;
-use crate::runtime::RealtimeEventService;
 use synctv_proto::client::{ClientMessage, ServerMessage};
+use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::ConnectionRuntime;
 
 mod resource_observer;
@@ -190,7 +190,7 @@ pub struct StreamMessageHandler {
     rate_limiter: Arc<dyn RequestRateLimiterService>,
     rate_limit_config: Arc<RateLimitConfig>,
     content_filter: Arc<ContentFilter>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     sender: Arc<dyn MessageSender>,
     playback_service: Arc<dyn PlaybackService>,
     playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -249,7 +249,7 @@ pub struct StreamMessageHandlerConfig {
     pub rate_limiter: Arc<dyn RequestRateLimiterService>,
     pub rate_limit_config: Arc<RateLimitConfig>,
     pub content_filter: Arc<ContentFilter>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub concurrency_config: Arc<MessageConcurrencyConfig>,
 }
@@ -746,7 +746,8 @@ impl StreamMessageHandler {
             .await;
         let member = match membership_lookup {
             Ok(RealtimeMembershipAccess::Allowed(member)) => member,
-            Ok(RealtimeMembershipAccess::Denied(reason)) => return Ok(Err(reason)),
+            Ok(RealtimeMembershipAccess::Denied(reason))
+            | Err(synctv_core::Error::Authorization(reason)) => return Ok(Err(reason)),
             Err(error) => {
                 tracing::warn!(
                     error = %error,
@@ -1738,7 +1739,7 @@ impl StreamMessageHandler {
 
             if is_still_rtc_joined {
                 // Only decrement the metric if the connection was still RTC-joined
-                synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
+                synctv_core::metrics::application::WEBRTC_PEERS_ACTIVE.dec();
 
                 // Mark the connection as no longer RTC-joined in the connection manager
                 self.connection_service.mark_rtc_joined(
@@ -2622,7 +2623,7 @@ impl StreamMessageHandler {
         self.room_service.touch_room_activity(self.room_id).await;
 
         // Track chat message metric
-        synctv_core::metrics::http::CHAT_MESSAGES_TOTAL
+        synctv_core::metrics::application::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
 
@@ -2757,7 +2758,7 @@ fn parse_optional_chat_message_id(raw: &str) -> Result<Option<i64>, String> {
 
 fn proto_chat_mentions_to_core(
     mentions: &[synctv_proto::client::ChatMentionInput],
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Vec<ChatMentionInput>, String> {
     mentions
         .iter()

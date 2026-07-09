@@ -2,6 +2,8 @@
 
 mod support;
 
+use synctv_api::ApiRuntimeSettings as Config;
+
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -16,7 +18,6 @@ use synctv_core::{
     service::{
         BruteForceProtection, InMemoryTokenBlacklistStore, JwtService, RoomService, UserService,
     },
-    Config,
 };
 use synctv_core_testing::{create_test_pool, TestContainer};
 use synctv_realtime::sync::{ConnectionLimits, ConnectionManager};
@@ -177,12 +178,12 @@ async fn create_client_api_fixture() -> ClientApiFixture {
     runtime.presence_service = connection_service.presence_service();
 
     let client_api = ClientApiImpl::new_with_runtime(
-        synctv_api::ClientApiConfig {
+        synctv_api::ClientApiOptions {
             read_pool: None,
             user_service,
             room_service,
             connection_service,
-            config: Arc::new(Config::default()),
+            runtime_settings: Arc::new(Config::default()),
             publish_key_service: None,
             jwt_service: JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!").unwrap(),
             live_streaming_infrastructure: None,

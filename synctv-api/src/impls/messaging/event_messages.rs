@@ -5,7 +5,7 @@ use synctv_proto::client::ServerMessage;
 pub(super) fn realtime_event_to_server_messages(
     event: &synctv_realtime::sync::RealtimeEvent,
     _room_id: &str,
-    _public_id_codec: &crate::public_id::PublicIdCodec,
+    _public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<Vec<ServerMessage>, String> {
     use synctv_proto::client::server_message::Message;
     use synctv_proto::client::{ErrorMessage, ServerMessage};

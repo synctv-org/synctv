@@ -7,14 +7,7 @@
 //! In standalone mode (cluster.enabled = false), these failures should be non-fatal.
 
 #![allow(clippy::unwrap_used)]
-use synctv_core::config::{
-    BootstrapConfig, BufferSizesConfig, CacheConfig, ChatConfig, ClusterChannelConfig, Config,
-    ConnectionLimitsConfig, DatabaseConfig, ExternalIdsConfig, FileStorageConfig,
-    HlsFileStorageConfig, HlsStorageConfig, JwtConfig, LivestreamConfig, LoggingConfig,
-    MediaProvidersConfig, MessagingRateLimitConfig, PasswordComplexityConfig,
-    ProxySliceCacheConfig, RedisConfig, RequestRateLimitConfig, SecurityConfig, ServerConfig,
-    TimeConfig, WebAuthnConfig, WebRTCConfig,
-};
+use synctv::app_config::{AppConfig as Config, *};
 
 fn relaxed_request_rate_limits() -> RequestRateLimitConfig {
     RequestRateLimitConfig {
@@ -51,13 +44,11 @@ fn standalone_test_config() -> Config {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        data_dir: synctv_core::config::default_data_dir()
-            .display()
-            .to_string(),
-        metrics: synctv_core::config::MetricsConfig::default(),
-        management: synctv_core::config::ManagementConfig {
+        data_dir: default_data_dir().display().to_string(),
+        metrics: MetricsConfig::default(),
+        management: ManagementConfig {
             enabled: false,
-            ..synctv_core::config::ManagementConfig::default()
+            ..ManagementConfig::default()
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig::default(), // Empty Redis URL for standalone
@@ -86,7 +77,6 @@ fn standalone_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
                 .to_string(),
@@ -110,13 +100,11 @@ fn cluster_test_config() -> Config {
             shutdown_drain_timeout_seconds: 30,
         },
         time: TimeConfig::default(),
-        data_dir: synctv_core::config::default_data_dir()
-            .display()
-            .to_string(),
-        metrics: synctv_core::config::MetricsConfig::default(),
-        management: synctv_core::config::ManagementConfig {
+        data_dir: default_data_dir().display().to_string(),
+        metrics: MetricsConfig::default(),
+        management: ManagementConfig {
             enabled: false,
-            ..synctv_core::config::ManagementConfig::default()
+            ..ManagementConfig::default()
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig {
@@ -160,7 +148,6 @@ fn cluster_test_config() -> Config {
         messaging_rate_limits: MessagingRateLimitConfig::default(),
         // Raise rate limits to avoid cross-test interference when running in parallel
         request_rate_limits: relaxed_request_rate_limits(),
-        external_ids: ExternalIdsConfig::default(),
         security: SecurityConfig {
             opaque_server_setup_secret: "test-opaque-server-setup-secret-for-cluster-startup"
                 .to_string(),

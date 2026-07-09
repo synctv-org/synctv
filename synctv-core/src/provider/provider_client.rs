@@ -1,15 +1,9 @@
 //! Provider client manager and facade.
 //!
 //! Local clients are managed by `ProviderClientManager` rather than global
-//! statics. Remote provider adapters live in `remote_provider_clients`.
+//! statics. Remote provider adapters live with the remote transport code so
+//! gRPC wire concerns stay grouped behind this facade.
 
-pub(crate) use super::remote_provider_clients::{
-    create_remote_alist_client, create_remote_bilibili_client, create_remote_emby_client,
-    AlistClientExt, AlistFileInfo, AlistRelatedFile, AlistSubtitleTask, AlistVideoPreview,
-};
-pub(crate) use super::remote_transport::{
-    execute_health_check, validate_auth_secret, RemoteProviderConnection,
-};
 use super::ProviderError;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -17,6 +11,11 @@ use std::sync::Arc;
 use synctv_media_providers::alist::AlistInterface;
 use synctv_media_providers::bilibili::BilibiliInterface;
 use synctv_media_providers::emby::EmbyInterface;
+#[cfg(test)]
+use synctv_media_providers::remote_transport::RemoteProviderConnection;
+pub(crate) use synctv_media_providers::remote_transport::{
+    create_remote_alist_client, create_remote_bilibili_client, create_remote_emby_client,
+};
 
 #[cfg(test)]
 static PROVIDER_CLIENT_MANAGER_MARKER_SEQ: AtomicUsize = AtomicUsize::new(1);

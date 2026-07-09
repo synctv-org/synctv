@@ -6,7 +6,6 @@ use tonic::{Request, Response, Status};
 use crate::api_runtime::SharedApiRuntime;
 use crate::impls::BilibiliApiImpl;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
-use synctv_core::Config;
 
 // Import generated proto types from synctv_proto
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderService;
@@ -24,7 +23,7 @@ use synctv_proto::providers::bilibili::{
 pub struct BilibiliProviderGrpcService {
     api: Arc<BilibiliApiImpl>,
     request_executor: Arc<RequestExecutor>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl BilibiliProviderGrpcService {
@@ -32,18 +31,22 @@ impl BilibiliProviderGrpcService {
     pub fn new(
         shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
     ) -> Self {
         Self {
             api: shared_api_runtime.bilibili_api.clone(),
             request_executor,
-            config,
+            runtime_settings,
         }
     }
 }
 
 fn redact_qr_key(key: &str) -> &'static str {
-    synctv_core::secrets::mask_secret(key)
+    if key.is_empty() {
+        "<empty>"
+    } else {
+        "[SECRET:redacted]"
+    }
 }
 
 #[tonic::async_trait]
@@ -55,7 +58,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<ParseRequest>,
     ) -> Result<Response<ParseResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili parse request: url={}", req.url);
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -85,7 +88,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LoginQrRequest>,
     ) -> Result<Response<QrCodeResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login QR request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -110,7 +113,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<CheckQrRequest>,
     ) -> Result<Response<QrStatusResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili check QR: key={}", redact_qr_key(&req.key));
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -140,7 +143,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<StartSmsLoginRequest>,
     ) -> Result<Response<StartSmsLoginResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili start SMS login request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -169,7 +172,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<SendSmsRequest>,
     ) -> Result<Response<SendSmsResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let masked_phone = if req.phone.len() >= 4 {
             format!("****{}", &req.phone[req.phone.len() - 4..])
@@ -198,7 +201,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LoginSmsRequest>,
     ) -> Result<Response<LoginSmsResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili login SMS");
         let api = self.api.clone();
@@ -227,7 +230,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<UserInfoRequest>,
     ) -> Result<Response<UserInfoResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili user info request");
         let instance_name = super::provider_instance_name(&req.instance_name)?;
@@ -257,7 +260,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili logout request");
         let api = self.api.clone();
@@ -281,7 +284,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<GetBindsRequest>,
     ) -> Result<Response<GetBindsResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.get_ref();
         let instance_name = super::provider_instance_name(&req.instance_name)?;
         let api = self.api.clone();

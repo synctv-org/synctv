@@ -17,13 +17,19 @@ use super::{
 #[derive(Clone)]
 pub struct DirectUrlPlaybackProviderGrpcService {
     state: Arc<PlaybackProviderGrpcState>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl DirectUrlPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
-        Self { state, config }
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
     }
 }
 
@@ -39,7 +45,7 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         &self,
         request: Request<GetDirectUrlStreamRequest>,
     ) -> Result<Response<Self::GetStreamStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -61,7 +67,7 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         &self,
         request: Request<GetDirectUrlHlsManifestRequest>,
     ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -83,7 +89,7 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         &self,
         request: Request<GetDirectUrlHlsSegmentRequest>,
     ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -105,7 +111,7 @@ impl DirectUrlPlaybackProviderService for DirectUrlPlaybackProviderGrpcService {
         &self,
         request: Request<GetDirectUrlSubtitleRequest>,
     ) -> Result<Response<Self::GetSubtitleStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 

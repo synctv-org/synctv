@@ -1,15 +1,13 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 use synctv_core::models::{Room, RoomId, UserId};
-use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::RealtimeOutboxRoomEventFactory;
+use synctv_core::service::{NewRealtimeOutboxEvent, RealtimeOutboxRoomEventFactory};
+use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::{
     broadcast_event_locally, PreparedRealtimeFanoutPlan, RealtimeFanoutService,
 };
-use crate::runtime::RealtimeEventService;
-
 #[derive(Clone)]
 pub struct PreparedRoomCreatedOutboxFanout {
     realtime_fanout: Arc<dyn RealtimeFanoutService>,

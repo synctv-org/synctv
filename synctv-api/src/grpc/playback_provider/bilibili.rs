@@ -21,13 +21,19 @@ use crate::impls::EndpointRateLimitCategory;
 #[derive(Clone)]
 pub struct BilibiliPlaybackProviderGrpcService {
     state: Arc<PlaybackProviderGrpcState>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl BilibiliPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
-        Self { state, config }
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
     }
 }
 
@@ -47,7 +53,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliMediaStreamRequest>,
     ) -> Result<Response<Self::GetMediaStreamStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -69,7 +75,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliHlsManifestRequest>,
     ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -91,7 +97,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliHlsSegmentRequest>,
     ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -113,7 +119,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliDashManifestRequest>,
     ) -> Result<Response<Self::GetDashManifestStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -135,7 +141,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliDashSegmentRequest>,
     ) -> Result<Response<Self::GetDashSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -157,7 +163,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliSubtitleRequest>,
     ) -> Result<Response<Self::GetSubtitleStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -179,7 +185,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<GetBilibiliDanmakuFileRequest>,
     ) -> Result<Response<Self::GetDanmakuFileStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -201,7 +207,7 @@ impl BilibiliPlaybackProviderService for BilibiliPlaybackProviderGrpcService {
         &self,
         request: Request<WatchBilibiliLiveDanmakuRequest>,
     ) -> Result<Response<Self::WatchLiveDanmakuStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         let state_for_stream = state.clone();

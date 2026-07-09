@@ -224,7 +224,7 @@ where
 }
 
 fn websocket_request_metadata(
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
     headers: &HeaderMap,
     direct_peer_ip: Option<std::net::IpAddr>,
 ) -> Result<ApiRequestMetadata, AppError> {
@@ -240,8 +240,12 @@ fn websocket_request_metadata(
     let user_agent = optional_header_str(headers, &header::USER_AGENT)?.map(str::to_owned);
     let client_ip = direct_peer_ip
         .map(|peer_ip| {
-            crate::client_ip::extract_client_ip_from_headers(config, peer_ip, headers)
-                .map_err(|error| AppError::bad_request(error.to_string()))
+            synctv_adapter::client_ip::extract_client_ip_from_headers(
+                |ip| runtime_settings.server.is_trusted_proxy(ip),
+                peer_ip,
+                headers,
+            )
+            .map_err(|error| AppError::bad_request(error.to_string()))
         })
         .transpose()?;
 
@@ -452,7 +456,7 @@ fn validate_websocket_origin(
     headers: &HeaderMap,
     allowed_origins: &[String],
     direct_peer_ip: Option<std::net::IpAddr>,
-    server_config: &synctv_core::config::ServerConfig,
+    server_config: &crate::ApiServerSettings,
 ) -> Result<(), AppError> {
     let Some(origin) = headers.get(header::ORIGIN) else {
         // Non-browser clients typically omit Origin. Keep supporting them.
@@ -1033,7 +1037,8 @@ pub async fn websocket_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let room_id = path.room_id;
     let transport_format = RealtimeTransportFormat::parse(query.format.as_deref())?;
-    let request_meta = websocket_request_metadata(state.config.as_ref(), &headers, peer_ip.0)?;
+    let request_meta =
+        websocket_request_metadata(state.runtime_settings.as_ref(), &headers, peer_ip.0)?;
     let handshake_control = ExecutionControl::from_timeout(request_meta.timeout);
 
     let prepared = run_websocket_handshake_with_timeout(async {
@@ -1200,9 +1205,9 @@ async fn prepare_websocket_upgrade(
 
     validate_websocket_origin(
         headers,
-        &state.config.server.cors_allowed_origins,
+        &state.runtime_settings.server.cors_allowed_origins,
         direct_peer_ip,
-        &state.config.server,
+        &state.runtime_settings.server,
     )?;
 
     let rid = state
@@ -1367,11 +1372,14 @@ async fn handle_socket(
             presence_service: state.presence_service.clone(),
             notification_service: state.notification_service.clone(),
             ws_message_rate_limit: state
-                .config
+                .runtime_settings
                 .connection_limits
                 .ws_message_rate_limit_per_second,
             heartbeat_schedule: state.shared_api_runtime.heartbeat_schedule,
-            filter_private_ice_candidates: state.config.webrtc.filter_private_ice_candidates,
+            filter_private_ice_candidates: state
+                .runtime_settings
+                .webrtc
+                .filter_private_ice_candidates,
         },
     );
     let connection_id = stream_handler.connection_id().to_string();

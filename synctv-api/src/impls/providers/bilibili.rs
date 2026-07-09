@@ -14,13 +14,13 @@ use synctv_core::provider::{
     BilibiliParseVideoPageRequest, BilibiliProvider, BilibiliQrLoginStatus,
     BilibiliSmsLoginTokenCodec, BilibiliUserInfoRequest, ExecutionControl, ProviderAccessService,
 };
-use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_proto::providers::bilibili::{
     BindInfo, CheckQrRequest, GetBindsResponse, LoginQrRequest, LoginSmsRequest, LoginSmsResponse,
     LogoutRequest, LogoutResponse, ParseRequest, ParseResponse, QrCodeResponse, QrStatusResponse,
     SendSmsRequest, SendSmsResponse, StartSmsLoginRequest, StartSmsLoginResponse, UserInfoRequest,
     UserInfoResponse, VideoInfo,
 };
+use synctv_realtime::fanout::RealtimeEventService;
 
 use super::ProviderApiRuntime;
 use super::{
@@ -36,7 +36,7 @@ use super::{
 pub struct BilibiliApiImpl {
     provider: Arc<BilibiliProvider>,
     access_service: Arc<dyn ProviderAccessService>,
-    event_service: Arc<dyn crate::runtime::RealtimeEventService>,
+    event_service: Arc<dyn RealtimeEventService>,
     sms_login_token_codec: Arc<BilibiliSmsLoginTokenCodec>,
     qr_login_status_cache: Arc<moka::sync::Cache<String, i32>>,
 }
@@ -71,13 +71,12 @@ const fn bilibili_qr_status_to_proto(status: BilibiliQrLoginStatus) -> i32 {
 
 impl BilibiliApiImpl {
     pub fn new_with_runtime(
-        provider: &Arc<BilibiliProvider>,
-        credential_repo: Arc<UserProviderCredentialRepository>,
+        provider: Arc<BilibiliProvider>,
         sms_login_secret: &[u8],
         runtime: ProviderApiRuntime,
     ) -> Result<Self, synctv_core::provider::ProviderError> {
         Ok(Self {
-            provider: Arc::new(provider.with_credential_repo(credential_repo)),
+            provider,
             access_service: runtime.access_service,
             event_service: runtime.event_service,
             sms_login_token_codec: Arc::new(BilibiliProvider::sms_login_token_codec_from_secret(
@@ -578,11 +577,10 @@ mod tests {
                 credential_repo.clone(),
                 alist_provider,
             )),
-            event_service: Arc::new(crate::runtime::LocalNoopRealtimeEventService::new()),
+            event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
         };
         provider_ok(BilibiliApiImpl::new_with_runtime(
-            &provider,
-            credential_repo.clone(),
+            Arc::new(provider.with_credential_repo(credential_repo.clone())),
             test_sms_login_secret(),
             runtime,
         ))

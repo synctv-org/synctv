@@ -39,7 +39,7 @@ use super::ApiError;
 pub struct OAuth2ApiImpl {
     pub oauth2_service: Arc<OAuth2Service>,
     pub user_service: Arc<UserService>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
 }
 
 struct UnlinkProviderPlan {
@@ -354,7 +354,7 @@ impl OAuth2ApiImpl {
     pub fn new(
         oauth2_service: Arc<OAuth2Service>,
         user_service: Arc<UserService>,
-        public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+        public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     ) -> Self {
         Self {
             oauth2_service,
@@ -979,7 +979,7 @@ pub struct LinkedProviderInfo {
 fn user_to_oauth2_user_info(
     user: &User,
     email: Option<&str>,
-    public_id_codec: &crate::public_id::PublicIdCodec,
+    public_id_codec: &synctv_adapter::PublicIdCodec,
 ) -> Result<OAuth2UserInfo, ApiError> {
     use synctv_proto::common::{UserRole as ProtoUserRole, UserStatus as ProtoUserStatus};
 

@@ -4,17 +4,26 @@ use synctv_core::service::StreamKickAuditRequest;
 
 use super::{
     compare_active_streams, live_streaming_unavailable_error, normalize_non_empty_filter,
-    paginate_vec, proto_admin_active_stream_list_sort_by, proto_admin_active_stream_sort_direction,
-    usize_to_i32_api, AdminApiImpl, ApiError, RequestContext,
+    paginate_vec, usize_to_i32_api, AdminApiImpl, ApiError, RequestContext,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveStreamListSortBy {
+    StartedAt,
+    RoomId,
+    MediaId,
+    UserId,
+    NodeId,
+}
 
 impl AdminApiImpl {
     pub async fn list_active_streams(
         &self,
         req: synctv_proto::admin::ListActiveStreamsRequest,
     ) -> Result<synctv_proto::admin::ListActiveStreamsResponse, ApiError> {
+        // API impl is the protobuf/public-id boundary for admin operations.
+        // Core-facing logic below uses typed ids and normalized values.
         crate::impls::validate_proto_request(&req)?;
-
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -27,26 +36,18 @@ impl AdminApiImpl {
                 ApiError::Internal(format!("Failed to list active streams: {error}"))
             })?;
         let room_id = normalize_non_empty_filter(&req.room_id)
-            .map(|room_id| {
-                self.public_id_codec
-                    .decode_room_id(&room_id)
-                    .map(|id| id.to_string())
-                    .map_err(ApiError::InvalidInput)
-            })
-            .transpose()?;
+            .map(|room_id| crate::impls::proto_validated_room_id(room_id, &self.public_id_codec))
+            .transpose()?
+            .map(|room_id| room_id.to_string());
         let user_filter = normalize_non_empty_filter(&req.user_id)
-            .map(|user_id| {
-                self.public_id_codec
-                    .decode_user_id(&user_id)
-                    .map(|id| id.to_string())
-                    .map_err(ApiError::InvalidInput)
-            })
-            .transpose()?;
+            .map(|user_id| crate::impls::proto_validated_user_id(user_id, &self.public_id_codec))
+            .transpose()?
+            .map(|user_id| user_id.to_string());
         let node_filter = normalize_non_empty_filter(&req.node_id);
         let search =
             normalize_non_empty_filter(&req.search).map(|value| value.to_ascii_lowercase());
-        let sort_by = proto_admin_active_stream_list_sort_by(req.sort_by)?;
-        let sort_direction = proto_admin_active_stream_sort_direction(req.sort_direction)?;
+        let sort_by = super::proto_admin_active_stream_list_sort_by(req.sort_by)?;
+        let sort_direction = super::proto_admin_active_stream_sort_direction(req.sort_direction)?;
 
         let mut streams = Vec::new();
         for active_publisher in active_publishers {
@@ -141,18 +142,11 @@ impl AdminApiImpl {
         ctx: &RequestContext,
     ) -> Result<(), ApiError> {
         crate::impls::validate_proto_request(&req)?;
-
-        let room_id = self
-            .public_id_codec
-            .decode_room_id(&req.room_id)
-            .map_err(ApiError::InvalidInput)?;
-        let media_id = self
-            .public_id_codec
-            .decode_media_id(&req.media_id)
-            .map_err(ApiError::InvalidInput)?;
+        let room_id = crate::impls::proto_validated_room_id(req.room_id, &self.public_id_codec)?;
+        let media_id = crate::impls::proto_validated_media_id(req.media_id, &self.public_id_codec)?;
+        let reason = req.reason;
         let room_id_key = room_id.to_string();
         let media_id_key = media_id.to_string();
-        let reason = req.reason;
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -186,8 +180,8 @@ impl AdminApiImpl {
             .log_stream_kicked(StreamKickAuditRequest {
                 actor_id: admin_user_id.to_string(),
                 actor_username: admin_username.clone(),
-                room_id: req.room_id.clone(),
-                media_id: req.media_id.clone(),
+                room_id: room_id.to_string(),
+                media_id: media_id.to_string(),
                 reason: if reason.is_empty() {
                     None
                 } else {

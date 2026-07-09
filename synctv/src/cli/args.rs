@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand, ValueEnum};
-use synctv_core::bootstrap::LoadConfigOptions;
 use synctv_core::models::{RoomAdminPermissionBits, RoomMemberPermissionBits};
 use synctv_management::proto as management_proto;
 
 use crate::admin_client::AdminConnectionOptions;
+use crate::config_loader::{public_id_config_extensions, LoadConfigOptions};
 
 use super::commands::*;
 use super::completion::CompletionArgs;
@@ -176,6 +176,7 @@ impl GlobalConfigArgs {
             load_dotenv: !self.no_dotenv,
             validate,
             verbose: self.verbose > 0,
+            extensions: public_id_config_extensions(),
         }
     }
 

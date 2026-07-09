@@ -13,7 +13,9 @@ pub use api::livestream::{FlvStreamingApi, HlsStreamingApi, LiveStreamingInfrast
 pub use api::tracker::StreamTracker;
 pub use error::StreamError;
 pub use grpc::{StreamRelayServiceImpl, StreamRelayServiceServer};
-pub use livestream::server::{LivestreamConfig, LivestreamHandle, LivestreamServer};
+pub use livestream::server::{
+    HlsOssOptions, HlsStorageBackend, LivestreamConfig, LivestreamHandle, LivestreamServer,
+};
 pub use relay::{
     local_stream_registry, shared_stream_registry, ActivePublisherEntry, PublisherInfo,
     PublisherRefreshOutcome, RegistryConnectionRuntime, StreamRegistryTrait, PUBLISHER_TTL_SECS,

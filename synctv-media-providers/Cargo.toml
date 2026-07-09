@@ -26,6 +26,9 @@ tonic-prost.workspace = true
 tonic-health.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+hyper-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
 
 # Serialization
 serde.workspace = true
@@ -68,21 +71,29 @@ tls-aws-lc = [
     "synctv-common/tls-aws-lc",
     "reqwest/rustls",
     "tonic/tls-aws-lc",
+    "rustls/aws_lc_rs",
+    "tokio-rustls/aws_lc_rs",
 ]
 tls-ring = [
     "synctv-common/tls-ring",
     "reqwest/rustls-no-provider",
     "tonic/tls-ring",
+    "rustls/ring",
+    "tokio-rustls/ring",
 ]
 tls-webpki-roots = [
     "synctv-common/tls-webpki-roots",
     "tonic/tls-webpki-roots",
     "tokio-tungstenite/rustls-tls-webpki-roots",
+    "rustls/ring",
+    "tokio-rustls/ring",
 ]
 tls-native-roots = [
     "synctv-common/tls-native-roots",
     "tonic/tls-native-roots",
     "tokio-tungstenite/rustls-tls-native-roots",
+    "rustls/ring",
+    "tokio-rustls/ring",
 ]
 
 [lints]

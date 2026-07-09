@@ -44,7 +44,7 @@ impl UserService {
     }
 
     pub(super) fn validate_password(&self, password: &str) -> Result<()> {
-        crate::validation::PasswordValidator::from_config(&self.password_complexity)
+        crate::validation::PasswordValidator::from_options(&self.password_complexity)
             .validate(password)
             .map_err(|error| Error::InvalidInput(error.to_string()))
     }

@@ -3,9 +3,22 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     models::{Media, MediaId, Playlist, PlaylistId, Room, RoomId, UserId},
     repository::{media::MediaListItem, playlist::PlaylistListItem},
-    service::{ClientResourceAvailability, RoomService},
+    service::RoomService,
     Error, Result,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientResourceAvailability {
+    Available,
+    CreatorInactive,
+}
+
+impl ClientResourceAvailability {
+    #[must_use]
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
 
 impl RoomService {
     fn playlist_client_availability(

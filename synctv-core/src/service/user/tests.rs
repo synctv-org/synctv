@@ -1,8 +1,8 @@
 use super::{nonnegative_i64_to_u64, UserService};
 use crate::{
-    config::PasswordComplexityConfig,
     models::{UserAuthFactors, UserId},
     service::{BruteForceProtection, RateLimiter},
+    validation::PasswordComplexityOptions,
     Error, Result,
 };
 use std::{collections::HashSet, sync::Arc};
@@ -38,7 +38,7 @@ fn validate_email(email: &str) -> Result<()> {
 }
 
 fn validate_password(password: &str) -> Result<()> {
-    crate::validation::PasswordValidator::from_config(&PasswordComplexityConfig::default())
+    crate::validation::PasswordValidator::from_options(&PasswordComplexityOptions::default())
         .validate(password)
         .map_err(|e| Error::InvalidInput(e.to_string()))
 }

@@ -122,20 +122,23 @@ impl ProviderSourceMetadataObservation {
 }
 
 async fn persist_provider_source_metadata(
-    repo: &synctv_core::repository::PlaybackSourceMetadataRepository,
+    playback_service: &synctv_core::service::PlaybackService,
     identity: &PlaybackSourceIdentity,
     observation: ProviderSourceMetadataObservation,
 ) -> Result<(), ApiError> {
     if observation.is_live {
-        repo.upsert_provider_source_metadata(identity, true, None)
+        playback_service
+            .upsert_provider_playback_source_metadata(identity, true, None)
             .await
             .map_err(ApiError::from)?;
     } else if let Some(duration_seconds) = observation.duration_seconds {
-        repo.upsert_provider_source_metadata(identity, false, Some(duration_seconds))
+        playback_service
+            .upsert_provider_playback_source_metadata(identity, false, Some(duration_seconds))
             .await
             .map_err(ApiError::from)?;
     } else {
-        repo.mark_probeable_unknown_if_absent(identity)
+        playback_service
+            .mark_probeable_playback_source_metadata_unknown_if_absent(identity)
             .await
             .map_err(ApiError::from)?;
     }
@@ -143,7 +146,7 @@ async fn persist_provider_source_metadata(
 }
 
 async fn persist_provider_source_metadata_with_gate(
-    repo: &synctv_core::repository::PlaybackSourceMetadataRepository,
+    playback_service: &synctv_core::service::PlaybackService,
     provider_stores: &dyn ProviderStoreResolver,
     identity: &PlaybackSourceIdentity,
     observation: ProviderSourceMetadataObservation,
@@ -166,7 +169,7 @@ async fn persist_provider_source_metadata_with_gate(
                 error = %error,
                 "Playback source metadata L2 gate read unavailable; using database throttle"
             );
-            persist_provider_source_metadata(repo, identity, observation).await?;
+            persist_provider_source_metadata(playback_service, identity, observation).await?;
             SOURCE_METADATA_WRITE_L1_GATE.insert(gate_key, ()).await;
             return Ok(());
         }
@@ -175,7 +178,7 @@ async fn persist_provider_source_metadata_with_gate(
     let lock_key = format!("lock:{gate_key}");
     match store.lock(&lock_key, SOURCE_METADATA_WRITE_GATE_TTL).await {
         Ok(_guard) => {
-            persist_provider_source_metadata(repo, identity, observation).await?;
+            persist_provider_source_metadata(playback_service, identity, observation).await?;
             if let Err(error) = store
                 .set_raw(&gate_key, b"1", SOURCE_METADATA_WRITE_GATE_TTL)
                 .await
@@ -195,7 +198,7 @@ async fn persist_provider_source_metadata_with_gate(
                 error = %error,
                 "Playback source metadata L2 gate unavailable; using database throttle"
             );
-            persist_provider_source_metadata(repo, identity, observation).await?;
+            persist_provider_source_metadata(playback_service, identity, observation).await?;
             SOURCE_METADATA_WRITE_L1_GATE.insert(gate_key, ()).await;
         }
     }
@@ -210,15 +213,23 @@ pub(crate) async fn resolve_playback_source_metadata(
     provider_is_live: Option<bool>,
     provider_duration_seconds: Option<f64>,
 ) -> Result<ResolvedPlaybackSourceMetadata, ApiError> {
-    let repo = room_service.playback_service().source_metadata_repository();
+    let playback_service = room_service.playback_service();
     let observation =
         ProviderSourceMetadataObservation::new(provider_is_live, provider_duration_seconds);
     if let Some(observation) = observation {
-        persist_provider_source_metadata_with_gate(repo, provider_stores, &identity, observation)
-            .await?;
+        persist_provider_source_metadata_with_gate(
+            playback_service,
+            provider_stores,
+            &identity,
+            observation,
+        )
+        .await?;
     }
 
-    let metadata = repo.get(&identity).await.map_err(ApiError::from)?;
+    let metadata = playback_service
+        .get_playback_source_metadata(&identity)
+        .await
+        .map_err(ApiError::from)?;
     if let Some(metadata) = metadata {
         return Ok(ResolvedPlaybackSourceMetadata {
             duration_seconds: positive_duration(metadata.duration_seconds),

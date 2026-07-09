@@ -4,12 +4,12 @@ use synctv_core::{
     models::{RoomId, RoomPermission, UserId},
     service::{ChatService, OnlinePresenceService, RoomService},
 };
+use synctv_realtime::fanout::RealtimeEventService;
 use synctv_realtime::sync::{ConnectionId, RealtimeEvent, SharedRealtimeEvent};
 
 use crate::impls::playback::PlaybackService;
 use crate::impls::playlist_items_snapshot::PlaylistItemsSnapshotService;
 use crate::impls::room_settings_snapshot::RoomSettingsSnapshotService;
-use crate::runtime::RealtimeEventService;
 use synctv_proto::client::ObserveResource;
 use synctv_realtime::sync::ConnectionRuntime;
 
@@ -54,7 +54,7 @@ pub struct ResourceWatchSessionConfig {
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<OnlinePresenceService>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub sender: Arc<dyn MessageSender>,
     pub playback_service: Arc<dyn PlaybackService>,
     pub playlist_items_snapshot_service: Arc<dyn PlaylistItemsSnapshotService>,
@@ -70,7 +70,7 @@ pub struct ResourceWatchSession {
     chat_service: Option<Arc<ChatService>>,
     event_service: Arc<dyn RealtimeEventService>,
     connection_service: Arc<dyn ConnectionRuntime>,
-    public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     resource_observer: Arc<ResourceObserver>,
 }
 

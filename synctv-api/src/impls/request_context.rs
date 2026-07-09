@@ -5,10 +5,10 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::api_runtime::RateLimitScopeStrategy;
 use synctv_core::provider::ExecutionControl;
 use synctv_core::service::{AuthErrorCategory, AuthenticatedToken, JwtValidator, SecurityPipeline};
 use synctv_core::service::{RateLimitError, RequestRateLimiterService};
-use synctv_core::{Config, RateLimitScopeStrategy};
 
 use super::{ApiError, ErrorKind};
 
@@ -226,18 +226,18 @@ impl RequestMetadata {
     }
 }
 
-/// Cooperative request execution context derived from transport metadata.
+/// Cooperative API request execution context derived from transport metadata.
 ///
 /// This carries the original metadata plus a minimal execution control handle.
 /// Unlike the previous executor-wide timeout wrapper, this context does not
 /// forcibly abort the business future from the outside.
 #[derive(Debug, Clone)]
-pub struct RequestContext {
+pub struct ApiRequestContext {
     metadata: RequestMetadata,
     control: ExecutionControl,
 }
 
-impl RequestContext {
+impl ApiRequestContext {
     #[must_use]
     pub fn from_metadata(metadata: RequestMetadata) -> Self {
         Self {
@@ -320,7 +320,7 @@ impl RequestContext {
 
 #[derive(Clone)]
 pub struct RequestExecutor {
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
     jwt_validator: Arc<JwtValidator>,
     security_pipeline: Arc<SecurityPipeline>,
     rate_limiter: Arc<dyn RequestRateLimiterService>,
@@ -369,13 +369,13 @@ impl AuthenticationAttempt {
 impl RequestExecutor {
     #[must_use]
     pub fn new(
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
         jwt_validator: Arc<JwtValidator>,
         security_pipeline: Arc<SecurityPipeline>,
         rate_limiter: Arc<dyn RequestRateLimiterService>,
     ) -> Self {
         Self {
-            config,
+            runtime_settings,
             jwt_validator,
             security_pipeline,
             rate_limiter,
@@ -473,8 +473,8 @@ impl RequestExecutor {
     }
 
     #[must_use]
-    pub fn prepare_context(&self, metadata: &RequestMetadata) -> RequestContext {
-        RequestContext::from_metadata_ref(metadata)
+    pub fn prepare_context(&self, metadata: &RequestMetadata) -> ApiRequestContext {
+        ApiRequestContext::from_metadata_ref(metadata)
     }
 
     pub fn execute_public<'a, T, F, Fut>(
@@ -499,7 +499,7 @@ impl RequestExecutor {
     ) -> BoxFuture<'a, Result<T, ApiError>>
     where
         T: Send + 'a,
-        F: FnOnce(RequestContext) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext) -> Fut + Send + 'a,
         Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         let request_context = self.prepare_context(metadata);
@@ -564,7 +564,7 @@ impl RequestExecutor {
     ) -> BoxFuture<'a, Result<T, ApiError>>
     where
         T: Send + 'a,
-        F: FnOnce(RequestContext, Option<AuthenticatedToken>) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext, Option<AuthenticatedToken>) -> Fut + Send + 'a,
         Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         let request_context = self.prepare_context(metadata);
@@ -637,7 +637,7 @@ impl RequestExecutor {
     ) -> BoxFuture<'a, Result<T, ApiError>>
     where
         T: Send + 'a,
-        F: FnOnce(RequestContext, Option<AuthenticatedToken>) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext, Option<AuthenticatedToken>) -> Fut + Send + 'a,
         Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         let request_context = self.prepare_context(metadata);
@@ -708,7 +708,7 @@ impl RequestExecutor {
     ) -> BoxFuture<'a, Result<T, ApiError>>
     where
         T: Send + 'a,
-        F: FnOnce(RequestContext, AuthenticatedToken) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext, AuthenticatedToken) -> Fut + Send + 'a,
         Fut: Future<Output = Result<T, ApiError>> + Send + 'a,
     {
         let request_context = self.prepare_context(metadata);
@@ -798,8 +798,11 @@ impl RequestExecutor {
         authenticated: Option<&AuthenticatedToken>,
         control: Option<&ExecutionControl>,
     ) -> Result<(), ApiError> {
-        let rate_limit =
-            rate_limit_policy_for_config(&self.config, category, metadata.endpoint_scope);
+        let rate_limit = rate_limit_policy_for_runtime_settings(
+            &self.runtime_settings,
+            category,
+            metadata.endpoint_scope,
+        );
         let subject_key = authenticated.map_or_else(
             || {
                 metadata
@@ -848,32 +851,34 @@ struct RateLimitPolicy {
     strategy: RateLimitScopeStrategy,
 }
 
-fn rate_limit_budget_for_config(
-    config: &Config,
+fn rate_limit_budget_for_runtime_settings(
+    runtime_settings: &crate::ApiRuntimeSettings,
     category: EndpointRateLimitCategory,
 ) -> RateLimitBudget {
-    let config = &config.request_rate_limits;
+    let settings = &runtime_settings.request_rate_limits;
     let (max_requests, window_seconds) = match category {
         EndpointRateLimitCategory::Auth | EndpointRateLimitCategory::Email => {
-            (config.auth_max_requests, config.auth_window_seconds)
+            (settings.auth_max_requests, settings.auth_window_seconds)
         }
         EndpointRateLimitCategory::Write => {
-            (config.write_max_requests, config.write_window_seconds)
+            (settings.write_max_requests, settings.write_window_seconds)
         }
-        EndpointRateLimitCategory::Read => (config.read_max_requests, config.read_window_seconds),
+        EndpointRateLimitCategory::Read => {
+            (settings.read_max_requests, settings.read_window_seconds)
+        }
         EndpointRateLimitCategory::Media => {
-            (config.media_max_requests, config.media_window_seconds)
+            (settings.media_max_requests, settings.media_window_seconds)
         }
         EndpointRateLimitCategory::Admin => {
-            (config.admin_max_requests, config.admin_window_seconds)
+            (settings.admin_max_requests, settings.admin_window_seconds)
         }
         EndpointRateLimitCategory::Streaming => (
-            config.streaming_max_requests,
-            config.streaming_window_seconds,
+            settings.streaming_max_requests,
+            settings.streaming_window_seconds,
         ),
         EndpointRateLimitCategory::WebSocket => (
-            config.websocket_max_requests,
-            config.websocket_window_seconds,
+            settings.websocket_max_requests,
+            settings.websocket_window_seconds,
         ),
     };
     RateLimitBudget {
@@ -882,19 +887,22 @@ fn rate_limit_budget_for_config(
     }
 }
 
-fn rate_limit_policy_for_config(
-    config: &Config,
+fn rate_limit_policy_for_runtime_settings(
+    runtime_settings: &crate::ApiRuntimeSettings,
     category: EndpointRateLimitCategory,
     scope: Option<EndpointRateLimitScope>,
 ) -> RateLimitPolicy {
-    let category_budget = rate_limit_budget_for_config(config, category);
+    let category_budget = rate_limit_budget_for_runtime_settings(runtime_settings, category);
     let Some(scope) = scope else {
         return RateLimitPolicy {
             budget: category_budget,
             strategy: RateLimitScopeStrategy::FixedWindow,
         };
     };
-    let scope_rule = config.request_rate_limits.scopes.get(scope.key_suffix());
+    let scope_rule = runtime_settings
+        .request_rate_limits
+        .scopes
+        .get(scope.key_suffix());
     let Some(scope_rule) = scope_rule else {
         return RateLimitPolicy {
             budget: category_budget,
@@ -915,11 +923,11 @@ fn rate_limit_policy_for_config(
 }
 
 #[cfg(test)]
-fn rate_limit_budget_tuple_for_config(
-    config: &Config,
+fn rate_limit_budget_tuple_for_runtime_settings(
+    runtime_settings: &crate::ApiRuntimeSettings,
     category: EndpointRateLimitCategory,
 ) -> (u32, u64) {
-    let budget = rate_limit_budget_for_config(config, category);
+    let budget = rate_limit_budget_for_runtime_settings(runtime_settings, category);
     (budget.max_requests, budget.window_seconds)
 }
 
@@ -955,7 +963,7 @@ fn map_rate_limit_error(err: RateLimitError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core::RateLimitScopeRule;
+    use crate::{ApiRuntimeSettings, RateLimitScopeRule};
 
     type TestResult<T = ()> = anyhow::Result<T>;
 
@@ -965,7 +973,7 @@ mod tests {
             .with_client_ip(Some("127.0.0.1".parse()?))
             .with_timeout(Some(Duration::from_secs(5)));
 
-        let context = RequestContext::from_metadata(metadata.clone());
+        let context = ApiRequestContext::from_metadata(metadata.clone());
 
         assert_eq!(context.metadata().transport, TransportProtocol::Http);
         assert_eq!(context.metadata().client_ip, metadata.client_ip);
@@ -980,7 +988,7 @@ mod tests {
     fn request_context_reports_expired_deadline_at_checkpoints() {
         let metadata =
             RequestMetadata::new(TransportProtocol::Grpc).with_timeout(Some(Duration::ZERO));
-        let context = RequestContext::from_metadata(metadata);
+        let context = ApiRequestContext::from_metadata(metadata);
 
         let err = context
             .check_active()
@@ -990,7 +998,8 @@ mod tests {
 
     #[test]
     fn request_context_reports_cancellation_at_checkpoints() {
-        let context = RequestContext::from_metadata(RequestMetadata::new(TransportProtocol::Http));
+        let context =
+            ApiRequestContext::from_metadata(RequestMetadata::new(TransportProtocol::Http));
         context.cancel();
 
         let err = context
@@ -1001,7 +1010,7 @@ mod tests {
 
     #[test]
     fn request_websocket_rate_limit_uses_shared_request_budget() {
-        let mut config = Config::default();
+        let mut config = ApiRuntimeSettings::default();
         config.request_rate_limits.write_max_requests = 30;
         config.request_rate_limits.write_window_seconds = 31;
         config.request_rate_limits.read_max_requests = 100;
@@ -1012,15 +1021,21 @@ mod tests {
         config.request_rate_limits.websocket_window_seconds = 8;
 
         assert_eq!(
-            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::WebSocket),
+            rate_limit_budget_tuple_for_runtime_settings(
+                &config,
+                EndpointRateLimitCategory::WebSocket
+            ),
             (7, 8)
         );
         assert_eq!(
-            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::Streaming),
+            rate_limit_budget_tuple_for_runtime_settings(
+                &config,
+                EndpointRateLimitCategory::Streaming
+            ),
             (200, 201)
         );
         assert_eq!(
-            rate_limit_budget_tuple_for_config(&config, EndpointRateLimitCategory::Write),
+            rate_limit_budget_tuple_for_runtime_settings(&config, EndpointRateLimitCategory::Write),
             (30, 31)
         );
     }
@@ -1040,11 +1055,11 @@ mod tests {
 
     #[test]
     fn scope_rate_limit_policy_uses_fixed_window_by_default() {
-        let mut config = Config::default();
+        let mut config = ApiRuntimeSettings::default();
         config.request_rate_limits.read_max_requests = 600;
         config.request_rate_limits.read_window_seconds = 60;
 
-        let policy = rate_limit_policy_for_config(
+        let policy = rate_limit_policy_for_runtime_settings(
             &config,
             EndpointRateLimitCategory::Read,
             Some(EndpointRateLimitScope::RoomMembers),
@@ -1062,7 +1077,7 @@ mod tests {
 
     #[test]
     fn scope_rate_limit_policy_uses_scope_override() {
-        let mut config = Config::default();
+        let mut config = ApiRuntimeSettings::default();
         config.request_rate_limits.scopes.insert(
             EndpointRateLimitScope::RoomMembers.key_suffix().to_string(),
             RateLimitScopeRule {
@@ -1072,7 +1087,7 @@ mod tests {
             },
         );
 
-        let policy = rate_limit_policy_for_config(
+        let policy = rate_limit_policy_for_runtime_settings(
             &config,
             EndpointRateLimitCategory::Read,
             Some(EndpointRateLimitScope::RoomMembers),
@@ -1090,7 +1105,7 @@ mod tests {
 
     #[test]
     fn scope_rate_limit_policy_falls_back_missing_rule_fields() {
-        let mut config = Config::default();
+        let mut config = ApiRuntimeSettings::default();
         config.request_rate_limits.read_max_requests = 500;
         config.request_rate_limits.read_window_seconds = 45;
         config.request_rate_limits.scopes.insert(
@@ -1102,7 +1117,7 @@ mod tests {
             },
         );
 
-        let policy = rate_limit_policy_for_config(
+        let policy = rate_limit_policy_for_runtime_settings(
             &config,
             EndpointRateLimitCategory::Read,
             Some(EndpointRateLimitScope::RoomMembers),

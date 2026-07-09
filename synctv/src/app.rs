@@ -17,13 +17,10 @@ use tracing::{error, info, warn};
 
 use synctv_cluster::leader::{build_managed_leader_runtime, LeaderRuntime, LeadershipEvent};
 use synctv_core::{
-    bootstrap::{
-        bootstrap_root_user, has_any_admin_users, init_database_with_read_pool_and_cancel,
-        init_redis, init_services_with_options, DatabasePools, InitServicesOptions,
-    },
     cache::{CacheInvalidationRuntime, InvalidationMessage, KeyBuilder},
     repository::realtime_outbox::RealtimeOutboxRepository,
-    Config, RedisConnectionRuntime,
+    service::RealtimeOutboxService,
+    RedisConnectionRuntime,
 };
 use synctv_management::lifecycle::ManagementLifecycleController;
 use synctv_realtime::sync::{
@@ -33,12 +30,11 @@ use synctv_realtime::sync::{
     RealtimeManagerRuntime, RoomMessageRuntime,
 };
 
-use synctv_api::{
-    distributed_realtime_fanout_service, local_realtime_fanout_service, RealtimeEventService,
-    RealtimeFanoutService,
-};
+use synctv_api::{distributed_realtime_fanout_service, local_realtime_fanout_service};
+use synctv_realtime::fanout::{RealtimeEventService, RealtimeFanoutService};
 use synctv_realtime::sync::ConnectionRuntime;
 
+use crate::app_config::AppConfig as Config;
 use crate::bootstrap::cluster::{
     build_cluster_coordination_provider, init_cluster_discovery, ClusterCoordinationProvider,
     ClusterNodeActivator, DefaultClusterNodeActivator,
@@ -46,8 +42,16 @@ use crate::bootstrap::cluster::{
 use crate::bootstrap::livestream::init_livestream;
 use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
+use crate::bootstrap::{
+    bootstrap_root_user, has_any_admin_users, init_database_with_read_pool_and_cancel, init_redis,
+    init_services_with_options, DatabasePools, InitServicesOptions, RedisInitOptions,
+};
 use crate::realtime_bridge::room_event_to_realtime_event;
 use crate::realtime_outbox_dispatcher::start_realtime_outbox_dispatcher;
+use crate::resource_options::{
+    connection_limits_options, core_services_options, database_init_options,
+    leader_runtime_options, redis_connection_options, root_user_bootstrap_options, time_options,
+};
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{
     AuditFlushHook, CacheFenceRepairHook, CacheInvalidationStopHook, ProviderInvalidationHook,
@@ -57,6 +61,7 @@ use crate::shutdown::{
 /// Infrastructure: Redis (optional), Database, `NodeID`.
 struct Infrastructure {
     config: Config,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pool: PgPool,
     database_pools: DatabasePools,
     shared_runtime: Option<Arc<dyn RedisConnectionRuntime>>,
@@ -66,7 +71,7 @@ struct Infrastructure {
 
 /// Core services from `synctv-core`.
 struct CoreState {
-    services: synctv_core::bootstrap::Services,
+    services: crate::bootstrap::Services,
     cache_invalidation: Arc<dyn CacheInvalidationRuntime>,
 }
 
@@ -275,6 +280,7 @@ type AsyncOnceTaskFactory = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Se
 /// The assembled application, ready to be started.
 pub struct Application {
     config: Config,
+    public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     clock: Arc<synctv_core::SyncedClock>,
     database_pools: DatabasePools,
     services: Services,
@@ -287,6 +293,7 @@ pub struct ApplicationBuildOptions {
     pub provider_address_overrides: HashMap<String, SocketAddr>,
     pub credential_encryption_key_override: Option<String>,
     pub allow_password_registration: bool,
+    pub public_id_config: synctv_adapter::PublicIdConfig,
 }
 
 impl std::fmt::Debug for ApplicationBuildOptions {
@@ -376,7 +383,7 @@ fn register_cache_invalidation_shutdown_hook(
 
 async fn ensure_administrator_bootstrap_precondition(
     pool: &PgPool,
-    bootstrap_config: &synctv_core::config::BootstrapConfig,
+    bootstrap_config: &crate::bootstrap::RootUserBootstrapOptions,
 ) -> Result<()> {
     if bootstrap_config.create_root_user || has_any_admin_users(pool).await? {
         return Ok(());
@@ -645,6 +652,10 @@ impl Application {
         options: ApplicationBuildOptions,
     ) -> Result<Self> {
         validate_startup_config(&config)?;
+        let public_id_codec = Arc::new(
+            synctv_adapter::PublicIdCodec::from_config(&options.public_id_config)
+                .map_err(|error| anyhow::anyhow!("Invalid public ID configuration: {error}"))?,
+        );
 
         let shutdown_budget =
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
@@ -653,7 +664,7 @@ impl Application {
         let clock = Self::init_application_clock(&config, &mut shutdown).await?;
 
         // Phase 1: Infrastructure (Redis, Database, NodeID)
-        let infra = match Self::init_infrastructure(config, &mut shutdown).await {
+        let infra = match Self::init_infrastructure(config, public_id_codec, &mut shutdown).await {
             Ok(infra) => infra,
             Err(e) => {
                 shutdown.shutdown().await;
@@ -737,7 +748,9 @@ impl Application {
         config: &Config,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<Arc<synctv_core::SyncedClock>> {
-        let clock = Arc::new(synctv_core::SyncedClock::from_config(&config.time));
+        let clock = Arc::new(synctv_core::SyncedClock::from_options(&time_options(
+            config,
+        )));
         if clock.enabled() {
             clock.sync_once().await.map_err(|error| {
                 anyhow::anyhow!("initial application clock synchronization failed: {error}")
@@ -754,6 +767,7 @@ impl Application {
     pub async fn run(self) -> Result<()> {
         let server = SyncTvServer::new(
             self.config,
+            self.public_id_codec,
             self.clock,
             self.services,
             self.livestream_state,
@@ -773,6 +787,7 @@ impl Application {
     {
         let server = SyncTvServer::new(
             self.config,
+            self.public_id_codec,
             self.clock,
             self.services,
             self.livestream_state,
@@ -786,6 +801,7 @@ impl Application {
 
     async fn init_infrastructure(
         config: Config,
+        public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<Infrastructure> {
         // Generate node_id once for the entire process
@@ -794,7 +810,13 @@ impl Application {
 
         // Redis (optional in standalone mode, mandatory in distributed mode)
         let sentinel_cancel = shutdown.register_token("sentinel_health_check");
-        let redis_init = init_redis(&config, Some(sentinel_cancel)).await?;
+        let redis_init = init_redis(
+            &RedisInitOptions {
+                redis: redis_connection_options(&config),
+            },
+            Some(sentinel_cancel),
+        )
+        .await?;
         let shared_runtime = redis_init.connection_runtime();
         let cluster_coordination_provider = redis_init
             .coordination_runtime()
@@ -814,8 +836,11 @@ impl Application {
 
         // Database (with cancellable pool metrics task)
         let db_metrics_cancel = shutdown.register_token("db_pool_metrics");
-        let db_init =
-            init_database_with_read_pool_and_cancel(&config, Some(db_metrics_cancel)).await?;
+        let db_init = init_database_with_read_pool_and_cancel(
+            &database_init_options(&config),
+            Some(db_metrics_cancel),
+        )
+        .await?;
         if let Some(task) = db_init.metrics_task {
             shutdown.register_task("db_pool_metrics", task);
         }
@@ -824,6 +849,7 @@ impl Application {
 
         Ok(Infrastructure {
             config,
+            public_id_codec,
             pool,
             database_pools,
             shared_runtime,
@@ -835,13 +861,14 @@ impl Application {
     async fn init_schema(infra: &Infrastructure) -> Result<()> {
         crate::migrations::run_migrations(&infra.pool).await?;
 
-        ensure_administrator_bootstrap_precondition(&infra.pool, &infra.config.bootstrap).await?;
+        let root_bootstrap = root_user_bootstrap_options(&infra.config);
+        ensure_administrator_bootstrap_precondition(&infra.pool, &root_bootstrap).await?;
 
         // Bootstrap root user
         info!("Checking root user bootstrap...");
         if let Err(e) = bootstrap_root_user(
             &infra.pool,
-            &infra.config.bootstrap,
+            &root_bootstrap,
             &infra.config.security.opaque_server_setup_secret,
         )
         .await
@@ -881,7 +908,7 @@ impl Application {
         // Initialize CacheInvalidationService early (before init_services).
         // Uses the cluster node_id so invalidation messages are correctly attributed.
         // When Redis is not configured, cache invalidation operates in no-op mode.
-        let key_builder = KeyBuilder::from_config(&infra.config);
+        let key_builder = KeyBuilder::new(infra.config.redis.key_prefix.clone());
         let cache_invalidation: Arc<dyn CacheInvalidationRuntime> = Arc::new(
             synctv_core::cache::CacheInvalidationService::from_shared_state_profile(
                 &runtime_plan.cache_shared_state_profile,
@@ -914,16 +941,17 @@ impl Application {
         }
 
         // Initialize core services
-        let credential_encryption_key_override = options
-            .credential_encryption_key_override
-            .clone()
-            .or_else(|| {
-                (!infra.config.security.credential_encryption_key.is_empty())
-                    .then(|| infra.config.security.credential_encryption_key.clone())
-            });
+        let credential_encryption_key =
+            options
+                .credential_encryption_key_override
+                .clone()
+                .or_else(|| {
+                    (!infra.config.security.credential_encryption_key.is_empty())
+                        .then(|| infra.config.security.credential_encryption_key.clone())
+                });
         let synctv_services = init_services_with_options(
             infra.pool.clone(),
-            &infra.config,
+            &core_services_options(&infra.config),
             infra.shared_runtime.clone(),
             cache_invalidation.clone(),
             cache_invalidation_listener_task,
@@ -931,7 +959,7 @@ impl Application {
                 clock,
                 provider_address_overrides: options.provider_address_overrides.clone(),
                 ssrf_guard: infra.config.security.ssrf_guard(),
-                credential_encryption_key_override,
+                credential_encryption_key,
                 realtime_outbox: Some(runtime_plan.realtime_outbox()),
                 read_pool: Some(infra.database_pools.read_pool()),
             },
@@ -1085,7 +1113,7 @@ impl Application {
 
         #[cfg(feature = "k8s")]
         let leader_runtime = build_managed_leader_runtime(
-            &infra.config,
+            leader_runtime_options(&infra.config)?,
             &infra.node_id,
             &runtime_plan.cache_shared_state_profile,
         )
@@ -1101,7 +1129,7 @@ impl Application {
 
         #[cfg(not(feature = "k8s"))]
         let leader_runtime = build_managed_leader_runtime(
-            &infra.config,
+            leader_runtime_options(&infra.config)?,
             &infra.node_id,
             &runtime_plan.cache_shared_state_profile,
         )
@@ -1348,7 +1376,8 @@ impl Application {
             )
             .map_err(|error| anyhow::anyhow!("Failed to initialize presence service: {error}"))?,
         );
-        let connection_limits = ConnectionLimits::from(&infra.config.connection_limits);
+        let connection_limit_options = connection_limits_options(&infra.config);
+        let connection_limits = ConnectionLimits::from(&connection_limit_options);
         let realtime_connection_service = build_connection_manager(
             connection_limits,
             &runtime_plan.realtime_shared_state_profile,
@@ -1477,6 +1506,7 @@ impl Application {
 
         let realtime_event_service: Arc<dyn RealtimeEventService> = realtime_manager.clone();
         let outbox = runtime_plan.realtime_outbox();
+        let outbox_service = Arc::new(RealtimeOutboxService::new(outbox.clone()));
         let outbox_cancel = shutdown.register_token("realtime_outbox_dispatcher");
         shutdown.register_task(
             "realtime_outbox_dispatcher",
@@ -1490,7 +1520,7 @@ impl Application {
 
         Ok(ClusterState {
             realtime_fanout_service: distributed_realtime_fanout_service(
-                outbox,
+                outbox_service,
                 realtime_event_service.clone(),
             ),
             realtime_connection_service: realtime_connection_service.clone(),
@@ -1517,6 +1547,7 @@ impl Application {
         // Livestream
         let (livestream_state, live_infra, background_handles) = init_livestream(
             &infra.config,
+            infra.public_id_codec.clone(),
             &core.services,
             infra.shared_runtime.clone(),
             Arc::new(LeaderRuntimeCheck {
@@ -1614,6 +1645,7 @@ impl Application {
 
         Self {
             config: infra.config,
+            public_id_codec: infra.public_id_codec,
             clock,
             database_pools: infra.database_pools,
             services,
@@ -1626,13 +1658,13 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
-    use synctv_core::config::{
+    use crate::app_config::{
         BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig,
-        ConnectionLimitsConfig, DatabaseConfig, ExternalIdsConfig, JwtConfig, LivestreamConfig,
-        LoggingConfig, MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig,
-        RedisConfig, RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
+        ConnectionLimitsConfig, DatabaseConfig, JwtConfig, LivestreamConfig, LoggingConfig,
+        MediaProvidersConfig, PasswordComplexityConfig, ProxySliceCacheConfig, RedisConfig,
+        RequestRateLimitConfig, ServerConfig, WebAuthnConfig, WebRTCConfig,
     };
+    use crate::bootstrap::cluster::{ClusterNodeActivator, DefaultClusterNodeActivator};
     use synctv_core::{
         models::{SignupMethod, User, UserRole, UserStatus},
         repository::{PasswordCredentialMaterial, UserPasswordRepository, UserRepository},
@@ -1755,14 +1787,12 @@ mod tests {
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
             },
-            time: synctv_core::config::TimeConfig::default(),
-            data_dir: synctv_core::config::default_data_dir()
-                .display()
-                .to_string(),
-            metrics: synctv_core::config::MetricsConfig::default(),
-            management: synctv_core::config::ManagementConfig {
+            time: crate::app_config::TimeConfig::default(),
+            data_dir: crate::app_config::default_data_dir().display().to_string(),
+            metrics: crate::app_config::MetricsConfig::default(),
+            management: crate::app_config::ManagementConfig {
                 enabled: false,
-                ..synctv_core::config::ManagementConfig::default()
+                ..crate::app_config::ManagementConfig::default()
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig {
@@ -1775,15 +1805,15 @@ mod tests {
             },
             logging: LoggingConfig::default(),
             livestream: LivestreamConfig {
-                hls_storage: synctv_core::config::HlsStorageConfig::SharedFile(
-                    synctv_core::config::HlsFileStorageConfig {
+                hls_storage: crate::app_config::HlsStorageConfig::SharedFile(
+                    crate::app_config::HlsFileStorageConfig {
                         path: "/var/lib/synctv/hls".to_string(),
                     },
                 ),
                 ..LivestreamConfig::default()
             },
-            file_storage: synctv_core::config::FileStorageConfig::default(),
-            chat: synctv_core::config::ChatConfig::default(),
+            file_storage: crate::app_config::FileStorageConfig::default(),
+            chat: crate::app_config::ChatConfig::default(),
             webauthn: WebAuthnConfig::default(),
             media_providers: MediaProvidersConfig::default(),
             webrtc: WebRTCConfig {
@@ -1801,13 +1831,12 @@ mod tests {
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
             proxy_slice_cache: ProxySliceCacheConfig::default(),
-            messaging_rate_limits: synctv_core::config::MessagingRateLimitConfig::default(),
+            messaging_rate_limits: crate::app_config::MessagingRateLimitConfig::default(),
             request_rate_limits: RequestRateLimitConfig::default(),
-            external_ids: ExternalIdsConfig::default(),
-            security: synctv_core::config::SecurityConfig {
+            security: crate::app_config::SecurityConfig {
                 opaque_server_setup_secret: "test-opaque-server-setup-secret-for-app-startup-tests"
                     .to_string(),
-                ..synctv_core::config::SecurityConfig::default()
+                ..crate::app_config::SecurityConfig::default()
             },
         }
     }
@@ -2001,7 +2030,7 @@ mod tests {
 
         let error = ensure_administrator_bootstrap_precondition(
             &pool,
-            &BootstrapConfig {
+            &crate::bootstrap::RootUserBootstrapOptions {
                 create_root_user: false,
                 root_username: "root".to_string(),
                 root_password: String::new(),
@@ -2054,7 +2083,7 @@ mod tests {
 
         ensure_administrator_bootstrap_precondition(
             &pool,
-            &BootstrapConfig {
+            &crate::bootstrap::RootUserBootstrapOptions {
                 create_root_user: false,
                 root_username: "root".to_string(),
                 root_password: String::new(),

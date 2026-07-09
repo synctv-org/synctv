@@ -35,6 +35,7 @@ mod provider_binding;
 pub(crate) mod providers_manager;
 pub(crate) mod publish_key;
 pub(crate) mod rate_limit;
+pub(crate) mod realtime_outbox;
 pub(crate) mod remote_provider_manager;
 pub(crate) mod review;
 pub(crate) mod room;
@@ -52,6 +53,10 @@ pub(crate) mod user;
 pub(crate) mod user_notification;
 pub(crate) mod ws_ticket;
 
+pub use crate::repository::{
+    realtime_outbox::NewRealtimeOutboxEvent, MediaListItem, PlaylistListItem,
+    RoomResourceEventPayload, RoomResourceKind, WebAuthnCredential,
+};
 pub use audit::{
     AuditEventParams, AuditFlushHandle, AuditLog, AuditService, StreamKickAuditRequest,
 };
@@ -81,7 +86,7 @@ pub use content_report::{
 pub use db_maintenance::{DatabaseMaintenanceOptions, DatabaseMaintenanceService};
 pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
 pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
-pub use email_token::EmailTokenService;
+pub use email_token::{EmailTokenRateLimitConfig, EmailTokenService};
 pub use file_storage::{
     submitted_file_reference_from_reuse_token, submitted_file_reference_from_session_file,
     upload_token_from_session_file, DatabaseFileStorageCompressionConfig,
@@ -127,12 +132,16 @@ pub use notification_partition_manager::{
     NotificationPartitionManager,
 };
 pub use oauth2::{
-    local_oauth_state_store, OAuth2LinkResult, OAuth2Operation, OAuth2PendingRegistration,
-    OAuth2Service, OAuth2ServiceRuntime, OAuth2State, OAuth2UserInfo, OAuthStateStore,
-    RedisOAuthStateStore,
+    local_oauth_state_store, state_store_from_shared_state_profile, OAuth2LinkResult,
+    OAuth2Operation, OAuth2PendingRegistration, OAuth2Service, OAuth2ServiceRuntime, OAuth2State,
+    OAuth2UserInfo, OAuthStateStore, RedisOAuthStateStore,
 };
 pub use optimistic_retry::retry_with_optimistic_lock;
-pub use passkey::{local_passkey_session_store, PasskeyService, PasskeySessionStore};
+pub use partitioning::acquire_unbounded_ddl_connection;
+pub use passkey::{
+    local_passkey_session_store, passkey_session_store_from_shared_state_profile, PasskeyService,
+    PasskeyServiceOptions, PasskeySessionStore,
+};
 pub(crate) use permission::PermissionWriteFence;
 pub use permission::{
     EffectivePermissionCalculator, PermissionService, PermissionServiceRuntime,
@@ -157,66 +166,71 @@ pub use presence::{
     OnlineNodeStats, OnlinePresenceService, OnlineRoomStats, OnlineUserRoomStats, OnlineUserStats,
     PresenceConnection, PresenceEvent, PresenceOverview,
 };
-pub use providers_manager::ProvidersManager;
+pub use providers_manager::{LocalProviderHttpOptions, MediaProvidersOptions, ProvidersManager};
 pub use publish_key::{
     InMemoryJtiStore, JtiStore, PublishClaims, PublishKey, PublishKeyService, RedisJtiStore,
     StreamingPublishKeyService,
 };
 pub use rate_limit::{RateLimitConfig, RateLimitError, RateLimiter, RequestRateLimiterService};
-pub use remote_provider_manager::{ProviderInstanceStore, RemoteProviderManager};
+pub use realtime_outbox::RealtimeOutboxService;
+pub use remote_provider_manager::{
+    empty_provider_instance_manager, ProviderInstanceStore, RemoteProviderManager,
+    RemoteProviderManagerOptions,
+};
 pub use review::{
     ReviewPage, ReviewService, RoomCreationReviewListQuery, RoomCreationReviewRecord,
     RoomJoinReviewListQuery, RoomJoinReviewRecord, UserRegistrationReviewListQuery,
     UserRegistrationReviewRecord,
 };
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use room::{
+pub(crate) use room::soft_delete_room_and_cleanup_in_tx;
+pub use room::{
     local_room_opaque_password_login_session_store,
     local_room_opaque_password_registration_session_store,
 };
-pub(crate) use room::{
+pub use room::{
     room_opaque_password_login_session_store_from_shared_state_profile,
     room_opaque_password_registration_session_store_from_shared_state_profile,
-    soft_delete_room_and_cleanup_in_tx,
 };
 pub use room::{
     AddMemberWithOutboxRequest, AdminAddMemberWithOutboxRequest, AdminRejectJoinRequestWithOutbox,
     AuthorizedAdminActor, ClientResourceAvailability, CreateRoomCoverUploadSession,
     CreateRoomWithTaxonomyRequest, DeleteEntriesPlan, DeleteEntriesRequest,
     KickMemberOutboxOptions, MemberPermissionPatch, MemberResourceCleanupResult,
-    PermissionChangedOutboxSnapshot, RealtimeOutboxDeleteEntriesEventFactory,
-    RealtimeOutboxMemberResourceCleanupEventFactory, RealtimeOutboxPermissionChangedEventFactory,
-    RealtimeOutboxRoomEventFactory, RealtimeOutboxSettingsEventFactory,
-    RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate, RoomOpaqueLoginStartChallenge,
-    RoomOpaquePasswordLoginSession, RoomOpaquePasswordLoginSessionStore,
-    RoomOpaquePasswordRegistrationSession, RoomOpaquePasswordRegistrationSessionStore,
-    RoomOpaqueRegistrationStartChallenge, RoomService, RoomServiceOptions,
-    UpdateMemberDisplayTagWithOutboxRequest, UpdateMemberRemarkNameWithOutboxRequest,
-    UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot, ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS,
-    ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
+    PermissionChangedOutboxSnapshot, RealtimeMembershipAccess,
+    RealtimeOutboxDeleteEntriesEventFactory, RealtimeOutboxMemberResourceCleanupEventFactory,
+    RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxRoomEventFactory,
+    RealtimeOutboxSettingsEventFactory, RealtimeOutboxUserLeftEventFactory, RoomCategoryUpdate,
+    RoomOpaqueLoginStartChallenge, RoomOpaquePasswordLoginSession,
+    RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSession,
+    RoomOpaquePasswordRegistrationSessionStore, RoomOpaqueRegistrationStartChallenge, RoomService,
+    RoomServiceOptions, UpdateMemberDisplayTagWithOutboxRequest,
+    UpdateMemberRemarkNameWithOutboxRequest, UpdateMemberWithOutboxRequest, UserLeftOutboxSnapshot,
+    ROOM_OPAQUE_LOGIN_SESSION_TTL_SECS, ROOM_OPAQUE_REGISTRATION_SESSION_TTL_SECS,
 };
-pub use room_settings::{CacheStats, RoomSettingsService};
+pub use room_settings::{CacheStats, RoomSettingsRuntime, RoomSettingsService};
 pub use server_state::{
     check_memory_health, email_health, livestream_snapshot_from_publishers,
     response_for_server_state_nodes, summarize_server_state, validate_server_state_selection,
     ws_ticket_backend_is_safe_for_mode, ws_ticket_health, ServerStateCluster,
-    ServerStateClusterNode, ServerStateClusterRuntime, ServerStateClusterStatus,
-    ServerStateClusterTarget, ServerStateCpu, ServerStateCpuStatus, ServerStateDatabase,
-    ServerStateDatabasePool, ServerStateDatabaseStatus, ServerStateEmail, ServerStateEmailStatus,
-    ServerStateError, ServerStateFailure, ServerStateLivestream, ServerStateLivestreamRuntime,
+    ServerStateClusterNode, ServerStateClusterOptions, ServerStateClusterRuntime,
+    ServerStateClusterStatus, ServerStateClusterTarget, ServerStateCpu, ServerStateCpuStatus,
+    ServerStateDatabase, ServerStateDatabaseOptions, ServerStateDatabasePool,
+    ServerStateDatabaseStatus, ServerStateEmail, ServerStateEmailStatus, ServerStateError,
+    ServerStateFailure, ServerStateHlsStorageBackend, ServerStateHlsStorageOptions,
+    ServerStateLivestream, ServerStateLivestreamOptions, ServerStateLivestreamRuntime,
     ServerStateLivestreamSnapshot, ServerStateLivestreamStatus, ServerStateMemory,
     ServerStateMemoryHealth, ServerStateMemoryStatus, ServerStateNode, ServerStateNodeStatus,
     ServerStateRealtime, ServerStateRealtimeMetrics, ServerStateRealtimeRuntime, ServerStateRedis,
-    ServerStateRedisStatus, ServerStateRemoteClient, ServerStateResponse, ServerStateResult,
-    ServerStateScope, ServerStateSelection, ServerStateService, ServerStateServiceDependencies,
-    ServerStateSliceCache, ServerStateSliceCacheRuntime, ServerStateSliceCacheStatus,
-    ServerStateSummary, ServerStateWebRtc, ServerStateWebRtcStatus, ServerStateWsTicket,
-    ServerStateWsTicketStatus,
+    ServerStateRedisOptions, ServerStateRedisStatus, ServerStateRemoteClient, ServerStateResponse,
+    ServerStateResult, ServerStateRuntimeParams, ServerStateScope, ServerStateSelection,
+    ServerStateService, ServerStateServiceDependencies, ServerStateSliceCache,
+    ServerStateSliceCacheRuntime, ServerStateSliceCacheStatus, ServerStateSummary,
+    ServerStateWebRtc, ServerStateWebRtcStatus, ServerStateWsTicket, ServerStateWsTicketStatus,
 };
 pub use service_state::{
     ServiceAdditionalState, ServiceState, ServiceStateService, ServiceStateServiceDependencies,
 };
-pub use settings::SettingsService;
+pub use settings::{SettingsService, SettingsServiceRuntime};
 pub use settings_vars::{Setting, SettingsStorage};
 pub use slice_cache_management::{
     evict_expired_response_from_nodes, purge_response_from_nodes, validate_slice_cache_selection,
@@ -228,16 +242,15 @@ pub use slice_cache_management::{
     SliceCacheStats, SliceCacheStatsNode, SliceCacheStatsResponse,
 };
 pub use stun_server::{
-    resolve_external_ip, validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState,
-    StunServer, StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
+    validate_external_addr, BuiltinStunRuntimeReason, BuiltinStunRuntimeState, StunServer,
+    StunServerConfig, WebRtcRuntimeMode, WebRtcRuntimeStatus,
 };
 pub use system_stats::SystemStatsService;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use user::{
+pub use user::{
     local_mfa_session_store, local_opaque_login_session_store,
     local_opaque_registration_session_store, local_sensitive_verification_session_store,
 };
-pub(crate) use user::{
+pub use user::{
     mfa_session_store_from_shared_state_profile,
     opaque_login_session_store_from_shared_state_profile,
     opaque_registration_session_store_from_shared_state_profile,

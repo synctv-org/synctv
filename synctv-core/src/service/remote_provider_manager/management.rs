@@ -1,7 +1,7 @@
 use super::RemoteProviderManager;
 use crate::models::ProviderInstance;
-use crate::provider::provider_client::RemoteProviderConnection;
 use synctv_common::ExecutionControl;
+use synctv_media_providers::remote_transport::RemoteProviderConnection;
 
 impl RemoteProviderManager {
     async fn restore_cached_connection(

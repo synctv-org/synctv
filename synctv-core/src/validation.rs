@@ -3,6 +3,9 @@
 //! This module provides input validation for usernames, passwords, emails,
 //! room names, and path traversal protection.
 
+use ammonia::{Builder, UrlRelative};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 // Canonical validation limits — single source of truth for the entire codebase
@@ -33,6 +36,15 @@ pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
 /// Maximum media display name length enforced by request/domain validation.
 pub const MEDIA_NAME_MAX: usize = 500;
+/// Maximum media description length enforced by the domain/service layer.
+pub const MEDIA_DESCRIPTION_MAX: usize = 5000;
+/// Maximum media items allowed at a single room root or playlist location.
+pub const MEDIA_PLAYLIST_MAX_ITEMS: usize = 1000;
+
+/// Maximum playlist name length enforced by the domain/service layer.
+pub const PLAYLIST_NAME_MAX: usize = 255;
+/// Maximum playlist description length enforced by the domain/service layer.
+pub const PLAYLIST_DESCRIPTION_MAX: usize = 5000;
 
 // Reserved usernames — prevent phishing/impersonation attacks
 
@@ -69,6 +81,9 @@ pub enum ValidationError {
     #[error("Invalid {field}: {message}")]
     Field { field: String, message: String },
 
+    #[error("Potential security issue detected in input")]
+    SecurityRisk,
+
     #[error("Multiple validation errors: {0}")]
     Multiple(String),
 }
@@ -76,12 +91,117 @@ pub enum ValidationError {
 /// Validation result
 pub type ValidationResult<T> = Result<T, ValidationError>;
 
+static PLAIN_TEXT_CLEANER: LazyLock<Builder<'static>> = LazyLock::new(|| {
+    let mut cleaner = Builder::default();
+    cleaner
+        .tags(HashSet::new())
+        .tag_attributes(HashMap::new())
+        .generic_attributes(HashSet::new())
+        .url_relative(UrlRelative::Deny);
+    cleaner
+});
+
+fn sanitize_string(input: &str) -> Cow<'_, str> {
+    let trimmed = input.trim();
+    if !trimmed.chars().any(is_disallowed_control_char) {
+        return Cow::Borrowed(trimmed);
+    }
+
+    Cow::Owned(
+        trimmed
+            .chars()
+            .filter(|ch| !is_disallowed_control_char(*ch))
+            .collect(),
+    )
+}
+
+fn is_disallowed_control_char(ch: char) -> bool {
+    matches!(ch, '\u{0000}'..='\u{0008}' | '\u{000B}' | '\u{000C}' | '\u{000E}'..='\u{001F}' | '\u{007F}')
+}
+
+fn contains_html_markup(input: &str) -> bool {
+    PLAIN_TEXT_CLEANER.clean(input).to_string() != input
+}
+
+fn input_field_error(field: &'static str, error: &ValidationError) -> ValidationError {
+    ValidationError::Field {
+        field: field.to_string(),
+        message: error.to_string(),
+    }
+}
+
+pub fn validate_room_name_input(name: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(name);
+    RoomNameValidator::new()
+        .validate(&sanitized)
+        .map_err(|error| input_field_error("room_name", &error))?;
+
+    if contains_html_markup(&sanitized) {
+        return Err(ValidationError::SecurityRisk);
+    }
+
+    Ok(sanitized.into_owned())
+}
+
+pub fn validate_room_description_input(description: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(description);
+    validate_room_description(&sanitized)
+        .map_err(|error| input_field_error("room_description", &error))?;
+
+    if contains_html_markup(&sanitized) {
+        return Err(ValidationError::SecurityRisk);
+    }
+
+    Ok(sanitized.into_owned())
+}
+
+pub fn validate_media_name_input(name: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(name);
+    validate_media_name(&sanitized).map_err(|error| input_field_error("media_name", &error))?;
+
+    if contains_html_markup(&sanitized) {
+        return Err(ValidationError::SecurityRisk);
+    }
+
+    Ok(sanitized.into_owned())
+}
+
 pub fn validate_media_name(name: &str) -> ValidationResult<()> {
     let char_count = name.chars().count();
     if char_count > MEDIA_NAME_MAX {
         return Err(ValidationError::Field {
             field: "media_name".to_string(),
             message: format!("must be at most {MEDIA_NAME_MAX} characters"),
+        });
+    }
+
+    Ok(())
+}
+
+pub fn validate_room_description(description: &str) -> ValidationResult<()> {
+    let char_count = description.chars().count();
+    if char_count > ROOM_DESCRIPTION_MAX {
+        return Err(ValidationError::Field {
+            field: "room_description".to_string(),
+            message: format!("must be at most {ROOM_DESCRIPTION_MAX} characters"),
+        });
+    }
+
+    Ok(())
+}
+
+pub fn validate_room_password_for_set(password: &str) -> ValidationResult<()> {
+    let char_count = password.trim().chars().count();
+    if char_count < ROOM_PASSWORD_MIN {
+        return Err(ValidationError::Field {
+            field: "room_password".to_string(),
+            message: format!("must be at least {ROOM_PASSWORD_MIN} characters"),
+        });
+    }
+    if char_count > ROOM_PASSWORD_MAX {
+        return Err(ValidationError::Field {
+            field: "room_password".to_string(),
+            message: format!("must not exceed {ROOM_PASSWORD_MAX} characters"),
         });
     }
 
@@ -182,6 +302,33 @@ pub struct PasswordValidator {
     zxcvbn_min_score: u8,
 }
 
+#[derive(Debug, Clone)]
+pub struct PasswordComplexityOptions {
+    pub min_length: usize,
+    pub require_uppercase: bool,
+    pub require_lowercase: bool,
+    pub require_digit: bool,
+    pub require_special: bool,
+    pub max_repeated_chars: usize,
+    pub zxcvbn_enabled: bool,
+    pub zxcvbn_min_score: u8,
+}
+
+impl Default for PasswordComplexityOptions {
+    fn default() -> Self {
+        Self {
+            min_length: 8,
+            require_uppercase: true,
+            require_lowercase: true,
+            require_digit: true,
+            require_special: false,
+            max_repeated_chars: 3,
+            zxcvbn_enabled: false,
+            zxcvbn_min_score: 3,
+        }
+    }
+}
+
 impl Default for PasswordValidator {
     fn default() -> Self {
         Self {
@@ -203,18 +350,18 @@ impl PasswordValidator {
         Self::default()
     }
 
-    /// Create a `PasswordValidator` from a `PasswordComplexityConfig`.
+    /// Create a `PasswordValidator` from explicit password complexity options.
     #[must_use]
-    pub const fn from_config(config: &crate::config::PasswordComplexityConfig) -> Self {
+    pub const fn from_options(options: &PasswordComplexityOptions) -> Self {
         Self {
-            min_length: config.min_length,
-            require_uppercase: config.require_uppercase,
-            require_lowercase: config.require_lowercase,
-            require_digit: config.require_digit,
-            require_special_char: config.require_special,
-            max_repeated_chars: config.max_repeated_chars,
-            zxcvbn_enabled: config.zxcvbn_enabled,
-            zxcvbn_min_score: config.zxcvbn_min_score,
+            min_length: options.min_length,
+            require_uppercase: options.require_uppercase,
+            require_lowercase: options.require_lowercase,
+            require_digit: options.require_digit,
+            require_special_char: options.require_special,
+            max_repeated_chars: options.max_repeated_chars,
+            zxcvbn_enabled: options.zxcvbn_enabled,
+            zxcvbn_min_score: options.zxcvbn_min_score,
         }
     }
 
@@ -603,6 +750,36 @@ mod tests {
     }
 
     #[test]
+    fn test_room_description_validation_uses_character_count() {
+        assert!(validate_room_description(&"a".repeat(ROOM_DESCRIPTION_MAX)).is_ok());
+        assert!(validate_room_description(&"\u{4e00}".repeat(ROOM_DESCRIPTION_MAX)).is_ok());
+
+        let result = validate_room_description(&"a".repeat(ROOM_DESCRIPTION_MAX + 1));
+        assert!(matches!(
+            result,
+            Err(ValidationError::Field { ref field, .. }) if field == "room_description"
+        ));
+    }
+
+    #[test]
+    fn test_room_password_set_validation_counts_trimmed_length() {
+        assert!(validate_room_password_for_set(" abcd ").is_ok());
+        assert!(validate_room_password_for_set(&"a".repeat(ROOM_PASSWORD_MAX)).is_ok());
+
+        let too_short = validate_room_password_for_set(" abc ");
+        assert!(matches!(
+            too_short,
+            Err(ValidationError::Field { ref field, .. }) if field == "room_password"
+        ));
+
+        let too_long = validate_room_password_for_set(&"a".repeat(ROOM_PASSWORD_MAX + 1));
+        assert!(matches!(
+            too_long,
+            Err(ValidationError::Field { ref field, .. }) if field == "room_password"
+        ));
+    }
+
+    #[test]
     fn test_username_validation() {
         let validator = UsernameValidator::new();
 
@@ -747,10 +924,8 @@ mod tests {
     }
 
     #[test]
-    fn test_password_from_config() {
-        use crate::config::PasswordComplexityConfig;
-
-        let config = PasswordComplexityConfig {
+    fn test_password_from_options() {
+        let options = PasswordComplexityOptions {
             min_length: 10,
             require_uppercase: false,
             require_lowercase: true,
@@ -760,7 +935,7 @@ mod tests {
             zxcvbn_enabled: false,
             zxcvbn_min_score: 3,
         };
-        let validator = PasswordValidator::from_config(&config);
+        let validator = PasswordValidator::from_options(&options);
 
         // 9 chars = too short (min 10)
         assert!(validator.validate("abcde1!fg").is_err());

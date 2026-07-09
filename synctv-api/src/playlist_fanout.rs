@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
-use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
-use synctv_core::service::RealtimeOutboxPlaylistEventFactory;
+use synctv_core::service::{NewRealtimeOutboxEvent, RealtimeOutboxPlaylistEventFactory};
 use synctv_realtime::sync::RealtimeEvent;
 
 use crate::realtime_fanout::{
@@ -175,14 +174,14 @@ pub fn default_playlist_fanout_service(
 #[cfg(test)]
 mod tests {
     use super::default_playlist_fanout_service;
-    use crate::realtime_fanout::RealtimeFanoutService;
     use async_trait::async_trait;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
     use synctv_core::models::{Playlist, PlaylistId, RoomId, UserId};
-    use synctv_core::repository::realtime_outbox::NewRealtimeOutboxEvent;
+    use synctv_core::service::NewRealtimeOutboxEvent;
+    use synctv_realtime::fanout::RealtimeFanoutService;
     use synctv_realtime::sync::{PublishRequest, RealtimeEvent};
 
     type TestResult<T = ()> = anyhow::Result<T>;

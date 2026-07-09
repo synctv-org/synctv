@@ -2,22 +2,115 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::{
-    cache::ConsistencyCoordinator,
+    cache::{CacheInvalidationRuntime, ConsistencyCoordinator},
     repository::{
-        ChatRepository, MediaRepository, PlaybackSourceMetadataRepository, PlaylistRepository,
-        RoomMemberRepository, RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
-        RoomSettingsRepository,
+        realtime_outbox::RealtimeOutboxRepository, ChatRepository, MediaRepository,
+        PlaybackSourceMetadataRepository, PlaylistRepository, RoomMemberRepository,
+        RoomPasswordRepository, RoomPlaybackStateRepository, RoomRepository,
+        RoomSettingsRepository, UserProviderCredentialRepository,
     },
     service::{
+        audit::AuditService,
         media::MediaService,
         member::MemberService,
         notification::NotificationService,
         room_settings::{RoomSettingsRuntime, RoomSettingsService},
-        PermissionService, PermissionServiceRuntime, PlaybackService, PlaylistService,
-        ProvidersManager, RoomService, RoomServiceOptions, UserService,
+        OpaquePasswordService, PermissionService, PermissionServiceRuntime, PlaybackService,
+        PlaylistService, ProvidersManager, RoomService, UserService,
     },
     Result,
 };
+
+use super::{RoomOpaquePasswordLoginSessionStore, RoomOpaquePasswordRegistrationSessionStore};
+
+#[derive(Clone)]
+pub struct RoomServiceOptions {
+    pub clock: Arc<dyn crate::Clock>,
+    pub read_pool: Option<sqlx::PgPool>,
+    pub distributed_lock: Option<Arc<dyn crate::service::CoordinationLock>>,
+    pub cache_invalidation: Option<Arc<dyn CacheInvalidationRuntime>>,
+    pub version_fence: Arc<dyn crate::cache::VersionFenceStore>,
+    pub playback_l2_cache: crate::cache::PlaybackStateCache,
+    pub room_settings_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
+    pub room_settings_cache_key_prefix: String,
+    pub member_permission_l2_cache: Arc<dyn crate::cache::CacheL2Backend>,
+    pub member_permission_cache_key_prefix: String,
+    pub credential_encryption: Option<crate::credential_encryption::CredentialEncryption>,
+    pub credential_repo: Option<Arc<UserProviderCredentialRepository>>,
+    pub provider_access_service: Option<Arc<dyn crate::provider::ProviderAccessService>>,
+    pub provider_stores: Option<Arc<dyn crate::provider::ProviderStoreResolver>>,
+    pub audit_service: Option<Arc<AuditService>>,
+    pub brute_force_service: Option<Arc<dyn crate::service::BruteForceProtectionService>>,
+    pub runtime_settings_store: Option<Arc<crate::service::RuntimeSettingsStore>>,
+    pub user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
+    pub opaque_password_service: Arc<OpaquePasswordService>,
+    pub opaque_password_registration_session_store:
+        Arc<dyn RoomOpaquePasswordRegistrationSessionStore>,
+    pub opaque_password_login_session_store: Arc<dyn RoomOpaquePasswordLoginSessionStore>,
+    pub realtime_outbox: Option<Arc<RealtimeOutboxRepository>>,
+    pub media_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+    pub room_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+    pub playlist_file_storage_service: Option<Arc<dyn crate::service::FileStorageService>>,
+}
+
+impl RoomServiceOptions {
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_defaults_with_settings(pool: sqlx::PgPool) -> Self {
+        let settings_service = Arc::new(crate::service::SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool,
+        ));
+        Self {
+            runtime_settings_store: Some(Arc::new(crate::service::RuntimeSettingsStore::new(
+                settings_service,
+            ))),
+            ..Self::test_defaults()
+        }
+    }
+
+    #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_defaults() -> Self {
+        Self {
+            clock: Arc::new(crate::SystemClock),
+            read_pool: None,
+            distributed_lock: None,
+            cache_invalidation: None,
+            version_fence: Arc::new(crate::cache::LocalVersionFenceStore::new()),
+            playback_l2_cache: crate::cache::PlaybackStateCache::new(
+                Arc::new(crate::cache::NoopCacheL2),
+                crate::service::PlaybackService::DEFAULT_CACHE_SIZE,
+                crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+                crate::service::PlaybackService::DEFAULT_CACHE_TTL_SECS,
+                "playback_state:".to_string(),
+            ),
+            room_settings_l2_cache: Arc::new(crate::cache::NoopCacheL2),
+            room_settings_cache_key_prefix: "room_settings:".to_string(),
+            member_permission_l2_cache: Arc::new(crate::cache::NoopCacheL2),
+            member_permission_cache_key_prefix: "member_permission:".to_string(),
+            credential_encryption: None,
+            credential_repo: None,
+            provider_access_service: None,
+            provider_stores: Some(Arc::new(
+                crate::provider::ProviderStoreRegistry::local_only("test:provider:"),
+            )),
+            audit_service: None,
+            brute_force_service: None,
+            runtime_settings_store: None,
+            user_notification_service: None,
+            opaque_password_service: Arc::new(OpaquePasswordService::new_ephemeral_for_process()),
+            opaque_password_registration_session_store:
+                crate::service::local_room_opaque_password_registration_session_store(),
+            opaque_password_login_session_store:
+                crate::service::local_room_opaque_password_login_session_store(),
+            realtime_outbox: None,
+            media_file_storage_service: None,
+            room_file_storage_service: None,
+            playlist_file_storage_service: None,
+        }
+    }
+}
 
 impl RoomService {
     #[cfg(any(test, feature = "test-support"))]
@@ -230,18 +323,18 @@ impl RoomService {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_brute_force_service(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn has_brute_force_service(&self) -> bool {
         self.brute_force_service.is_some()
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_distributed_lock(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn has_distributed_lock(&self) -> bool {
         self.distributed_lock.is_some()
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_runtime_settings_store(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn has_runtime_settings_store(&self) -> bool {
         self.runtime_settings_store.is_some()
     }
 
@@ -252,8 +345,8 @@ impl RoomService {
         self.runtime_settings_store.as_ref()
     }
 
-    #[cfg(test)]
-    pub(crate) fn has_playback_l2_cache(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_playback_l2_cache(&self) -> bool {
         self.playback_service.has_l2_cache()
     }
 }

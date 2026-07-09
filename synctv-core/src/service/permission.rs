@@ -136,8 +136,8 @@ impl PermissionService {
             .ok_or_else(|| Error::Internal("PermissionService has no room repository".into()))
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_runtime_settings_store(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn has_runtime_settings_store(&self) -> bool {
         self.runtime_settings_store.is_some()
     }
 

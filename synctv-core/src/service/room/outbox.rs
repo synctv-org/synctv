@@ -1,22 +1,58 @@
+use std::sync::Arc;
+
 use sqlx::{Postgres, Transaction};
 
 use crate::{
     models::{
-        AuditAction, AuditDetails, AuditTargetType, RoomId, RoomMember, RoomPermissionSet,
-        RoomRole, UserId,
+        AuditAction, AuditDetails, AuditTargetType, Room, RoomId, RoomMember, RoomPermissionSet,
+        RoomRole, RoomSettings, UserId, LOCAL_MANAGEMENT_ACTOR_USER_ID,
     },
     repository::realtime_outbox::NewRealtimeOutboxEvent,
     service::{
         audit::AuditEventParams,
-        room::{
-            MemberResourceCleanupResult, PermissionChangedOutboxSnapshot,
-            RealtimeOutboxMemberResourceCleanupEventFactory,
-            RealtimeOutboxPermissionChangedEventFactory, RealtimeOutboxUserLeftEventFactory,
-            RoomService, UserLeftOutboxSnapshot,
-        },
+        room::{MemberResourceCleanupResult, RoomService},
     },
     Error, Result,
 };
+
+pub type RealtimeOutboxSettingsEventFactory =
+    Arc<dyn Fn(&RoomSettings, i64) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxRoomEventFactory =
+    Arc<dyn Fn(&Room) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxPermissionChangedEventFactory =
+    Arc<dyn Fn(&PermissionChangedOutboxSnapshot) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxUserLeftEventFactory =
+    Arc<dyn Fn(&UserLeftOutboxSnapshot) -> Result<NewRealtimeOutboxEvent> + Send + Sync>;
+pub type RealtimeOutboxMemberResourceCleanupEventFactory =
+    Arc<dyn Fn(&MemberResourceCleanupResult) -> Result<Vec<NewRealtimeOutboxEvent>> + Send + Sync>;
+
+#[derive(Debug, Clone)]
+pub struct PermissionChangedOutboxSnapshot {
+    pub room_id: RoomId,
+    pub target_user_id: UserId,
+    pub target_username: String,
+    pub target_remark_name: String,
+    pub target_display_tag: String,
+    pub changed_by: UserId,
+    pub changed_by_username: String,
+    pub role_changed: bool,
+    pub new_permissions: RoomPermissionSet,
+    pub role: i32,
+    pub added_permissions: RoomPermissionSet,
+    pub removed_permissions: RoomPermissionSet,
+    pub admin_added_permissions: RoomPermissionSet,
+    pub admin_removed_permissions: RoomPermissionSet,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserLeftOutboxSnapshot {
+    pub room_id: RoomId,
+    pub user_id: UserId,
+    pub username: String,
+    pub remark_name: String,
+    pub display_tag: String,
+    pub role: i32,
+}
 
 pub(super) fn log_if_no_local_subscribers(
     subscriber_count: usize,
@@ -39,6 +75,14 @@ pub(super) struct MemberJoinedSystemChatInsert {
     pub actor_user_id: UserId,
     pub actor_username: String,
     pub role: RoomRole,
+}
+
+pub(super) struct MemberJoinedEffectsRequest<'a> {
+    pub room_id: RoomId,
+    pub target_user_id: UserId,
+    pub actor_id: UserId,
+    pub member: &'a RoomMember,
+    pub outbox_event_factory: Option<&'a RealtimeOutboxPermissionChangedEventFactory>,
 }
 
 impl RoomService {
@@ -105,7 +149,7 @@ impl RoomService {
     }
 
     pub(super) async fn membership_snapshot_username(&self, user_id: &UserId) -> Result<String> {
-        if *user_id == UserId::MAX {
+        if *user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
             return Ok("local-management".to_string());
         }
 
@@ -126,7 +170,7 @@ impl RoomService {
         tx: &mut Transaction<'_, Postgres>,
         user_id: &UserId,
     ) -> Result<String> {
-        if *user_id == UserId::MAX {
+        if *user_id == LOCAL_MANAGEMENT_ACTOR_USER_ID {
             return Ok("local-management".to_string());
         }
 
@@ -247,6 +291,32 @@ impl RoomService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // Shared outbox preparation keeps mutation modules lean.
+    pub(super) async fn prepare_and_insert_member_update_outbox(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        room_id: RoomId,
+        target_user_id: UserId,
+        actor_id: UserId,
+        updated: Option<&RoomMember>,
+        role_changed: bool,
+        outbox_event_factory: Option<&RealtimeOutboxPermissionChangedEventFactory>,
+    ) -> Result<PermissionChangedOutboxSnapshot> {
+        let snapshot = self
+            .permission_changed_snapshot_tx(
+                tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                updated,
+                role_changed,
+            )
+            .await?;
+        self.insert_permission_changed_outbox_tx(tx, &snapshot, outbox_event_factory)
+            .await?;
+        Ok(snapshot)
+    }
+
     pub(super) async fn insert_realtime_outbox_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -254,6 +324,41 @@ impl RoomService {
     ) -> Result<()> {
         if let (Some(outbox), Some(event)) = (&self.realtime_outbox, outbox_event) {
             outbox.insert_with_executor(event, &mut **tx).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn commit_member_update_with_outbox(
+        &self,
+        tx: Transaction<'_, Postgres>,
+        fence: Option<&crate::service::PermissionWriteFence>,
+        snapshot: &PermissionChangedOutboxSnapshot,
+        updated_version: i64,
+        context: &'static str,
+    ) -> Result<()> {
+        if let Err(error) = tx.commit().await {
+            if let Some(fence) = fence {
+                self.abort_permission_write(fence).await;
+            }
+            return Err(error.into());
+        }
+        if let Some(fence) = fence {
+            self.finalize_committed_permission_write_best_effort(
+                fence,
+                &snapshot.room_id,
+                &snapshot.target_user_id,
+                updated_version,
+                context,
+            )
+            .await;
+        }
+
+        self.permission_service
+            .invalidate_committed_member_write_cache(&snapshot.room_id, &snapshot.target_user_id)
+            .await;
+        if snapshot.role_changed {
+            self.notify_room_settings_invalidation(&snapshot.room_id)
+                .await;
         }
         Ok(())
     }
@@ -367,5 +472,51 @@ impl RoomService {
             }),
         )
         .await
+    }
+
+    pub(super) async fn apply_member_joined_effects_and_commit(
+        &self,
+        tx: Transaction<'_, Postgres>,
+        request: MemberJoinedEffectsRequest<'_>,
+    ) -> Result<()> {
+        let MemberJoinedEffectsRequest {
+            room_id,
+            target_user_id,
+            actor_id,
+            member,
+            outbox_event_factory,
+        } = request;
+        let mut tx = tx;
+        let snapshot = self
+            .permission_changed_snapshot_tx(
+                &mut tx,
+                room_id,
+                target_user_id,
+                actor_id,
+                Some(member),
+                Self::role_member_event_scope(),
+            )
+            .await?;
+        self.insert_permission_changed_outbox_tx(&mut tx, &snapshot, outbox_event_factory)
+            .await?;
+        self.insert_member_joined_system_chat_tx(
+            &mut tx,
+            MemberJoinedSystemChatInsert {
+                room_id,
+                target_user_id,
+                target_username: snapshot.target_username.clone(),
+                actor_user_id: actor_id,
+                actor_username: snapshot.changed_by_username.clone(),
+                role: member.role,
+            },
+        )
+        .await?;
+        tx.commit().await?;
+
+        self.permission_service
+            .seed_added_member_cache(&room_id, &target_user_id, member.version)
+            .await;
+
+        Ok(())
     }
 }

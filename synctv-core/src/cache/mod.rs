@@ -13,7 +13,7 @@ pub mod tiered;
 pub mod user_cache;
 pub mod username_cache;
 
-pub(crate) use consistency::version_fence_store_from_shared_state_profile;
+pub use consistency::version_fence_store_from_shared_state_profile;
 pub use consistency::{
     CacheDomain, ConsistencyCoordinator, ConsistencyPolicy, LocalVersionFenceStore,
     RedisVersionFenceStore, VersionFenceReservation, VersionFenceStore, VersionedCacheValue,

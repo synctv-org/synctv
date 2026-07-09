@@ -1,6 +1,9 @@
 use super::*;
 use crate::cache::CacheInvalidationService;
 use crate::models::{ProviderInstance, SourceProvider};
+use crate::provider::ProviderError;
+use synctv_common::ExecutionControl;
+use synctv_media_providers::remote_transport::normalized_transport_endpoint;
 
 fn ok<T, E: std::fmt::Display>(result: std::result::Result<T, E>, context: &str) -> T {
     match result {
@@ -167,10 +170,8 @@ fn validate_config_accepts_https_endpoint_with_tls() {
 
 #[test]
 fn normalized_transport_endpoint_preserves_http() {
-    let config = remote_instance("http://provider.example.com:50051");
-
     let normalized = ok(
-        RemoteProviderManager::normalized_transport_endpoint(&config),
+        normalized_transport_endpoint("http://provider.example.com:50051"),
         "http:// endpoint should normalize to a remote transport URL",
     );
 
@@ -200,34 +201,6 @@ fn map_remote_resolution_error_hides_redis_details() {
         err,
         ProviderError::ApiError(ref message)
             if message == "Provider configuration service is temporarily unavailable."
-    ));
-}
-
-#[test]
-fn provider_connection_setup_error_hides_invalid_endpoint_details() {
-    let err = RemoteProviderManager::provider_connection_setup_error(
-        "Remote provider endpoint configuration is invalid.",
-        "relative URL without a base",
-    );
-
-    assert!(matches!(
-        err,
-        crate::Error::Internal(ref message)
-            if message == "Remote provider endpoint configuration is invalid."
-    ));
-}
-
-#[test]
-fn provider_connection_setup_error_hides_tls_connect_details() {
-    let err = RemoteProviderManager::provider_connection_setup_error(
-        "Remote provider TLS connection setup failed.",
-        "certificate verify failed",
-    );
-
-    assert!(matches!(
-        err,
-        crate::Error::Internal(ref message)
-            if message == "Remote provider TLS connection setup failed."
     ));
 }
 

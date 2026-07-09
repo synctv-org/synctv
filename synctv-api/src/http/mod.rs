@@ -2,8 +2,11 @@
 //
 // This module is a transport adapter. Business behavior belongs in
 // synctv-api/src/impls and synctv-core so HTTP and gRPC share one execution
-// path. File downloads still look like ordinary binary HTTP responses; the
-// body is backed by FileObjectDownload streams from core storage services.
+// path. JSON request bodies use protobuf messages; REST handlers compose
+// path/query fields into those protobuf requests before calling impls. Bare
+// binary bodies, file uploads, and playback streams own raw bytes/streams.
+// File downloads still look like ordinary binary HTTP responses; the body is
+// backed by FileObjectDownload streams from core storage services.
 
 pub(crate) mod admin;
 pub(crate) mod admin_execute;
@@ -29,8 +32,6 @@ pub(crate) mod providers;
 
 use crate::api_runtime::SharedApiRuntime;
 use crate::proxy_signature::ProxySigningKey;
-use crate::realtime_fanout::RealtimeFanoutService;
-use crate::runtime::RealtimeEventService;
 use axum::{
     body::Body,
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
@@ -42,15 +43,14 @@ use axum::{
 use futures::StreamExt;
 use std::sync::{Arc, LazyLock};
 use synctv_core::provider::PlaybackTransportServices;
-use synctv_core::provider::ProviderSet;
-use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{
     AlistPlaybackProviderService, BilibiliPlaybackProviderService,
     DirectUrlPlaybackProviderService, EmbyPlaybackProviderService,
-    LiveProxyPlaybackProviderService, RemoteProviderManager, RoomService,
-    RtmpPlaybackProviderService, UserService,
+    LiveProxyPlaybackProviderService, RoomService, RtmpPlaybackProviderService, UserService,
 };
 use synctv_livestream::LiveStreamingInfrastructure;
+use synctv_realtime::fanout::RealtimeEventService;
+use synctv_realtime::fanout::RealtimeFanoutService;
 use synctv_realtime::sync::ConnectionRuntime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -257,27 +257,24 @@ pub(crate) fn file_object_download_response(
 static X_FORWARDED_PROTO: LazyLock<HeaderName> =
     LazyLock::new(|| HeaderName::from_static("x-forwarded-proto"));
 
-/// Configuration for creating the HTTP router
+/// Options for creating the HTTP router
 #[derive(Clone)]
-pub struct RouterConfig {
-    pub config: Arc<synctv_core::Config>,
+pub struct RouterOptions {
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub user_service: Arc<UserService>,
     /// Eventually consistent PostgreSQL pool for read-only API views.
     pub read_pool: Option<sqlx::PgPool>,
     pub user_cache: Arc<synctv_core::cache::UserCache>,
     pub room_service: Arc<RoomService>,
     pub content_filter: synctv_core::service::ContentFilter,
-    pub provider_instance_manager: Arc<RemoteProviderManager>,
-    pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
-    pub providers: ProviderSet,
     pub event_service: Arc<dyn RealtimeEventService>,
     pub connection_manager: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
     pub jwt_service: synctv_core::service::JwtService,
     pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub request_executor: Arc<crate::impls::RequestExecutor>,
     pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
@@ -345,8 +342,8 @@ pub struct RouterConfig {
 
 #[derive(Clone)]
 pub struct AppState {
-    /// Common service configuration (shared cheaply via `Arc`).
-    pub router_config: Arc<RouterConfig>,
+    /// Common service construction options (shared cheaply via `Arc`).
+    pub router_options: Arc<RouterOptions>,
     /// Shared transport-agnostic runtime reused across HTTP, gRPC, and management.
     pub shared_api_runtime: Arc<SharedApiRuntime>,
     pub metrics_access_controller: Arc<crate::metrics_auth::MetricsAccessController>,
@@ -360,9 +357,9 @@ pub struct ProxyCacheLifecycleRuntime {
 }
 
 impl std::ops::Deref for AppState {
-    type Target = RouterConfig;
-    fn deref(&self) -> &RouterConfig {
-        &self.router_config
+    type Target = RouterOptions;
+    fn deref(&self) -> &RouterOptions {
+        &self.router_options
     }
 }
 
@@ -423,16 +420,16 @@ impl AppState {
     }
 }
 
-/// Create the HTTP router from configuration struct
-pub fn create_router_from_config(config: RouterConfig) -> anyhow::Result<axum::Router> {
-    let state = create_app_state_from_config(config)?;
+/// Create the HTTP router from construction options.
+pub fn create_router_from_options(options: RouterOptions) -> anyhow::Result<axum::Router> {
+    let state = create_app_state_from_options(options)?;
     let router = create_router_from_shared_state(&state)?;
     Ok(router)
 }
 
 /// Create shared `AppState` once so multiple transports can reuse the same impl instances.
-pub fn create_app_state_from_config(config: RouterConfig) -> anyhow::Result<AppState> {
-    build_app_state(config)
+pub fn create_app_state_from_options(options: RouterOptions) -> anyhow::Result<AppState> {
+    build_app_state(options)
 }
 
 /// Create the HTTP router from an already constructed shared `AppState`.
@@ -442,21 +439,21 @@ pub fn create_router_from_shared_state(state: &AppState) -> anyhow::Result<axum:
     apply_global_layers(router, &state)
 }
 
-/// Create the HTTP router and the shared application state from configuration.
-pub fn create_router_with_state_from_config(
-    config: RouterConfig,
+/// Create the HTTP router and the shared application state from construction options.
+pub fn create_router_with_state_from_options(
+    options: RouterOptions,
 ) -> anyhow::Result<(axum::Router, AppState)> {
-    let state = create_app_state_from_config(config)?;
+    let state = create_app_state_from_options(options)?;
     let router = create_router_from_shared_state(&state)?;
     Ok((router, state))
 }
 
-/// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
-fn build_app_state(config: RouterConfig) -> anyhow::Result<AppState> {
-    let shared_api_runtime = Arc::new(build_shared_api_runtime(&config)?);
+/// Build `AppState` from `RouterOptions`, creating the shared API implementation layers.
+fn build_app_state(options: RouterOptions) -> anyhow::Result<AppState> {
+    let shared_api_runtime = Arc::new(build_shared_api_runtime(&options)?);
 
     Ok(AppState {
-        router_config: Arc::new(config),
+        router_options: Arc::new(options),
         shared_api_runtime: shared_api_runtime.clone(),
         metrics_access_controller: shared_api_runtime.metrics_access_controller.clone(),
         #[cfg(test)]
@@ -464,60 +461,60 @@ fn build_app_state(config: RouterConfig) -> anyhow::Result<AppState> {
     })
 }
 
-pub(crate) fn build_shared_api_runtime(config: &RouterConfig) -> anyhow::Result<SharedApiRuntime> {
-    let redis_runtime = config.redis_runtime.clone();
-    let proxy_signing_key = config.shared_proxy_signing_key.clone();
-    let provider_stores = config.shared_provider_stores.clone();
-    let credential_repo = config.user_provider_credential_repository.clone();
-    let provider_access_service = config.provider_access_service.clone();
-    let security_pipeline = config.security_pipeline.clone();
-    let jwt_validator = config.jwt_validator.clone();
-    let public_id_codec = config.public_id_codec.clone();
-    let request_executor = config.request_executor.clone();
+pub(crate) fn build_shared_api_runtime(
+    options: &RouterOptions,
+) -> anyhow::Result<SharedApiRuntime> {
+    let redis_runtime = options.redis_runtime.clone();
+    let proxy_signing_key = options.shared_proxy_signing_key.clone();
+    let provider_stores = options.shared_provider_stores.clone();
+    let provider_access_service = options.provider_access_service.clone();
+    let security_pipeline = options.security_pipeline.clone();
+    let jwt_validator = options.jwt_validator.clone();
+    let public_id_codec = options.public_id_codec.clone();
+    let request_executor = options.request_executor.clone();
 
-    // Create shared RateLimitConfig from the config file.
-    let rate_limit_config = Arc::new(config.config.request_rate_limits.clone());
+    // Create shared RateLimitConfig from the runtime settings.
+    let rate_limit_config = Arc::new(options.runtime_settings.request_rate_limits.clone());
 
     // Create shared messaging rate limit config for WebSocket chat messages.
-    let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
+    let messaging_rate_limit_config = Arc::new(options.messaging_rate_limit_config.clone());
 
     Ok(SharedApiRuntime {
         redis_runtime,
         rate_limit_config,
         messaging_rate_limit_config,
-        content_filter: Arc::new(config.content_filter.clone()),
-        heartbeat_schedule: config.heartbeat_schedule,
+        content_filter: Arc::new(options.content_filter.clone()),
+        heartbeat_schedule: options.heartbeat_schedule,
         jwt_validator,
         security_pipeline,
         public_id_codec,
         request_executor,
-        metrics_access_controller: config.metrics_access_controller.clone(),
-        client_api: config.client_api.clone(),
-        admin_api: config.admin_api.clone(),
-        email_api: config.email_api.clone(),
-        notification_api: config.notification_api.clone(),
-        oauth2_api: config.oauth2_api.clone(),
-        provider_common_api: config.provider_common_api.clone(),
-        bilibili_api: config.bilibili_api.clone(),
-        alist_api: config.alist_api.clone(),
-        emby_api: config.emby_api.clone(),
-        user_provider_credential_repository: credential_repo,
+        metrics_access_controller: options.metrics_access_controller.clone(),
+        client_api: options.client_api.clone(),
+        admin_api: options.admin_api.clone(),
+        email_api: options.email_api.clone(),
+        notification_api: options.notification_api.clone(),
+        oauth2_api: options.oauth2_api.clone(),
+        provider_common_api: options.provider_common_api.clone(),
+        bilibili_api: options.bilibili_api.clone(),
+        alist_api: options.alist_api.clone(),
+        emby_api: options.emby_api.clone(),
         provider_access_service,
         provider_stores,
-        playback_transport_services: config.playback_transport_services.clone(),
-        alist_playback_provider_service: config.alist_playback_provider_service.clone(),
-        bilibili_playback_provider_service: config.bilibili_playback_provider_service.clone(),
-        direct_url_playback_provider_service: config.direct_url_playback_provider_service.clone(),
-        emby_playback_provider_service: config.emby_playback_provider_service.clone(),
-        rtmp_playback_provider_service: config.rtmp_playback_provider_service.clone(),
-        live_proxy_playback_provider_service: config.live_proxy_playback_provider_service.clone(),
+        playback_transport_services: options.playback_transport_services.clone(),
+        alist_playback_provider_service: options.alist_playback_provider_service.clone(),
+        bilibili_playback_provider_service: options.bilibili_playback_provider_service.clone(),
+        direct_url_playback_provider_service: options.direct_url_playback_provider_service.clone(),
+        emby_playback_provider_service: options.emby_playback_provider_service.clone(),
+        rtmp_playback_provider_service: options.rtmp_playback_provider_service.clone(),
+        live_proxy_playback_provider_service: options.live_proxy_playback_provider_service.clone(),
         proxy_signing_key,
-        webrtc_status: config.webrtc_status.clone(),
-        server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_config(
-            config,
+        webrtc_status: options.webrtc_status.clone(),
+        server_state_runtime: Arc::new(crate::status::server_state_runtime_from_router_options(
+            options,
         )),
         slice_cache_management_runtime: Arc::new(
-            crate::status::slice_cache_management_runtime_from_router_config(config),
+            crate::status::slice_cache_management_runtime_from_router_options(options),
         ),
     })
 }
@@ -1385,9 +1382,9 @@ fn register_provider_management_routes() -> Router<AppState> {
         )
 }
 
-/// Build CORS layer based on configuration.
-fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
-    if config.server.cors_allowed_origins.is_empty() {
+/// Build CORS layer from API runtime settings.
+fn build_cors_layer(runtime_settings: &crate::ApiRuntimeSettings) -> anyhow::Result<CorsLayer> {
+    if runtime_settings.server.cors_allowed_origins.is_empty() {
         tracing::warn!(
             "CORS policy: DENY ALL cross-origin requests (no origins configured). \
              Web frontends on different origins will fail to connect. \
@@ -1396,7 +1393,7 @@ fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
         );
         Ok(CorsLayer::new())
     } else {
-        let origins: Vec<HeaderValue> = config
+        let origins: Vec<HeaderValue> = runtime_settings
             .server
             .cors_allowed_origins
             .iter()
@@ -1446,7 +1443,7 @@ fn build_cors_layer(config: &synctv_core::Config) -> anyhow::Result<CorsLayer> {
 }
 
 fn parse_configured_cors_origin(origin: &str) -> anyhow::Result<HeaderValue> {
-    synctv_core::config::validate_cors_origin(origin)
+    crate::validate_cors_origin(origin)
         .map_err(|error| anyhow::anyhow!("invalid CORS origin configured: {error}"))?;
 
     HeaderValue::from_str(origin)
@@ -1454,7 +1451,7 @@ fn parse_configured_cors_origin(origin: &str) -> anyhow::Result<HeaderValue> {
 }
 
 fn forwarded_proto_is_https(
-    server: &synctv_core::config::ServerConfig,
+    server: &crate::ApiServerSettings,
     headers: &HeaderMap,
     remote_addr: Option<std::net::IpAddr>,
 ) -> AppResult<bool> {
@@ -1477,7 +1474,7 @@ fn forwarded_proto_is_https(
 fn apply_shared_http_layers(
     router: Router<AppState>,
     cors: CorsLayer,
-    server_config: synctv_core::config::ServerConfig,
+    server_config: crate::ApiServerSettings,
     hsts_value: String,
 ) -> Router<AppState> {
     router
@@ -1524,8 +1521,8 @@ fn apply_shared_http_layers(
 }
 
 fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Result<axum::Router> {
-    let cors = build_cors_layer(&state.config)?;
-    let server_config = state.config.server.clone();
+    let cors = build_cors_layer(&state.runtime_settings)?;
+    let server_config = state.runtime_settings.server.clone();
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
     Ok(
         apply_shared_http_layers(router, cors, server_config, hsts_value)

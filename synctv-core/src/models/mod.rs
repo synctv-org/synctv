@@ -175,6 +175,7 @@ pub use file_storage::{
 pub use id::{
     generate_id, BanRecordId, ContentReportId, EmailRegistrationTokenId, MediaId, PlaylistId,
     ReviewRequestId, RoomCategoryId, RoomId, RoomLabelId, TypedId, UserId,
+    LOCAL_MANAGEMENT_ACTOR_USER_ID,
 };
 pub use media::{
     provider_type_code_from_name, provider_type_codes_from_names, provider_type_name_from_code,

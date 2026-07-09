@@ -2,6 +2,13 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RedisDeploymentMode {
+    #[default]
+    Standalone,
+    Sentinel,
+}
+
 #[async_trait]
 pub trait RedisConnectionRuntime: Send + Sync {
     async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager>;
@@ -109,37 +116,37 @@ impl RedisConnectionRuntime for SharedRedisConnectionRuntime {
 #[derive(Clone)]
 pub struct OnDemandRedisRuntime {
     client: redis::Client,
-    manager_config: redis::aio::ConnectionManagerConfig,
+    manager_options: redis::aio::ConnectionManagerConfig,
     operation_timeout: Duration,
 }
 
 impl OnDemandRedisRuntime {
     #[must_use]
     pub fn new(client: redis::Client) -> Self {
-        Self::new_with_config(client, redis::aio::ConnectionManagerConfig::new())
+        Self::new_with_connection_options(client, redis::aio::ConnectionManagerConfig::new())
     }
 
     #[must_use]
-    pub fn new_with_config(
+    pub fn new_with_connection_options(
         client: redis::Client,
-        manager_config: redis::aio::ConnectionManagerConfig,
+        manager_options: redis::aio::ConnectionManagerConfig,
     ) -> Self {
-        Self::new_with_config_and_operation_timeout(
+        Self::new_with_connection_options_and_operation_timeout(
             client,
-            manager_config,
+            manager_options,
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
         )
     }
 
     #[must_use]
-    pub fn new_with_config_and_operation_timeout(
+    pub fn new_with_connection_options_and_operation_timeout(
         client: redis::Client,
-        manager_config: redis::aio::ConnectionManagerConfig,
+        manager_options: redis::aio::ConnectionManagerConfig,
         operation_timeout: Duration,
     ) -> Self {
         Self {
             client,
-            manager_config,
+            manager_options,
             operation_timeout,
         }
     }
@@ -150,7 +157,7 @@ impl RedisConnectionRuntime for OnDemandRedisRuntime {
     async fn snapshot(&self) -> redis::RedisResult<redis::aio::ConnectionManager> {
         redis::aio::ConnectionManager::new_with_config(
             self.client.clone(),
-            self.manager_config.clone(),
+            self.manager_options.clone(),
         )
         .await
     }
@@ -212,11 +219,11 @@ impl ManagedRedisRuntime {
 
     pub async fn from_client_with_config(
         client: redis::Client,
-        manager_config: redis::aio::ConnectionManagerConfig,
+        manager_options: redis::aio::ConnectionManagerConfig,
     ) -> redis::RedisResult<Self> {
         Self::from_client_with_config_and_operation_timeout(
             client,
-            manager_config,
+            manager_options,
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
         )
         .await
@@ -224,11 +231,11 @@ impl ManagedRedisRuntime {
 
     pub async fn from_client_with_config_and_operation_timeout(
         client: redis::Client,
-        manager_config: redis::aio::ConnectionManagerConfig,
+        manager_options: redis::aio::ConnectionManagerConfig,
         operation_timeout: Duration,
     ) -> redis::RedisResult<Self> {
         let conn =
-            redis::aio::ConnectionManager::new_with_config(client.clone(), manager_config).await?;
+            redis::aio::ConnectionManager::new_with_config(client.clone(), manager_options).await?;
         Ok(Self::new_with_operation_timeout(
             client,
             Arc::new(tokio::sync::RwLock::new(conn)),
@@ -322,36 +329,33 @@ pub fn coordination_runtime_from_client(
 }
 
 #[must_use]
-pub fn coordination_runtime_from_client_with_config(
+pub fn coordination_runtime_from_client_with_connection_options(
     client: redis::Client,
-    manager_config: redis::aio::ConnectionManagerConfig,
+    manager_options: redis::aio::ConnectionManagerConfig,
 ) -> Arc<dyn RedisCoordinationRuntime> {
-    Arc::new(OnDemandRedisRuntime::new_with_config(
+    Arc::new(OnDemandRedisRuntime::new_with_connection_options(
         client,
-        manager_config,
+        manager_options,
     ))
 }
 
 #[must_use]
-pub fn coordination_runtime_from_client_with_config_and_operation_timeout(
+pub fn coordination_runtime_from_client_with_connection_options_and_operation_timeout(
     client: redis::Client,
-    manager_config: redis::aio::ConnectionManagerConfig,
+    manager_options: redis::aio::ConnectionManagerConfig,
     operation_timeout: Duration,
 ) -> Arc<dyn RedisCoordinationRuntime> {
-    Arc::new(OnDemandRedisRuntime::new_with_config_and_operation_timeout(
-        client,
-        manager_config,
-        operation_timeout,
-    ))
+    Arc::new(
+        OnDemandRedisRuntime::new_with_connection_options_and_operation_timeout(
+            client,
+            manager_options,
+            operation_timeout,
+        ),
+    )
 }
 
 #[must_use]
-pub fn redis_operation_timeout_from_config(config: &crate::Config) -> Duration {
-    Duration::from_secs(config.redis.response_timeout_seconds)
-}
-
-#[must_use]
-pub fn redis_connection_manager_config(
+pub fn redis_connection_manager_options(
     connect_timeout: Duration,
     response_timeout: Duration,
     pipeline_buffer_size: usize,
@@ -365,9 +369,8 @@ pub fn redis_connection_manager_config(
 #[cfg(test)]
 mod tests {
     use super::{
-        redis_connection_manager_config, redis_operation_timeout_from_config,
-        redis_runtime_snapshot, shared_runtime, shared_runtime_from_conn, ManagedRedisRuntime,
-        RedisConnectionRuntime,
+        redis_connection_manager_options, redis_runtime_snapshot, shared_runtime,
+        shared_runtime_from_conn, ManagedRedisRuntime, RedisConnectionRuntime,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -393,32 +396,21 @@ mod tests {
     }
 
     #[test]
-    fn test_redis_connection_manager_config_sets_timeouts_and_pipeline_buffer() {
-        let manager_config =
-            redis_connection_manager_config(Duration::from_secs(3), Duration::from_secs(4), 256);
+    fn test_redis_connection_manager_options_sets_timeouts_and_pipeline_buffer() {
+        let manager_options =
+            redis_connection_manager_options(Duration::from_secs(3), Duration::from_secs(4), 256);
 
         assert_eq!(
-            manager_config.connection_timeout(),
+            manager_options.connection_timeout(),
             Some(Duration::from_secs(3))
         );
         assert_eq!(
-            manager_config.response_timeout(),
+            manager_options.response_timeout(),
             Some(Duration::from_secs(4))
         );
         assert!(
-            format!("{manager_config:?}").contains("pipeline_buffer_size: Some(256)"),
+            format!("{manager_options:?}").contains("pipeline_buffer_size: Some(256)"),
             "pipeline buffer size should be applied to ConnectionManagerConfig"
-        );
-    }
-
-    #[test]
-    fn test_redis_operation_timeout_comes_from_response_timeout_config() {
-        let mut config = crate::Config::default();
-        config.redis.response_timeout_seconds = 13;
-
-        assert_eq!(
-            redis_operation_timeout_from_config(&config),
-            Duration::from_secs(13)
         );
     }
 

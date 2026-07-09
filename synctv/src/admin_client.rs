@@ -2,10 +2,13 @@ use anyhow::{bail, Context, Result};
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
 use std::time::Duration;
-use synctv_core::bootstrap::{load_config_with_options, load_dotenv, LoadConfigOptions};
 use synctv_management::proto::management_service_client::ManagementServiceClient;
 use tonic::transport::Channel;
 use tonic::{metadata::MetadataValue, service::Interceptor, Request, Status};
+
+use crate::config_loader::{
+    load_config_with_options, load_dotenv, public_id_config_extensions, LoadConfigOptions,
+};
 
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -143,6 +146,7 @@ fn resolve_management_endpoint_from_config(
         load_dotenv,
         validate: false,
         verbose,
+        extensions: public_id_config_extensions(),
     })?;
     normalize_endpoint(&config.management_endpoint())
 }
@@ -215,6 +219,7 @@ fn resolve_management_auth_token(options: &AdminConnectionOptions) -> Result<Opt
         load_dotenv: options.load_dotenv,
         validate: false,
         verbose: options.verbose,
+        extensions: public_id_config_extensions(),
     })?;
     let token = config.management.auth_token.trim();
     if token.is_empty() {
@@ -327,7 +332,7 @@ mod tests {
     use std::pin::Pin;
 
     #[cfg(unix)]
-    use synctv_core::config::default_management_unix_socket_path;
+    use crate::app_config::default_management_unix_socket_path;
     use tempfile::tempdir;
 
     #[cfg(unix)]
@@ -435,7 +440,10 @@ mod tests {
 
     impl Drop for CurrentDirGuard {
         fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("current dir should be restored");
+            if std::env::set_current_dir(&self.previous).is_err() {
+                std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .expect("crate root should be available as current dir fallback");
+            }
         }
     }
 

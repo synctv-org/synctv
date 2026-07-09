@@ -3,6 +3,8 @@ use synctv_core::{
     service::RoomService,
 };
 
+pub(super) use synctv_core::service::RealtimeMembershipAccess;
+
 use super::{RealtimeJoinError, RealtimePrincipal};
 
 pub(crate) fn guest_policy_error_to_denial_reason(
@@ -12,12 +14,6 @@ pub(crate) fn guest_policy_error_to_denial_reason(
         synctv_core::Error::Authorization(reason) => Ok(Some(reason)),
         error => Err(error),
     }
-}
-
-#[derive(Debug)]
-pub(super) enum RealtimeMembershipAccess {
-    Allowed(RoomMember),
-    Denied(String),
 }
 
 pub(super) struct InitialRealtimeJoinState {
@@ -160,44 +156,9 @@ impl<'a> RealtimeMembershipProbe<'a> {
         room: &synctv_core::models::Room,
         user_id: &UserId,
     ) -> synctv_core::Result<RealtimeMembershipAccess> {
-        match self
-            .room_service
-            .check_membership_with_room(room, user_id)
+        self.room_service
+            .realtime_membership_access_with_room(room, user_id)
             .await
-        {
-            Ok(()) => match self
-                .room_service
-                .member_service()
-                .get_member(&room.id, user_id)
-                .await?
-            {
-                Some(member) => Ok(RealtimeMembershipAccess::Allowed(member)),
-                None => Ok(RealtimeMembershipAccess::Denied(
-                    synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
-                )),
-            },
-            Err(synctv_core::Error::Authorization(message))
-                if message == synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM =>
-            {
-                if self
-                    .room_service
-                    .member_service()
-                    .is_in_kick_cooldown(&room.id, user_id)
-                    .await?
-                {
-                    Ok(RealtimeMembershipAccess::Denied(
-                        synctv_core::repository::room_member::KICK_COOLDOWN_DENIED_MESSAGE
-                            .to_string(),
-                    ))
-                } else {
-                    Ok(RealtimeMembershipAccess::Denied(message))
-                }
-            }
-            Err(synctv_core::Error::Authorization(message)) => {
-                Ok(RealtimeMembershipAccess::Denied(message))
-            }
-            Err(error) => Err(error),
-        }
     }
 
     pub(super) async fn probe_realtime_membership_access(
@@ -217,10 +178,12 @@ impl<'a> RealtimeMembershipProbe<'a> {
     ) -> synctv_core::Result<Option<String>> {
         match self
             .probe_realtime_membership_access(room_id, user_id)
-            .await?
+            .await
         {
-            RealtimeMembershipAccess::Allowed(_) => Ok(None),
-            RealtimeMembershipAccess::Denied(reason) => Ok(Some(reason)),
+            Ok(RealtimeMembershipAccess::Allowed(_)) => Ok(None),
+            Ok(RealtimeMembershipAccess::Denied(reason))
+            | Err(synctv_core::Error::Authorization(reason)) => Ok(Some(reason)),
+            Err(error) => Err(error),
         }
     }
 }

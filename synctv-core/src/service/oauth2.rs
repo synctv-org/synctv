@@ -24,7 +24,7 @@ mod linking;
 mod mappings;
 mod providers;
 mod state_store;
-pub(crate) use state_store::state_store_from_shared_state_profile;
+pub use state_store::state_store_from_shared_state_profile;
 pub use state_store::{local_oauth_state_store, OAuthStateStore, RedisOAuthStateStore};
 
 /// Default TTL for `OAuth2` states (5 minutes)

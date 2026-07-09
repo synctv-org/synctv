@@ -17,13 +17,19 @@ use super::{
 #[derive(Clone)]
 pub struct EmbyPlaybackProviderGrpcService {
     state: Arc<PlaybackProviderGrpcState>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl EmbyPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
-        Self { state, config }
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
     }
 }
 
@@ -39,7 +45,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         &self,
         request: Request<GetEmbyMediaStreamRequest>,
     ) -> Result<Response<Self::GetMediaStreamStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -61,7 +67,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         &self,
         request: Request<GetEmbyHlsManifestRequest>,
     ) -> Result<Response<Self::GetHlsManifestStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -83,7 +89,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         &self,
         request: Request<GetEmbyHlsSegmentRequest>,
     ) -> Result<Response<Self::GetHlsSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 
@@ -105,7 +111,7 @@ impl EmbyPlaybackProviderService for EmbyPlaybackProviderGrpcService {
         &self,
         request: Request<GetEmbySubtitleRequest>,
     ) -> Result<Response<Self::GetSubtitleStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
 

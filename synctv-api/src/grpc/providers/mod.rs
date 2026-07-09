@@ -10,11 +10,11 @@ pub(crate) mod rtmp;
 
 pub(crate) fn provider_request_metadata<T>(
     request: &tonic::Request<T>,
-    config: &synctv_core::Config,
+    runtime_settings: &crate::ApiRuntimeSettings,
 ) -> Result<crate::impls::RequestMetadata, tonic::Status> {
     crate::grpc::request_metadata(
         request,
-        config,
+        runtime_settings,
         Some(crate::grpc::grpc_unary_request_timeout()),
     )
 }

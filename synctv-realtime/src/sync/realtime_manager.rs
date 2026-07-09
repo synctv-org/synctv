@@ -26,7 +26,6 @@ use super::transport::{
 use super::{RealtimeEvent, SharedRealtimeEvent};
 use crate::error::Result as RealtimeResult;
 use synctv_cluster::discovery::{ClusterNodeDirectory, HeartbeatResult};
-use synctv_core::config::ClusterChannelConfig;
 use synctv_core::models::id::{RoomId, UserId};
 
 #[cfg(not(test))]
@@ -128,18 +127,17 @@ impl std::fmt::Debug for RealtimeConfig {
 
 impl Default for RealtimeConfig {
     fn default() -> Self {
-        let cluster_config = ClusterChannelConfig::default();
         Self {
             distributed_transport_factory: None,
             message_runtime: Arc::new(RoomMessageHub::new()),
             distributed_enabled: false,
             node_id: format!("node_{}", synctv_common::snanoid!(8)),
             dedup_window: Duration::from_mins(15),
-            critical_channel_capacity: cluster_config.critical_channel_capacity,
-            publish_channel_capacity: cluster_config.publish_channel_capacity,
+            critical_channel_capacity: 10_000,
+            publish_channel_capacity: 100_000,
             key_prefix: "synctv:".to_string(),
-            catchup_window_secs: cluster_config.catchup_window_secs,
-            stream_max_length: cluster_config.stream_max_length,
+            catchup_window_secs: 300,
+            stream_max_length: 100_000,
             event_handler: None,
             parent_cancel_token: None,
         }

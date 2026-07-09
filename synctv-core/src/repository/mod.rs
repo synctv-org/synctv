@@ -14,7 +14,7 @@ pub(crate) mod playback_source_metadata;
 pub(crate) mod playlist;
 pub(crate) mod pools;
 pub(crate) mod provider_instance;
-pub(crate) mod query_builder;
+pub mod query_builder;
 pub mod realtime_outbox;
 pub(crate) mod review;
 pub(crate) mod room;
@@ -70,9 +70,9 @@ pub use room::RoomRepository;
 pub use room_member::RoomMemberRepository;
 pub use room_password::RoomPasswordRepository;
 pub use room_resource_event::{
-    NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventPayload,
-    RoomResourceEventRepository, RoomResourceEventScope, RoomResourceEventSummary,
-    RoomResourceEventSummaryDetails, RoomResourceKind,
+    NewRoomResourceEvent, RoomMemberResourceSummary, RoomResourceEventLog,
+    RoomResourceEventPayload, RoomResourceEventRepository, RoomResourceEventScope,
+    RoomResourceEventSummary, RoomResourceEventSummaryDetails, RoomResourceKind,
 };
 pub use room_settings::RoomSettingsRepository;
 pub use room_taxonomy::{RoomTaxonomyAssignment, RoomTaxonomyRepository};

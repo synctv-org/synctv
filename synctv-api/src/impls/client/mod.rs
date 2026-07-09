@@ -26,15 +26,13 @@ pub(crate) mod playlist;
 mod report;
 mod room;
 pub(crate) use room::{
-    chat_reaction_count, chat_reaction_summary_to_proto, parse_optional_room_category_id,
-    parse_proto_chat_attachments, parse_required_room_category_id, parse_room_label_ids,
+    build_search_chat_messages_query, parse_optional_room_category_id,
+    parse_proto_chat_attachments, parse_room_label_ids,
 };
 pub(crate) mod stream;
 mod user;
 mod webrtc;
-pub(crate) use playback::{
-    build_playback_state_update, build_start_playback_request, PlaybackStateUpdateCommand,
-};
+pub(crate) use playback::{build_playback_state_update, build_start_playback_request};
 pub(crate) use user::{
     token_auth_context_from_claims, user_notification_preferences_to_proto,
     user_preferences_update_from_proto,
@@ -65,8 +63,8 @@ pub(crate) use convert::{
 use crate::chat_event_dispatcher::{default_chat_event_dispatcher, ChatEventDispatcher};
 use crate::fanout::{default_room_settings_fanout_service, RoomSettingsFanoutService};
 use crate::impls::{
-    ApiError, EndpointRateLimitCategory, EndpointRateLimitScope, RequestContext, RequestExecutor,
-    RequestMetadata,
+    ApiError, ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope,
+    RequestExecutor, RequestMetadata,
 };
 use crate::media_fanout::{default_media_fanout_service, MediaFanoutService};
 use crate::membership_event_fanout::{
@@ -74,31 +72,32 @@ use crate::membership_event_fanout::{
 };
 use crate::playback_fanout::{default_playback_fanout_service, PlaybackFanoutService};
 use crate::playlist_fanout::{default_playlist_fanout_service, PlaylistFanoutService};
-use crate::realtime_fanout::RealtimeFanoutService;
 use crate::realtime_lifecycle::{default_realtime_lifecycle_service, RealtimeLifecycleService};
 use crate::room_cache_fanout::{default_room_cache_fanout_service, RoomCacheFanoutService};
 use crate::room_lifecycle_fanout::{
     default_room_lifecycle_fanout_service_with_realtime, RoomLifecycleFanoutService,
 };
-use crate::runtime::{LocalNoopRealtimeEventService, RealtimeEventService};
+use synctv_realtime::fanout::{
+    LocalNoopRealtimeEventService, RealtimeEventService, RealtimeFanoutService,
+};
 use synctv_realtime::sync::ConnectionRuntime;
 
-/// Configuration for constructing a [`ClientApiImpl`].
+/// Options for constructing a [`ClientApiImpl`].
 ///
 /// Groups all dependencies into a single struct to avoid `too_many_arguments`.
-pub struct ClientApiConfig {
+pub struct ClientApiOptions {
     pub user_service: Arc<UserService>,
     pub read_pool: Option<sqlx::PgPool>,
     pub room_service: Arc<RoomService>,
     pub chat_service: Option<Arc<ChatService>>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
     pub runtime_settings_store: Option<Arc<synctv_core::service::RuntimeSettingsStore>>,
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub email_api: Option<Arc<crate::impls::EmailApiImpl>>,
     pub passkey_service: Option<Arc<synctv_core::service::PasskeyService>>,
 }
@@ -241,7 +240,7 @@ pub struct ClientApiImpl {
     pub content_report_service: Arc<ContentReportService>,
     pub connection_service: Arc<dyn ConnectionRuntime>,
     pub presence_service: Arc<synctv_core::service::OnlinePresenceService>,
-    pub config: Arc<synctv_core::Config>,
+    pub runtime_settings: Arc<crate::ApiRuntimeSettings>,
     pub publish_key_service: Option<Arc<dyn synctv_core::service::StreamingPublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::LiveStreamingInfrastructure>>,
@@ -274,7 +273,7 @@ pub struct ClientApiImpl {
     /// JWT validator for token validation (e.g. live streaming tokens)
     pub jwt_validator: Arc<synctv_core::service::JwtValidator>,
     /// Shared sqids codec for API-facing resource identifiers.
-    pub public_id_codec: Arc<crate::public_id::PublicIdCodec>,
+    pub public_id_codec: Arc<synctv_adapter::PublicIdCodec>,
     pub playback_duration_probe: Option<Arc<synctv_core::service::PlaybackDurationProbeService>>,
     pub request_executor: Arc<RequestExecutor>,
     /// Shared email API for email-token flows that are exposed by multiple transports.
@@ -293,8 +292,8 @@ impl ClientApiImpl {
         let Some(file_reference_id) = file_reference_id else {
             return Ok(None);
         };
-        synctv_core::repository::FileStorageRepository::new(self.user_service.pool().clone())
-            .get_reference_by_id(file_reference_id)
+        self.user_service
+            .get_stored_file_reference(file_reference_id)
             .await
             .map_err(ApiError::from)
     }
@@ -864,17 +863,17 @@ impl ClientApiImpl {
     }
 
     #[must_use]
-    pub fn new_with_runtime(config: ClientApiConfig, runtime: ClientApiRuntime) -> Self {
-        let read_pool = config
+    pub fn new_with_runtime(options: ClientApiOptions, runtime: ClientApiRuntime) -> Self {
+        let read_pool = options
             .read_pool
             .clone()
-            .unwrap_or_else(|| config.user_service.eventually_consistent_pool().clone());
+            .unwrap_or_else(|| options.user_service.eventually_consistent_pool().clone());
         let review_service = Arc::new(ReviewService::new_with_read_pool(
-            config.user_service.pool().clone(),
+            options.user_service.pool().clone(),
             read_pool.clone(),
         ));
         let content_report_service = Arc::new(ContentReportService::new_with_read_pool(
-            config.user_service.pool().clone(),
+            options.user_service.pool().clone(),
             read_pool,
         ));
         let realtime_fanout = runtime.realtime_fanout;
@@ -889,8 +888,8 @@ impl ClientApiImpl {
         let playlist_fanout = default_playlist_fanout_service(realtime_fanout.clone());
         let room_cache_fanout = default_room_cache_fanout_service(realtime_fanout.clone());
         let realtime_lifecycle = default_realtime_lifecycle_service(
-            config.connection_service.clone(),
-            config.live_streaming_infrastructure.clone(),
+            options.connection_service.clone(),
+            options.live_streaming_infrastructure.clone(),
             realtime_fanout.clone(),
         );
         let room_lifecycle_fanout = default_room_lifecycle_fanout_service_with_realtime(
@@ -900,18 +899,18 @@ impl ClientApiImpl {
         let chat_event_dispatcher = runtime.chat_event_dispatcher;
         Self {
             clock: runtime.clock,
-            user_service: config.user_service,
-            room_service: config.room_service,
-            chat_service: config.chat_service,
+            user_service: options.user_service,
+            room_service: options.room_service,
+            chat_service: options.chat_service,
             content_report_service,
             review_service,
-            connection_service: config.connection_service,
+            connection_service: options.connection_service,
             presence_service: runtime.presence_service,
-            config: config.config,
-            publish_key_service: config.publish_key_service,
-            jwt_service: config.jwt_service,
-            live_streaming_infrastructure: config.live_streaming_infrastructure,
-            runtime_settings_store: config.runtime_settings_store,
+            runtime_settings: options.runtime_settings,
+            publish_key_service: options.publish_key_service,
+            jwt_service: options.jwt_service,
+            live_streaming_infrastructure: options.live_streaming_infrastructure,
+            runtime_settings_store: options.runtime_settings_store,
             realtime_fanout,
             room_settings_fanout,
             membership_event_fanout,
@@ -928,13 +927,13 @@ impl ClientApiImpl {
             webrtc_status: runtime.webrtc_status,
             provider_access_service: runtime.provider_access_service,
             signing_key: runtime.signing_key,
-            provider_stores: config.provider_stores,
+            provider_stores: options.provider_stores,
             jwt_validator: runtime.jwt_validator,
-            public_id_codec: config.public_id_codec,
+            public_id_codec: options.public_id_codec,
             playback_duration_probe: runtime.playback_duration_probe,
             request_executor: runtime.request_executor,
-            email_api: config.email_api,
-            passkey_service: config.passkey_service,
+            email_api: options.email_api,
+            passkey_service: options.passkey_service,
             ws_ticket_service: runtime.ws_ticket_service,
         }
     }
@@ -1008,7 +1007,7 @@ impl ClientApiImpl {
     where
         T: Send + 'a,
         E: Into<ApiError> + Send + 'a,
-        F: FnOnce(RequestContext) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         self.request_executor().execute_public_with_context(
@@ -1089,7 +1088,7 @@ impl ClientApiImpl {
     where
         T: Send + 'a,
         E: Into<ApiError> + Send + 'a,
-        F: FnOnce(RequestContext, Option<synctv_core::service::AuthenticatedToken>) -> Fut
+        F: FnOnce(ApiRequestContext, Option<synctv_core::service::AuthenticatedToken>) -> Fut
             + Send
             + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
@@ -1180,7 +1179,7 @@ impl ClientApiImpl {
     where
         T: Send + 'a,
         E: Into<ApiError> + Send + 'a,
-        F: FnOnce(RequestContext, synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
+        F: FnOnce(ApiRequestContext, synctv_core::service::AuthenticatedToken) -> Fut + Send + 'a,
         Fut: std::future::Future<Output = Result<T, E>> + Send + 'a,
     {
         self.request_executor().execute_user_with_context(

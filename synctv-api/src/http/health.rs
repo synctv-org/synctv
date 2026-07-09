@@ -135,7 +135,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     // In distributed mode, memory-backed ticket storage causes cross-replica auth failures.
     let ws_ticket_status = {
         let svc = &state.ws_ticket_service;
-        let is_cluster_mode = state.config.cluster_runtime_enabled();
+        let is_cluster_mode = state.runtime_settings.cluster_runtime_enabled();
         let health = check_ws_ticket_health(svc.as_ref());
         if ws_ticket_backend_is_safe_for_mode(svc.as_ref(), is_cluster_mode) {
             Some(health)
@@ -239,7 +239,7 @@ pub(crate) async fn check_database_health(state: &AppState) -> Result<(), String
 /// Returns `Some(Ok(()))` if the realtime runtime is healthy.
 /// Returns `Some(Err(...))` if the realtime runtime reports issues.
 fn check_cluster_health(state: &AppState) -> Option<Result<(), String>> {
-    if !state.config.cluster_runtime_enabled() {
+    if !state.runtime_settings.cluster_runtime_enabled() {
         return None;
     }
     let event_service = state.event_service.as_ref();
@@ -572,11 +572,11 @@ pub async fn prometheus_metrics(
     #[cfg(feature = "k8s")]
     let auth_result = state
         .metrics_access_controller
-        .authorize(&state.config.metrics, &headers, "/metrics", "GET")
+        .authorize(&state.runtime_settings.metrics, &headers, "/metrics", "GET")
         .await;
     #[cfg(not(feature = "k8s"))]
     let auth_result = state.metrics_access_controller.authorize(
-        &state.config.metrics,
+        &state.runtime_settings.metrics,
         &headers,
         "/metrics",
         "GET",
@@ -823,10 +823,10 @@ mod tests {
 
     fn metrics_test_state(metrics_bearer_token: &str) -> crate::http::AppState {
         let mut state = test_app_state();
-        Arc::make_mut(&mut state.router_config).config = Arc::new({
-            let mut config = (*state.config).clone();
+        Arc::make_mut(&mut state.router_options).runtime_settings = Arc::new({
+            let mut config = (*state.runtime_settings).clone();
             config.metrics.enabled = true;
-            config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::BearerToken;
+            config.metrics.auth.mode = crate::api_runtime::MetricsAuthMode::BearerToken;
             config.metrics.auth.bearer_token = metrics_bearer_token.to_string();
             config
         });
@@ -857,10 +857,10 @@ mod tests {
     #[tokio::test]
     async fn test_prometheus_metrics_accepts_matching_basic_auth() {
         let mut state = test_app_state();
-        Arc::make_mut(&mut state.router_config).config = Arc::new({
-            let mut config = (*state.config).clone();
+        Arc::make_mut(&mut state.router_options).runtime_settings = Arc::new({
+            let mut config = (*state.runtime_settings).clone();
             config.metrics.enabled = true;
-            config.metrics.auth.mode = synctv_core::config::MetricsAuthMode::Basic;
+            config.metrics.auth.mode = crate::api_runtime::MetricsAuthMode::Basic;
             config.metrics.auth.basic_username = "metrics".to_string();
             config.metrics.auth.basic_password = "secret".to_string();
             config
@@ -909,15 +909,15 @@ mod tests {
             Arc::new(SharedTestTicketStore),
             None,
         );
-        let mut standalone = synctv_core::Config::default();
-        standalone.cluster.enabled = false;
+        let mut standalone = crate::ApiRuntimeSettings::default();
+        standalone.cluster_enabled = false;
         assert!(
             !standalone.cluster_runtime_enabled(),
             "standalone config should not be treated as distributed mode"
         );
 
-        let mut clustered = synctv_core::Config::default();
-        clustered.cluster.enabled = true;
+        let mut clustered = crate::ApiRuntimeSettings::default();
+        clustered.cluster_enabled = true;
         clustered.cluster.secret = "shared-secret".to_string();
         assert!(
             clustered.cluster_runtime_enabled(),

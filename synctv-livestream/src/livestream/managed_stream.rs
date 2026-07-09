@@ -49,7 +49,7 @@ impl StreamLifecycle {
     pub(crate) fn decrement_subscriber_count(&self) {
         let result = self
             .subscriber_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |v| {
                 if v > 0 {
                     Some(v - 1)
                 } else {

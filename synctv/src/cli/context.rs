@@ -1,17 +1,17 @@
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{anyhow, Result};
-use synctv_core::bootstrap::load_config_with_options;
 
 use super::args::{GlobalConfigArgs, RemoteAccessArgs};
 use super::execute::resolve_remote_endpoint;
 use crate::admin_client::AdminConnectionOptions;
+use crate::config_loader::{load_config_with_options, load_public_id_config_with_options};
 
 #[derive(Clone)]
 pub(super) struct CliConfigContext {
     global: GlobalConfigArgs,
-    unvalidated: Arc<OnceLock<std::result::Result<synctv_core::Config, String>>>,
-    validated: Arc<OnceLock<std::result::Result<synctv_core::Config, String>>>,
+    unvalidated: Arc<OnceLock<std::result::Result<crate::app_config::AppConfig, String>>>,
+    validated: Arc<OnceLock<std::result::Result<crate::app_config::AppConfig, String>>>,
 }
 
 impl CliConfigContext {
@@ -23,19 +23,23 @@ impl CliConfigContext {
         }
     }
 
-    pub(super) fn config(&self) -> Result<synctv_core::Config> {
+    pub(super) fn config(&self) -> Result<crate::app_config::AppConfig> {
         self.load(false)
     }
 
-    pub(super) fn validated_config(&self) -> Result<synctv_core::Config> {
+    pub(super) fn validated_config(&self) -> Result<crate::app_config::AppConfig> {
         self.load(true)
     }
 
-    pub(super) fn strict_validated_config(&self) -> Result<synctv_core::Config> {
+    pub(super) fn strict_validated_config(&self) -> Result<crate::app_config::AppConfig> {
         load_config_with_options(&self.global.load_options(true))
     }
 
-    fn load(&self, validate: bool) -> Result<synctv_core::Config> {
+    pub(super) fn public_id_config(&self) -> Result<synctv_adapter::PublicIdConfig> {
+        load_public_id_config_with_options(&self.global.load_options(false))
+    }
+
+    fn load(&self, validate: bool) -> Result<crate::app_config::AppConfig> {
         let cache = if validate {
             &self.validated
         } else {

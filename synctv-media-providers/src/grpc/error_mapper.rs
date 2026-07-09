@@ -8,7 +8,7 @@
 //! Since `AlistError` and `EmbyError` are type aliases for
 //! `ProviderClientError`, a single mapping function handles all providers.
 
-use tonic::Status;
+use tonic::{Code, Status};
 
 use crate::error::ProviderClientError;
 
@@ -77,6 +77,54 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             -412 | 429 => Status::resource_exhausted(format!("{context}: rate limited")),
             _ => Status::internal(format!("{context}: API error (code {code})")),
         },
+    }
+}
+
+const fn remote_status_to_http_status(code: Code) -> Option<reqwest::StatusCode> {
+    match code {
+        Code::NotFound => Some(reqwest::StatusCode::NOT_FOUND),
+        Code::PermissionDenied => Some(reqwest::StatusCode::FORBIDDEN),
+        Code::ResourceExhausted => Some(reqwest::StatusCode::TOO_MANY_REQUESTS),
+        Code::FailedPrecondition | Code::AlreadyExists => Some(reqwest::StatusCode::CONFLICT),
+        _ => None,
+    }
+}
+
+/// Map a provider gRPC client status back into the shared provider-client
+/// error model used by in-process provider adapters.
+#[must_use]
+pub fn map_remote_status(context: &str, status: &Status) -> ProviderClientError {
+    let message = status.message().to_string();
+    match status.code() {
+        Code::Unauthenticated => ProviderClientError::Auth(message),
+        Code::InvalidArgument => ProviderClientError::InvalidConfig(message),
+        Code::Unimplemented => ProviderClientError::Api {
+            code: 501,
+            message: format!("remote transport {context}: {message}"),
+        },
+        Code::DeadlineExceeded | Code::Unavailable | Code::Cancelled => {
+            ProviderClientError::Network(format!(
+                "remote transport {} for {}: {}",
+                status.code(),
+                context,
+                message
+            ))
+        }
+        code => {
+            if let Some(http_status) = remote_status_to_http_status(code) {
+                ProviderClientError::Http {
+                    status: http_status,
+                    url: format!("http://remote/{context}"),
+                    retry_after_secs: None,
+                    body: message,
+                }
+            } else {
+                ProviderClientError::Api {
+                    code: i64::from(code as i32),
+                    message,
+                }
+            }
+        }
     }
 }
 
@@ -254,5 +302,48 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("120")
         );
+    }
+
+    #[test]
+    fn remote_status_unauthenticated_maps_to_auth() {
+        let error = map_remote_status("login", &Status::unauthenticated("Invalid provider secret"));
+        assert!(matches!(
+            error,
+            ProviderClientError::Auth(message) if message == "Invalid provider secret"
+        ));
+    }
+
+    #[test]
+    fn remote_status_invalid_argument_maps_to_invalid_config() {
+        let error = map_remote_status(
+            "fs_get",
+            &Status::invalid_argument("missing host parameter"),
+        );
+        assert!(matches!(
+            error,
+            ProviderClientError::InvalidConfig(message) if message == "missing host parameter"
+        ));
+    }
+
+    #[test]
+    fn remote_status_not_found_maps_to_http_404() {
+        let error = map_remote_status("me", &Status::not_found("user not found"));
+        assert!(matches!(
+            error,
+            ProviderClientError::Http { status, ref url, ref body, retry_after_secs: None }
+                if status == reqwest::StatusCode::NOT_FOUND
+                    && url == "http://remote/me"
+                    && body == "user not found"
+        ));
+    }
+
+    #[test]
+    fn remote_status_unimplemented_maps_to_api_501() {
+        let error = map_remote_status("future_method", &Status::unimplemented("rpc unavailable"));
+        assert!(matches!(
+            error,
+            ProviderClientError::Api { code: 501, message }
+                if message == "remote transport future_method: rpc unavailable"
+        ));
     }
 }

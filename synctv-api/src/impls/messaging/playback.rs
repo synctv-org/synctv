@@ -112,7 +112,7 @@ impl StreamMessageHandler {
         if self.principal.is_guest() {
             return Err("Guests cannot control playback".to_string());
         }
-        let command = crate::impls::client::build_playback_state_update(
+        let update_parts = crate::impls::client::build_playback_state_update(
             update.clone(),
             &self.public_id_codec,
         )
@@ -128,13 +128,11 @@ impl StreamMessageHandler {
                 )
             })?;
 
-        let crate::impls::client::PlaybackStateUpdateCommand::Patch {
-            playing,
-            position,
-            speed,
-            version,
-            expected_source,
-        } = command;
+        let playing = update_parts.playing;
+        let position = update_parts.position;
+        let speed = update_parts.speed;
+        let version = update_parts.version;
+        let expected_source = update_parts.expected_source;
         let playback_service = self.room_service.playback_service();
         let is_progress_update = matches!(
             synctv_proto::client::PlaybackUpdateType::try_from(update.r#type),

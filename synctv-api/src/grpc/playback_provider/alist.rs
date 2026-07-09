@@ -18,13 +18,19 @@ use super::{
 #[derive(Clone)]
 pub struct AlistPlaybackProviderGrpcService {
     state: Arc<PlaybackProviderGrpcState>,
-    config: Arc<synctv_core::Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl AlistPlaybackProviderGrpcService {
     #[must_use]
-    pub fn new(state: Arc<PlaybackProviderGrpcState>, config: Arc<synctv_core::Config>) -> Self {
-        Self { state, config }
+    pub fn new(
+        state: Arc<PlaybackProviderGrpcState>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
+    ) -> Self {
+        Self {
+            state,
+            runtime_settings,
+        }
     }
 }
 
@@ -41,7 +47,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         &self,
         request: Request<GetAlistFileStreamRequest>,
     ) -> Result<Response<Self::GetFileStreamStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
@@ -62,7 +68,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         &self,
         request: Request<GetAlistTranscodedHlsManifestRequest>,
     ) -> Result<Response<Self::GetTranscodedHlsManifestStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         execute_playback_provider_stream(state.clone(), metadata, move |request_control| {
@@ -83,7 +89,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         &self,
         request: Request<GetAlistTranscodedHlsSegmentRequest>,
     ) -> Result<Response<Self::GetTranscodedHlsSegmentStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         let state_for_stream = state.clone();
@@ -105,7 +111,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         &self,
         request: Request<GetAlistSubtitleRequest>,
     ) -> Result<Response<Self::GetSubtitleStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         let state_for_stream = state.clone();
@@ -127,7 +133,7 @@ impl AlistPlaybackProviderService for AlistPlaybackProviderGrpcService {
         &self,
         request: Request<GetAlistThumbnailRequest>,
     ) -> Result<Response<Self::GetThumbnailStream>, Status> {
-        let metadata = grpc_request_metadata(&request, &self.config)?;
+        let metadata = grpc_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let state = self.state.clone();
         let state_for_stream = state.clone();

@@ -4,7 +4,6 @@ use tonic::{Request, Response, Status};
 use crate::api_runtime::SharedApiRuntime;
 use crate::grpc::map_api_error;
 use crate::impls::{EndpointRateLimitCategory, RequestExecutor};
-use synctv_core::Config;
 
 use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderService;
 use synctv_proto::providers::rtmp::{
@@ -15,7 +14,7 @@ use synctv_proto::providers::rtmp::{
 pub struct RtmpProviderGrpcService {
     api: Arc<crate::impls::ClientApiImpl>,
     request_executor: Arc<RequestExecutor>,
-    config: Arc<Config>,
+    runtime_settings: Arc<crate::ApiRuntimeSettings>,
 }
 
 impl RtmpProviderGrpcService {
@@ -23,12 +22,12 @@ impl RtmpProviderGrpcService {
     pub fn new(
         shared_api_runtime: &Arc<SharedApiRuntime>,
         request_executor: Arc<RequestExecutor>,
-        config: Arc<Config>,
+        runtime_settings: Arc<crate::ApiRuntimeSettings>,
     ) -> Self {
         Self {
             api: shared_api_runtime.client_api.clone(),
             request_executor,
-            config,
+            runtime_settings,
         }
     }
 }
@@ -39,7 +38,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
         &self,
         request: Request<CreatePublishKeyRequest>,
     ) -> Result<Response<CreatePublishKeyResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
 
@@ -60,7 +59,7 @@ impl RtmpProviderService for RtmpProviderGrpcService {
         &self,
         request: Request<GetStreamInfoRequest>,
     ) -> Result<Response<GetStreamInfoResponse>, Status> {
-        let metadata = super::provider_request_metadata(&request, &self.config)?;
+        let metadata = super::provider_request_metadata(&request, &self.runtime_settings)?;
         let req = request.into_inner();
         let api = self.api.clone();
 

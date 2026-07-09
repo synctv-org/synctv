@@ -1,7 +1,7 @@
 use crate::{
     models::{
         NotificationData, PageParams, Room, RoomCategoryId, RoomLabelId, RoomMember, RoomRole,
-        RoomSettings, UserId, UserListQuery, UserRole, UserStatus,
+        RoomSettings, UserId, UserListQuery, UserStatus,
     },
     service::room::{RealtimeOutboxRoomEventFactory, RoomService},
     Error, Result,
@@ -208,28 +208,25 @@ impl RoomService {
             let pending_member = RoomMember::new(pending_room.id, created_by, RoomRole::Creator);
 
             if let Some(ref notif_service) = self.user_notification_service {
-                let mut all_admins = Vec::new();
-                for role in [UserRole::Root, UserRole::Admin] {
-                    let query = UserListQuery {
-                        pagination: PageParams::new(Some(1), Some(100)),
-                        search: None,
-                        status: Some(UserStatus::Active),
-                        role: Some(role),
-                        is_banned: Some(false),
-                        sort_by: crate::models::UserListSortBy::CreatedAt,
-                        sort_direction: crate::models::SortDirection::Desc,
-                    };
-                    match self.user_service.list_users(&query).await {
-                        Ok((users, _)) => all_admins.extend(users),
-                        Err(error) => {
-                            tracing::warn!(
-                                role = %role,
-                                error = %error,
-                                "Failed to load admins for pending room creation notification"
-                            );
-                        }
+                let query = UserListQuery {
+                    pagination: PageParams::new(Some(1), Some(100)),
+                    search: None,
+                    status: Some(UserStatus::Active),
+                    role: None,
+                    is_banned: None,
+                    sort_by: crate::models::UserListSortBy::CreatedAt,
+                    sort_direction: crate::models::SortDirection::Desc,
+                };
+                let all_admins = match self.user_service.list_admins(&query).await {
+                    Ok((users, _)) => users,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to load admins for pending room creation notification"
+                        );
+                        Vec::new()
                     }
-                }
+                };
 
                 for admin in all_admins {
                     if let Err(e) = notif_service

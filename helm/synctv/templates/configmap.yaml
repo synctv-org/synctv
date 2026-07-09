@@ -168,8 +168,6 @@ data:
       l2_ttl_seconds: {{ $cache.l2TtlSeconds | default 300 }}
       username_cache_capacity: {{ $cache.usernameCacheCapacity | default 10000 }}
       username_cache_ttl_seconds: {{ $cache.usernameCacheTtlSeconds | default 3600 }}
-      permission_cache_capacity: {{ $cache.permissionCacheCapacity | default 20000 }}
-      permission_cache_ttl_seconds: {{ $cache.permissionCacheTtlSeconds | default 300 }}
 
     proxy_slice_cache:
       enabled: {{ if hasKey $proxySliceCache "enabled" }}{{ $proxySliceCache.enabled }}{{ else }}true{{ end }}

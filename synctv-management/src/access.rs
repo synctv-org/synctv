@@ -4,20 +4,20 @@ use tonic::{Request, Status};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ManagementAccessController {
-    required_bearer_token: Option<String>,
+    required_bearer_token_digest: Option<[u8; 32]>,
 }
 
 impl ManagementAccessController {
     pub(crate) fn new(auth_token: &str) -> Self {
         let trimmed = auth_token.trim();
-        let required_bearer_token = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        let required_bearer_token_digest = (!trimmed.is_empty()).then(|| token_digest(trimmed));
         Self {
-            required_bearer_token,
+            required_bearer_token_digest,
         }
     }
 
     pub(crate) fn authorize<T: std::fmt::Debug>(&self, request: &Request<T>) -> Result<(), Status> {
-        let Some(expected_token) = &self.required_bearer_token else {
+        let Some(expected_token_digest) = &self.required_bearer_token_digest else {
             return Ok(());
         };
 
@@ -31,7 +31,7 @@ impl ManagementAccessController {
         let provided_token = synctv_core::service::JwtValidator::extract_bearer_token(header_value)
             .map_err(|_| Status::unauthenticated("Invalid management authorization header"))?;
 
-        if constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
+        if constant_time_eq(&token_digest(&provided_token), expected_token_digest) {
             Ok(())
         } else {
             Err(Status::unauthenticated(
@@ -41,10 +41,15 @@ impl ManagementAccessController {
     }
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let left_hash = Sha256::digest(left);
-    let right_hash = Sha256::digest(right);
-    left_hash.ct_eq(&right_hash).into()
+fn token_digest(token: &str) -> [u8; 32] {
+    let digest = Sha256::digest(token.as_bytes());
+    let mut bytes = [0; 32];
+    bytes.copy_from_slice(&digest);
+    bytes
+}
+
+fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.ct_eq(right).into()
 }
 
 #[cfg(test)]

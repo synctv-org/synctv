@@ -173,12 +173,15 @@ impl CreationLockEntry {
 pub(crate) struct CreationLockGuard {
     key: String,
     creation_locks: Arc<DashMap<String, Arc<CreationLockEntry>>>,
+    entry: Arc<CreationLockEntry>,
     _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl Drop for CreationLockGuard {
     fn drop(&mut self) {
-        self.creation_locks.remove(&self.key);
+        self.creation_locks.remove_if(&self.key, |_, current| {
+            Arc::ptr_eq(current, &self.entry) && Arc::strong_count(current) == 2
+        });
     }
 }
 
@@ -237,14 +240,17 @@ impl<S: ManagedStream> StreamPool<S> {
     }
 
     pub(crate) async fn acquire_creation_lock(&self, stream_key: &str) -> CreationLockGuard {
-        let entry = self
-            .creation_locks
-            .entry(stream_key.to_string())
-            .or_insert_with(|| Arc::new(CreationLockEntry::new()));
+        let entry = Arc::clone(
+            self.creation_locks
+                .entry(stream_key.to_string())
+                .or_insert_with(|| Arc::new(CreationLockEntry::new()))
+                .value(),
+        );
         let lock = Arc::clone(&entry.lock);
         CreationLockGuard {
             key: stream_key.to_string(),
             creation_locks: Arc::clone(&self.creation_locks),
+            entry,
             _guard: lock.lock_owned().await,
         }
     }
@@ -489,6 +495,67 @@ mod tests {
             1,
             "unhealthy streams removed on access must run the stream-specific stop protocol"
         );
+    }
+
+    #[tokio::test]
+    async fn test_creation_lock_reuses_entry_while_waiter_is_queued() -> TestResult {
+        let pool: Arc<StreamPool<TestStream>> = Arc::new(StreamPool::new(
+            Duration::from_mins(1),
+            Duration::from_mins(5),
+        ));
+        let first_guard = pool.acquire_creation_lock("room:media").await;
+
+        let (second_acquired_tx, second_acquired_rx) = tokio::sync::oneshot::channel();
+        let (release_second_tx, release_second_rx) = tokio::sync::oneshot::channel();
+        let second_pool = Arc::clone(&pool);
+        let second_task = tokio::spawn(async move {
+            let _guard = second_pool.acquire_creation_lock("room:media").await;
+            let _ = second_acquired_tx.send(());
+            let _ = release_second_rx.await;
+        });
+
+        tokio::time::timeout(Duration::from_millis(20), async {
+            while pool
+                .creation_locks
+                .get("room:media")
+                .is_none_or(|entry| Arc::strong_count(entry.value()) < 3)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| test_error("second task should queue on the existing lock entry"))?;
+
+        drop(first_guard);
+        second_acquired_rx
+            .await
+            .map_err(|_| test_error("second task should acquire after first guard drops"))?;
+
+        let (third_acquired_tx, third_acquired_rx) = tokio::sync::oneshot::channel();
+        let third_pool = Arc::clone(&pool);
+        let third_task = tokio::spawn(async move {
+            let _guard = third_pool.acquire_creation_lock("room:media").await;
+            let _ = third_acquired_tx.send(());
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), third_acquired_rx)
+                .await
+                .is_err(),
+            "third task should wait behind the second holder"
+        );
+
+        release_second_tx
+            .send(())
+            .map_err(|()| test_error("second task should still be waiting for release"))?;
+        second_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+        third_task
+            .await
+            .map_err(|error| test_error(error.to_string()))?;
+
+        Ok(())
     }
 
     /// Test that try_claim_for_cleanup succeeds when subscriber count is 0.

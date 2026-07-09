@@ -218,7 +218,7 @@ impl PublicIdCodec {
 
         let options = sqids::Options::new(alphabet, Some(sqids_config.min_length), None);
         let sqids = sqids::Sqids::new(Some(options))
-            .map_err(|error| format!("invalid external_ids.sqids configuration: {error}"))?;
+            .map_err(|error| format!("invalid public_ids.sqids configuration: {error}"))?;
         Ok(Self {
             encoding: PublicIdEncoding::Sqids(Arc::new(sqids)),
         })
@@ -374,18 +374,18 @@ fn validate_positive_id(id: i64, kind: PublicIdKind) -> Result<(), String> {
 fn validate_sqids_alphabet(alphabet: &str) -> Result<(), String> {
     if alphabet.chars().count() < 3 {
         return Err(
-            "invalid external_ids.sqids.alphabet: expected at least 3 characters".to_string(),
+            "invalid public_ids.sqids.alphabet: expected at least 3 characters".to_string(),
         );
     }
     if !alphabet.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return Err(
-            "invalid external_ids.sqids.alphabet: expected ASCII alphanumeric characters only"
+            "invalid public_ids.sqids.alphabet: expected ASCII alphanumeric characters only"
                 .to_string(),
         );
     }
     let mut seen = std::collections::BTreeSet::new();
     if !alphabet.chars().all(|character| seen.insert(character)) {
-        return Err("invalid external_ids.sqids.alphabet: expected unique characters".to_string());
+        return Err("invalid public_ids.sqids.alphabet: expected unique characters".to_string());
     }
     Ok(())
 }

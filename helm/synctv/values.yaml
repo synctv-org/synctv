@@ -431,8 +431,6 @@ config:
     l2TtlSeconds: 300
     usernameCacheCapacity: 10000
     usernameCacheTtlSeconds: 3600
-    permissionCacheCapacity: 20000
-    permissionCacheTtlSeconds: 300
 
   ## ProxySliceCacheConfig: media proxy Range-slice cache.
   proxySliceCache:

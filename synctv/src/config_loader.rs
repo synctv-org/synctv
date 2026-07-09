@@ -16,7 +16,7 @@ use config::{ConfigError, FileFormat};
 use serde::Deserialize;
 use synctv_common::time::set_default_timezone_name;
 
-const CONFIG_KEY_EXTERNAL_IDS: &str = "external_ids";
+const CONFIG_KEY_PUBLIC_IDS: &str = "public_ids";
 const ENV_PUBLIC_IDS_SQIDS_ALPHABET: &str = "SYNCTV_PUBLIC_IDS_SQIDS_ALPHABET";
 const ENV_PUBLIC_IDS_SQIDS_MIN_LENGTH: &str = "SYNCTV_PUBLIC_IDS_SQIDS_MIN_LENGTH";
 
@@ -90,7 +90,7 @@ impl ConfigLoadExtensions {
 
 pub fn public_id_config_extensions() -> ConfigLoadExtensions {
     ConfigLoadExtensions::new(
-        [CONFIG_KEY_EXTERNAL_IDS],
+        [CONFIG_KEY_PUBLIC_IDS],
         [
             ENV_PUBLIC_IDS_SQIDS_ALPHABET,
             ENV_PUBLIC_IDS_SQIDS_MIN_LENGTH,
@@ -101,7 +101,7 @@ pub fn public_id_config_extensions() -> ConfigLoadExtensions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct PublicIdRootConfig {
-    external_ids: synctv_adapter::PublicIdConfig,
+    public_ids: synctv_adapter::PublicIdConfig,
 }
 
 pub fn default_config_search_paths() -> Vec<PathBuf> {
@@ -476,7 +476,7 @@ fn load_public_id_config_file(path: &str) -> Result<synctv_adapter::PublicIdConf
             ));
         }
     };
-    Ok(root.external_ids)
+    Ok(root.public_ids)
 }
 
 pub fn load_public_id_config_with_options(
@@ -1204,7 +1204,7 @@ jwt:
     }
 
     #[test]
-    fn test_load_public_id_config_reads_external_ids_file_section() {
+    fn test_load_public_id_config_reads_public_ids_file_section() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().checked("temp dir should be created");
         let _public_id_env = clear_public_id_env_overrides();
@@ -1212,7 +1212,7 @@ jwt:
         std::fs::write(
             &config_path,
             r"
-external_ids:
+public_ids:
   sqids:
     min_length: 9
 ",
@@ -1234,7 +1234,7 @@ external_ids:
     }
 
     #[test]
-    fn test_load_config_public_id_extension_accepts_external_ids_keys() {
+    fn test_load_config_public_id_extension_accepts_public_ids_keys() {
         let _lock = acquire_process_config_test_lock();
         let dir = tempdir().checked("temp dir should be created");
         let _public_id_env = clear_public_id_env_overrides();
@@ -1242,12 +1242,12 @@ external_ids:
         std::fs::write(
             &config_path,
             r"
-external_ids:
+public_ids:
   sqids:
     min_length: 9
 ",
         )
-        .checked("config with external_ids should be written");
+        .checked("config with public_ids should be written");
 
         load_config_with_options(&LoadConfigOptions {
             config_path: Some(config_path.to_string_lossy().to_string()),

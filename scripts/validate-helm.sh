@@ -184,18 +184,24 @@ assert_file_storage_s3_file_credentials_rendering() {
   ' "$file"
 }
 
-validate_rendered_synctv_config() {
+write_rendered_synctv_config() {
   local rendered_manifest="$1"
-  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  local rendered_config="$2"
+  local secret_dir="${3:-}"
   ruby -ryaml -e '
-    file, output = ARGV
+    file, output, secret_dir = ARGV
     docs = YAML.load_stream(File.read(file)).compact
     config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
     abort("synctv-config ConfigMap was not rendered in #{file}") unless config
     synctv_yaml = config.dig("data", "synctv.yaml")
     abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
+    synctv_yaml = synctv_yaml.gsub("/run/secrets/file-storage-s3", secret_dir) unless secret_dir.empty?
     File.write(output, synctv_yaml)
-  ' "$rendered_manifest" "$rendered_config"
+  ' "$rendered_manifest" "$rendered_config" "$secret_dir"
+}
+
+run_rendered_synctv_config_validation() {
+  local rendered_config="$1"
   local -a validation_env=(
     "PATH=${PATH:-/usr/bin:/bin}"
     "HOME=${HOME:-$tmp_dir}"
@@ -216,6 +222,13 @@ validate_rendered_synctv_config() {
     cargo run -q -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
 }
 
+validate_rendered_synctv_config() {
+  local rendered_manifest="$1"
+  local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
+  write_rendered_synctv_config "$rendered_manifest" "$rendered_config"
+  run_rendered_synctv_config_validation "$rendered_config"
+}
+
 validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
   local rendered_manifest="$1"
   local secret_dir="$tmp_dir/file-storage-s3"
@@ -224,35 +237,8 @@ validate_rendered_synctv_config_with_file_storage_s3_secret_files() {
   printf '%s\n' "file-storage-secret-key" >"$secret_dir/secret_access_key"
 
   local rendered_config="$tmp_dir/$(basename "$rendered_manifest" .yaml).synctv.yaml"
-  ruby -ryaml -e '
-    file, output, secret_dir = ARGV
-    docs = YAML.load_stream(File.read(file)).compact
-    config = docs.find { |doc| doc["kind"] == "ConfigMap" && doc.dig("metadata", "name") == "synctv-config" }
-    abort("synctv-config ConfigMap was not rendered in #{file}") unless config
-    synctv_yaml = config.dig("data", "synctv.yaml")
-    abort("synctv.yaml ConfigMap entry was not rendered in #{file}") unless synctv_yaml
-    synctv_yaml = synctv_yaml.gsub("/run/secrets/file-storage-s3", secret_dir)
-    File.write(output, synctv_yaml)
-  ' "$rendered_manifest" "$rendered_config" "$secret_dir"
-
-  local -a validation_env=(
-    "PATH=${PATH:-/usr/bin:/bin}"
-    "HOME=${HOME:-$tmp_dir}"
-    "TMPDIR=${TMPDIR:-/tmp}"
-    "SYNCTV_JWT_SECRET=helm-validation-jwt-secret-12345678901234567890"
-    "SYNCTV_SECURITY_OPAQUE_SERVER_SETUP_SECRET=helm-validation-opaque-secret-123456789012345"
-    "SYNCTV_CLUSTER_SECRET=helm-validation-cluster-secret-12345678901234567890"
-    "SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.10"
-    "SYNCTV_REDIS_HOST=synctv-redis"
-    "SYNCTV_REDIS_PORT=6379"
-    "SYNCTV_REDIS_DATABASE=0"
-  )
-  [ -z "${USER:-}" ] || validation_env+=("USER=$USER")
-  [ -z "${CARGO_HOME:-}" ] || validation_env+=("CARGO_HOME=$CARGO_HOME")
-  [ -z "${RUSTUP_HOME:-}" ] || validation_env+=("RUSTUP_HOME=$RUSTUP_HOME")
-  [ -z "${CARGO_TARGET_DIR:-}" ] || validation_env+=("CARGO_TARGET_DIR=$CARGO_TARGET_DIR")
-  env -i "${validation_env[@]}" \
-    cargo run -q -p synctv --bin synctv -- --no-dotenv --config "$rendered_config" config validate --strict
+  write_rendered_synctv_config "$rendered_manifest" "$rendered_config" "$secret_dir"
+  run_rendered_synctv_config_validation "$rendered_config"
 }
 
 chart_version="$(ruby -ryaml -e 'puts YAML.load_file(ARGV.fetch(0)).fetch("version")' "$chart_dir/Chart.yaml")"

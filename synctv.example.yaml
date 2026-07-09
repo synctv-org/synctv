@@ -320,8 +320,6 @@ cache:
   l2_ttl_seconds: 300
   username_cache_capacity: 10000
   username_cache_ttl_seconds: 3600
-  permission_cache_capacity: 20000
-  permission_cache_ttl_seconds: 300
 
 proxy_slice_cache:
   # Enable range-based proxy slice caching at process startup.

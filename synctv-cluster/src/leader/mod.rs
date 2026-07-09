@@ -266,6 +266,7 @@ pub enum LeaderRedisDeploymentMode {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "k8s"), derive(Copy))]
 pub struct LeaderRuntimeOptions {
     pub cluster_enabled: bool,
     pub leader_election_mode: LeaderElectionMode,

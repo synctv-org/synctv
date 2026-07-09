@@ -2422,6 +2422,18 @@ mod tests {
         }
     }
 
+    fn assert_invalid_argument_contains(
+        error: &crate::impls::ApiError,
+        expected: &str,
+    ) -> TestResult {
+        if !error.is_invalid_argument() {
+            return Err(test_error(format!("expected invalid input, got {error:?}")));
+        }
+        let message = error.message();
+        assert!(message.contains(expected), "{message}");
+        Ok(())
+    }
+
     fn codec_ok<T>(result: Result<T, String>) -> TestResult<T> {
         result.map_err(test_error)
     }
@@ -2562,12 +2574,7 @@ mod tests {
             },
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("status"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "status")?;
         Ok(())
     }
 
@@ -2586,10 +2593,7 @@ mod tests {
             },
             &public_id_codec,
         ))?;
-        assert!(matches!(
-            public_room_error,
-            crate::impls::ApiError::InvalidInput(message) if message.contains("sort_by")
-        ));
+        assert_invalid_argument_contains(&public_room_error, "sort_by")?;
 
         let my_room_relation_error = api_err(build_my_room_list_query(
             synctv_proto::client::ListMyRoomsRequest {
@@ -2603,10 +2607,7 @@ mod tests {
                 sort_direction: synctv_proto::client::SortDirection::Unspecified as i32,
             },
         ))?;
-        assert!(matches!(
-            my_room_relation_error,
-            crate::impls::ApiError::InvalidInput(message) if message.contains("relation")
-        ));
+        assert_invalid_argument_contains(&my_room_relation_error, "relation")?;
 
         let my_room_sort_error = api_err(build_my_room_list_query(
             synctv_proto::client::ListMyRoomsRequest {
@@ -2620,10 +2621,7 @@ mod tests {
                 sort_direction: 99,
             },
         ))?;
-        assert!(matches!(
-            my_room_sort_error,
-            crate::impls::ApiError::InvalidInput(message) if message.contains("sort_direction")
-        ));
+        assert_invalid_argument_contains(&my_room_sort_error, "sort_direction")?;
         Ok(())
     }
 
@@ -2642,12 +2640,7 @@ mod tests {
             },
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("search"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "search")?;
         Ok(())
     }
 
@@ -2667,16 +2660,13 @@ mod tests {
             &public_id_codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("page"), "{message}");
-                assert!(message.contains("page_size"), "{message}");
-                assert!(message.contains("search"), "{message}");
-                assert!(message.contains("sort_by"), "{message}");
-                assert!(message.contains("sort_direction"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("page"), "{message}");
+        assert!(message.contains("page_size"), "{message}");
+        assert!(message.contains("search"), "{message}");
+        assert!(message.contains("sort_by"), "{message}");
+        assert!(message.contains("sort_direction"), "{message}");
         Ok(())
     }
 
@@ -2690,12 +2680,7 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("new_owner_user_id"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "new_owner_user_id")?;
         Ok(())
     }
 
@@ -2709,12 +2694,7 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("room_id"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "room_id")?;
         Ok(())
     }
 
@@ -2728,12 +2708,7 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("room_id"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "room_id")?;
         Ok(())
     }
 
@@ -2764,12 +2739,7 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("RoomId"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "RoomId")?;
         Ok(())
     }
 
@@ -2783,12 +2753,7 @@ mod tests {
             },
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("limit"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "limit")?;
         Ok(())
     }
 
@@ -2798,12 +2763,7 @@ mod tests {
             &synctv_proto::client::GetHotRoomsRequest { limit: 51 },
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("limit"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert_invalid_argument_contains(&error, "limit")?;
         Ok(())
     }
 

@@ -265,14 +265,11 @@ mod tests {
             },
         ))?;
 
-        match error {
-            ApiError::InvalidInput(message) => {
-                assert!(message.contains("page"), "{message}");
-                assert!(message.contains("page_size"), "{message}");
-                assert!(message.contains("search"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("page"), "{message}");
+        assert!(message.contains("page_size"), "{message}");
+        assert!(message.contains("search"), "{message}");
         Ok(())
     }
 

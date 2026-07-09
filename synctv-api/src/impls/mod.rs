@@ -146,7 +146,7 @@ pub fn validate_proto_request<M>(message: &M) -> Result<(), ApiError>
 where
     M: prost_reflect::ReflectMessage,
 {
-    synctv_proto::validate(message).map_err(|error| ApiError::InvalidInput(error.to_string()))
+    synctv_proto::validate(message).map_err(ApiError::from_proto_validation_error)
 }
 
 pub fn validate_room_name_input(name: &str) -> Result<String, ApiError> {
@@ -416,6 +416,12 @@ where
 pub(crate) use synctv_adapter::error::error_codes;
 pub use synctv_adapter::error::ErrorKind;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiFieldViolation {
+    pub field: String,
+    pub description: String,
+}
+
 /// Structured API error that wraps `synctv_core::Error` variants for
 /// type-safe status code mapping. This allows callers that propagate
 /// typed errors to bypass keyword matching entirely.
@@ -430,6 +436,10 @@ pub enum ApiError {
     AlreadyExists(String),
     Conflict(String),
     InvalidInput(String),
+    InvalidRequest {
+        message: String,
+        violations: Vec<ApiFieldViolation>,
+    },
     RangeNotSatisfiable {
         total_size: i64,
     },
@@ -626,7 +636,9 @@ impl ApiError {
                 ErrorKind::AlreadyExists
             }
             Self::Conflict(_) => ErrorKind::Conflict,
-            Self::InvalidInput(_) | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
+            Self::InvalidInput(_)
+            | Self::InvalidRequest { .. }
+            | Self::RangeNotSatisfiable { .. } => ErrorKind::InvalidArgument,
             Self::BadGateway(_) => ErrorKind::ServiceUnavailable,
             Self::RequestTimeout(_) | Self::Timeout(_) => ErrorKind::Timeout,
             Self::RateLimited(_) | Self::RateLimitedWithRetry { .. } => ErrorKind::RateLimited,
@@ -642,6 +654,11 @@ impl ApiError {
             | Self::OAuth2LoginFailed { kind, .. }
             | Self::OAuth2General { kind, .. } => *kind,
         }
+    }
+
+    #[must_use]
+    pub fn is_invalid_argument(&self) -> bool {
+        self.classify() == ErrorKind::InvalidArgument
     }
 
     /// Get the error message.
@@ -672,6 +689,7 @@ impl ApiError {
             | Self::OAuth2LoginFailed { message, .. }
             | Self::OAuth2ResponseBuildFailed { message, .. }
             | Self::OAuth2General { message, .. } => message,
+            Self::InvalidRequest { message, .. } => message,
             Self::RangeNotSatisfiable { .. } => "Requested byte range is not satisfiable",
         }
     }
@@ -712,6 +730,47 @@ impl ApiError {
             Self::OAuth2General { operation, .. } => *operation,
             _ => None,
         }
+    }
+
+    fn from_proto_validation_error(error: prost_protovalidate::Error) -> Self {
+        match error {
+            prost_protovalidate::Error::Validation(error) => {
+                let violations = error
+                    .violations()
+                    .iter()
+                    .map(|violation| ApiFieldViolation {
+                        field: violation.field_path(),
+                        description: proto_violation_description(violation),
+                    })
+                    .collect();
+                Self::InvalidRequest {
+                    message: error.to_string(),
+                    violations,
+                }
+            }
+            prost_protovalidate::Error::Compilation(error) => {
+                tracing::error!("proto validation rule compilation failed: {error}");
+                Self::Internal("Validation rule compilation failed".to_string())
+            }
+            prost_protovalidate::Error::Runtime(error) => {
+                tracing::error!("proto validation rule evaluation failed: {error}");
+                Self::Internal("Validation rule evaluation failed".to_string())
+            }
+            error => {
+                tracing::error!("unexpected proto validation failure: {error}");
+                Self::Internal("Validation failed".to_string())
+            }
+        }
+    }
+}
+
+fn proto_violation_description(violation: &prost_protovalidate::Violation) -> String {
+    if !violation.message().is_empty() {
+        violation.message().to_string()
+    } else if !violation.rule_id().is_empty() {
+        format!("[{}]", violation.rule_id())
+    } else {
+        "invalid value".to_string()
     }
 }
 
@@ -971,7 +1030,9 @@ mod tests {
     {
         match validate_proto_request(request) {
             Ok(()) => Err(test_error("proto request should fail validation")),
-            Err(ApiError::InvalidInput(message)) => Ok(message),
+            Err(error) if error.classify() == ErrorKind::InvalidArgument => {
+                Ok(error.message().to_string())
+            }
             Err(other) => Err(test_error(format!("expected invalid input, got {other:?}"))),
         }
     }

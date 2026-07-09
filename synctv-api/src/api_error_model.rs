@@ -48,6 +48,21 @@ impl GoogleApiError {
             crate::impls::ApiError::InvalidInput(message) => {
                 details.add_bad_request_violation("request", message);
             }
+            crate::impls::ApiError::InvalidRequest {
+                message,
+                violations,
+            } => {
+                if violations.is_empty() {
+                    details.add_bad_request_violation("request", message);
+                } else {
+                    for violation in violations {
+                        details.add_bad_request_violation(
+                            violation.field.as_str(),
+                            violation.description.as_str(),
+                        );
+                    }
+                }
+            }
             crate::impls::ApiError::RangeNotSatisfiable { total_size } => {
                 details.set_resource_info(
                     "byte_range",
@@ -269,6 +284,42 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("BadRequest.fieldViolations is missing"))?;
         assert_eq!(violations[0]["field"], "request");
         assert_eq!(violations[0]["description"], "email is invalid");
+
+        Ok(())
+    }
+
+    #[test]
+    fn protojson_expands_validation_field_violations() -> anyhow::Result<()> {
+        let error = GoogleApiError::from_api_error(&crate::impls::ApiError::InvalidRequest {
+            message: "validation failed".to_string(),
+            violations: vec![
+                crate::impls::ApiFieldViolation {
+                    field: "username".to_string(),
+                    description: "must be at least 3 characters".to_string(),
+                },
+                crate::impls::ApiFieldViolation {
+                    field: "email".to_string(),
+                    description: "must be a valid email".to_string(),
+                },
+            ],
+        });
+
+        let bytes = error.to_protojson_bytes()?;
+        let json: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let bad_request = detail_by_type(&json, "google.rpc.BadRequest")
+            .ok_or_else(|| anyhow::anyhow!("missing BadRequest detail: {json}"))?;
+        let violations = bad_request["fieldViolations"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("BadRequest.fieldViolations is missing"))?;
+
+        assert_eq!(violations.len(), 2);
+        assert_eq!(violations[0]["field"], "username");
+        assert_eq!(
+            violations[0]["description"],
+            "must be at least 3 characters"
+        );
+        assert_eq!(violations[1]["field"], "email");
+        assert_eq!(violations[1]["description"], "must be a valid email");
 
         Ok(())
     }

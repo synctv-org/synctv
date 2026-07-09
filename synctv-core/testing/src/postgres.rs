@@ -675,7 +675,7 @@ fn template_database_name_from(run_id: Option<&str>) -> String {
 }
 
 fn embedded_migrations_fingerprint() -> String {
-    use sha2_010::{Digest as _, Sha256};
+    use sha2::{Digest as _, Sha256};
 
     let mut hasher = Sha256::new();
     let migrator = sqlx::migrate!("../../migrations");

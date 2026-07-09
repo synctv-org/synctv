@@ -874,15 +874,12 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(
-                    message.contains("name") || message.contains("dynamic"),
-                    "{message}"
-                );
-            }
-            other => return Err(test_error(format!("expected InvalidInput, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(
+            message.contains("name") || message.contains("dynamic"),
+            "{message}"
+        );
         Ok(())
     }
 
@@ -958,12 +955,9 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("name"), "{message}");
-            }
-            other => return Err(test_error(format!("expected InvalidInput, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("name"), "{message}");
         Ok(())
     }
 
@@ -978,12 +972,9 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("anchor"), "{message}");
-            }
-            other => return Err(test_error(format!("expected InvalidInput, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("anchor"), "{message}");
         Ok(())
     }
 
@@ -998,12 +989,9 @@ mod tests {
             &codec,
         ))?;
 
-        match error {
-            crate::impls::ApiError::InvalidInput(message) => {
-                assert!(message.contains("playlist_id"), "{message}");
-            }
-            other => return Err(test_error(format!("expected InvalidInput, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("playlist_id"), "{message}");
         Ok(())
     }
 

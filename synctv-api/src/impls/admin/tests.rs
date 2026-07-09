@@ -2219,7 +2219,7 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
             })
             .await,
     )?;
-    assert!(matches!(list_rooms_error, ApiError::InvalidInput(_)));
+    assert!(list_rooms_error.is_invalid_argument());
 
     let get_room_members_error = api_err(
         admin_api
@@ -2234,7 +2234,7 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
             })
             .await,
     )?;
-    assert!(matches!(get_room_members_error, ApiError::InvalidInput(_)));
+    assert!(get_room_members_error.is_invalid_argument());
 
     let get_user_rooms_error = api_err(
         admin_api
@@ -2250,7 +2250,7 @@ async fn test_admin_list_endpoints_reject_invalid_proto_requests() -> TestResult
             })
             .await,
     )?;
-    assert!(matches!(get_user_rooms_error, ApiError::InvalidInput(_)));
+    assert!(get_user_rooms_error.is_invalid_argument());
 
     Ok(())
 }
@@ -2283,7 +2283,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
             )
             .await,
     )?;
-    assert!(matches!(list_playlists_error, ApiError::InvalidInput(_)));
+    assert!(list_playlists_error.is_invalid_argument());
 
     let list_media_error = api_err(
         admin_api
@@ -2306,7 +2306,7 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
             )
             .await,
     )?;
-    assert!(matches!(list_media_error, ApiError::InvalidInput(_)));
+    assert!(list_media_error.is_invalid_argument());
     Ok(())
 }
 

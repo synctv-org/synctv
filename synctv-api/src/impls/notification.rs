@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_normalize_notification_pagination_rejects_excessive_offset() -> TestResult {
         let err = api_err(normalize_notification_pagination(Some(1002), Some(100)))?;
-        assert!(matches!(err, ApiError::InvalidInput(_)));
+        assert!(err.is_invalid_argument());
         Ok(())
     }
 
@@ -657,17 +657,14 @@ mod tests {
             sort_direction: 99,
         }))?;
 
-        match error {
-            ApiError::InvalidInput(message) => {
-                assert!(message.contains("page"), "{message}");
-                assert!(message.contains("page_size"), "{message}");
-                assert!(message.contains("search"), "{message}");
-                assert!(message.contains("notification_type"), "{message}");
-                assert!(message.contains("sort_by"), "{message}");
-                assert!(message.contains("sort_direction"), "{message}");
-            }
-            other => return Err(test_error(format!("expected invalid input, got {other:?}"))),
-        }
+        assert!(error.is_invalid_argument(), "{error:?}");
+        let message = error.message();
+        assert!(message.contains("page"), "{message}");
+        assert!(message.contains("page_size"), "{message}");
+        assert!(message.contains("search"), "{message}");
+        assert!(message.contains("notification_type"), "{message}");
+        assert!(message.contains("sort_by"), "{message}");
+        assert!(message.contains("sort_direction"), "{message}");
         Ok(())
     }
 
@@ -687,7 +684,7 @@ mod tests {
             notification_id: 0,
         }))?;
 
-        assert!(matches!(error, ApiError::InvalidInput(_)));
+        assert!(error.is_invalid_argument());
         Ok(())
     }
 
@@ -707,7 +704,7 @@ mod tests {
             notification_ids: vec![0],
         }))?;
 
-        assert!(matches!(error, ApiError::InvalidInput(_)));
+        assert!(error.is_invalid_argument());
         Ok(())
     }
 
@@ -729,7 +726,7 @@ mod tests {
             &DeleteNotificationRequest { notification_id: 0 },
         ))?;
 
-        assert!(matches!(error, ApiError::InvalidInput(_)));
+        assert!(error.is_invalid_argument());
         Ok(())
     }
 }

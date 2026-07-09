@@ -15,6 +15,7 @@ opaque-ke.workspace = true
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sha2_010.workspace = true
 sqlx = { workspace = true, features = ["runtime-tokio", "postgres", "chrono", "uuid", "json"] }
 testcontainers = { workspace = true, features = ["reusable-containers"] }

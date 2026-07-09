@@ -370,7 +370,7 @@ mod tests {
             )?;
 
         assert!(
-            matches!(&err, ApiError::InvalidInput(message) if message.contains("media_id")),
+            err.is_invalid_argument() && err.message().contains("media_id"),
             "unexpected error: {err:?}"
         );
         Ok(())

@@ -557,6 +557,7 @@ impl std::str::FromStr for OAuth2ProviderConfigs {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSettings {
+    pub server: ServerRuntimeSettings,
     pub room_defaults: RoomDefaultsRuntimeSettings,
     pub permissions: PermissionRuntimeSettings,
     pub room_creation: RoomCreationRuntimeSettings,
@@ -581,6 +582,7 @@ impl RuntimeSettings {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeSettingsUpdateMask {
+    pub server: ServerRuntimeSettingsUpdateMask,
     pub room_defaults: RoomDefaultsRuntimeSettingsUpdateMask,
     pub permissions: PermissionRuntimeSettingsUpdateMask,
     pub room_creation: RoomCreationRuntimeSettingsUpdateMask,
@@ -598,6 +600,7 @@ impl RuntimeSettingsUpdateMask {
     #[must_use]
     pub const fn all() -> Self {
         Self {
+            server: ServerRuntimeSettingsUpdateMask::all(),
             room_defaults: RoomDefaultsRuntimeSettingsUpdateMask::all(),
             permissions: PermissionRuntimeSettingsUpdateMask::all(),
             room_creation: RoomCreationRuntimeSettingsUpdateMask::all(),
@@ -614,7 +617,8 @@ impl RuntimeSettingsUpdateMask {
 
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.room_defaults.is_empty()
+        self.server.is_empty()
+            && self.room_defaults.is_empty()
             && self.permissions.is_empty()
             && self.room_creation.is_empty()
             && self.user.is_empty()
@@ -625,6 +629,23 @@ impl RuntimeSettingsUpdateMask {
             && self.webrtc.is_empty()
             && self.chat.is_empty()
             && self.cors.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerRuntimeSettingsUpdateMask {
+    pub name: bool,
+}
+
+impl ServerRuntimeSettingsUpdateMask {
+    #[must_use]
+    pub const fn all() -> Self {
+        Self { name: true }
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        !self.name
     }
 }
 
@@ -908,6 +929,11 @@ impl CorsRuntimeSettingsUpdateMask {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRuntimeSettings {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomDefaultsRuntimeSettings {
     pub default_max_members: i64,
     pub default_max_chat_messages: u64,
@@ -998,6 +1024,7 @@ fn validate_all_runtime_settings(
     settings: &RuntimeSettings,
     ctx: &crate::models::SettingsValidationContext<'_>,
 ) -> crate::Result<()> {
+    validate_server_name(&settings.server.name)?;
     validate_room_defaults_settings(&settings.room_defaults)?;
     validate_permission_settings(&settings.permissions)?;
     validate_room_policy_settings(&settings.room_creation)?;
@@ -1009,6 +1036,20 @@ fn validate_all_runtime_settings(
     validate_webrtc_settings(&settings.webrtc)?;
     validate_chat_settings(&settings.chat)?;
     validate_cors_settings(&settings.cors)
+}
+
+pub(super) fn validate_server_name(name: &str) -> crate::Result<()> {
+    if name.trim() != name
+        || name.is_empty()
+        || name.chars().count() > 128
+        || name.chars().any(char::is_control)
+    {
+        return Err(crate::Error::InvalidInput(
+            "server.name must be 1 to 128 characters without surrounding whitespace or control characters"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_room_defaults_settings(settings: &RoomDefaultsRuntimeSettings) -> crate::Result<()> {
@@ -1197,6 +1238,7 @@ fn validate_email_domain(entry: &str) -> crate::Result<()> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettings {
+    pub server_name: String,
     pub room_creation_enabled: bool,
     pub max_rooms_per_user: i64,
     pub default_max_members: i64,
@@ -1224,8 +1266,9 @@ pub struct PublicSettings {
 
 impl PublicSettings {
     #[must_use]
-    pub const fn defaults() -> Self {
+    pub fn defaults() -> Self {
         Self {
+            server_name: "SyncTV".to_string(),
             room_creation_enabled: true,
             max_rooms_per_user: 10,
             default_max_members: 100,

@@ -4790,6 +4790,7 @@ fn settings_update_set_and_unset_build_standard_proto_json_request() {
         "settings update request",
         None,
         &[
+            "server.name=Family TV".to_string(),
             "email.enabled=true".to_string(),
             "email.whitelistDomains=[\"example.com\"]".to_string(),
             "roomCreation.passwordPolicy=required".to_string(),
@@ -4799,6 +4800,10 @@ fn settings_update_set_and_unset_build_standard_proto_json_request() {
     .expect("set and unset should build an update request");
 
     let settings = request.settings.expect("settings");
+    assert_eq!(
+        settings.server.expect("server").name.as_deref(),
+        Some("Family TV")
+    );
     let email = settings.email.expect("email");
     assert_eq!(email.enabled, Some(true));
     assert_eq!(email.whitelist_domains, ["example.com"]);
@@ -4813,6 +4818,7 @@ fn settings_update_set_and_unset_build_standard_proto_json_request() {
     assert_eq!(
         request.update_mask.expect("update mask").paths,
         [
+            "server.name",
             "email.enabled",
             "email.whitelist_domains",
             "room_creation.password_policy",

@@ -175,6 +175,14 @@ message RuntimeSettings {
   WebRtcSettings webrtc = 9 [(buf.validate.field).required = true];
   ChatSettings chat = 10 [(buf.validate.field).required = true];
   CorsSettings cors = 11 [(buf.validate.field).required = true];
+  ServerSettings server = 12 [(buf.validate.field).required = true];
+}
+
+message ServerSettings {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message RoomDefaultsSettings {
@@ -340,6 +348,14 @@ message RuntimeSettingsPatch {
   WebRtcSettingsPatch webrtc = 9;
   ChatSettingsPatch chat = 10;
   CorsSettingsPatch cors = 11;
+  ServerSettingsPatch server = 12;
+}
+
+message ServerSettingsPatch {
+  optional string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
 }
 
 message RoomDefaultsSettingsPatch {

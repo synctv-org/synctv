@@ -120,7 +120,8 @@ pub use global_settings::{
     RoomCreationEnabledSetting, RoomCreationPasswordPolicySetting, RoomCreationRuntimeSettings,
     RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings,
     RuntimeEmailConfigProvider, RuntimeSettings, RuntimeSettingsStore, RuntimeSettingsUpdateMask,
-    ServerIdentityIdSetting, TsDisguisedAsPngSetting, UserRuntimeSettings, WebRtcRuntimeSettings,
+    ServerIdentityIdSetting, ServerNameSetting, ServerRuntimeSettings, TsDisguisedAsPngSetting,
+    UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 pub use media::{
     AddMediaRequest, BackendPlaybackRequest, CreateMediaCoverUploadSession,

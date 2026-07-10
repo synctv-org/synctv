@@ -146,14 +146,12 @@ impl Default for LivestreamRuntimeSettings {
 #[derive(Debug, Clone)]
 pub struct WebRtcRuntimeSettings {
     pub filter_private_ice_candidates: bool,
-    pub rp_name: String,
 }
 
 impl Default for WebRtcRuntimeSettings {
     fn default() -> Self {
         Self {
             filter_private_ice_candidates: true,
-            rp_name: "SyncTV".to_string(),
         }
     }
 }

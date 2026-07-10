@@ -97,6 +97,7 @@ make dev-serve
 ```
 
 This starts PostgreSQL and Redis first, then runs SyncTV with local `cargo run`. Start `make dev-stack` first when the full dependency set is needed.
+Development startup defaults to the `debug` log level so HTTP request logs are visible. Override it with `SYNCTV_LOGGING_LEVEL` in `.env.synctv`.
 
 For a background process with the same development settings:
 

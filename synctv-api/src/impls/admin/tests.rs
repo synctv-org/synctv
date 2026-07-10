@@ -91,6 +91,9 @@ fn admin_email_settings(
 
 fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
     synctv_core::service::RuntimeSettings {
+        server: synctv_core::service::ServerRuntimeSettings {
+            name: "SyncTV".to_string(),
+        },
         room_defaults: synctv_core::service::RoomDefaultsRuntimeSettings {
             default_max_members: 100,
             default_max_chat_messages: 500,
@@ -2571,6 +2574,14 @@ async fn test_get_settings_projects_registered_defaults() -> TestResult {
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
     let settings = current_admin_settings(&admin_api).await?;
+    assert_eq!(
+        settings
+            .server
+            .as_ref()
+            .ok_or_else(|| test_error("expected server settings"))?
+            .name,
+        "SyncTV"
+    );
     let room_defaults = admin_room_defaults_settings(&settings)?;
     let room_creation = admin_room_creation_settings(&settings)?;
     assert!(room_creation.enabled);
@@ -2589,6 +2600,9 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
         runtime_settings_request(
             synctv_proto::admin::RuntimeSettingsPatch {
+                server: Some(synctv_proto::admin::ServerSettingsPatch {
+                    name: Some("Family TV".to_string()),
+                }),
                 room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
                     max_rooms_per_user: Some(42),
                     ..Default::default()
@@ -2610,6 +2624,7 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
                 ..Default::default()
             },
             &[
+                "server.name",
                 "room_creation.max_rooms_per_user",
                 "email.smtp_credentials",
                 "email.smtp_proxy",
@@ -2623,6 +2638,7 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
         .map_err(|error| test_error(format!("{error:?}")))?;
 
     let patched = patch_result.settings;
+    assert_eq!(patched.server.name, "Family TV");
     assert_eq!(patched.room_creation.max_rooms_per_user, 42);
     assert!(patched.room_creation.enabled);
     assert_eq!(patched.email.smtp_host.as_deref(), Some("smtp.example.com"));
@@ -2638,6 +2654,7 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     );
     assert!(patched.email.whitelist_domains.is_empty());
     assert!(patched.cors.allowed_origins.0.is_empty());
+    assert!(patch_result.update_mask.server.name);
     assert!(patch_result.update_mask.room_creation.max_rooms_per_user);
     assert!(!patch_result.update_mask.room_creation.enabled);
     assert!(patch_result.update_mask.email.smtp_credentials);
@@ -2668,6 +2685,29 @@ fn test_runtime_settings_field_mask_ignores_values_outside_mask() -> TestResult 
     let email = patch.email.ok_or_else(|| test_error("email patch"))?;
     assert_eq!(email.enabled, Some(true));
     assert_eq!(email.smtp_port, None);
+    Ok(())
+}
+
+#[test]
+fn test_server_name_runtime_settings_patch() -> TestResult {
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                server: Some(synctv_proto::admin::ServerSettingsPatch {
+                    name: Some("Family TV".to_string()),
+                }),
+                ..Default::default()
+            },
+            &["server.name"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+
+    let result = AdminApiImpl::apply_runtime_settings_patch(test_runtime_settings(), patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    assert_eq!(result.settings.server.name, "Family TV");
+    assert!(result.update_mask.server.name);
+    assert!(result.update_mask.room_defaults.is_empty());
     Ok(())
 }
 

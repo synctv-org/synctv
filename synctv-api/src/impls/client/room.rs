@@ -1467,6 +1467,7 @@ impl ClientApiImpl {
 
         let s = reg.to_public_settings().map_err(ApiError::from)?;
         Ok(synctv_proto::client::GetPublicSettingsResponse {
+            server_name: s.server_name,
             room_creation_enabled: s.room_creation_enabled,
             max_rooms_per_user: s.max_rooms_per_user,
             default_max_members: s.default_max_members,
@@ -1505,7 +1506,7 @@ impl ClientApiImpl {
 
         Ok(synctv_proto::client::GetServerInfoResponse {
             server_id,
-            server_name: self.runtime_settings.webrtc.rp_name.clone(),
+            server_name: reg.server.name.get().map_err(ApiError::from)?,
         })
     }
 

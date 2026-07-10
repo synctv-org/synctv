@@ -4191,6 +4191,7 @@ message RoomWithStats {
 message GetPublicSettingsRequest {}
 
 message GetPublicSettingsResponse {
+  string server_name = 28;
   bool room_creation_enabled = 2;
   int64 max_rooms_per_user = 3;
   int64 default_max_members = 4;

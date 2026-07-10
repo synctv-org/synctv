@@ -56,7 +56,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tower_http::on_early_drop::{EarlyDropsAsFailures, OnEarlyDropLayer};
-use tower_http::trace::{DefaultOnFailure, TraceLayer};
+use tower_http::trace::{
+    DefaultMakeSpan, DefaultOnFailure, DefaultOnRequest, DefaultOnResponse, TraceLayer,
+};
 
 pub use auth::extract_client_ip;
 pub use error::{map_api_error, AppError, AppResult};
@@ -1537,7 +1539,12 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> anyhow::Re
             .layer(OnEarlyDropLayer::new(EarlyDropsAsFailures::new(
                 DefaultOnFailure::default(),
             )))
-            .layer(TraceLayer::new_for_http())
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                    .on_request(DefaultOnRequest::new().level(tracing::Level::DEBUG))
+                    .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+            )
             .with_state(state.clone()),
     )
 }

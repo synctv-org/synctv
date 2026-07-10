@@ -10,6 +10,7 @@ use super::{AdminApiImpl, ApiError, RequestContext};
 
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeSettingsPatch {
+    pub server: Option<ServerSettingsPatch>,
     pub room_defaults: Option<RoomDefaultsSettingsPatch>,
     pub permissions: Option<PermissionSettingsPatch>,
     pub room_creation: Option<RoomCreationSettingsPatch>,
@@ -21,6 +22,11 @@ pub struct RuntimeSettingsPatch {
     pub webrtc: Option<WebRtcSettingsPatch>,
     pub chat: Option<ChatSettingsPatch>,
     pub cors: Option<CorsSettingsPatch>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerSettingsPatch {
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -234,6 +240,9 @@ pub(crate) struct RuntimeSettingsPatchResult {
 
 fn changed_runtime_settings_sections(patch: &RuntimeSettingsPatch) -> Vec<String> {
     let mut sections = Vec::new();
+    if patch.server.is_some() {
+        sections.push("server".to_string());
+    }
     if patch.room_defaults.is_some() {
         sections.push("roomDefaults".to_string());
     }
@@ -369,6 +378,9 @@ impl AdminApiImpl {
         settings: synctv_core::service::RuntimeSettings,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
         Ok(synctv_proto::admin::RuntimeSettings {
+            server: Some(synctv_proto::admin::ServerSettings {
+                name: settings.server.name,
+            }),
             room_defaults: Some(synctv_proto::admin::RoomDefaultsSettings {
                 default_max_members: settings.room_defaults.default_max_members,
                 default_max_chat_messages: settings.room_defaults.default_max_chat_messages,
@@ -467,6 +479,13 @@ impl AdminApiImpl {
         patch: RuntimeSettingsPatch,
     ) -> Result<RuntimeSettingsPatchResult, ApiError> {
         let mut update_mask = synctv_core::service::RuntimeSettingsUpdateMask::default();
+
+        if let Some(server) = patch.server {
+            if let Some(value) = server.name {
+                current.server.name = value;
+                update_mask.server.name = true;
+            }
+        }
 
         if let Some(room_defaults) = patch.room_defaults {
             if let Some(value) = room_defaults.default_max_members {
@@ -680,6 +699,7 @@ impl AdminApiImpl {
                 .map_err(ApiError::from)?,
         )?;
         let sections = [
+            "server",
             "roomDefaults",
             "permissions",
             "roomCreation",

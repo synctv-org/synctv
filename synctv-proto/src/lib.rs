@@ -1091,6 +1091,22 @@ mod tests {
     }
 
     #[test]
+    fn public_settings_server_name_uses_proto_json_field_name() {
+        let response = crate::client::GetPublicSettingsResponse {
+            server_name: "家庭影院".to_string(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&response).expect("public settings should serialize");
+        assert_eq!(json["serverName"], "家庭影院");
+        assert!(json.get("server_name").is_none());
+
+        let decoded: crate::client::GetPublicSettingsResponse =
+            serde_json::from_value(json).expect("public settings should deserialize");
+        assert_eq!(decoded.server_name, "家庭影院");
+    }
+
+    #[test]
     fn http_json_update_user_username_request_accepts_new_username_field() {
         let json = r#"{"newUsername":"patched-name"}"#;
 

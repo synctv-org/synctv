@@ -524,7 +524,6 @@ pub fn api_runtime_settings(config: &AppConfig) -> ApiRuntimeSettings {
         },
         webrtc: WebRtcRuntimeSettings {
             filter_private_ice_candidates: config.webrtc.filter_private_ice_candidates,
-            rp_name: config.webauthn.rp_name.clone(),
         },
         proxy_slice_cache: proxy_slice_cache_runtime_settings(config),
         cluster: ClusterRuntimeSettings {

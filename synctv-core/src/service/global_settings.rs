@@ -40,8 +40,8 @@ pub use types::{
     OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
     OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet, ProxyRuntimeSettings,
     PublicSettings, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
-    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, UserRuntimeSettings,
-    WebRtcRuntimeSettings,
+    RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, ServerRuntimeSettings,
+    UserRuntimeSettings, WebRtcRuntimeSettings,
 };
 
 /// Maximum allowed value for `default_max_chat_messages` setting (0 = unlimited)
@@ -50,9 +50,17 @@ const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
 const MAX_PINNED_CHAT_MESSAGES_PER_ROOM_LIMIT: u64 = 1_000;
 
 setting!(
+    ServerNameSetting,
+    String,
+    "server.name",
+    "SyncTV".to_string(),
+    |value: &String| types::validate_server_name(value)
+);
+
+setting!(
     ServerIdentityIdSetting,
     String,
-    "room_defaults.identity_id",
+    "server.identity_id",
     String::new(),
     |value: &String| -> crate::Result<()> {
         let value = value.trim();
@@ -63,7 +71,7 @@ setting!(
             Ok(())
         } else {
             Err(crate::Error::InvalidInput(
-                "room_defaults.identity_id must be a generated srv_ prefixed UUID value".into(),
+                "server.identity_id must be a generated srv_ prefixed UUID value".into(),
             ))
         }
     }
@@ -448,8 +456,7 @@ pub struct RuntimeSettingsStore {
     /// Storage for managing all settings
     pub storage: Arc<SettingsStorage>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
-    /// Stable logical room_defaults identity, automatically initialized by the runtime.
-    pub server_identity_id: ServerIdentityIdSetting,
+    pub server: ServerSettingsStore,
     pub room_defaults: RoomDefaultsSettingsStore,
     pub permissions: PermissionSettingsStore,
     pub room_creation: RoomCreationSettingsStore,
@@ -461,6 +468,13 @@ pub struct RuntimeSettingsStore {
     pub webrtc: WebRtcSettingsStore,
     pub chat: ChatSettingsStore,
     pub cors: CorsSettingsStore,
+}
+
+#[derive(Clone)]
+pub struct ServerSettingsStore {
+    /// Stable logical server identity, automatically initialized by the runtime.
+    pub identity_id: ServerIdentityIdSetting,
+    pub name: ServerNameSetting,
 }
 
 impl std::fmt::Debug for RuntimeSettingsStore {
@@ -733,6 +747,11 @@ impl RuntimeSettingsStore {
         storage: &Arc<SettingsStorage>,
         ssrf_guard: &synctv_common::ssrf::SsrfGuard,
     ) -> Self {
+        let server = ServerSettingsStore {
+            identity_id: ServerIdentityIdSetting::new(storage.clone()),
+            name: ServerNameSetting::new(storage.clone()),
+        };
+
         let room_defaults = RoomDefaultsSettingsStore {
             default_max_members: DefaultMaxMembersSetting::new(storage.clone()),
             default_max_chat_messages: DefaultMaxChatMessagesSetting::new(storage.clone()),
@@ -805,7 +824,7 @@ impl RuntimeSettingsStore {
         Self {
             storage: storage.clone(),
             ssrf_guard: ssrf_guard.clone(),
-            server_identity_id: ServerIdentityIdSetting::new(storage.clone()),
+            server,
             room_defaults,
             permissions,
             room_creation,
@@ -844,13 +863,17 @@ impl RuntimeSettingsStore {
     }
 
     pub async fn get_or_initialize_server_id(&self) -> crate::Result<String> {
-        self.server_identity_id
+        self.server
+            .identity_id
             .get_or_initialize_with(|| format!("srv_{}", uuid::Uuid::new_v4().simple()))
             .await
     }
 
     pub fn runtime_settings(&self) -> crate::Result<RuntimeSettings> {
         Ok(RuntimeSettings {
+            server: ServerRuntimeSettings {
+                name: self.server.name.get()?,
+            },
             room_defaults: RoomDefaultsRuntimeSettings {
                 default_max_members: self.room_defaults.default_max_members.get()?,
                 default_max_chat_messages: self.room_defaults.default_max_chat_messages.get()?,
@@ -943,6 +966,12 @@ impl RuntimeSettingsStore {
         update_mask: &RuntimeSettingsUpdateMask,
     ) -> crate::Result<Vec<(String, String)>> {
         let mut entries = Vec::new();
+        Self::push_update_entry(
+            &mut entries,
+            update_mask.server.name,
+            &self.server.name,
+            &settings.server.name,
+        )?;
         Self::push_update_entry(
             &mut entries,
             update_mask.room_defaults.default_max_members,
@@ -1224,6 +1253,7 @@ impl RuntimeSettingsStore {
         };
 
         Ok(PublicSettings {
+            server_name: self.server.name.get()?,
             room_creation_enabled: self.room_creation.enabled.get()?,
             max_rooms_per_user: self.room_creation.max_rooms_per_user.get()?,
             default_max_members: self.room_defaults.default_max_members.get()?,
@@ -1287,6 +1317,32 @@ mod tests {
 
     fn validate_configs(configs: &OAuth2ProviderConfigs) -> crate::Result<()> {
         SettingsValidationContext::with_strict_policy(|ctx| configs.validate(ctx))
+    }
+
+    #[test]
+    fn test_server_name_defaults_and_validation() {
+        let store = RuntimeSettingsStore::new_for_tests();
+        let mut settings = store
+            .runtime_settings()
+            .expect("runtime settings should load");
+        assert_eq!(settings.server.name, "SyncTV");
+        assert_eq!(
+            store
+                .to_public_settings()
+                .expect("public settings should load")
+                .server_name,
+            "SyncTV"
+        );
+
+        settings.server.name = "Family TV".to_string();
+        assert!(validate_settings(&settings).is_ok());
+
+        for invalid in [String::new(), " SyncTV".to_string(), "SyncTV\n".to_string()] {
+            settings.server.name = invalid;
+            assert!(validate_settings(&settings).is_err());
+        }
+        settings.server.name = "x".repeat(129);
+        assert!(validate_settings(&settings).is_err());
     }
 
     #[test]

@@ -14,8 +14,8 @@ use crate::impls::admin::settings::{
     ChatSettingsPatch, CorsSettingsPatch, EmailSettingsPatch, OAuth2SettingsPatch,
     OptionalConfigPatch, PermissionSettingsPatch, ProxySettingsPatch, RoomAutoPlaySettingsPatch,
     RoomCreationSettingsPatch, RoomDefaultsSettingsPatch, RoomSettingsUpdatePatch,
-    RtmpSettingsPatch, RuntimeSettingsPatch, SmtpCredentialsInput, SmtpProxyInput,
-    UserSettingsPatch, WebRtcSettingsPatch,
+    RtmpSettingsPatch, RuntimeSettingsPatch, ServerSettingsPatch, SmtpCredentialsInput,
+    SmtpProxyInput, UserSettingsPatch, WebRtcSettingsPatch,
 };
 use crate::ApiError;
 
@@ -31,6 +31,9 @@ pub fn runtime_settings_patch_from_admin_proto(
         .ok_or_else(|| ApiError::InvalidInput("update_mask is required".to_string()))?
         .paths;
     let patch = RuntimeSettingsPatch {
+        server: settings
+            .server
+            .map(|patch| ServerSettingsPatch { name: patch.name }),
         room_defaults: settings
             .room_defaults
             .map(|patch| RoomDefaultsSettingsPatch {
@@ -141,6 +144,7 @@ fn select_runtime_settings_patch(
         }
 
         match path.as_str() {
+            "server.name" => select_required!(server, name, path),
             "room_defaults.default_max_members" => {
                 select_required!(room_defaults, default_max_members, path);
             }

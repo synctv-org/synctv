@@ -17,6 +17,7 @@ fn settings_json_value<T: serde::Serialize>(value: &T) -> serde_json::Value {
 
 #[derive(Debug, Clone, Copy)]
 enum SettingsSection {
+    Server,
     RoomDefaults,
     Permissions,
     RoomCreation,
@@ -32,6 +33,7 @@ enum SettingsSection {
 
 impl SettingsSection {
     const NAMES: &'static [&'static str] = &[
+        "server",
         "roomDefaults",
         "permissions",
         "roomCreation",
@@ -47,6 +49,7 @@ impl SettingsSection {
 
     fn parse(raw: &str) -> Result<Self> {
         match raw {
+            "server" => Ok(Self::Server),
             "roomDefaults" => Ok(Self::RoomDefaults),
             "permissions" => Ok(Self::Permissions),
             "roomCreation" => Ok(Self::RoomCreation),
@@ -71,6 +74,7 @@ fn select_admin_settings_section(
     group: &str,
 ) -> Result<serde_json::Value> {
     match SettingsSection::parse(group)? {
+        SettingsSection::Server => Ok(settings_json_value(&settings.server)),
         SettingsSection::RoomDefaults => Ok(settings_json_value(&settings.room_defaults)),
         SettingsSection::Permissions => Ok(settings_json_value(&settings.permissions)),
         SettingsSection::RoomCreation => Ok(settings_json_value(&settings.room_creation)),

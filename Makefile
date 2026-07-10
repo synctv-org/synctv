@@ -41,6 +41,7 @@ set +a; \
 export SYNCTV_DATA_DIR="$(DEV_DATA_DIR)"; \
 export SYNCTV_DATABASE_URL="$(DEV_DATABASE_URL)"; \
 export SYNCTV_REDIS_URL="$(DEV_REDIS_URL)"; \
+export SYNCTV_LOGGING_LEVEL="$${SYNCTV_LOGGING_LEVEL:-debug}"; \
 export SYNCTV_SERVER_HOST=0.0.0.0; \
 export SYNCTV_SERVER_PORT=8080; \
 export SYNCTV_SERVER_CORS_ALLOWED_ORIGINS='$(DEV_CORS_ORIGINS)'; \
@@ -119,7 +120,6 @@ dev-start: dev-up dev-build ## Start SyncTV in the background with development d
 	fi
 	@rm -f "$(DEV_PID)" "$(DEV_SOCKET)"
 	@$(DEV_ENV_EXPORTS); \
-	export SYNCTV_LOGGING_LEVEL="$${SYNCTV_LOGGING_LEVEL:-info}"; \
 	nohup "$(DEV_BIN)" serve >"$(DEV_LOG)" 2>&1 < /dev/null & \
 	pid="$$!"; \
 	printf "%s\n" "$$pid" >"$(DEV_PID)"; \

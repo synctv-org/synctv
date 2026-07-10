@@ -56,6 +56,7 @@ Semantics:
 
 | Key | Type | Default | Validation | Meaning |
 | --- | --- | --- | --- | --- |
+| `server.name` | string | `"SyncTV"` | 1..=128 characters, no surrounding whitespace or control characters | Public server display name |
 | `server.allowRoomCreation` | bool | `true` | bool | Whether users can create rooms |
 | `server.maxRoomsPerUser` | i64 | `10` | `1..=1000` | Maximum rooms per user |
 | `server.maxMembersPerRoom` | i64 | `100` | `1..=10000` | Maximum members per room |

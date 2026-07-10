@@ -56,6 +56,7 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 
 | Key | 类型 | 默认值 | 校验 | 说明 |
 | --- | --- | --- | --- | --- |
+| `server.name` | string | `"SyncTV"` | 1..=128 个字符，无首尾空白和控制字符 | 对客户端公开的服务器显示名称 |
 | `server.allowRoomCreation` | bool | `true` | bool | 是否允许用户创建房间 |
 | `server.maxRoomsPerUser` | i64 | `10` | `1..=1000` | 每个用户最多创建多少房间 |
 | `server.maxMembersPerRoom` | i64 | `100` | `1..=10000` | 每个房间最大成员数 |

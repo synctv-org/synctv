@@ -97,6 +97,7 @@ make dev-serve
 ```
 
 这个目标会先启动 PostgreSQL 和 Redis，然后用本机 `cargo run` 启动 SyncTV。需要完整依赖时，先运行 `make dev-stack`。
+开发启动默认使用 `debug` 日志级别，因此会输出 HTTP 请求日志；可通过 `.env.synctv` 中的 `SYNCTV_LOGGING_LEVEL` 覆盖。
 
 后台运行使用同一套开发配置：
 

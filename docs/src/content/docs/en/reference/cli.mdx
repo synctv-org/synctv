@@ -451,14 +451,15 @@ Runtime settings are changed through the management endpoint. They are not the s
 ```bash
 synctv settings list
 synctv settings get email
-synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
-synctv settings update permissions --set guestDefaultPermissions=view_member_list,use_webrtc
+synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
 synctv settings test-email admin@example.com
 ```
 
+`--request-json` accepts the standard `UpdateSettingsRequest` ProtoJSON shape. `updateMask` is a comma-separated lowerCamel FieldMask string.
+
 See [Runtime Settings Reference](../runtime-settings/) for all keys, defaults, and validation rules.
 
-SMTP host, port, username, password, and sender identity are startup configuration, not runtime settings. `settings test-email` sends through the SMTP configuration loaded by the running service.
+SMTP host, port, credentials, SOCKS5 proxy, and sender identity are managed through the `email` runtime settings. `settings test-email` uses the current hot-reloaded configuration. Settings reads redact the SMTP and proxy passwords.
 
 Security note: do not expose the management TCP endpoint publicly. Use strong tokens and prefer internal networks or VPNs.
 

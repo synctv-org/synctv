@@ -3817,14 +3817,16 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "settings",
             "update",
-            "roomCreation",
-            "--patch-json",
-            r#"{"approvalRequired":true}"#,
+            "--request-json",
+            r#"{"settings":{"roomCreation":{"approvalRequired":true}},"updateMask":"roomCreation.approvalRequired"}"#,
         ],
         "enable room creation review",
     )
     .await;
-    assert_eq!(updated_global_room_settings["approvalRequired"], true);
+    assert_eq!(
+        updated_global_room_settings["roomCreation"]["approvalRequired"],
+        true
+    );
 
     let review_room = run_synctv_remote_cli_json(
         &server,
@@ -3866,16 +3868,17 @@ async fn full_stack_cli_media_resource_and_member_commands_cover_status_permissi
         &[
             "settings",
             "update",
-            "roomCreation",
-            "--patch-json",
-            r#"{"approvalRequired":false}"#,
+            "--request-json",
+            r#"{"settings":{"roomCreation":{"approvalRequired":false}},"updateMask":"roomCreation.approvalRequired"}"#,
         ],
         "disable room creation review",
     )
     .await;
-    assert!(!reset_global_room_review["approvalRequired"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(
+        !reset_global_room_review["roomCreation"]["approvalRequired"]
+            .as_bool()
+            .unwrap_or(false)
+    );
 
     let room_password_set = run_synctv_remote_cli_json(
         &server,
@@ -5038,9 +5041,8 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
         &[
             "settings",
             "update",
-            "roomCreation",
-            "--patch-json",
-            r#"{"maxRoomsPerUser":42}"#,
+            "--request-json",
+            r#"{"settings":{"roomCreation":{"maxRoomsPerUser":"42"}},"updateMask":"roomCreation.maxRoomsPerUser"}"#,
         ],
     )
     .await;
@@ -5052,7 +5054,10 @@ async fn full_stack_cli_settings_and_system_commands_manage_remote_runtime_state
     );
     let settings_update_body: Value = serde_json::from_slice(&settings_update.stdout)
         .expect("CLI settings update output should be JSON");
-    assert_eq!(settings_update_body["maxRoomsPerUser"], "42");
+    assert_eq!(
+        settings_update_body["roomCreation"]["maxRoomsPerUser"],
+        "42"
+    );
 
     let mut management_client =
         management_proto::management_service_client::ManagementServiceClient::connect(

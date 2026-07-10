@@ -224,7 +224,6 @@ The application uses split database/Redis configuration so credentials can stay 
 | `config.cluster` | Cluster coordination and discovery settings |
 | `config.jwt` | Token durations; signing secret comes from a secret |
 | `config.bootstrap` | Bootstrap root-user settings |
-| `config.email` | SMTP base settings; credentials can come from a secret |
 | `config.livestream` | RTMP/HLS/pull timeout and cache settings |
 | `config.fileStorage` | Uploaded file storage backends and product-level backend routing |
 | `config.cache` | Business L1/L2 cache settings |

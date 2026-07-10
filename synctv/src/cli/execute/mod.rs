@@ -84,7 +84,6 @@ pub(in crate::cli) use db::{database_summary, DatabaseCliOutput};
 #[cfg(test)]
 pub(in crate::cli) use serve::switch_process_working_dir_to_data_dir;
 #[cfg(test)]
-pub(in crate::cli) use settings::parse_management_settings_patch_json;
 #[cfg(test)]
 pub(in crate::cli) use stop::{
     stop_stream_disconnect_can_be_treated_as_success, stop_stream_end_can_be_treated_as_success,
@@ -918,7 +917,7 @@ fn playlist_source_config_json_to_proto(
     })
 }
 
-fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>
+pub(in crate::cli) fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>
 where
     T: DeserializeOwned,
 {

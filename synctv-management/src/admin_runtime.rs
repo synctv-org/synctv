@@ -403,17 +403,8 @@ pub struct GetSettingsQuery;
 
 #[derive(Debug, Clone)]
 pub struct UpdateSettingsCommand {
-    pub room_defaults: Option<admin_proto::RoomDefaultsSettingsPatch>,
-    pub permissions: Option<admin_proto::PermissionSettingsPatch>,
-    pub room_creation: Option<admin_proto::RoomCreationSettingsPatch>,
-    pub user: Option<admin_proto::UserSettingsPatch>,
-    pub oauth2: Option<admin_proto::OAuth2SettingsPatch>,
-    pub proxy: Option<admin_proto::ProxySettingsPatch>,
-    pub rtmp: Option<admin_proto::RtmpSettingsPatch>,
-    pub email: Option<admin_proto::EmailSettingsPatch>,
-    pub webrtc: Option<admin_proto::WebRtcSettingsPatch>,
-    pub chat: Option<admin_proto::ChatSettingsPatch>,
-    pub cors: Option<admin_proto::CorsSettingsPatch>,
+    pub settings: admin_proto::RuntimeSettingsPatch,
+    pub update_mask: synctv_proto::FieldMask,
 }
 
 #[derive(Debug, Clone)]

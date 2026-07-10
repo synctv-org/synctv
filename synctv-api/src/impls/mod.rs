@@ -688,8 +688,8 @@ impl ApiError {
             | Self::OAuth2ProviderLinkFailed { message, .. }
             | Self::OAuth2LoginFailed { message, .. }
             | Self::OAuth2ResponseBuildFailed { message, .. }
-            | Self::OAuth2General { message, .. } => message,
-            Self::InvalidRequest { message, .. } => message,
+            | Self::OAuth2General { message, .. }
+            | Self::InvalidRequest { message, .. } => message,
             Self::RangeNotSatisfiable { .. } => "Requested byte range is not satisfiable",
         }
     }

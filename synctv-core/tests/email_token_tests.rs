@@ -467,8 +467,11 @@ async fn test_failed_verification_email_send_surfaces_error() {
     let email_service = EmailService::new(Arc::new(StaticEmailConfigProvider(Some(EmailConfig {
         smtp_host: "127.0.0.1".to_string(),
         smtp_port: 9,
-        smtp_username: "test".to_string(),
-        smtp_password: "test".to_string(),
+        smtp_credentials: Some(synctv_core::service::SmtpCredentials {
+            username: "test".to_string(),
+            password: "test".to_string(),
+        }),
+        smtp_proxy: None,
         from_email: "noreply@example.com".to_string(),
         from_name: "SyncTV".to_string(),
         use_tls: false,

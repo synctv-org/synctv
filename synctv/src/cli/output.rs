@@ -167,7 +167,7 @@ fn redact_known_secret_fields(map: &mut Map<String, Value>) {
         "auth_token",
         "bearer_token",
         "basic_password",
-        "smtp_password",
+        "password",
         "root_password",
         "client_secret",
         "credential_encryption_key",

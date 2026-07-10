@@ -599,14 +599,6 @@ config:
     websocketOutbound: 256
     auditBuffer: 10000
 
-  ## EmailConfig (only rendered if smtpHost is set)
-  email:
-    smtpHost: ""
-    smtpPort: 587
-    fromEmail: ""
-    fromName: "SyncTV"
-    useTls: true
-
   ## WebAuthnConfig
   webauthn:
     enabled: false
@@ -678,11 +670,6 @@ secrets:
     ## Leave empty to auto-generate a secure 32-character random secret (recommended)
     ## On upgrades, the existing secret is preserved automatically
     grpcSecret: ""
-
-  ## Email SMTP Credentials (only used when email.smtpHost is set)
-  email:
-    username: ""
-    password: ""
 
   ## Security secrets injected via SYNCTV_SECURITY_*.
   security:

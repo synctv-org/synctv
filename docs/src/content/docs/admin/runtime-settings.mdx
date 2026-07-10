@@ -10,13 +10,13 @@ runtime settings 是存储在 PostgreSQL 的热更新产品策略。它们适合
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update user --set enablePasswordSignup=true
+synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
 ```
 
 权限默认值也属于 runtime settings。guest 使用独立上限，不能写入播放列表、媒体、聊天写入或管理权限：
 
 ```bash
-synctv settings update permissions --set guestDefaultPermissions=view_member_list,use_webrtc
+synctv settings update --request-json '{"settings":{"permissions":{"guestDefaultPermissions":"40"}},"updateMask":"permissions.guestDefaultPermissions"}'
 ```
 
 ## 判断是否属于 runtime settings

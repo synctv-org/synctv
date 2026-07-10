@@ -279,18 +279,6 @@ spec:
                 secretKeyRef:
                   name: {{ include "synctv.secretName" . }}
                   key: SYNCTV_CLUSTER_SECRET
-            {{- if .Values.config.email.smtpHost }}
-            - name: SYNCTV_EMAIL_SMTP_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_EMAIL_SMTP_USERNAME
-            - name: SYNCTV_EMAIL_SMTP_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "synctv.secretName" . }}
-                  key: SYNCTV_EMAIL_SMTP_PASSWORD
-            {{- end }}
             - name: SYNCTV_SECURITY_CREDENTIAL_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:

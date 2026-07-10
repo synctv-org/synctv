@@ -87,8 +87,8 @@ async fn email_signup_registry(pool: &PgPool) -> Arc<RuntimeSettingsStore> {
         .runtime_settings()
         .checked("runtime settings should load");
     settings.email.enabled = true;
-    settings.email.smtp_host = "smtp.example.com".to_string();
-    settings.email.from_email = "noreply@example.com".to_string();
+    settings.email.smtp_host = Some("smtp.example.com".to_string());
+    settings.email.from_email = Some("noreply@example.com".to_string());
     settings.user.enable_email_signup = true;
     settings.user.email_signup_need_review = false;
     registry

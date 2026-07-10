@@ -21,7 +21,7 @@
 //! ```
 
 use crate::models::{room_settings::MaxMembers, SettingsValidationContext};
-use crate::service::email::{EmailConfig, EmailConfigProvider};
+use crate::service::email::{EmailConfig, EmailConfigProvider, SmtpCredentials, SmtpProxyConfig};
 use crate::service::{
     settings_vars::{Setting, SettingChangeReceiver, SettingsStorage},
     SettingsService,
@@ -38,8 +38,8 @@ pub use types::{
     EmailRuntimeSettings, IceServerList, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
     OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
     OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2RuntimeSettings, OAuth2SignupPolicy,
-    PermissionRuntimeSettings, PermissionSet, ProxyRuntimeSettings, PublicSettings,
-    RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
+    OptionalRuntimeConfig, PermissionRuntimeSettings, PermissionSet, ProxyRuntimeSettings,
+    PublicSettings, RoomCreationRuntimeSettings, RoomDefaultsRuntimeSettings, RoomPasswordPolicy,
     RtmpRuntimeSettings, RuntimeSettings, RuntimeSettingsUpdateMask, UserRuntimeSettings,
     WebRtcRuntimeSettings,
 };
@@ -198,9 +198,17 @@ setting!(MovieProxySetting, bool, "proxy.movie_proxy", true);
 setting!(LiveProxySetting, bool, "proxy.live_proxy", true);
 setting!(
     CustomPublishHostSetting,
-    String,
+    OptionalRuntimeConfig<String>,
     "rtmp.custom_publish_host",
-    String::new()
+    OptionalRuntimeConfig::default(),
+    |value: &OptionalRuntimeConfig<String>| -> crate::Result<()> {
+        if value.0.as_ref().is_some_and(|host| host.trim().is_empty()) {
+            return Err(crate::Error::InvalidInput(
+                "rtmp.custom_publish_host must be non-empty when configured".to_string(),
+            ));
+        }
+        Ok(())
+    }
 );
 setting!(
     TsDisguisedAsPngSetting,
@@ -212,9 +220,17 @@ setting!(
 setting!(EmailEnabledSetting, bool, "email.enabled", false);
 setting!(
     EmailSmtpHostSetting,
-    String,
+    OptionalRuntimeConfig<String>,
     "email.smtp_host",
-    String::new()
+    OptionalRuntimeConfig::default(),
+    |value: &OptionalRuntimeConfig<String>| -> crate::Result<()> {
+        if value.0.as_ref().is_some_and(|host| host.trim().is_empty()) {
+            return Err(crate::Error::InvalidInput(
+                "email.smtp_host must be non-empty when configured".to_string(),
+            ));
+        }
+        Ok(())
+    }
 );
 setting!(
     EmailSmtpPortSetting,
@@ -232,33 +248,40 @@ setting!(
     }
 );
 setting!(
-    EmailSmtpUsernameSetting,
-    String,
-    "email.smtp_username",
-    String::new()
+    EmailSmtpCredentialsSetting,
+    OptionalRuntimeConfig<SmtpCredentials>,
+    "email.smtp_credentials",
+    OptionalRuntimeConfig::default(),
+    |value: &OptionalRuntimeConfig<SmtpCredentials>| -> crate::Result<()> {
+        match &value.0 {
+            Some(credentials) => credentials.validate(),
+            None => Ok(()),
+        }
+    }
 );
 setting!(
-    EmailSmtpPasswordSetting,
-    String,
-    "email.smtp_password",
-    String::new()
+    EmailSmtpProxySetting,
+    OptionalRuntimeConfig<SmtpProxyConfig>,
+    "email.smtp_proxy",
+    OptionalRuntimeConfig::default(),
+    |value: &OptionalRuntimeConfig<SmtpProxyConfig>| -> crate::Result<()> {
+        match &value.0 {
+            Some(proxy) => proxy.validate(),
+            None => Ok(()),
+        }
+    }
 );
 setting!(EmailUseTlsSetting, bool, "email.use_tls", true);
 setting!(
     EmailFromEmailSetting,
-    String,
+    OptionalRuntimeConfig<String>,
     "email.from_email",
-    String::new(),
-    |value: &String| -> crate::Result<()> {
-        if value.is_empty()
-            || (value.contains('@') && !value.starts_with('@') && !value.ends_with('@'))
-        {
-            Ok(())
-        } else {
-            Err(crate::Error::InvalidInput(
-                "email.from_email must be empty or a valid email address".into(),
-            ))
+    OptionalRuntimeConfig::default(),
+    |value: &OptionalRuntimeConfig<String>| -> crate::Result<()> {
+        if let Some(email) = &value.0 {
+            crate::service::EmailService::validate_email(email)?;
         }
+        Ok(())
     }
 );
 setting!(
@@ -500,8 +523,8 @@ pub struct EmailSettingsStore {
     pub enabled: EmailEnabledSetting,
     pub smtp_host: EmailSmtpHostSetting,
     pub smtp_port: EmailSmtpPortSetting,
-    pub smtp_username: EmailSmtpUsernameSetting,
-    pub smtp_password: EmailSmtpPasswordSetting,
+    pub smtp_credentials: EmailSmtpCredentialsSetting,
+    pub smtp_proxy: EmailSmtpProxySetting,
     pub use_tls: EmailUseTlsSetting,
     pub from_email: EmailFromEmailSetting,
     pub from_name: EmailFromNameSetting,
@@ -565,8 +588,8 @@ impl RuntimeEmailConfigProvider {
                     event = recv_email_setting_change(&mut subscriptions.enabled) => event,
                     event = recv_email_setting_change(&mut subscriptions.smtp_host) => event,
                     event = recv_email_setting_change(&mut subscriptions.smtp_port) => event,
-                    event = recv_email_setting_change(&mut subscriptions.smtp_username) => event,
-                    event = recv_email_setting_change(&mut subscriptions.smtp_password) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_credentials) => event,
+                    event = recv_email_setting_change(&mut subscriptions.smtp_proxy) => event,
                     event = recv_email_setting_change(&mut subscriptions.use_tls) => event,
                     event = recv_email_setting_change(&mut subscriptions.from_email) => event,
                     event = recv_email_setting_change(&mut subscriptions.from_name) => event,
@@ -602,12 +625,12 @@ impl RuntimeEmailConfigProvider {
 
 struct RuntimeEmailSettingSubscriptions {
     enabled: SettingChangeReceiver<bool>,
-    smtp_host: SettingChangeReceiver<String>,
+    smtp_host: SettingChangeReceiver<OptionalRuntimeConfig<String>>,
     smtp_port: SettingChangeReceiver<u16>,
-    smtp_username: SettingChangeReceiver<String>,
-    smtp_password: SettingChangeReceiver<String>,
+    smtp_credentials: SettingChangeReceiver<OptionalRuntimeConfig<SmtpCredentials>>,
+    smtp_proxy: SettingChangeReceiver<OptionalRuntimeConfig<SmtpProxyConfig>>,
     use_tls: SettingChangeReceiver<bool>,
-    from_email: SettingChangeReceiver<String>,
+    from_email: SettingChangeReceiver<OptionalRuntimeConfig<String>>,
     from_name: SettingChangeReceiver<String>,
 }
 
@@ -618,8 +641,8 @@ fn subscribe_email_settings(
         enabled: settings.email.enabled.subscribe_changes()?,
         smtp_host: settings.email.smtp_host.subscribe_changes()?,
         smtp_port: settings.email.smtp_port.subscribe_changes()?,
-        smtp_username: settings.email.smtp_username.subscribe_changes()?,
-        smtp_password: settings.email.smtp_password.subscribe_changes()?,
+        smtp_credentials: settings.email.smtp_credentials.subscribe_changes()?,
+        smtp_proxy: settings.email.smtp_proxy.subscribe_changes()?,
         use_tls: settings.email.use_tls.subscribe_changes()?,
         from_email: settings.email.from_email.subscribe_changes()?,
         from_name: settings.email.from_name.subscribe_changes()?,
@@ -633,11 +656,35 @@ impl EmailConfigProvider for RuntimeEmailConfigProvider {
         }
 
         Ok(Some(EmailConfig {
-            smtp_host: self.settings.email.smtp_host.get()?.trim().to_string(),
+            smtp_host: self
+                .settings
+                .email
+                .smtp_host
+                .get()?
+                .0
+                .ok_or_else(|| {
+                    crate::Error::InvalidInput(
+                        "email.smtp_host is required when email.enabled is true".to_string(),
+                    )
+                })?
+                .trim()
+                .to_string(),
             smtp_port: self.settings.email.smtp_port.get()?,
-            smtp_username: self.settings.email.smtp_username.get()?,
-            smtp_password: self.settings.email.smtp_password.get()?,
-            from_email: self.settings.email.from_email.get()?.trim().to_string(),
+            smtp_credentials: self.settings.email.smtp_credentials.get()?.0,
+            smtp_proxy: self.settings.email.smtp_proxy.get()?.0,
+            from_email: self
+                .settings
+                .email
+                .from_email
+                .get()?
+                .0
+                .ok_or_else(|| {
+                    crate::Error::InvalidInput(
+                        "email.from_email is required when email.enabled is true".to_string(),
+                    )
+                })?
+                .trim()
+                .to_string(),
             from_name: self.settings.email.from_name.get()?.trim().to_string(),
             use_tls: self.settings.email.use_tls.get()?,
         }))
@@ -732,8 +779,8 @@ impl RuntimeSettingsStore {
             enabled: EmailEnabledSetting::new(storage.clone()),
             smtp_host: EmailSmtpHostSetting::new(storage.clone()),
             smtp_port: EmailSmtpPortSetting::new(storage.clone()),
-            smtp_username: EmailSmtpUsernameSetting::new(storage.clone()),
-            smtp_password: EmailSmtpPasswordSetting::new(storage.clone()),
+            smtp_credentials: EmailSmtpCredentialsSetting::new(storage.clone()),
+            smtp_proxy: EmailSmtpProxySetting::new(storage.clone()),
             use_tls: EmailUseTlsSetting::new(storage.clone()),
             from_email: EmailFromEmailSetting::new(storage.clone()),
             from_name: EmailFromNameSetting::new(storage.clone()),
@@ -836,17 +883,17 @@ impl RuntimeSettingsStore {
                 live_proxy: self.proxy.live_proxy.get()?,
             },
             rtmp: RtmpRuntimeSettings {
-                custom_publish_host: self.rtmp.custom_publish_host.get()?,
+                custom_publish_host: self.rtmp.custom_publish_host.get()?.0,
                 ts_disguised_as_png: self.rtmp.ts_disguised_as_png.get()?,
             },
             email: EmailRuntimeSettings {
                 enabled: self.email.enabled.get()?,
-                smtp_host: self.email.smtp_host.get()?,
+                smtp_host: self.email.smtp_host.get()?.0,
                 smtp_port: self.email.smtp_port.get()?,
-                smtp_username: self.email.smtp_username.get()?,
-                smtp_password: self.email.smtp_password.get()?,
+                smtp_credentials: self.email.smtp_credentials.get()?.0,
+                smtp_proxy: self.email.smtp_proxy.get()?.0,
                 use_tls: self.email.use_tls.get()?,
-                from_email: self.email.from_email.get()?,
+                from_email: self.email.from_email.get()?.0,
                 from_name: self.email.from_name.get()?,
                 whitelist_enabled: self.email.whitelist_enabled.get()?,
                 whitelist_domains: Self::normalize_email_whitelist_domains(
@@ -1018,7 +1065,7 @@ impl RuntimeSettingsStore {
             &mut entries,
             update_mask.rtmp.custom_publish_host,
             &self.rtmp.custom_publish_host,
-            &settings.rtmp.custom_publish_host,
+            &OptionalRuntimeConfig(settings.rtmp.custom_publish_host.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1037,7 +1084,7 @@ impl RuntimeSettingsStore {
             &mut entries,
             update_mask.email.smtp_host,
             &self.email.smtp_host,
-            &settings.email.smtp_host,
+            &OptionalRuntimeConfig(settings.email.smtp_host.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1047,15 +1094,15 @@ impl RuntimeSettingsStore {
         )?;
         Self::push_update_entry(
             &mut entries,
-            update_mask.email.smtp_username,
-            &self.email.smtp_username,
-            &settings.email.smtp_username,
+            update_mask.email.smtp_credentials,
+            &self.email.smtp_credentials,
+            &OptionalRuntimeConfig(settings.email.smtp_credentials.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
-            update_mask.email.smtp_password,
-            &self.email.smtp_password,
-            &settings.email.smtp_password,
+            update_mask.email.smtp_proxy,
+            &self.email.smtp_proxy,
+            &OptionalRuntimeConfig(settings.email.smtp_proxy.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1067,7 +1114,7 @@ impl RuntimeSettingsStore {
             &mut entries,
             update_mask.email.from_email,
             &self.email.from_email,
-            &settings.email.from_email,
+            &OptionalRuntimeConfig(settings.email.from_email.clone()),
         )?;
         Self::push_update_entry(
             &mut entries,
@@ -1195,7 +1242,7 @@ impl RuntimeSettingsStore {
             movie_proxy: self.proxy.movie_proxy.get()?,
             live_proxy: self.proxy.live_proxy.get()?,
             ts_disguised_as_png: self.rtmp.ts_disguised_as_png.get()?,
-            custom_publish_host: self.rtmp.custom_publish_host.get()?,
+            custom_publish_host: self.rtmp.custom_publish_host.get()?.0,
             email_whitelist_enabled,
             email_whitelist_domains,
         })
@@ -1535,7 +1582,7 @@ mod tests {
     #[test]
     fn test_public_settings_includes_nonempty_custom_publish_host() {
         let mut settings = PublicSettings::defaults();
-        settings.custom_publish_host = "rtmp://live.example.com".to_string();
+        settings.custom_publish_host = Some("rtmp://live.example.com".to_string());
         let json = ok(
             serde_json::to_string(&settings),
             "public settings should serialize",

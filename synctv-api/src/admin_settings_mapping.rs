@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use synctv_core::{
     models::PlayMode,
@@ -12,9 +12,10 @@ use synctv_proto::{admin as admin_proto, client as client_proto};
 
 use crate::impls::admin::settings::{
     ChatSettingsPatch, CorsSettingsPatch, EmailSettingsPatch, OAuth2SettingsPatch,
-    PermissionSettingsPatch, ProxySettingsPatch, RoomAutoPlaySettingsPatch,
+    OptionalConfigPatch, PermissionSettingsPatch, ProxySettingsPatch, RoomAutoPlaySettingsPatch,
     RoomCreationSettingsPatch, RoomDefaultsSettingsPatch, RoomSettingsUpdatePatch,
-    RtmpSettingsPatch, RuntimeSettingsPatch, UserSettingsPatch, WebRtcSettingsPatch,
+    RtmpSettingsPatch, RuntimeSettingsPatch, SmtpCredentialsInput, SmtpProxyInput,
+    UserSettingsPatch, WebRtcSettingsPatch,
 };
 use crate::ApiError;
 
@@ -22,54 +23,30 @@ pub fn runtime_settings_patch_from_admin_proto(
     req: admin_proto::UpdateSettingsRequest,
 ) -> Result<RuntimeSettingsPatch, ApiError> {
     crate::impls::validate_proto_request(&req)?;
-    runtime_settings_patch_from_admin_proto_parts(AdminUpdateSettingsProtoParts {
-        room_defaults: req.room_defaults,
-        permissions: req.permissions,
-        room_creation: req.room_creation,
-        user: req.user,
-        oauth2: req.oauth2,
-        proxy: req.proxy,
-        rtmp: req.rtmp,
-        email: req.email,
-        webrtc: req.webrtc,
-        chat: req.chat,
-        cors: req.cors,
-    })
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct AdminUpdateSettingsProtoParts {
-    pub room_defaults: Option<admin_proto::RoomDefaultsSettingsPatch>,
-    pub permissions: Option<admin_proto::PermissionSettingsPatch>,
-    pub room_creation: Option<admin_proto::RoomCreationSettingsPatch>,
-    pub user: Option<admin_proto::UserSettingsPatch>,
-    pub oauth2: Option<admin_proto::OAuth2SettingsPatch>,
-    pub proxy: Option<admin_proto::ProxySettingsPatch>,
-    pub rtmp: Option<admin_proto::RtmpSettingsPatch>,
-    pub email: Option<admin_proto::EmailSettingsPatch>,
-    pub webrtc: Option<admin_proto::WebRtcSettingsPatch>,
-    pub chat: Option<admin_proto::ChatSettingsPatch>,
-    pub cors: Option<admin_proto::CorsSettingsPatch>,
-}
-
-pub fn runtime_settings_patch_from_admin_proto_parts(
-    parts: AdminUpdateSettingsProtoParts,
-) -> Result<RuntimeSettingsPatch, ApiError> {
-    Ok(RuntimeSettingsPatch {
-        room_defaults: parts.room_defaults.map(|patch| RoomDefaultsSettingsPatch {
-            default_max_members: patch.default_max_members,
-            default_max_chat_messages: patch.default_max_chat_messages,
-        }),
-        permissions: parts.permissions.map(|patch| PermissionSettingsPatch {
+    let settings = req
+        .settings
+        .ok_or_else(|| ApiError::InvalidInput("settings is required".to_string()))?;
+    let paths = req
+        .update_mask
+        .ok_or_else(|| ApiError::InvalidInput("update_mask is required".to_string()))?
+        .paths;
+    let patch = RuntimeSettingsPatch {
+        room_defaults: settings
+            .room_defaults
+            .map(|patch| RoomDefaultsSettingsPatch {
+                default_max_members: patch.default_max_members,
+                default_max_chat_messages: patch.default_max_chat_messages,
+            }),
+        permissions: settings.permissions.map(|patch| PermissionSettingsPatch {
             admin_default_permissions: patch.admin_default_permissions,
             member_default_permissions: patch.member_default_permissions,
             guest_default_permissions: patch.guest_default_permissions,
         }),
-        room_creation: parts
+        room_creation: settings
             .room_creation
             .map(room_creation_settings_patch_from_admin_proto)
             .transpose()?,
-        user: parts.user.map(|patch| UserSettingsPatch {
+        user: settings.user.map(|patch| UserSettingsPatch {
             enable_password_signup: patch.enable_password_signup,
             password_signup_need_review: patch.password_signup_need_review,
             enable_email_signup: patch.enable_email_signup,
@@ -78,44 +55,177 @@ pub fn runtime_settings_patch_from_admin_proto_parts(
             webauthn_signup_need_review: patch.webauthn_signup_need_review,
             enable_guest: patch.enable_guest,
         }),
-        oauth2: parts
+        oauth2: settings
             .oauth2
             .map(oauth2_settings_patch_from_admin_proto)
             .transpose()?,
-        proxy: parts.proxy.map(|patch| ProxySettingsPatch {
+        proxy: settings.proxy.map(|patch| ProxySettingsPatch {
             movie_proxy: patch.movie_proxy,
             live_proxy: patch.live_proxy,
         }),
-        rtmp: parts.rtmp.map(|patch| RtmpSettingsPatch {
-            custom_publish_host: patch.custom_publish_host,
+        rtmp: settings.rtmp.map(|patch| RtmpSettingsPatch {
+            custom_publish_host: patch.custom_publish_host.map(OptionalConfigPatch::Set),
             ts_disguised_as_png: patch.ts_disguised_as_png,
         }),
-        email: parts.email.map(|patch| EmailSettingsPatch {
-            enabled: patch.enabled,
-            smtp_host: patch.smtp_host,
-            smtp_port: patch.smtp_port,
-            smtp_username: patch.smtp_username,
-            smtp_password: patch.smtp_password,
-            use_tls: patch.use_tls,
-            from_email: patch.from_email,
-            from_name: patch.from_name,
-            whitelist_enabled: patch.whitelist_enabled,
-            whitelist_domains: patch.whitelist_domains.map(|domains| domains.values),
+        email: settings.email.map(email_settings_patch_from_admin_proto),
+        webrtc: settings.webrtc.map(|patch| WebRtcSettingsPatch {
+            external_ice_servers: Some(
+                patch
+                    .external_ice_servers
+                    .into_iter()
+                    .map(core_ice_server)
+                    .collect(),
+            ),
         }),
-        webrtc: parts.webrtc.map(|patch| WebRtcSettingsPatch {
-            external_ice_servers: patch
-                .external_ice_servers
-                .map(|servers| servers.values.into_iter().map(core_ice_server).collect()),
-        }),
-        chat: parts.chat.map(|patch| ChatSettingsPatch {
+        chat: settings.chat.map(|patch| ChatSettingsPatch {
             max_messages_per_room: patch.max_messages_per_room,
             max_pinned_messages_per_room: patch.max_pinned_messages_per_room,
             message_retention_days: patch.message_retention_days,
         }),
-        cors: parts.cors.map(|patch| CorsSettingsPatch {
-            allowed_origins: patch.allowed_origins.map(|origins| origins.values),
+        cors: settings.cors.map(|patch| CorsSettingsPatch {
+            allowed_origins: Some(patch.allowed_origins),
         }),
-    })
+    };
+    select_runtime_settings_patch(patch, &paths)
+}
+
+fn required_mask_value<T>(value: Option<T>, path: &str) -> Result<T, ApiError> {
+    value.ok_or_else(|| ApiError::InvalidInput(format!("{path} is required by update_mask")))
+}
+
+fn select_runtime_settings_patch(
+    mut source: RuntimeSettingsPatch,
+    paths: &[String],
+) -> Result<RuntimeSettingsPatch, ApiError> {
+    if paths.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "update_mask.paths must not be empty".to_string(),
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut selected = RuntimeSettingsPatch::default();
+
+    macro_rules! select_required {
+        ($section:ident, $field:ident, $path:expr) => {{
+            let value = source
+                .$section
+                .as_mut()
+                .and_then(|section| section.$field.take());
+            selected
+                .$section
+                .get_or_insert_with(Default::default)
+                .$field = Some(required_mask_value(value, $path)?);
+        }};
+    }
+
+    macro_rules! select_optional {
+        ($section:ident, $field:ident) => {{
+            let value = source
+                .$section
+                .as_mut()
+                .and_then(|section| section.$field.take())
+                .unwrap_or(OptionalConfigPatch::Clear);
+            selected
+                .$section
+                .get_or_insert_with(Default::default)
+                .$field = Some(value);
+        }};
+    }
+
+    for path in paths {
+        if !seen.insert(path.as_str()) {
+            return Err(ApiError::InvalidInput(format!(
+                "duplicate update_mask path '{path}'"
+            )));
+        }
+
+        match path.as_str() {
+            "room_defaults.default_max_members" => {
+                select_required!(room_defaults, default_max_members, path);
+            }
+            "room_defaults.default_max_chat_messages" => {
+                select_required!(room_defaults, default_max_chat_messages, path);
+            }
+            "permissions.admin_default_permissions" => {
+                select_required!(permissions, admin_default_permissions, path);
+            }
+            "permissions.member_default_permissions" => {
+                select_required!(permissions, member_default_permissions, path);
+            }
+            "permissions.guest_default_permissions" => {
+                select_required!(permissions, guest_default_permissions, path);
+            }
+            "room_creation.enabled" => select_required!(room_creation, enabled, path),
+            "room_creation.approval_required" => {
+                select_required!(room_creation, approval_required, path);
+            }
+            "room_creation.password_policy" => {
+                select_required!(room_creation, password_policy, path);
+            }
+            "room_creation.max_rooms_per_user" => {
+                select_required!(room_creation, max_rooms_per_user, path);
+            }
+            "user.enable_password_signup" => {
+                select_required!(user, enable_password_signup, path);
+            }
+            "user.password_signup_need_review" => {
+                select_required!(user, password_signup_need_review, path);
+            }
+            "user.enable_email_signup" => select_required!(user, enable_email_signup, path),
+            "user.email_signup_need_review" => {
+                select_required!(user, email_signup_need_review, path);
+            }
+            "user.enable_webauthn_signup" => {
+                select_required!(user, enable_webauthn_signup, path);
+            }
+            "user.webauthn_signup_need_review" => {
+                select_required!(user, webauthn_signup_need_review, path);
+            }
+            "user.enable_guest" => select_required!(user, enable_guest, path),
+            "oauth2.providers" => select_required!(oauth2, providers, path),
+            "proxy.movie_proxy" => select_required!(proxy, movie_proxy, path),
+            "proxy.live_proxy" => select_required!(proxy, live_proxy, path),
+            "rtmp.custom_publish_host" => select_optional!(rtmp, custom_publish_host),
+            "rtmp.ts_disguised_as_png" => {
+                select_required!(rtmp, ts_disguised_as_png, path);
+            }
+            "email.enabled" => select_required!(email, enabled, path),
+            "email.smtp_host" => select_optional!(email, smtp_host),
+            "email.smtp_port" => select_required!(email, smtp_port, path),
+            "email.smtp_credentials" => select_optional!(email, smtp_credentials),
+            "email.smtp_proxy" => select_optional!(email, smtp_proxy),
+            "email.use_tls" => select_required!(email, use_tls, path),
+            "email.from_email" => select_optional!(email, from_email),
+            "email.from_name" => select_required!(email, from_name, path),
+            "email.whitelist_enabled" => {
+                select_required!(email, whitelist_enabled, path);
+            }
+            "email.whitelist_domains" => {
+                select_required!(email, whitelist_domains, path);
+            }
+            "webrtc.external_ice_servers" => {
+                select_required!(webrtc, external_ice_servers, path);
+            }
+            "chat.max_messages_per_room" => {
+                select_required!(chat, max_messages_per_room, path);
+            }
+            "chat.max_pinned_messages_per_room" => {
+                select_required!(chat, max_pinned_messages_per_room, path);
+            }
+            "chat.message_retention_days" => {
+                select_required!(chat, message_retention_days, path);
+            }
+            "cors.allowed_origins" => select_required!(cors, allowed_origins, path),
+            _ => {
+                return Err(ApiError::InvalidInput(format!(
+                    "unsupported update_mask path '{path}'"
+                )))
+            }
+        }
+    }
+
+    Ok(selected)
 }
 
 pub fn room_settings_patch_from_admin_proto(
@@ -136,6 +246,36 @@ pub fn room_settings_patch_from_admin_proto(
         guest_added_permissions: req.guest_added_permissions,
         guest_removed_permissions: req.guest_removed_permissions,
     })
+}
+
+fn email_settings_patch_from_admin_proto(
+    patch: admin_proto::EmailSettingsPatch,
+) -> EmailSettingsPatch {
+    EmailSettingsPatch {
+        enabled: patch.enabled,
+        smtp_host: patch.smtp_host.map(OptionalConfigPatch::Set),
+        smtp_port: patch.smtp_port,
+        smtp_credentials: patch.smtp_credentials.map(|credentials| {
+            OptionalConfigPatch::Set(SmtpCredentialsInput {
+                username: credentials.username,
+                password: credentials.password,
+            })
+        }),
+        smtp_proxy: patch.smtp_proxy.map(|proxy| {
+            OptionalConfigPatch::Set(SmtpProxyInput {
+                url: proxy.url,
+                credentials: proxy.credentials.map(|credentials| SmtpCredentialsInput {
+                    username: credentials.username,
+                    password: credentials.password,
+                }),
+            })
+        }),
+        use_tls: patch.use_tls,
+        from_email: patch.from_email.map(OptionalConfigPatch::Set),
+        from_name: patch.from_name,
+        whitelist_enabled: patch.whitelist_enabled,
+        whitelist_domains: Some(patch.whitelist_domains),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -194,10 +334,7 @@ fn oauth2_settings_patch_from_admin_proto(
     patch: admin_proto::OAuth2SettingsPatch,
 ) -> Result<OAuth2SettingsPatch, ApiError> {
     Ok(OAuth2SettingsPatch {
-        providers: patch
-            .providers
-            .map(|providers| oauth2_provider_configs_from_admin_proto(providers.providers))
-            .transpose()?,
+        providers: Some(oauth2_provider_configs_from_admin_proto(patch.providers)?),
     })
 }
 

@@ -23,14 +23,16 @@ Runtime settings 是存储在 PostgreSQL 的热更新设置，主要用于运行
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update user --set enablePasswordSignup=true
+synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
 ```
 
-如果命令支持 `--set` 批量形式，也可以用：
+更新协议使用 protobuf `FieldMask`。`settings` 中的 key 和 `updateMask` 的 JSON 表示均为 lowerCamel；多个路径用逗号分隔：
 
 ```bash
-synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
+synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
 ```
+
+mask 中存在的可选字段在 `settings` 中缺失时会被清除。普通字段必须在 `settings` 中提供值。mask 只接受叶子路径。
 
 具体参数以当前二进制的 `synctv settings --help` 为准。
 
@@ -151,19 +153,31 @@ runtime settings 写入 PostgreSQL 后，会通过 PostgreSQL LISTEN/NOTIFY 通�
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `rtmp.customPublishHost` | string | `""` | 返回给推流端的自定义发布 host |
+| `rtmp.customPublishHost` | string/null | `null` | 可选的自定义发布 host |
 | `rtmp.tsDisguisedAsPng` | bool | `false` | 是否把 TS 片段伪装为 PNG 路径或响应形式 |
+
+设置请求使用 `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`。清除请求使用 `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`。
 
 ### Email
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
+| `email.enabled` | bool | `false` | 是否启用邮件发送 |
+| `email.smtpHost` | string/null | `null` | SMTP 服务器主机 |
+| `email.smtpPort` | u16 | `587` | SMTP 服务器端口 |
+| `email.smtpCredentials` | object/null | `null` | 可选 SMTP 登录凭据 `{username, password}` |
+| `email.smtpProxy` | object/null | `null` | 可选 SOCKS5 代理 `{url, credentials?}` |
+| `email.useTls` | bool | `true` | 是否使用 SMTP TLS |
+| `email.fromEmail` | string/null | `null` | 发件邮箱 |
+| `email.fromName` | string | `"SyncTV"` | 发件人显示名 |
 | `email.whitelistEnabled` | bool | `false` | 是否启用邮箱白名单 |
-| `email.whitelistDomains` | string | `""` | 邮箱白名单内容，逗号分隔域名或邮箱 |
+| `email.whitelistDomains` | string[] | `[]` | 邮箱白名单域名或邮箱列表 |
 
 `email.whitelistEnabled=true` 且 `email.whitelistDomains` 为空时不会拒绝任何邮箱；只有白名单非空时才会按域名或邮箱匹配。
 
-SMTP 主机、密码、发件人等启动配置仍在 [邮件与 OAuth2](../../configuration/email-oauth2/)。
+SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `smtpProxy.credentials`。代理启用时，SMTP 目标域名交给 SOCKS5 代理解析。任一 SMTP 或代理字段更新后，服务会清理缓存连接，下一封邮件使用新配置。
+
+可选配置通过对应 FieldMask 路径更新，例如 `{"settings":{"email":{"smtpProxy":{"url":"socks5://proxy.example.com:1080"}}},"updateMask":"email.smtpProxy"}`。清除代理时提交 `{"settings":{"email":{}},"updateMask":"email.smtpProxy"}`。`email.smtpHost`、`email.fromEmail` 和 `email.smtpCredentials` 使用相同语义。管理读取结果省略密码。用户名保持一致时，更新凭据并省略密码会沿用现有值。
 
 ### WebRTC
 
@@ -204,46 +218,35 @@ SMTP 主机、密码、发件人等启动配置仍在 [邮件与 OAuth2](../../c
   <TabItem label="开启密码注册" icon="setting">
 
 ```bash
-synctv settings update user --set enablePasswordSignup=true
+synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
 ```
 
   </TabItem>
   <TabItem label="密码注册审核" icon="approve-check-circle">
 
 ```bash
-synctv settings update user --set passwordSignupNeedReview=true
+synctv settings update --request-json '{"settings":{"user":{"passwordSignupNeedReview":true}},"updateMask":"user.passwordSignupNeedReview"}'
 ```
 
   </TabItem>
   <TabItem label="限制房间数量" icon="document">
 
 ```bash
-synctv settings update server --set maxRoomsPerUser=20
+synctv settings update --request-json '{"settings":{"roomCreation":{"maxRoomsPerUser":"20"}},"updateMask":"roomCreation.maxRoomsPerUser"}'
 ```
 
   </TabItem>
   <TabItem label="清理聊天保留" icon="warning">
 
 ```bash
-synctv settings update chat --set maxMessagesPerRoom=1000 --set messageRetentionDays=180
+synctv settings update --request-json '{"settings":{"chat":{"maxMessagesPerRoom":"1000","messageRetentionDays":"180"}},"updateMask":"chat.maxMessagesPerRoom,chat.messageRetentionDays"}'
 ```
 
   </TabItem>
   <TabItem label="配置 OAuth2" icon="document">
 
 ```bash
-synctv settings update oauth2 --set providers='[
-  {
-    "instanceName": "github",
-    "enableSignup": true,
-    "signupNeedReview": false,
-    "github": {
-      "clientId": "github-client-id",
-      "clientSecret": "github-client-secret",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
-    }
-  }
-]'
+synctv settings update --request-json '{"settings":{"oauth2":{"providers":[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]}},"updateMask":"oauth2.providers"}'
 ```
 
   </TabItem>

@@ -330,15 +330,6 @@ data:
       create_root_user: {{ .Values.config.bootstrap.createRootUser | default false }}
       root_username: {{ .Values.config.bootstrap.rootUsername | default "root" | quote }}
 
-    {{- if .Values.config.email.smtpHost }}
-    email:
-      smtp_host: {{ .Values.config.email.smtpHost | quote }}
-      smtp_port: {{ .Values.config.email.smtpPort | default 587 }}
-      from_email: {{ .Values.config.email.fromEmail | quote }}
-      from_name: {{ .Values.config.email.fromName | default "SyncTV" | quote }}
-      use_tls: {{ .Values.config.email.useTls }}
-    {{- end }}
-
     media_providers:
       alist:
         request_timeout_seconds: {{ $mediaProviderAlist.requestTimeoutSeconds | default 30 }}

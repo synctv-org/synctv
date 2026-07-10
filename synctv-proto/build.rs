@@ -463,6 +463,7 @@ fn build_pbjson(
     let mut builder = pbjson_build::Builder::new();
     builder.out_dir(out_dir).use_integers_for_enums();
     builder.extern_path(".google.protobuf", "::pbjson_types");
+    builder.extern_path(".google.protobuf.FieldMask", "crate::FieldMask");
     for (proto_path, rust_path) in extern_paths {
         builder.extern_path(*proto_path, *rust_path);
     }
@@ -475,6 +476,7 @@ fn build_pbjson(
 fn configure_well_known_types(config: &mut tonic_prost_build::Config) {
     config.compile_well_known_types();
     config.extern_path(".google.protobuf", "::pbjson_types");
+    config.extern_path(".google.protobuf.FieldMask", "crate::FieldMask");
 }
 
 fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -542,6 +544,11 @@ fn build_main_protos(protoc: PathBuf, out_dir: &Path) -> Result<(), Box<dyn std:
             ".synctv.admin.GetRoomMembersRequest.room_id",
         ],
         "#[cfg_attr(feature = \"openapi\", param(ignore))]",
+    );
+    builder = add_field_attrs(
+        builder,
+        &[".synctv.admin.UpdateSettingsRequest.update_mask"],
+        "#[cfg_attr(feature = \"openapi\", schema(value_type = String))]",
     );
     builder.out_dir(out_dir).compile_with_config(
         prost_config,

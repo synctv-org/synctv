@@ -3689,21 +3689,18 @@ impl ManagementService for ManagementServiceImpl {
         let validated = self.check_admin_get_validated(&request)?;
         let ctx = self.grpc_request_context(&request);
         let req = request.into_inner();
+        let settings = req
+            .settings
+            .ok_or_else(|| Status::invalid_argument("settings is required"))?;
+        let update_mask = req
+            .update_mask
+            .ok_or_else(|| Status::invalid_argument("update_mask is required"))?;
         let response = self
             .admin_api
             .update_settings(
                 UpdateSettingsCommand {
-                    room_defaults: req.room_defaults,
-                    permissions: req.permissions,
-                    room_creation: req.room_creation,
-                    user: req.user,
-                    oauth2: req.oauth2,
-                    proxy: req.proxy,
-                    rtmp: req.rtmp,
-                    email: req.email,
-                    webrtc: req.webrtc,
-                    chat: req.chat,
-                    cors: req.cors,
+                    settings,
+                    update_mask,
                 },
                 &validated.user_id,
                 &ctx,

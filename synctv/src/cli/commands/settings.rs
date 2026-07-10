@@ -12,7 +12,7 @@ pub enum SettingsSubcommand {
     List(SettingsListArgs),
     /// Get one effective settings section
     Get(SettingsGetArgs),
-    /// Update one settings section using a typed ProtoJSON patch
+    /// Update runtime settings using an UpdateSettingsRequest ProtoJSON document
     Update(SettingsUpdateArgs),
     /// Send a test email using the current runtime email settings
     TestEmail(SettingsTestEmailArgs),
@@ -34,11 +34,9 @@ pub struct SettingsGetArgs {
 
 #[derive(Debug, Args)]
 pub struct SettingsUpdateArgs {
-    pub group: String,
-
-    /// Section patch encoded as ProtoJSON.
-    #[arg(long = "patch-json", value_name = "JSON", required = true)]
-    pub patch_json: String,
+    /// UpdateSettingsRequest encoded as ProtoJSON.
+    #[arg(long = "request-json", value_name = "JSON", required = true)]
+    pub request_json: String,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,

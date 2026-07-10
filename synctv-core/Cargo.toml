@@ -70,6 +70,9 @@ ipnet.workspace = true
 
 # HTTP Client
 reqwest.workspace = true
+tokio-socks.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
 
 rustls.workspace = true
 

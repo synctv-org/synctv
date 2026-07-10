@@ -4211,7 +4211,7 @@ message GetPublicSettingsResponse {
 
   // RTMP settings
   bool ts_disguised_as_png = 13;
-  string custom_publish_host = 14;
+  optional string custom_publish_host = 14;
 
   // Email settings
   bool email_whitelist_enabled = 15;
@@ -4361,13 +4361,6 @@ message WebRtcEvent {
     WebRTCJoin join = 4;
     WebRTCLeave leave = 5;
   }
-}
-
-// ICE Servers Configuration
-// Server sends this to client upon request or connection
-// Contains ICE server URLs for NAT traversal
-message IceServersConfig {
-  repeated IceServer servers = 1;
 }
 
 message IceServer {

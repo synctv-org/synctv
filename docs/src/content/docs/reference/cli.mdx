@@ -463,14 +463,15 @@ synctv provider rtmp info --username alice --room-id <ROOM_ID> <MEDIA_ID>
 ```bash
 synctv settings list
 synctv settings get email
-synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
-synctv settings update permissions --set guestDefaultPermissions=view_member_list,use_webrtc
+synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
 synctv settings test-email admin@example.com
 ```
 
+`--request-json` 接受标准 `UpdateSettingsRequest` ProtoJSON。`updateMask` 是逗号分隔的 lowerCamel FieldMask 字符串。
+
 完整 key、默认值和校验规则见 [Runtime settings 参考](../runtime-settings/)。
 
-SMTP 主机、端口、账号、密码和发件人属于启动配置，不是 runtime settings。`settings test-email` 使用当前服务启动时加载的 SMTP 配置发送测试邮件。
+SMTP 主机、端口、账号、密码、SOCKS5 代理和发件人通过 `email` runtime settings 管理。`settings test-email` 使用当前热更新配置发送测试邮件；设置读取结果会隐藏 SMTP 密码和代理密码。
 
 安全建议：不要把 management TCP 端点暴露公网。远程执行时使用强 token，并优先通过内网或 VPN 访问。
 

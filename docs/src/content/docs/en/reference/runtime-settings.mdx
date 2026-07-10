@@ -23,14 +23,16 @@ Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update user --set enablePasswordSignup=true
+synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
 ```
 
-If the command supports grouped `--set` form:
+Updates use protobuf `FieldMask`. Keys under `settings` and the JSON form of `updateMask` use lowerCamel names. Separate multiple mask paths with commas:
 
 ```bash
-synctv settings update email --set whitelistEnabled=true --set whitelistDomains=example.com
+synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
 ```
+
+An optional field named by the mask is cleared when it is absent from `settings`. Required fields named by the mask must have a value. The mask accepts leaf paths only.
 
 Check the current binary with `synctv settings --help`.
 
@@ -151,19 +153,31 @@ These are business proxy policy switches, not startup setting `proxy_slice_cache
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `rtmp.customPublishHost` | string | `""` | Custom publish host returned to stream publishers |
+| `rtmp.customPublishHost` | string/null | `null` | Optional custom publish host returned to stream publishers |
 | `rtmp.tsDisguisedAsPng` | bool | `false` | Disguise TS segments as PNG paths or responses |
+
+Set it with `{"settings":{"rtmp":{"customPublishHost":"rtmp://live.example.com"}},"updateMask":"rtmp.customPublishHost"}`. Clear it with `{"settings":{"rtmp":{}},"updateMask":"rtmp.customPublishHost"}`.
 
 ### Email
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
+| `email.enabled` | bool | `false` | Enable email delivery |
+| `email.smtpHost` | string/null | `null` | SMTP server host |
+| `email.smtpPort` | u16 | `587` | SMTP server port |
+| `email.smtpCredentials` | object/null | `null` | Optional SMTP credentials `{username, password}` |
+| `email.smtpProxy` | object/null | `null` | Optional SOCKS5 proxy `{url, credentials?}` |
+| `email.useTls` | bool | `true` | Use SMTP TLS |
+| `email.fromEmail` | string/null | `null` | Sender email address |
+| `email.fromName` | string | `"SyncTV"` | Sender display name |
 | `email.whitelistEnabled` | bool | `false` | Enable email allowlist |
-| `email.whitelistDomains` | string | `""` | Email allowlist content as comma-separated domains or email addresses |
+| `email.whitelistDomains` | string[] | `[]` | Email allowlist domains or addresses |
 
 When `email.whitelistEnabled=true` but `email.whitelistDomains` is empty, no email domain is rejected. Matching is enforced only when the allowlist has entries.
 
-SMTP host, password, and sender configuration remain startup settings. See [Email and OAuth2](../../configuration/email-oauth2/).
+The SOCKS5 proxy URL contains only the scheme, host, and port. Proxy credentials live in `smtpProxy.credentials`. With a proxy configured, the SOCKS5 server resolves the SMTP target hostname. Updating any SMTP or proxy field invalidates cached connections, and the next message uses the updated configuration.
+
+Optional configuration is updated through its FieldMask path, for example `{"settings":{"email":{"smtpProxy":{"url":"socks5://proxy.example.com:1080"}}},"updateMask":"email.smtpProxy"}`. Clear the proxy with `{"settings":{"email":{}},"updateMask":"email.smtpProxy"}`. The same semantics apply to `email.smtpHost`, `email.fromEmail`, and `email.smtpCredentials`. Management reads omit passwords. Updating credentials with an unchanged username and no password preserves the current password.
 
 ### WebRTC
 
@@ -204,46 +218,35 @@ Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for 
   <TabItem label="Enable password signup" icon="setting">
 
 ```bash
-synctv settings update user --set enablePasswordSignup=true
+synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
 ```
 
   </TabItem>
   <TabItem label="Review password signup" icon="approve-check-circle">
 
 ```bash
-synctv settings update user --set passwordSignupNeedReview=true
+synctv settings update --request-json '{"settings":{"user":{"passwordSignupNeedReview":true}},"updateMask":"user.passwordSignupNeedReview"}'
 ```
 
   </TabItem>
   <TabItem label="Limit room count" icon="document">
 
 ```bash
-synctv settings update server --set maxRoomsPerUser=20
+synctv settings update --request-json '{"settings":{"roomCreation":{"maxRoomsPerUser":"20"}},"updateMask":"roomCreation.maxRoomsPerUser"}'
 ```
 
   </TabItem>
   <TabItem label="Chat retention" icon="warning">
 
 ```bash
-synctv settings update chat --set maxMessagesPerRoom=1000 --set messageRetentionDays=180
+synctv settings update --request-json '{"settings":{"chat":{"maxMessagesPerRoom":"1000","messageRetentionDays":"180"}},"updateMask":"chat.maxMessagesPerRoom,chat.messageRetentionDays"}'
 ```
 
   </TabItem>
   <TabItem label="Configure OAuth2" icon="document">
 
 ```bash
-synctv settings update oauth2 --set providers='[
-  {
-    "instanceName": "github",
-    "enableSignup": true,
-    "signupNeedReview": false,
-    "github": {
-      "clientId": "github-client-id",
-      "clientSecret": "github-client-secret",
-      "redirectUrl": "https://app.example.com/oauth2/callback"
-    }
-  }
-]'
+synctv settings update --request-json '{"settings":{"oauth2":{"providers":[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]}},"updateMask":"oauth2.providers"}'
 ```
 
   </TabItem>

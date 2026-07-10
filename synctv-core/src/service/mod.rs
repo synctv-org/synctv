@@ -85,7 +85,9 @@ pub use content_report::{
 };
 pub use db_maintenance::{DatabaseMaintenanceOptions, DatabaseMaintenanceService};
 pub use distributed_lock::{with_coordination_lock, CoordinationLock, DistributedLock, LockGuard};
-pub use email::{mask_email, EmailConfig, EmailConfigProvider, EmailService};
+pub use email::{
+    mask_email, EmailConfig, EmailConfigProvider, EmailService, SmtpCredentials, SmtpProxyConfig,
+};
 pub use email_token::{EmailTokenRateLimitConfig, EmailTokenService};
 pub use file_storage::{
     submitted_file_reference_from_reuse_token, submitted_file_reference_from_session_file,
@@ -104,17 +106,17 @@ pub use global_settings::{
     AdminDefaultPermissionsSetting, ChatRuntimeSettings, ConfiguredIceServer, CorsAllowedOrigins,
     CorsAllowedOriginsSetting, CorsRuntimeSettings, DefaultMaxChatMessagesSetting,
     DefaultMaxMembersSetting, EmailEnabledSetting, EmailFromEmailSetting, EmailFromNameSetting,
-    EmailRuntimeSettings, EmailSmtpHostSetting, EmailSmtpPasswordSetting, EmailSmtpPortSetting,
-    EmailSmtpUsernameSetting, EmailUseTlsSetting, EmailWhitelistEnabledSetting,
-    EmailWhitelistSetting, EnableEmailSignupSetting, EnableGuestSetting,
-    EnablePasswordSignupSetting, EnableWebauthnSignupSetting, ExternalIceServersSetting,
-    GuestDefaultPermissionsSetting, IceServerList, LiveProxySetting, MaxMessagesPerRoomSetting,
-    MaxPinnedMessagesPerRoomSetting, MaxRoomsPerUserSetting, MemberDefaultPermissionsSetting,
-    MessageRetentionDaysSetting, MovieProxySetting, OAuth2GithubProviderConfig,
-    OAuth2GoogleProviderConfig, OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig,
-    OAuth2ProviderConfig, OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig,
-    OAuth2ProvidersSetting, OAuth2RuntimeSettings, OAuth2SignupPolicy, PermissionRuntimeSettings,
-    PermissionSet, ProxyRuntimeSettings, PublicSettings, RoomCreationApprovalRequiredSetting,
+    EmailRuntimeSettings, EmailSmtpCredentialsSetting, EmailSmtpHostSetting, EmailSmtpPortSetting,
+    EmailSmtpProxySetting, EmailUseTlsSetting, EmailWhitelistEnabledSetting, EmailWhitelistSetting,
+    EnableEmailSignupSetting, EnableGuestSetting, EnablePasswordSignupSetting,
+    EnableWebauthnSignupSetting, ExternalIceServersSetting, GuestDefaultPermissionsSetting,
+    IceServerList, LiveProxySetting, MaxMessagesPerRoomSetting, MaxPinnedMessagesPerRoomSetting,
+    MaxRoomsPerUserSetting, MemberDefaultPermissionsSetting, MessageRetentionDaysSetting,
+    MovieProxySetting, OAuth2GithubProviderConfig, OAuth2GoogleProviderConfig,
+    OAuth2LogtoProviderConfig, OAuth2OidcProviderConfig, OAuth2ProviderConfig,
+    OAuth2ProviderConfigs, OAuth2ProviderPrivateConfig, OAuth2ProvidersSetting,
+    OAuth2RuntimeSettings, OAuth2SignupPolicy, PermissionRuntimeSettings, PermissionSet,
+    ProxyRuntimeSettings, PublicSettings, RoomCreationApprovalRequiredSetting,
     RoomCreationEnabledSetting, RoomCreationPasswordPolicySetting, RoomCreationRuntimeSettings,
     RoomDefaultsRuntimeSettings, RoomPasswordPolicy, RtmpRuntimeSettings,
     RuntimeEmailConfigProvider, RuntimeSettings, RuntimeSettingsStore, RuntimeSettingsUpdateMask,

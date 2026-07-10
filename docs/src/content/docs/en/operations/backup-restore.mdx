@@ -89,7 +89,7 @@ Store at least these values:
 | `cluster.secret` | Kubernetes Secret or Secret Manager |
 | `management.auth_token` | Secret Manager |
 | `metrics.auth.*` | Monitoring system secret |
-| `email.smtp_password` | Secret Manager |
+| `email.smtpCredentials`, `email.smtpProxy.credentials` | Encrypted PostgreSQL backup |
 | Provider token/API key/cookie | Secret Manager or encrypted database storage |
 
 If you use `_file` settings, back up the file contents, not just the paths.

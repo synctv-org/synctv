@@ -1377,17 +1377,8 @@ impl AdminRuntime for ManagementAdminRuntime {
         self.inner
             .update_settings(
                 admin_proto::UpdateSettingsRequest {
-                    room_defaults: command.room_defaults,
-                    permissions: command.permissions,
-                    room_creation: command.room_creation,
-                    user: command.user,
-                    oauth2: command.oauth2,
-                    proxy: command.proxy,
-                    rtmp: command.rtmp,
-                    email: command.email,
-                    webrtc: command.webrtc,
-                    chat: command.chat,
-                    cors: command.cors,
+                    settings: Some(command.settings),
+                    update_mask: Some(command.update_mask),
                 },
                 admin_user_id,
                 &api_request_context(ctx),

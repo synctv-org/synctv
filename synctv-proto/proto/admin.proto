@@ -6,6 +6,7 @@ import "proto/buf/validate/validate.proto";
 import "proto/client.proto";
 import "proto/common.proto";
 import "proto/oauth2.proto";
+import "google/protobuf/field_mask.proto";
 
 // Admin API for SyncTV - Requires admin or root permissions
 //
@@ -281,21 +282,31 @@ message ProxySettings {
 }
 
 message RtmpSettings {
-  string custom_publish_host = 1;
+  optional string custom_publish_host = 1;
   bool ts_disguised_as_png = 2;
 }
 
 message EmailSettings {
   bool enabled = 1;
-  string smtp_host = 2;
+  optional string smtp_host = 2;
   uint32 smtp_port = 3;
-  string smtp_username = 4;
-  optional string smtp_password = 5;
+  SmtpCredentials smtp_credentials = 4;
+  SmtpProxy smtp_proxy = 5;
   bool use_tls = 6;
-  string from_email = 7;
+  optional string from_email = 7;
   string from_name = 8;
   bool whitelist_enabled = 9;
   repeated string whitelist_domains = 10;
+}
+
+message SmtpCredentials {
+  string username = 1;
+  optional string password = 2;
+}
+
+message SmtpProxy {
+  string url = 1;
+  SmtpCredentials credentials = 2;
 }
 
 message WebRtcSettings {
@@ -313,6 +324,11 @@ message CorsSettings {
 }
 
 message UpdateSettingsRequest {
+  RuntimeSettingsPatch settings = 1 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 2 [(buf.validate.field).required = true];
+}
+
+message RuntimeSettingsPatch {
   RoomDefaultsSettingsPatch room_defaults = 1;
   PermissionSettingsPatch permissions = 2;
   RoomCreationSettingsPatch room_creation = 3;
@@ -354,12 +370,8 @@ message UserSettingsPatch {
   optional bool enable_guest = 7;
 }
 
-message OAuth2ProviderList {
-  repeated OAuth2ProviderSettings providers = 1;
-}
-
 message OAuth2SettingsPatch {
-  OAuth2ProviderList providers = 1;
+  repeated OAuth2ProviderSettings providers = 1;
 }
 
 message ProxySettingsPatch {
@@ -372,29 +384,21 @@ message RtmpSettingsPatch {
   optional bool ts_disguised_as_png = 2;
 }
 
-message StringList {
-  repeated string values = 1;
-}
-
 message EmailSettingsPatch {
   optional bool enabled = 1;
   optional string smtp_host = 2;
   optional uint32 smtp_port = 3;
-  optional string smtp_username = 4;
-  optional string smtp_password = 5;
+  SmtpCredentials smtp_credentials = 4;
+  SmtpProxy smtp_proxy = 5;
   optional bool use_tls = 6;
   optional string from_email = 7;
   optional string from_name = 8;
   optional bool whitelist_enabled = 9;
-  StringList whitelist_domains = 10;
-}
-
-message IceServerList {
-  repeated synctv.client.IceServer values = 1;
+  repeated string whitelist_domains = 10;
 }
 
 message WebRtcSettingsPatch {
-  IceServerList external_ice_servers = 1;
+  repeated synctv.client.IceServer external_ice_servers = 1;
 }
 
 message ChatSettingsPatch {
@@ -404,7 +408,7 @@ message ChatSettingsPatch {
 }
 
 message CorsSettingsPatch {
-  StringList allowed_origins = 1;
+  repeated string allowed_origins = 1;
 }
 
 enum BanTargetType {

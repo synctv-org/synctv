@@ -123,17 +123,26 @@ fn test_runtime_settings() -> synctv_core::service::RuntimeSettings {
             live_proxy: true,
         },
         rtmp: synctv_core::service::RtmpRuntimeSettings {
-            custom_publish_host: String::new(),
+            custom_publish_host: None,
             ts_disguised_as_png: false,
         },
         email: synctv_core::service::EmailRuntimeSettings {
             enabled: true,
-            smtp_host: "smtp.example.com".to_string(),
+            smtp_host: Some("smtp.example.com".to_string()),
             smtp_port: 587,
-            smtp_username: "smtp-user".to_string(),
-            smtp_password: "smtp-secret".to_string(),
+            smtp_credentials: Some(synctv_core::service::SmtpCredentials {
+                username: "smtp-user".to_string(),
+                password: "smtp-secret".to_string(),
+            }),
+            smtp_proxy: Some(synctv_core::service::SmtpProxyConfig {
+                url: "socks5://proxy.example.com:1080".to_string(),
+                credentials: Some(synctv_core::service::SmtpCredentials {
+                    username: "proxy-user".to_string(),
+                    password: "proxy-secret".to_string(),
+                }),
+            }),
             use_tls: true,
-            from_email: "noreply@example.com".to_string(),
+            from_email: Some("noreply@example.com".to_string()),
             from_name: "SyncTV".to_string(),
             whitelist_enabled: true,
             whitelist_domains: vec!["example.com".to_string()],
@@ -175,16 +184,31 @@ async fn update_admin_settings(
     )
 }
 
+fn runtime_settings_request(
+    settings: synctv_proto::admin::RuntimeSettingsPatch,
+    paths: &[&str],
+) -> synctv_proto::admin::UpdateSettingsRequest {
+    synctv_proto::admin::UpdateSettingsRequest {
+        settings: Some(settings),
+        update_mask: Some(synctv_proto::FieldMask {
+            paths: paths.iter().map(|path| (*path).to_string()).collect(),
+        }),
+    }
+}
+
 fn room_creation_max_rooms_per_user_patch(
     max_rooms_per_user: i64,
 ) -> synctv_proto::admin::UpdateSettingsRequest {
-    synctv_proto::admin::UpdateSettingsRequest {
-        room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
-            max_rooms_per_user: Some(max_rooms_per_user),
+    runtime_settings_request(
+        synctv_proto::admin::RuntimeSettingsPatch {
+            room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
+                max_rooms_per_user: Some(max_rooms_per_user),
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
-        ..Default::default()
-    }
+        },
+        &["room_creation.max_rooms_per_user"],
+    )
 }
 
 fn email_settings_patch(
@@ -193,21 +217,32 @@ fn email_settings_patch(
     smtp_port: u32,
     from_email: &str,
 ) -> synctv_proto::admin::UpdateSettingsRequest {
-    synctv_proto::admin::UpdateSettingsRequest {
-        email: Some(synctv_proto::admin::EmailSettingsPatch {
-            enabled: Some(enabled),
-            smtp_host: Some(smtp_host.to_string()),
-            smtp_port: Some(smtp_port),
-            smtp_username: Some(String::new()),
-            use_tls: Some(true),
-            from_email: Some(from_email.to_string()),
-            from_name: Some("SyncTV".to_string()),
-            whitelist_enabled: Some(false),
-            whitelist_domains: Some(synctv_proto::admin::StringList { values: Vec::new() }),
+    runtime_settings_request(
+        synctv_proto::admin::RuntimeSettingsPatch {
+            email: Some(synctv_proto::admin::EmailSettingsPatch {
+                enabled: Some(enabled),
+                smtp_host: Some(smtp_host.to_string()),
+                smtp_port: Some(smtp_port),
+                use_tls: Some(true),
+                from_email: Some(from_email.to_string()),
+                from_name: Some("SyncTV".to_string()),
+                whitelist_enabled: Some(false),
+                whitelist_domains: Vec::new(),
+                ..Default::default()
+            }),
             ..Default::default()
-        }),
-        ..Default::default()
-    }
+        },
+        &[
+            "email.enabled",
+            "email.smtp_host",
+            "email.smtp_port",
+            "email.use_tls",
+            "email.from_email",
+            "email.from_name",
+            "email.whitelist_enabled",
+            "email.whitelist_domains",
+        ],
+    )
 }
 
 #[test]
@@ -2552,21 +2587,36 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     let (_admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
     let current = test_runtime_settings();
     let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
-        synctv_proto::admin::UpdateSettingsRequest {
-            room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
-                max_rooms_per_user: Some(42),
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                room_creation: Some(synctv_proto::admin::RoomCreationSettingsPatch {
+                    max_rooms_per_user: Some(42),
+                    ..Default::default()
+                }),
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    smtp_proxy: Some(synctv_proto::admin::SmtpProxy {
+                        url: "socks5://proxy.example.com:1080".to_string(),
+                        credentials: Some(synctv_proto::admin::SmtpCredentials {
+                            username: "proxy-user".to_string(),
+                            password: Some("next-proxy-secret".to_string()),
+                        }),
+                    }),
+                    whitelist_domains: Vec::new(),
+                    ..Default::default()
+                }),
+                cors: Some(synctv_proto::admin::CorsSettingsPatch {
+                    allowed_origins: Vec::new(),
+                }),
                 ..Default::default()
-            }),
-            email: Some(synctv_proto::admin::EmailSettingsPatch {
-                smtp_password: Some(String::new()),
-                whitelist_domains: Some(synctv_proto::admin::StringList { values: Vec::new() }),
-                ..Default::default()
-            }),
-            cors: Some(synctv_proto::admin::CorsSettingsPatch {
-                allowed_origins: Some(synctv_proto::admin::StringList { values: Vec::new() }),
-            }),
-            ..Default::default()
-        },
+            },
+            &[
+                "room_creation.max_rooms_per_user",
+                "email.smtp_credentials",
+                "email.smtp_proxy",
+                "email.whitelist_domains",
+                "cors.allowed_origins",
+            ],
+        ),
     )
     .map_err(|error| test_error(format!("{error:?}")))?;
     let patch_result = AdminApiImpl::apply_runtime_settings_patch(current, patch)
@@ -2575,22 +2625,323 @@ async fn test_runtime_settings_patch_updates_only_present_fields() -> TestResult
     let patched = patch_result.settings;
     assert_eq!(patched.room_creation.max_rooms_per_user, 42);
     assert!(patched.room_creation.enabled);
-    assert_eq!(patched.email.smtp_host, "smtp.example.com");
-    assert_eq!(patched.email.smtp_password, "");
+    assert_eq!(patched.email.smtp_host.as_deref(), Some("smtp.example.com"));
+    assert_eq!(patched.email.smtp_credentials, None);
+    assert_eq!(
+        patched
+            .email
+            .smtp_proxy
+            .as_ref()
+            .and_then(|proxy| proxy.credentials.as_ref())
+            .map(|credentials| credentials.password.as_str()),
+        Some("next-proxy-secret")
+    );
     assert!(patched.email.whitelist_domains.is_empty());
     assert!(patched.cors.allowed_origins.0.is_empty());
     assert!(patch_result.update_mask.room_creation.max_rooms_per_user);
     assert!(!patch_result.update_mask.room_creation.enabled);
-    assert!(patch_result.update_mask.email.smtp_password);
+    assert!(patch_result.update_mask.email.smtp_credentials);
+    assert!(patch_result.update_mask.email.smtp_proxy);
     assert!(!patch_result.update_mask.email.smtp_host);
     assert!(patch_result.update_mask.email.whitelist_domains);
     assert!(patch_result.update_mask.cors.allowed_origins);
     Ok(())
 }
 
+#[test]
+fn test_runtime_settings_field_mask_ignores_values_outside_mask() -> TestResult {
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    enabled: Some(true),
+                    smtp_port: Some(2525),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &["email.enabled"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+
+    let email = patch.email.ok_or_else(|| test_error("email patch"))?;
+    assert_eq!(email.enabled, Some(true));
+    assert_eq!(email.smtp_port, None);
+    Ok(())
+}
+
+#[test]
+fn test_runtime_settings_field_mask_maps_repeated_fields_directly() -> TestResult {
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                oauth2: Some(synctv_proto::admin::OAuth2SettingsPatch {
+                    providers: Vec::new(),
+                }),
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    whitelist_domains: vec!["example.com".to_string()],
+                    ..Default::default()
+                }),
+                webrtc: Some(synctv_proto::admin::WebRtcSettingsPatch {
+                    external_ice_servers: Vec::new(),
+                }),
+                cors: Some(synctv_proto::admin::CorsSettingsPatch {
+                    allowed_origins: vec!["https://app.example.com".to_string()],
+                }),
+                ..Default::default()
+            },
+            &[
+                "oauth2.providers",
+                "email.whitelist_domains",
+                "webrtc.external_ice_servers",
+                "cors.allowed_origins",
+            ],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert!(patch
+        .oauth2
+        .and_then(|section| section.providers)
+        .is_some_and(|providers| providers.0.is_empty()));
+    assert_eq!(
+        patch.email.and_then(|section| section.whitelist_domains),
+        Some(vec!["example.com".to_string()])
+    );
+    assert_eq!(
+        patch
+            .webrtc
+            .and_then(|section| section.external_ice_servers),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        patch.cors.and_then(|section| section.allowed_origins),
+        Some(vec!["https://app.example.com".to_string()])
+    );
+    Ok(())
+}
+
+#[test]
+fn test_runtime_settings_field_mask_requires_non_optional_values() {
+    let result = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch::default()),
+                ..Default::default()
+            },
+            &["email.smtp_port"],
+        ),
+    );
+
+    assert!(matches!(
+        result,
+        Err(ApiError::InvalidInput(message))
+            if message.contains("email.smtp_port is required by update_mask")
+    ));
+}
+
+#[test]
+fn test_runtime_settings_field_mask_rejects_invalid_paths() {
+    let cases = [
+        (Vec::<&str>::new(), "must not be empty"),
+        (vec!["email"], "unsupported update_mask path 'email'"),
+        (
+            vec!["email.unknown_field"],
+            "unsupported update_mask path 'email.unknown_field'",
+        ),
+        (
+            vec!["email.enabled", "email.enabled"],
+            "duplicate update_mask path 'email.enabled'",
+        ),
+    ];
+
+    for (paths, expected) in cases {
+        let result = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+            runtime_settings_request(
+                synctv_proto::admin::RuntimeSettingsPatch {
+                    email: Some(synctv_proto::admin::EmailSettingsPatch {
+                        enabled: Some(true),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                &paths,
+            ),
+        );
+        assert!(
+            matches!(result, Err(ApiError::InvalidInput(ref message)) if message.contains(expected)),
+            "expected FieldMask error containing {expected:?}, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn test_smtp_proxy_runtime_patch_and_projection() -> TestResult {
+    let current = test_runtime_settings();
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    smtp_proxy: Some(synctv_proto::admin::SmtpProxy {
+                        url: "socks5://next-proxy.example.com:1081".to_string(),
+                        credentials: Some(synctv_proto::admin::SmtpCredentials {
+                            username: "next-proxy-user".to_string(),
+                            password: Some("next-proxy-secret".to_string()),
+                        }),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &["email.smtp_proxy"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let patch_result = AdminApiImpl::apply_runtime_settings_patch(current, patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert!(patch_result.update_mask.email.smtp_proxy);
+    assert!(!patch_result.update_mask.email.smtp_host);
+
+    let projected = AdminApiImpl::project_admin_settings(patch_result.settings)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    let email = admin_email_settings(&projected)?;
+    let proxy = some_value(email.smtp_proxy.as_ref(), "SMTP proxy")?;
+    assert_eq!(proxy.url, "socks5://next-proxy.example.com:1081");
+    let credentials = some_value(proxy.credentials.as_ref(), "SMTP proxy credentials")?;
+    assert_eq!(credentials.username, "next-proxy-user");
+    assert_eq!(credentials.password, None);
+    assert_eq!(
+        some_value(email.smtp_credentials.as_ref(), "SMTP credentials")?.password,
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn test_smtp_credentials_patch_preserves_password_for_unchanged_username() -> TestResult {
+    let current = test_runtime_settings();
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    smtp_credentials: Some(synctv_proto::admin::SmtpCredentials {
+                        username: "smtp-user".to_string(),
+                        password: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &["email.smtp_credentials"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let patched = AdminApiImpl::apply_runtime_settings_patch(current, patch)
+        .map_err(|error| test_error(format!("{error:?}")))?
+        .settings;
+
+    let credentials = some_value(patched.email.smtp_credentials.as_ref(), "SMTP credentials")?;
+    assert_eq!(credentials.username, "smtp-user");
+    assert_eq!(credentials.password, "smtp-secret");
+    Ok(())
+}
+
+#[test]
+fn test_smtp_credentials_patch_requires_password_for_username_change() -> TestResult {
+    let current = test_runtime_settings();
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch {
+                    smtp_credentials: Some(synctv_proto::admin::SmtpCredentials {
+                        username: "next-user".to_string(),
+                        password: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &["email.smtp_credentials"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert!(matches!(
+        AdminApiImpl::apply_runtime_settings_patch(current, patch),
+        Err(ApiError::InvalidInput(message)) if message.contains("password is required")
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_optional_rtmp_publish_host_supports_set_and_clear() -> TestResult {
+    let current = test_runtime_settings();
+    let set_patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                rtmp: Some(synctv_proto::admin::RtmpSettingsPatch {
+                    custom_publish_host: Some("rtmp://live.example.com".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            &["rtmp.custom_publish_host"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let set_result = AdminApiImpl::apply_runtime_settings_patch(current, set_patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    assert_eq!(
+        set_result.settings.rtmp.custom_publish_host.as_deref(),
+        Some("rtmp://live.example.com")
+    );
+    assert!(set_result.update_mask.rtmp.custom_publish_host);
+
+    let clear_patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                rtmp: Some(synctv_proto::admin::RtmpSettingsPatch::default()),
+                ..Default::default()
+            },
+            &["rtmp.custom_publish_host"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let clear_result = AdminApiImpl::apply_runtime_settings_patch(set_result.settings, clear_patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+    assert_eq!(clear_result.settings.rtmp.custom_publish_host, None);
+    assert!(clear_result.update_mask.rtmp.custom_publish_host);
+    Ok(())
+}
+
+#[test]
+fn test_optional_email_address_fields_support_clear() -> TestResult {
+    let current = test_runtime_settings();
+    let patch = crate::admin_settings_mapping::runtime_settings_patch_from_admin_proto(
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                email: Some(synctv_proto::admin::EmailSettingsPatch::default()),
+                ..Default::default()
+            },
+            &["email.smtp_host", "email.from_email"],
+        ),
+    )
+    .map_err(|error| test_error(format!("{error:?}")))?;
+    let result = AdminApiImpl::apply_runtime_settings_patch(current, patch)
+        .map_err(|error| test_error(format!("{error:?}")))?;
+
+    assert_eq!(result.settings.email.smtp_host, None);
+    assert_eq!(result.settings.email.from_email, None);
+    assert!(result.update_mask.email.smtp_host);
+    assert!(result.update_mask.email.from_email);
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_settings_does_not_project_smtp_password() -> TestResult {
+async fn test_get_settings_omits_nested_smtp_credential_passwords() -> TestResult {
     let (_postgres, pool) = create_test_pool().await;
     let (admin_api, _redis_publish_rx) = make_admin_api_for_delete_user_test(pool).await;
 
@@ -2601,13 +2952,30 @@ async fn test_get_settings_does_not_project_smtp_password() -> TestResult {
     let mut runtime_settings = registry
         .runtime_settings()
         .map_err(|error| test_error(error.to_string()))?;
-    runtime_settings.email.smtp_password = "smtp-secret".to_string();
+    runtime_settings.email.smtp_credentials = Some(synctv_core::service::SmtpCredentials {
+        username: "smtp-user".to_string(),
+        password: "smtp-secret".to_string(),
+    });
+    runtime_settings.email.smtp_proxy = Some(synctv_core::service::SmtpProxyConfig {
+        url: "socks5://proxy.example.com:1080".to_string(),
+        credentials: Some(synctv_core::service::SmtpCredentials {
+            username: "proxy-user".to_string(),
+            password: "proxy-secret".to_string(),
+        }),
+    });
     core_ok(registry.persist_runtime_settings(&runtime_settings).await)?;
 
     let settings = current_admin_settings(&admin_api).await?;
     let email = admin_email_settings(&settings)?;
     assert!(!email.enabled);
-    assert_eq!(email.smtp_password, None);
+    let credentials = some_value(email.smtp_credentials.as_ref(), "SMTP credentials")?;
+    assert_eq!(credentials.username, "smtp-user");
+    assert_eq!(credentials.password, None);
+    let proxy = some_value(email.smtp_proxy.as_ref(), "SMTP proxy")?;
+    assert_eq!(proxy.url, "socks5://proxy.example.com:1080");
+    let proxy_credentials = some_value(proxy.credentials.as_ref(), "SMTP proxy credentials")?;
+    assert_eq!(proxy_credentials.username, "proxy-user");
+    assert_eq!(proxy_credentials.password, None);
     Ok(())
 }
 
@@ -2809,33 +3177,42 @@ async fn test_runtime_settings_patch_uses_role_specific_permission_validation() 
 
     update_admin_settings(
         &admin_api,
-        synctv_proto::admin::UpdateSettingsRequest {
-            permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
-                admin_default_permissions: Some(
-                    synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
-                ),
-                member_default_permissions: Some(
-                    synctv_core::models::RoomAdminPermissionBits::CHAT,
-                ),
+        runtime_settings_request(
+            synctv_proto::admin::RuntimeSettingsPatch {
+                permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
+                    admin_default_permissions: Some(
+                        synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                    ),
+                    member_default_permissions: Some(
+                        synctv_core::models::RoomAdminPermissionBits::CHAT,
+                    ),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        },
+            },
+            &[
+                "permissions.admin_default_permissions",
+                "permissions.member_default_permissions",
+            ],
+        ),
     )
     .await?;
 
     let error = api_err(
         admin_api
             .update_settings(
-                synctv_proto::admin::UpdateSettingsRequest {
-                    permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
-                        guest_default_permissions: Some(
-                            synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
-                        ),
+                runtime_settings_request(
+                    synctv_proto::admin::RuntimeSettingsPatch {
+                        permissions: Some(synctv_proto::admin::PermissionSettingsPatch {
+                            guest_default_permissions: Some(
+                                synctv_core::models::RoomAdminPermissionBits::PLAY_CONTROL,
+                            ),
+                            ..Default::default()
+                        }),
                         ..Default::default()
-                    }),
-                    ..Default::default()
-                },
+                    },
+                    &["permissions.guest_default_permissions"],
+                ),
                 &UserId::new(),
                 &RequestContext::default(),
             )

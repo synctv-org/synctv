@@ -7,39 +7,28 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## Scope
 
-Login-related configuration has two parts:
-
-- static email configuration
-- runtime OAuth2 provider configuration
-
-OAuth2 providers live in runtime settings under `oauth2.providers`.
+Email login and OAuth2 providers use runtime settings. Email uses the `email` group, and OAuth2 providers use `oauth2.providers`.
 
 ## Email configuration
 
-Email settings remain static and are used for SMTP connectivity and sender identity.
+Email settings are stored in PostgreSQL and hot-reloaded across cluster nodes:
 
-```yaml
-email:
-  smtp_host: "smtp.example.com"
-  smtp_port: 587
-  smtp_username: "synctv@example.com"
-  smtp_password_file: "/run/secrets/smtp_password"
-  from_email: "synctv@example.com"
-  from_name: "SyncTV"
-  use_tls: true
+```bash
+synctv settings update --request-json '{"settings":{"email":{"smtpHost":"smtp.example.com","smtpPort":465,"smtpCredentials":{"username":"synctv@example.com","password":"secret"},"smtpProxy":{"url":"socks5://proxy.example.com:1080"},"useTls":true,"fromEmail":"synctv@example.com","fromName":"SyncTV","enabled":true}},"updateMask":"email.smtpHost,email.smtpPort,email.smtpCredentials,email.smtpProxy,email.useTls,email.fromEmail,email.fromName,email.enabled"}'
 ```
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `email.smtp_host` | `""` | SMTP server host. Empty means email sending is not configured |
-| `email.smtp_port` | `587` | SMTP port |
-| `email.smtp_username` | `""` | SMTP login username |
-| `email.smtp_password` | `""` | SMTP login password; supports `smtp_password_file` |
-| `email.from_email` | `""` | Sender email address. Required and validated when SMTP is configured |
-| `email.from_name` | `SyncTV` | Sender display name |
-| `email.use_tls` | `true` | Whether SMTP uses TLS |
+| `email.enabled` | `false` | Enable email delivery |
+| `email.smtpHost` | `null` | SMTP server host |
+| `email.smtpPort` | `587` | SMTP port |
+| `email.smtpCredentials` | `null` | Optional SMTP credentials `{username, password}` |
+| `email.smtpProxy` | `null` | Optional SOCKS5 proxy `{url, credentials?}` |
+| `email.fromEmail` | `null` | Sender email address; required and validated when email is enabled |
+| `email.fromName` | `SyncTV` | Sender display name |
+| `email.useTls` | `true` | Whether SMTP uses TLS |
 
-Email verification codes, password reset, and email MFA depend on these SMTP settings. Standalone email login only serves existing accounts; the code request API intentionally returns a generic message to avoid account enumeration. Whether email signup is open or requires review is a runtime setting; see [Runtime Settings](../../reference/runtime-settings/#user).
+`updateMask` identifies the fields to replace. To clear `smtpHost`, `fromEmail`, `smtpCredentials`, or `smtpProxy`, keep its path in `updateMask` and omit the field from `settings.email`. Management reads return usernames and the proxy URL while omitting passwords. Omitting `password` preserves it when the username is unchanged; new credentials and username changes require a password. The proxy resolves the SMTP target hostname. Email verification codes, password reset, and email MFA depend on these SMTP settings. Standalone email login only serves existing accounts; the code request API intentionally returns a generic message to avoid account enumeration. Email signup and review policy live in [Runtime Settings](../../reference/runtime-settings/#user).
 
 ## OAuth2 runtime configuration
 

@@ -9,6 +9,9 @@
 #[cfg(all(feature = "tls-aws-lc", feature = "tls-ring"))]
 compile_error!("features \"tls-aws-lc\" and \"tls-ring\" are mutually exclusive - use only one");
 
+mod field_mask;
+pub use field_mask::FieldMask;
+
 #[cfg(feature = "main")]
 pub static DESCRIPTOR_POOL: std::sync::LazyLock<prost_reflect::DescriptorPool> =
     std::sync::LazyLock::new(|| {

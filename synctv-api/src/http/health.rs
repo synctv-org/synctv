@@ -960,8 +960,11 @@ mod tests {
             TestEmailConfigProvider(Some(synctv_core::service::EmailConfig {
                 smtp_host: "smtp.example.com".to_string(),
                 smtp_port: 587,
-                smtp_username: "user".to_string(),
-                smtp_password: "password".to_string(),
+                smtp_credentials: Some(synctv_core::service::SmtpCredentials {
+                    username: "user".to_string(),
+                    password: "password".to_string(),
+                }),
+                smtp_proxy: None,
                 from_email: "noreply@example.com".to_string(),
                 from_name: "SyncTV".to_string(),
                 use_tls: true,

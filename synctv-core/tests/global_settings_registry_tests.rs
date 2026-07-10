@@ -200,9 +200,9 @@ async fn test_email_enabled_batch_update_accepts_complete_email_config() {
         "runtime settings snapshot should load",
     );
     settings.email.enabled = true;
-    settings.email.smtp_host = "smtp.example.com".to_string();
+    settings.email.smtp_host = Some("smtp.example.com".to_string());
     settings.email.smtp_port = 587;
-    settings.email.from_email = "noreply@example.com".to_string();
+    settings.email.from_email = Some("noreply@example.com".to_string());
 
     ok(
         registry.persist_runtime_settings(&settings).await,

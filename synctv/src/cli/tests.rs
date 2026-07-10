@@ -4721,177 +4721,62 @@ fn cli_parses_settings_get() {
 }
 
 #[test]
-fn cli_parses_settings_update_with_typed_patch_json() {
+fn cli_parses_settings_update_with_standard_proto_json_request() {
+    let request_json = r#"{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}"#;
     let cli = Cli::parse_from([
         "synctv",
         "settings",
         "update",
-        "user",
-        "--patch-json",
-        r#"{"enablePasswordSignup":true,"passwordSignupNeedReview":true}"#,
+        "--request-json",
+        request_json,
     ]);
     match cli.command {
         Commands::Settings(SettingsCommand {
             command: SettingsSubcommand::Update(args),
             ..
-        }) => {
-            assert_eq!(args.group, "user");
-            assert_eq!(
-                args.patch_json,
-                r#"{"enablePasswordSignup":true,"passwordSignupNeedReview":true}"#
-            );
-        }
+        }) => assert_eq!(args.request_json, request_json),
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
 
 #[test]
-fn settings_update_parser_accepts_typed_permission_patch_json() {
-    let request = parse_management_settings_patch_json(
-        "permissions",
-        &format!(
-            r#"{{"guestDefaultPermissions":{}}}"#,
-            RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC
-        ),
+fn settings_update_parser_accepts_field_mask_proto_json() {
+    let request: synctv_proto::admin::UpdateSettingsRequest = parse_cli_json(
+        "settings update request",
+        r#"{"settings":{"email":{"smtpProxy":{"url":"socks5://proxy.example.com:1080"}}},"updateMask":"email.smtpProxy"}"#,
     )
-    .expect("permissions update should parse");
-    let settings = request.permissions.expect("permissions settings");
-
+    .expect("settings update request should parse");
+    let proxy = request
+        .settings
+        .expect("settings")
+        .email
+        .expect("email")
+        .smtp_proxy
+        .expect("smtp proxy");
+    assert_eq!(proxy.url, "socks5://proxy.example.com:1080");
     assert_eq!(
-        settings.guest_default_permissions,
-        Some(RoomMemberPermissionBits::VIEW_MEMBER_LIST | RoomMemberPermissionBits::USE_WEBRTC)
-    );
-    assert_eq!(settings.admin_default_permissions, None);
-}
-
-#[test]
-fn settings_update_parser_accepts_camel_case_section_names() {
-    let room_defaults =
-        parse_management_settings_patch_json("roomDefaults", r#"{"defaultMaxMembers":42}"#)
-            .expect("roomDefaults update should parse");
-    assert_eq!(
-        room_defaults
-            .room_defaults
-            .expect("roomDefaults settings")
-            .default_max_members,
-        Some(42)
-    );
-
-    let room_creation =
-        parse_management_settings_patch_json("roomCreation", r#"{"approvalRequired":true}"#)
-            .expect("roomCreation update should parse");
-    assert_eq!(
-        room_creation
-            .room_creation
-            .expect("roomCreation settings")
-            .approval_required,
-        Some(true)
+        request.update_mask.expect("update mask").paths,
+        ["email.smtp_proxy"]
     );
 }
 
 #[test]
-fn settings_update_parser_rejects_snake_case_section_names() {
-    let error =
-        parse_management_settings_patch_json("room_creation", r#"{"approvalRequired":true}"#)
-            .expect_err("snake_case section name rejects");
-    let message = error.to_string();
-    assert!(message.contains("unsupported settings group 'room_creation'"));
-    assert!(message.contains("roomCreation"));
-}
-
-#[test]
-fn settings_update_parser_rejects_snake_case_field_names() {
-    let error = parse_management_settings_patch_json("user", r#"{"enable_password_signup":true}"#)
-        .expect_err("snake_case rejects");
-    assert!(error.to_string().contains("user settings patch"));
-}
-
-#[test]
-fn settings_update_parser_accepts_typed_oauth2_proto_json() {
-    let request = parse_management_settings_patch_json(
-        "oauth2",
-        r#"{"providers":{"providers":[
-          {
-            "name": "github",
-            "enableSignup": true,
-            "signupNeedReview": false,
-            "github": {
-              "clientId": "github-client-id",
-              "clientSecret": "github-client-secret",
-              "redirectUrl": "https://app.example.com/oauth2/callback"
-            }
-          }
-        ]}}"#,
+fn settings_update_parser_accepts_field_mask_clear_request() {
+    let request: synctv_proto::admin::UpdateSettingsRequest = parse_cli_json(
+        "settings update request",
+        r#"{"settings":{"email":{}},"updateMask":"email.smtpProxy"}"#,
     )
-    .expect("oauth2 update should parse");
-    let settings = request.oauth2.expect("oauth2 settings");
-    let providers = settings
-        .providers
-        .expect("providers wrapper should be present")
-        .providers;
-    assert_eq!(providers.len(), 1);
-    let provider = &providers[0];
-    assert_eq!(provider.name, "github");
-    assert!(provider.enable_signup);
-    assert!(matches!(
-        provider.config,
-        Some(synctv_proto::admin::o_auth2_provider_settings::Config::Github(_))
-    ));
-}
-
-#[test]
-fn settings_update_parser_rejects_oauth2_runtime_provider_map() {
-    let error = parse_management_settings_patch_json(
-        "oauth2",
-        r#"{"providers":{
-          "github": {
-            "type": "github",
-            "enableSignup": true,
-            "signupNeedReview": false,
-            "clientId": "github-client-id",
-            "clientSecret": "github-client-secret",
-            "redirectUrl": "https://app.example.com/oauth2/callback"
-          }
-        }}"#,
-    )
-    .expect_err("runtime provider map should reject");
-
-    assert!(error.to_string().contains("oauth2 settings patch"));
-}
-
-#[test]
-fn settings_update_parser_rejects_duplicate_oauth2_names() {
-    let request = parse_management_settings_patch_json(
-        "oauth2",
-        r#"{"providers":{"providers":[
-          {
-            "name": "github",
-            "github": {
-              "clientId": "github-client-id",
-              "clientSecret": "github-client-secret",
-              "redirectUrl": "https://app.example.com/oauth2/callback"
-            }
-          },
-          {
-            "name": "github",
-            "google": {
-              "clientId": "google-client-id",
-              "clientSecret": "google-client-secret",
-              "redirectUrl": "https://app.example.com/oauth2/callback"
-            }
-          }
-        ]}}"#,
-    )
-    .expect("duplicate provider names are service-level validation");
+    .expect("settings clear request should parse");
+    assert!(request
+        .settings
+        .expect("settings")
+        .email
+        .expect("email")
+        .smtp_proxy
+        .is_none());
     assert_eq!(
-        request
-            .oauth2
-            .expect("oauth2 settings")
-            .providers
-            .expect("providers")
-            .providers
-            .len(),
-        2
+        request.update_mask.expect("update mask").paths,
+        ["email.smtp_proxy"]
     );
 }
 

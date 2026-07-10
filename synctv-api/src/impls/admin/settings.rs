@@ -68,22 +68,94 @@ pub struct ProxySettingsPatch {
 
 #[derive(Debug, Clone, Default)]
 pub struct RtmpSettingsPatch {
-    pub custom_publish_host: Option<String>,
+    pub custom_publish_host: Option<OptionalConfigPatch<String>>,
     pub ts_disguised_as_png: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct EmailSettingsPatch {
     pub enabled: Option<bool>,
-    pub smtp_host: Option<String>,
+    pub smtp_host: Option<OptionalConfigPatch<String>>,
     pub smtp_port: Option<u32>,
-    pub smtp_username: Option<String>,
-    pub smtp_password: Option<String>,
+    pub smtp_credentials: Option<OptionalConfigPatch<SmtpCredentialsInput>>,
+    pub smtp_proxy: Option<OptionalConfigPatch<SmtpProxyInput>>,
     pub use_tls: Option<bool>,
-    pub from_email: Option<String>,
+    pub from_email: Option<OptionalConfigPatch<String>>,
     pub from_name: Option<String>,
     pub whitelist_enabled: Option<bool>,
     pub whitelist_domains: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum OptionalConfigPatch<T> {
+    Set(T),
+    Clear,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmtpCredentialsInput {
+    pub username: String,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SmtpProxyInput {
+    pub url: String,
+    pub credentials: Option<SmtpCredentialsInput>,
+}
+
+fn apply_smtp_credentials_patch(
+    current: Option<synctv_core::service::SmtpCredentials>,
+    patch: OptionalConfigPatch<SmtpCredentialsInput>,
+    field: &str,
+) -> Result<Option<synctv_core::service::SmtpCredentials>, ApiError> {
+    match patch {
+        OptionalConfigPatch::Clear => Ok(None),
+        OptionalConfigPatch::Set(input) => {
+            let password = match input.password {
+                Some(password) => password,
+                None => current
+                    .filter(|credentials| credentials.username == input.username)
+                    .map(|credentials| credentials.password)
+                    .ok_or_else(|| {
+                        ApiError::InvalidInput(format!(
+                            "{field}.set.password is required for new credentials or a username change"
+                        ))
+                    })?,
+            };
+            Ok(Some(synctv_core::service::SmtpCredentials {
+                username: input.username,
+                password,
+            }))
+        }
+    }
+}
+
+fn apply_smtp_proxy_patch(
+    current: Option<synctv_core::service::SmtpProxyConfig>,
+    patch: OptionalConfigPatch<SmtpProxyInput>,
+) -> Result<Option<synctv_core::service::SmtpProxyConfig>, ApiError> {
+    match patch {
+        OptionalConfigPatch::Clear => Ok(None),
+        OptionalConfigPatch::Set(input) => {
+            let current_credentials = current.and_then(|proxy| proxy.credentials);
+            let credentials = input
+                .credentials
+                .map(|credentials| {
+                    apply_smtp_credentials_patch(
+                        current_credentials,
+                        OptionalConfigPatch::Set(credentials),
+                        "email.smtp_proxy.credentials",
+                    )
+                })
+                .transpose()?
+                .flatten();
+            Ok(Some(synctv_core::service::SmtpProxyConfig {
+                url: input.url,
+                credentials,
+            }))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,6 +280,24 @@ fn proto_ice_server(
     }
 }
 
+fn proto_smtp_credentials(
+    credentials: synctv_core::service::SmtpCredentials,
+) -> synctv_proto::admin::SmtpCredentials {
+    synctv_proto::admin::SmtpCredentials {
+        username: credentials.username,
+        password: None,
+    }
+}
+
+fn proto_smtp_proxy(
+    proxy: synctv_core::service::SmtpProxyConfig,
+) -> synctv_proto::admin::SmtpProxy {
+    synctv_proto::admin::SmtpProxy {
+        url: proxy.url,
+        credentials: proxy.credentials.map(proto_smtp_credentials),
+    }
+}
+
 fn oauth2_github_config_to_proto(
     config: &synctv_core::service::OAuth2GithubProviderConfig,
 ) -> synctv_proto::admin::OAuth2GithubProviderConfig {
@@ -275,7 +365,7 @@ impl AdminApiImpl {
             .ok_or_else(|| ApiError::Internal("runtime settings store is unavailable".to_string()))
     }
 
-    fn project_admin_settings(
+    pub(crate) fn project_admin_settings(
         settings: synctv_core::service::RuntimeSettings,
     ) -> Result<synctv_proto::admin::RuntimeSettings, ApiError> {
         Ok(synctv_proto::admin::RuntimeSettings {
@@ -344,8 +434,8 @@ impl AdminApiImpl {
                 enabled: settings.email.enabled,
                 smtp_host: settings.email.smtp_host,
                 smtp_port: settings.email.smtp_port.into(),
-                smtp_username: settings.email.smtp_username,
-                smtp_password: None,
+                smtp_credentials: settings.email.smtp_credentials.map(proto_smtp_credentials),
+                smtp_proxy: settings.email.smtp_proxy.map(proto_smtp_proxy),
                 use_tls: settings.email.use_tls,
                 from_email: settings.email.from_email,
                 from_name: settings.email.from_name,
@@ -474,8 +564,11 @@ impl AdminApiImpl {
         }
 
         if let Some(rtmp) = patch.rtmp {
-            if let Some(value) = rtmp.custom_publish_host {
-                current.rtmp.custom_publish_host = value;
+            if let Some(patch) = rtmp.custom_publish_host {
+                current.rtmp.custom_publish_host = match patch {
+                    OptionalConfigPatch::Set(value) => Some(value),
+                    OptionalConfigPatch::Clear => None,
+                };
                 update_mask.rtmp.custom_publish_host = true;
             }
             if let Some(value) = rtmp.ts_disguised_as_png {
@@ -489,8 +582,11 @@ impl AdminApiImpl {
                 current.email.enabled = value;
                 update_mask.email.enabled = true;
             }
-            if let Some(value) = email.smtp_host {
-                current.email.smtp_host = value;
+            if let Some(patch) = email.smtp_host {
+                current.email.smtp_host = match patch {
+                    OptionalConfigPatch::Set(value) => Some(value),
+                    OptionalConfigPatch::Clear => None,
+                };
                 update_mask.email.smtp_host = true;
             }
             if let Some(value) = email.smtp_port {
@@ -501,20 +597,27 @@ impl AdminApiImpl {
                 })?;
                 update_mask.email.smtp_port = true;
             }
-            if let Some(value) = email.smtp_username {
-                current.email.smtp_username = value;
-                update_mask.email.smtp_username = true;
+            if let Some(patch) = email.smtp_credentials {
+                current.email.smtp_credentials = apply_smtp_credentials_patch(
+                    current.email.smtp_credentials,
+                    patch,
+                    "email.smtp_credentials",
+                )?;
+                update_mask.email.smtp_credentials = true;
             }
-            if let Some(value) = email.smtp_password {
-                current.email.smtp_password = value;
-                update_mask.email.smtp_password = true;
+            if let Some(patch) = email.smtp_proxy {
+                current.email.smtp_proxy = apply_smtp_proxy_patch(current.email.smtp_proxy, patch)?;
+                update_mask.email.smtp_proxy = true;
             }
             if let Some(value) = email.use_tls {
                 current.email.use_tls = value;
                 update_mask.email.use_tls = true;
             }
-            if let Some(value) = email.from_email {
-                current.email.from_email = value;
+            if let Some(patch) = email.from_email {
+                current.email.from_email = match patch {
+                    OptionalConfigPatch::Set(value) => Some(value),
+                    OptionalConfigPatch::Clear => None,
+                };
                 update_mask.email.from_email = true;
             }
             if let Some(value) = email.from_name {

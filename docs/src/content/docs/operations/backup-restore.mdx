@@ -89,7 +89,7 @@ pg_dump --format=custom --file=synctv.dump "$DATABASE_URL"
 | `cluster.secret` | Kubernetes Secret 或 Secret Manager |
 | `management.auth_token` | Secret Manager |
 | `metrics.auth.*` | 监控系统 secret |
-| `email.smtp_password` | Secret Manager |
+| `email.smtpCredentials`、`email.smtpProxy.credentials` | PostgreSQL 加密备份 |
 | Provider token/API key/cookie | Secret Manager 或数据库内加密存储 |
 
 如果你使用 `_file` 配置，把文件内容备份，而不是只备份路径。

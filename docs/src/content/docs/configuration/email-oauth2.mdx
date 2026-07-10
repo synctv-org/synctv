@@ -7,39 +7,28 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 ## 范围
 
-登录相关配置分两类：
-
-- 邮件登录的静态配置
-- OAuth2 provider 的 runtime 配置
-
-OAuth2 provider 放在 runtime settings 的 `oauth2.providers` 里。
+邮件登录和 OAuth2 provider 都通过 runtime settings 配置。邮件使用 `email` 分组，OAuth2 provider 使用 `oauth2.providers`。
 
 ## 邮件配置
 
-邮件配置仍然属于静态配置，主要用于 SMTP 连接和发信身份。
+邮件配置存储在 PostgreSQL，并在集群节点间热更新：
 
-```yaml
-email:
-  smtp_host: "smtp.example.com"
-  smtp_port: 587
-  smtp_username: "synctv@example.com"
-  smtp_password_file: "/run/secrets/smtp_password"
-  from_email: "synctv@example.com"
-  from_name: "SyncTV"
-  use_tls: true
+```bash
+synctv settings update --request-json '{"settings":{"email":{"smtpHost":"smtp.example.com","smtpPort":465,"smtpCredentials":{"username":"synctv@example.com","password":"secret"},"smtpProxy":{"url":"socks5://proxy.example.com:1080"},"useTls":true,"fromEmail":"synctv@example.com","fromName":"SyncTV","enabled":true}},"updateMask":"email.smtpHost,email.smtpPort,email.smtpCredentials,email.smtpProxy,email.useTls,email.fromEmail,email.fromName,email.enabled"}'
 ```
 
 | 字段 | 默认值 | 作用 |
 | --- | --- | --- |
-| `email.smtp_host` | `""` | SMTP 服务器地址。为空表示不配置发信能力 |
-| `email.smtp_port` | `587` | SMTP 端口 |
-| `email.smtp_username` | `""` | SMTP 登录用户名 |
-| `email.smtp_password` | `""` | SMTP 登录密码，支持 `smtp_password_file` |
-| `email.from_email` | `""` | 发件邮箱。配置 SMTP 时必须是合法邮箱地址 |
-| `email.from_name` | `SyncTV` | 发件人显示名 |
-| `email.use_tls` | `true` | 是否使用 TLS 连接 SMTP |
+| `email.enabled` | `false` | 启用邮件发送 |
+| `email.smtpHost` | `null` | SMTP 服务器地址 |
+| `email.smtpPort` | `587` | SMTP 端口 |
+| `email.smtpCredentials` | `null` | 可选 SMTP 登录凭据 `{username, password}` |
+| `email.smtpProxy` | `null` | 可选 SOCKS5 代理 `{url, credentials?}` |
+| `email.fromEmail` | `null` | 发件邮箱，启用邮件时必须是合法地址 |
+| `email.fromName` | `SyncTV` | 发件人显示名 |
+| `email.useTls` | `true` | 是否使用 TLS 连接 SMTP |
 
-邮件验证码、密码重置、邮件 MFA 都依赖这组 SMTP 配置。独立邮箱登录只服务已有账号；请求验证码接口会返回统一文案，避免泄露邮箱是否已注册。邮件注册是否开放、是否需要审核属于 runtime settings，见 [运行时设置](../../reference/runtime-settings/#user)。
+`updateMask` 指定需要覆盖的字段。清除 `smtpHost`、`fromEmail`、`smtpCredentials` 或 `smtpProxy` 时，在 `updateMask` 中保留对应路径，并在 `settings.email` 中省略该字段。管理读取接口返回用户名和代理 URL，并省略密码。保留相同用户名且省略 `password` 时沿用现有密码；新凭据和用户名变更需要提供密码。代理负责解析 SMTP 目标域名。邮件验证码、密码重置、邮件 MFA 都依赖这组 SMTP 配置。独立邮箱登录只服务已有账号；请求验证码接口会返回统一文案，避免泄露邮箱是否已注册。邮件注册是否开放、是否需要审核见 [运行时设置](../../reference/runtime-settings/#user)。
 
 ## OAuth2 runtime 配置
 

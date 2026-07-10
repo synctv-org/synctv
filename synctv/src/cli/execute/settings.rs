@@ -64,66 +64,6 @@ impl SettingsSection {
             ),
         }
     }
-
-    fn patch_label(self) -> &'static str {
-        match self {
-            Self::RoomDefaults => "roomDefaults settings patch",
-            Self::Permissions => "permissions settings patch",
-            Self::RoomCreation => "roomCreation settings patch",
-            Self::User => "user settings patch",
-            Self::OAuth2 => "oauth2 settings patch",
-            Self::Proxy => "proxy settings patch",
-            Self::Rtmp => "rtmp settings patch",
-            Self::Email => "email settings patch",
-            Self::WebRtc => "webrtc settings patch",
-            Self::Chat => "chat settings patch",
-            Self::Cors => "cors settings patch",
-        }
-    }
-}
-
-pub(in crate::cli) fn parse_management_settings_patch_json(
-    group: &str,
-    patch_json: &str,
-) -> Result<synctv_proto::admin::UpdateSettingsRequest> {
-    let mut request = synctv_proto::admin::UpdateSettingsRequest::default();
-    let section = SettingsSection::parse(group)?;
-    match section {
-        SettingsSection::RoomDefaults => {
-            request.room_defaults = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Permissions => {
-            request.permissions = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::RoomCreation => {
-            request.room_creation = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::User => {
-            request.user = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::OAuth2 => {
-            request.oauth2 = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Proxy => {
-            request.proxy = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Rtmp => {
-            request.rtmp = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Email => {
-            request.email = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::WebRtc => {
-            request.webrtc = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Chat => {
-            request.chat = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-        SettingsSection::Cors => {
-            request.cors = Some(parse_cli_json(section.patch_label(), patch_json)?);
-        }
-    }
-    Ok(request)
 }
 
 fn select_admin_settings_section(
@@ -172,12 +112,11 @@ pub(super) async fn execute_settings(settings_command: SettingsCommand) -> Resul
         }
         SettingsSubcommand::Update(args) => {
             let session = connect_remote_access(&args.remote).await?;
-            let request = parse_management_settings_patch_json(&args.group, &args.patch_json)?;
+            let request: synctv_proto::admin::UpdateSettingsRequest =
+                parse_cli_json("settings update request", &args.request_json)?;
             let response =
                 management_unary_call!(session, "update settings", update_settings, request)?;
-            let section =
-                SettingsSectionOutput(select_admin_settings_section(&response, &args.group)?);
-            args.remote.print_output(&section)
+            args.remote.print_output(&response)
         }
         SettingsSubcommand::TestEmail(args) => {
             let session = connect_remote_access(&args.remote).await?;

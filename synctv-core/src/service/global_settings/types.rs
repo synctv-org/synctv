@@ -1,8 +1,34 @@
 use crate::models::{RoomAdminPermissionBits, RoomPermissionSet};
-use crate::service::email::EmailConfig;
+use crate::service::email::{EmailConfig, SmtpCredentials, SmtpProxyConfig};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OptionalRuntimeConfig<T>(pub Option<T>);
+
+impl<T> Default for OptionalRuntimeConfig<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T: Serialize> fmt::Display for OptionalRuntimeConfig<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let json = serde_json::to_string(&self.0).map_err(|_| fmt::Error)?;
+        f.write_str(&json)
+    }
+}
+
+impl<T: DeserializeOwned> std::str::FromStr for OptionalRuntimeConfig<T> {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value).map(Self)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionSet(RoomPermissionSet);
@@ -777,8 +803,8 @@ pub struct EmailRuntimeSettingsUpdateMask {
     pub enabled: bool,
     pub smtp_host: bool,
     pub smtp_port: bool,
-    pub smtp_username: bool,
-    pub smtp_password: bool,
+    pub smtp_credentials: bool,
+    pub smtp_proxy: bool,
     pub use_tls: bool,
     pub from_email: bool,
     pub from_name: bool,
@@ -793,8 +819,8 @@ impl EmailRuntimeSettingsUpdateMask {
             enabled: true,
             smtp_host: true,
             smtp_port: true,
-            smtp_username: true,
-            smtp_password: true,
+            smtp_credentials: true,
+            smtp_proxy: true,
             use_tls: true,
             from_email: true,
             from_name: true,
@@ -808,8 +834,8 @@ impl EmailRuntimeSettingsUpdateMask {
         !self.enabled
             && !self.smtp_host
             && !self.smtp_port
-            && !self.smtp_username
-            && !self.smtp_password
+            && !self.smtp_credentials
+            && !self.smtp_proxy
             && !self.use_tls
             && !self.from_email
             && !self.from_name
@@ -926,19 +952,19 @@ pub struct ProxyRuntimeSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtmpRuntimeSettings {
-    pub custom_publish_host: String,
+    pub custom_publish_host: Option<String>,
     pub ts_disguised_as_png: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailRuntimeSettings {
     pub enabled: bool,
-    pub smtp_host: String,
+    pub smtp_host: Option<String>,
     pub smtp_port: u16,
-    pub smtp_username: String,
-    pub smtp_password: String,
+    pub smtp_credentials: Option<SmtpCredentials>,
+    pub smtp_proxy: Option<SmtpProxyConfig>,
     pub use_tls: bool,
-    pub from_email: String,
+    pub from_email: Option<String>,
     pub from_name: String,
     pub whitelist_enabled: bool,
     pub whitelist_domains: Vec<String>,
@@ -978,7 +1004,7 @@ fn validate_all_runtime_settings(
     validate_user_settings(&settings.user, &settings.email)?;
     settings.oauth2.providers.validate(ctx)?;
     validate_proxy_settings(&settings.proxy);
-    validate_rtmp_settings(&settings.rtmp);
+    validate_rtmp_settings(&settings.rtmp)?;
     validate_email_settings(&settings.email)?;
     validate_webrtc_settings(&settings.webrtc)?;
     validate_chat_settings(&settings.chat)?;
@@ -1040,9 +1066,18 @@ fn validate_proxy_settings(settings: &ProxyRuntimeSettings) {
     let _ = settings.live_proxy;
 }
 
-fn validate_rtmp_settings(settings: &RtmpRuntimeSettings) {
-    let _ = &settings.custom_publish_host;
+fn validate_rtmp_settings(settings: &RtmpRuntimeSettings) -> crate::Result<()> {
+    if settings
+        .custom_publish_host
+        .as_ref()
+        .is_some_and(|host| host.trim().is_empty())
+    {
+        return Err(crate::Error::InvalidInput(
+            "rtmp.custom_publish_host must be non-empty when configured".to_string(),
+        ));
+    }
     let _ = settings.ts_disguised_as_png;
+    Ok(())
 }
 
 fn validate_email_settings(settings: &EmailRuntimeSettings) -> crate::Result<()> {
@@ -1058,12 +1093,22 @@ fn validate_enabled_email_config(settings: &EmailRuntimeSettings) -> crate::Resu
     if !settings.enabled {
         return Ok(());
     }
+    let smtp_host = settings.smtp_host.as_deref().ok_or_else(|| {
+        crate::Error::InvalidInput(
+            "email.smtp_host is required when email.enabled is true".to_string(),
+        )
+    })?;
+    let from_email = settings.from_email.as_deref().ok_or_else(|| {
+        crate::Error::InvalidInput(
+            "email.from_email is required when email.enabled is true".to_string(),
+        )
+    })?;
     EmailConfig {
-        smtp_host: settings.smtp_host.trim().to_string(),
+        smtp_host: smtp_host.trim().to_string(),
         smtp_port: settings.smtp_port,
-        smtp_username: settings.smtp_username.clone(),
-        smtp_password: settings.smtp_password.clone(),
-        from_email: settings.from_email.trim().to_string(),
+        smtp_credentials: settings.smtp_credentials.clone(),
+        smtp_proxy: settings.smtp_proxy.clone(),
+        from_email: from_email.trim().to_string(),
         from_name: settings.from_name.trim().to_string(),
         use_tls: settings.use_tls,
     }
@@ -1170,8 +1215,8 @@ pub struct PublicSettings {
     pub movie_proxy: bool,
     pub live_proxy: bool,
     pub ts_disguised_as_png: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub custom_publish_host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_publish_host: Option<String>,
     pub email_whitelist_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub email_whitelist_domains: Vec<String>,
@@ -1199,7 +1244,7 @@ impl PublicSettings {
             movie_proxy: true,
             live_proxy: true,
             ts_disguised_as_png: false,
-            custom_publish_host: String::new(),
+            custom_publish_host: None,
             email_whitelist_enabled: false,
             email_whitelist_domains: Vec::new(),
         }

@@ -109,18 +109,19 @@ async fn test_shared_room_actor_playlist_items_rejects_guest_even_if_media_resou
     );
 }
 
-#[tokio::test]
-async fn update_room_settings_accepts_empty_patch_as_noop() -> TestResult {
+#[test]
+fn update_room_settings_rejects_empty_request() {
     let current = synctv_core::models::RoomSettings::default();
-    let updated = super::room::validate_update_room_settings_request(
+    let error = super::room::validate_update_room_settings_request(
         &synctv_proto::client::UpdateRoomSettingsRequest::default(),
-        current.clone(),
+        current,
     )
-    .map_err(test_error)?;
+    .expect_err("empty room settings update should be rejected");
 
-    assert_eq!(updated.allow_guest_join.0, current.allow_guest_join.0);
-    assert_eq!(updated.max_members.0, current.max_members.0);
-    Ok(())
+    assert!(matches!(
+        error,
+        ApiError::InvalidInput(message) if message.contains("settings is required")
+    ));
 }
 
 #[test]

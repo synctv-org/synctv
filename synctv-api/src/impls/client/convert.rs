@@ -185,7 +185,7 @@ pub(crate) fn room_settings_from_proto(
 
 pub(crate) fn apply_room_settings_patch_from_proto(
     mut settings: synctv_core::models::RoomSettings,
-    patch: client_proto::UpdateRoomSettingsRequest,
+    request: client_proto::UpdateRoomSettingsRequest,
 ) -> Result<synctv_core::models::RoomSettings, crate::impls::ApiError> {
     use synctv_core::models::room_settings::{
         AdminAddedPermissions, AdminRemovedPermissions, AllowAutoJoin, AllowGuestJoin, AutoPlay,
@@ -193,6 +193,14 @@ pub(crate) fn apply_room_settings_patch_from_proto(
         MemberAddedPermissions, MemberRemovedPermissions, RequireApproval, RoomSettingsPatch,
     };
 
+    let patch = request
+        .settings
+        .ok_or_else(|| crate::impls::ApiError::InvalidInput("settings is required".to_string()))?;
+    let paths = request
+        .update_mask
+        .ok_or_else(|| crate::impls::ApiError::InvalidInput("update_mask is required".to_string()))?
+        .paths;
+    let patch = crate::room_settings_mapping::select_room_settings_patch(patch, &paths)?;
     let mut typed_patch = RoomSettingsPatch::default();
     if let Some(value) = patch.allow_guest_join {
         typed_patch.allow_guest_join = Some(AllowGuestJoin::new(value));

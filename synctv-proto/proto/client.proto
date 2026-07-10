@@ -3,6 +3,7 @@ syntax = "proto3";
 package synctv.client;
 
 import "proto/buf/validate/validate.proto";
+import "google/protobuf/field_mask.proto";
 import "proto/common.proto";
 import "proto/passkey.proto";
 import "proto/source_config.proto";
@@ -1222,7 +1223,7 @@ message DeleteRoomResponse {
   bool success = 1;
 }
 
-message UpdateRoomSettingsRequest {
+message RoomSettingsPatch {
   optional bool allow_guest_join = 1;
   optional uint64 max_members = 2;
   optional bool require_approval = 3;
@@ -1235,6 +1236,11 @@ message UpdateRoomSettingsRequest {
   optional uint64 member_removed_permissions = 10;
   optional uint64 guest_added_permissions = 11;
   optional uint64 guest_removed_permissions = 12;
+}
+
+message UpdateRoomSettingsRequest {
+  RoomSettingsPatch settings = 1 [(buf.validate.field).required = true];
+  google.protobuf.FieldMask update_mask = 2 [(buf.validate.field).required = true];
 }
 
 

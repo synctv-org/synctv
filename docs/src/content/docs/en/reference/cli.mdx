@@ -285,7 +285,8 @@ Room settings:
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+synctv room settings update <ROOM_ID> --unset autoPlay.mode
 synctv room settings reset <ROOM_ID>
 ```
 
@@ -451,11 +452,12 @@ Runtime settings are changed through the management endpoint. They are not the s
 ```bash
 synctv settings list
 synctv settings get email
-synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
+synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
 synctv settings test-email admin@example.com
 ```
 
-`--request-json` accepts the standard `UpdateSettingsRequest` ProtoJSON shape. `updateMask` is a comma-separated lowerCamel FieldMask string.
+`--set PATH=VALUE` and `--unset PATH` are repeatable, and the CLI builds the FieldMask. `--request-json` accepts the standard `UpdateSettingsRequest` ProtoJSON shape and is mutually exclusive with set/unset mode.
 
 See [Runtime Settings Reference](../runtime-settings/) for all keys, defaults, and validation rules.
 

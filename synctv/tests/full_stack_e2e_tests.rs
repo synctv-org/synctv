@@ -281,15 +281,6 @@ fn room_settings_value(
     serde_json::to_value(settings.expect(context)).expect("room settings should encode")
 }
 
-fn room_settings_patch_json(chat_enabled: bool, allow_guest_join: bool) -> String {
-    serde_json::to_string(&synctv_proto::client::UpdateRoomSettingsRequest {
-        chat_enabled: Some(chat_enabled),
-        allow_guest_join: Some(allow_guest_join),
-        ..Default::default()
-    })
-    .expect("room settings patch should serialize")
-}
-
 fn create_ticket_request(room_id: &str) -> synctv_proto::client::CreateWebSocketTicketRequest {
     synctv_proto::client::CreateWebSocketTicketRequest {
         room_id: room_id.to_string(),
@@ -2937,8 +2928,6 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
         initial_settings_version > 0,
         "CLI room settings get should return a persisted initial version"
     );
-    let updated_settings_json = room_settings_patch_json(false, true);
-
     let settings_update = run_synctv_remote_cli(
         &server,
         &[
@@ -2946,8 +2935,10 @@ async fn full_stack_cli_room_settings_commands_manage_room_settings_lifecycle() 
             "settings",
             "update",
             &room_id,
-            "--settings-json",
-            &updated_settings_json,
+            "--set",
+            "chatEnabled=false",
+            "--set",
+            "allowGuestJoin=true",
         ],
     )
     .await;
@@ -3339,8 +3330,6 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
         .expect("room create should include id")
         .to_string();
 
-    let full_room_settings_json = room_settings_patch_json(false, true);
-
     let updated_room_settings = run_synctv_remote_cli_json(
         &server,
         &[
@@ -3348,8 +3337,10 @@ async fn full_stack_cli_user_batch_and_settings_commands_cover_remaining_managem
             "settings",
             "update",
             &room_id,
-            "--settings-json",
-            &full_room_settings_json,
+            "--set",
+            "chatEnabled=false",
+            "--set",
+            "allowGuestJoin=true",
         ],
         "update room settings for reset coverage",
     )
@@ -7343,8 +7334,6 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
     assert_eq!(settings.version, expected_initial_version);
     let initial_version = settings.version;
 
-    let updated_settings_json = room_settings_patch_json(false, true);
-
     let _ = run_synctv_remote_cli_json(
         &server,
         &[
@@ -7352,8 +7341,10 @@ async fn full_stack_grpc_message_stream_watch_room_settings_receives_initial_and
             "settings",
             "update",
             &room_id,
-            "--settings-json",
-            &updated_settings_json,
+            "--set",
+            "chatEnabled=false",
+            "--set",
+            "allowGuestJoin=true",
         ],
         "update room settings for grpc watch",
     )
@@ -8079,7 +8070,6 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
     )
     .await;
 
-    let updated_settings_json = room_settings_patch_json(false, true);
     let _ = run_synctv_remote_cli_json(
         &server,
         &[
@@ -8087,8 +8077,10 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             "settings",
             "update",
             &room_id,
-            "--settings-json",
-            &updated_settings_json,
+            "--set",
+            "chatEnabled=false",
+            "--set",
+            "allowGuestJoin=true",
         ],
         "update room settings for websocket test",
     )
@@ -8591,8 +8583,6 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
     assert_eq!(settings.version, expected_initial_version);
     let initial_version = settings.version;
 
-    let updated_settings_json = room_settings_patch_json(false, true);
-
     let _ = run_synctv_remote_cli_json(
         &server,
         &[
@@ -8600,8 +8590,10 @@ async fn full_stack_websocket_watch_room_settings_receives_initial_and_future_up
             "settings",
             "update",
             &room_id,
-            "--settings-json",
-            &updated_settings_json,
+            "--set",
+            "chatEnabled=false",
+            "--set",
+            "allowGuestJoin=true",
         ],
         "update room settings for websocket watch",
     )

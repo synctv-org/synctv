@@ -305,7 +305,8 @@ synctv room delete <ROOM_ID>
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
+synctv room settings update <ROOM_ID> --unset autoPlay.mode
 synctv room settings reset <ROOM_ID>
 ```
 
@@ -463,11 +464,12 @@ synctv provider rtmp info --username alice --room-id <ROOM_ID> <MEDIA_ID>
 ```bash
 synctv settings list
 synctv settings get email
-synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
+synctv settings update --set email.whitelistEnabled=true --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
 synctv settings test-email admin@example.com
 ```
 
-`--request-json` 接受标准 `UpdateSettingsRequest` ProtoJSON。`updateMask` 是逗号分隔的 lowerCamel FieldMask 字符串。
+`--set PATH=VALUE` 与 `--unset PATH` 可以重复使用，CLI 自动生成 FieldMask。`--request-json` 接受标准 `UpdateSettingsRequest` ProtoJSON，并与 set/unset 模式互斥。
 
 完整 key、默认值和校验规则见 [Runtime settings 参考](../runtime-settings/)。
 

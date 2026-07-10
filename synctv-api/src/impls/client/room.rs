@@ -2519,7 +2519,7 @@ pub(crate) fn validate_update_room_settings_request(
     req: &synctv_proto::client::UpdateRoomSettingsRequest,
     current: synctv_core::models::RoomSettings,
 ) -> Result<synctv_core::models::RoomSettings, ApiError> {
-    apply_room_settings_patch_from_proto(current, *req)
+    apply_room_settings_patch_from_proto(current, req.clone())
 }
 
 #[cfg(test)]

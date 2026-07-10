@@ -10,7 +10,7 @@ pub struct RoomSettingsCommand {
 pub enum RoomSettingsSubcommand {
     /// Get room settings
     Get(RoomSettingsGetArgs),
-    /// Patch room settings with a partial JSON object
+    /// Update room settings
     Update(RoomSettingsUpdateArgs),
     /// Reset room settings to defaults
     Reset(RoomSettingsResetArgs),
@@ -45,9 +45,21 @@ pub struct RoomSettingsUpdateArgs {
     #[command(flatten)]
     pub room: RoomSettingsScopeArgs,
 
-    /// Partial JSON object patch merged onto the current room settings before submission
-    #[arg(long)]
-    pub settings_json: String,
+    /// Set a room settings leaf using PATH=VALUE; may be repeated.
+    #[arg(long, value_name = "PATH=VALUE", conflicts_with = "request_json")]
+    pub set: Vec<String>,
+
+    /// Restore a room settings leaf to its server default; may be repeated.
+    #[arg(long, value_name = "PATH", conflicts_with = "request_json")]
+    pub unset: Vec<String>,
+
+    /// Admin UpdateRoomSettingsRequest encoded as ProtoJSON; roomId is taken from ROOM_ID.
+    #[arg(
+        long = "request-json",
+        value_name = "JSON",
+        conflicts_with_all = ["set", "unset"]
+    )]
+    pub request_json: Option<String>,
 }
 
 #[derive(Debug, Args)]

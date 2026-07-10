@@ -1039,7 +1039,7 @@ fn cli_parses_room_create_minimal() {
 
 #[test]
 fn room_create_settings_json_is_applied_as_patch_to_defaults() {
-    let patch: synctv_proto::client::UpdateRoomSettingsRequest =
+    let patch: synctv_proto::client::RoomSettingsPatch =
         serde_json::from_str(r#"{"chatEnabled":false}"#)
             .expect("room settings patch JSON should parse");
 
@@ -1629,15 +1629,17 @@ fn cli_parses_room_settings_get() {
 }
 
 #[test]
-fn cli_parses_room_settings_update_with_json_payload() {
+fn cli_parses_room_settings_update_with_set_and_unset() {
     let cli = Cli::parse_from([
         "synctv",
         "room",
         "settings",
         "update",
         "room-123",
-        "--settings-json",
-        "{\"chatEnabled\":false}",
+        "--set",
+        "chatEnabled=false",
+        "--unset",
+        "autoPlay.mode",
     ]);
     match cli.command {
         Commands::Room(RoomCommand {
@@ -1648,7 +1650,9 @@ fn cli_parses_room_settings_update_with_json_payload() {
             ..
         }) => {
             assert_eq!(args.room.resolved_room_id(), "room-123");
-            assert_eq!(args.settings_json, "{\"chatEnabled\":false}");
+            assert_eq!(args.set, ["chatEnabled=false"]);
+            assert_eq!(args.unset, ["autoPlay.mode"]);
+            assert_eq!(args.request_json, None);
         }
         other => panic!("unexpected command parsed: {other:?}"),
     }
@@ -4734,7 +4738,7 @@ fn cli_parses_settings_update_with_standard_proto_json_request() {
         Commands::Settings(SettingsCommand {
             command: SettingsSubcommand::Update(args),
             ..
-        }) => assert_eq!(args.request_json, request_json),
+        }) => assert_eq!(args.request_json.as_deref(), Some(request_json)),
         other => panic!("unexpected command parsed: {other:?}"),
     }
 }
@@ -4778,6 +4782,82 @@ fn settings_update_parser_accepts_field_mask_clear_request() {
         request.update_mask.expect("update mask").paths,
         ["email.smtp_proxy"]
     );
+}
+
+#[test]
+fn settings_update_set_and_unset_build_standard_proto_json_request() {
+    let request: synctv_proto::admin::UpdateSettingsRequest = parse_masked_settings_request(
+        "settings update request",
+        None,
+        &[
+            "email.enabled=true".to_string(),
+            "email.whitelistDomains=[\"example.com\"]".to_string(),
+            "roomCreation.passwordPolicy=required".to_string(),
+        ],
+        &["email.smtpProxy".to_string()],
+    )
+    .expect("set and unset should build an update request");
+
+    let settings = request.settings.expect("settings");
+    let email = settings.email.expect("email");
+    assert_eq!(email.enabled, Some(true));
+    assert_eq!(email.whitelist_domains, ["example.com"]);
+    assert_eq!(email.smtp_proxy, None);
+    assert_eq!(
+        settings
+            .room_creation
+            .expect("room creation")
+            .password_policy,
+        Some(synctv_proto::admin::RoomPasswordPolicy::Required as i32)
+    );
+    assert_eq!(
+        request.update_mask.expect("update mask").paths,
+        [
+            "email.enabled",
+            "email.whitelist_domains",
+            "room_creation.password_policy",
+            "email.smtp_proxy"
+        ]
+    );
+}
+
+#[test]
+fn room_settings_update_set_and_unset_build_field_mask_request() {
+    let request: synctv_proto::admin::UpdateRoomSettingsRequest = parse_masked_settings_request(
+        "room settings update request",
+        None,
+        &[
+            "requireApproval=true".to_string(),
+            "autoPlay.mode=shuffle".to_string(),
+        ],
+        &["autoPlay.delay".to_string()],
+    )
+    .expect("room set and unset should build an update request");
+
+    let settings = request.settings.expect("settings");
+    assert_eq!(settings.require_approval, Some(true));
+    assert_eq!(
+        settings.auto_play.expect("auto play").mode,
+        Some(synctv_proto::client::PlayMode::Shuffle as i32)
+    );
+    assert_eq!(
+        request.update_mask.expect("update mask").paths,
+        ["require_approval", "auto_play.mode", "auto_play.delay"]
+    );
+}
+
+#[test]
+fn settings_update_rejects_conflicting_input_modes() {
+    Cli::try_parse_from([
+        "synctv",
+        "settings",
+        "update",
+        "--set",
+        "email.enabled=true",
+        "--request-json",
+        r#"{"settings":{"email":{"enabled":true}},"updateMask":"email.enabled"}"#,
+    ])
+    .expect_err("set and request-json must be mutually exclusive");
 }
 
 #[test]

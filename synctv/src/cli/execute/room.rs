@@ -137,9 +137,15 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
                 args.remote.print_output(&response)
             }
             RoomSettingsSubcommand::Update(args) => {
-                let session = connect_remote_access(&args.remote).await?;
-                let mut request = parse_required_room_settings_json(&args.settings_json)?;
+                let mut request: synctv_proto::admin::UpdateRoomSettingsRequest =
+                    parse_masked_settings_request(
+                        "room settings update request",
+                        args.request_json.as_deref(),
+                        &args.set,
+                        &args.unset,
+                    )?;
                 request.room_id = args.room.resolved_room_id().to_string();
+                let session = connect_remote_access(&args.remote).await?;
                 let response = management_unary_call!(
                     session,
                     "update room settings",

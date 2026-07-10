@@ -14,7 +14,15 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 邮件配置存储在 PostgreSQL，并在集群节点间热更新：
 
 ```bash
-synctv settings update --request-json '{"settings":{"email":{"smtpHost":"smtp.example.com","smtpPort":465,"smtpCredentials":{"username":"synctv@example.com","password":"secret"},"smtpProxy":{"url":"socks5://proxy.example.com:1080"},"useTls":true,"fromEmail":"synctv@example.com","fromName":"SyncTV","enabled":true}},"updateMask":"email.smtpHost,email.smtpPort,email.smtpCredentials,email.smtpProxy,email.useTls,email.fromEmail,email.fromName,email.enabled"}'
+synctv settings update \
+  --set email.smtpHost=smtp.example.com \
+  --set email.smtpPort=465 \
+  --set 'email.smtpCredentials={"username":"synctv@example.com","password":"secret"}' \
+  --set 'email.smtpProxy={"url":"socks5://proxy.example.com:1080"}' \
+  --set email.useTls=true \
+  --set email.fromEmail=synctv@example.com \
+  --set email.fromName=SyncTV \
+  --set email.enabled=true
 ```
 
 | 字段 | 默认值 | 作用 |

@@ -232,20 +232,16 @@ pub fn room_settings_patch_from_admin_proto(
     req: &admin_proto::UpdateRoomSettingsRequest,
 ) -> Result<RoomSettingsUpdatePatch, ApiError> {
     crate::impls::validate_proto_request(req)?;
-    room_settings_patch_from_admin_proto_parts(&AdminUpdateRoomSettingsProtoParts {
-        allow_guest_join: req.allow_guest_join,
-        max_members: req.max_members,
-        require_approval: req.require_approval,
-        allow_auto_join: req.allow_auto_join,
-        chat_enabled: req.chat_enabled,
-        auto_play: req.auto_play,
-        admin_added_permissions: req.admin_added_permissions,
-        admin_removed_permissions: req.admin_removed_permissions,
-        member_added_permissions: req.member_added_permissions,
-        member_removed_permissions: req.member_removed_permissions,
-        guest_added_permissions: req.guest_added_permissions,
-        guest_removed_permissions: req.guest_removed_permissions,
-    })
+    let settings = req
+        .settings
+        .ok_or_else(|| ApiError::InvalidInput("settings is required".to_string()))?;
+    let paths = &req
+        .update_mask
+        .as_ref()
+        .ok_or_else(|| ApiError::InvalidInput("update_mask is required".to_string()))?
+        .paths;
+    let patch = crate::room_settings_mapping::select_room_settings_patch(settings, paths)?;
+    room_settings_patch_from_client_proto(patch)
 }
 
 fn email_settings_patch_from_admin_proto(
@@ -278,41 +274,25 @@ fn email_settings_patch_from_admin_proto(
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct AdminUpdateRoomSettingsProtoParts {
-    pub allow_guest_join: Option<bool>,
-    pub max_members: Option<u64>,
-    pub require_approval: Option<bool>,
-    pub allow_auto_join: Option<bool>,
-    pub chat_enabled: Option<bool>,
-    pub auto_play: Option<client_proto::AutoPlaySettingsPatch>,
-    pub admin_added_permissions: Option<u64>,
-    pub admin_removed_permissions: Option<u64>,
-    pub member_added_permissions: Option<u64>,
-    pub member_removed_permissions: Option<u64>,
-    pub guest_added_permissions: Option<u64>,
-    pub guest_removed_permissions: Option<u64>,
-}
-
-pub fn room_settings_patch_from_admin_proto_parts(
-    parts: &AdminUpdateRoomSettingsProtoParts,
+fn room_settings_patch_from_client_proto(
+    patch: client_proto::RoomSettingsPatch,
 ) -> Result<RoomSettingsUpdatePatch, ApiError> {
     Ok(RoomSettingsUpdatePatch {
-        allow_guest_join: parts.allow_guest_join,
-        max_members: parts.max_members,
-        require_approval: parts.require_approval,
-        allow_auto_join: parts.allow_auto_join,
-        chat_enabled: parts.chat_enabled,
-        auto_play: parts
+        allow_guest_join: patch.allow_guest_join,
+        max_members: patch.max_members,
+        require_approval: patch.require_approval,
+        allow_auto_join: patch.allow_auto_join,
+        chat_enabled: patch.chat_enabled,
+        auto_play: patch
             .auto_play
             .map(auto_play_patch_from_client_proto)
             .transpose()?,
-        admin_added_permissions: parts.admin_added_permissions,
-        admin_removed_permissions: parts.admin_removed_permissions,
-        member_added_permissions: parts.member_added_permissions,
-        member_removed_permissions: parts.member_removed_permissions,
-        guest_added_permissions: parts.guest_added_permissions,
-        guest_removed_permissions: parts.guest_removed_permissions,
+        admin_added_permissions: patch.admin_added_permissions,
+        admin_removed_permissions: patch.admin_removed_permissions,
+        member_added_permissions: patch.member_added_permissions,
+        member_removed_permissions: patch.member_removed_permissions,
+        guest_added_permissions: patch.guest_added_permissions,
+        guest_removed_permissions: patch.guest_removed_permissions,
     })
 }
 

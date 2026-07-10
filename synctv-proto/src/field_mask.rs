@@ -2,11 +2,24 @@ use std::fmt;
 
 use serde::{de::Visitor, Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Clone, PartialEq, Eq, prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, prost::Message)]
 pub struct FieldMask {
     #[prost(string, repeated, tag = "1")]
     pub paths: Vec<String>,
 }
+
+#[cfg(feature = "openapi")]
+impl utoipa::PartialSchema for FieldMask {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .description(Some("Comma-separated lowerCamel protobuf field paths"))
+            .into()
+    }
+}
+
+#[cfg(feature = "openapi")]
+impl utoipa::ToSchema for FieldMask {}
 
 impl Serialize for FieldMask {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

@@ -2157,18 +2157,12 @@ impl ManagementService for ManagementServiceImpl {
             .update_room_settings(
                 UpdateRoomSettingsCommand {
                     room_id: req.room_id,
-                    allow_guest_join: req.allow_guest_join,
-                    max_members: req.max_members,
-                    require_approval: req.require_approval,
-                    allow_auto_join: req.allow_auto_join,
-                    chat_enabled: req.chat_enabled,
-                    auto_play: req.auto_play,
-                    admin_added_permissions: req.admin_added_permissions,
-                    admin_removed_permissions: req.admin_removed_permissions,
-                    member_added_permissions: req.member_added_permissions,
-                    member_removed_permissions: req.member_removed_permissions,
-                    guest_added_permissions: req.guest_added_permissions,
-                    guest_removed_permissions: req.guest_removed_permissions,
+                    settings: req
+                        .settings
+                        .ok_or_else(|| Status::invalid_argument("settings is required"))?,
+                    update_mask: req
+                        .update_mask
+                        .ok_or_else(|| Status::invalid_argument("update_mask is required"))?,
                 },
                 &validated.user_id,
             )

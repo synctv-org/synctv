@@ -23,16 +23,19 @@ Runtime settings 是存储在 PostgreSQL 的热更新设置，主要用于运行
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
+synctv settings update --set user.enablePasswordSignup=true
 ```
 
-更新协议使用 protobuf `FieldMask`。`settings` 中的 key 和 `updateMask` 的 JSON 表示均为 lowerCamel；多个路径用逗号分隔：
+`--set PATH=VALUE` 和 `--unset PATH` 均可重复使用。普通字符串可以直接传入，数组和对象使用 JSON：
 
 ```bash
-synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
+synctv settings update \
+  --set email.whitelistEnabled=true \
+  --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
 ```
 
-mask 中存在的可选字段在 `settings` 中缺失时会被清除。普通字段必须在 `settings` 中提供值。mask 只接受叶子路径。
+CLI 会自动构造 protobuf `FieldMask`。路径使用 lowerCamel 叶子字段；`--unset` 用于清除 optional 配置。`--request-json` 接受完整的 `UpdateSettingsRequest` ProtoJSON，适合生成式配置和自动化批量请求。
 
 具体参数以当前二进制的 `synctv settings --help` 为准。
 
@@ -218,35 +221,37 @@ SOCKS5 代理 URL 只包含 scheme、host 和 port。代理认证信息位于 `s
   <TabItem label="开启密码注册" icon="setting">
 
 ```bash
-synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
+synctv settings update --set user.enablePasswordSignup=true
 ```
 
   </TabItem>
   <TabItem label="密码注册审核" icon="approve-check-circle">
 
 ```bash
-synctv settings update --request-json '{"settings":{"user":{"passwordSignupNeedReview":true}},"updateMask":"user.passwordSignupNeedReview"}'
+synctv settings update --set user.passwordSignupNeedReview=true
 ```
 
   </TabItem>
   <TabItem label="限制房间数量" icon="document">
 
 ```bash
-synctv settings update --request-json '{"settings":{"roomCreation":{"maxRoomsPerUser":"20"}},"updateMask":"roomCreation.maxRoomsPerUser"}'
+synctv settings update --set roomCreation.maxRoomsPerUser=20
 ```
 
   </TabItem>
   <TabItem label="清理聊天保留" icon="warning">
 
 ```bash
-synctv settings update --request-json '{"settings":{"chat":{"maxMessagesPerRoom":"1000","messageRetentionDays":"180"}},"updateMask":"chat.maxMessagesPerRoom,chat.messageRetentionDays"}'
+synctv settings update \
+  --set chat.maxMessagesPerRoom=1000 \
+  --set chat.messageRetentionDays=180
 ```
 
   </TabItem>
   <TabItem label="配置 OAuth2" icon="document">
 
 ```bash
-synctv settings update --request-json '{"settings":{"oauth2":{"providers":[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]}},"updateMask":"oauth2.providers"}'
+synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]'
 ```
 
   </TabItem>

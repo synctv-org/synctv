@@ -111,9 +111,14 @@ pub(super) async fn execute_settings(settings_command: SettingsCommand) -> Resul
             args.remote.print_output(&section)
         }
         SettingsSubcommand::Update(args) => {
-            let session = connect_remote_access(&args.remote).await?;
             let request: synctv_proto::admin::UpdateSettingsRequest =
-                parse_cli_json("settings update request", &args.request_json)?;
+                parse_masked_settings_request(
+                    "settings update request",
+                    args.request_json.as_deref(),
+                    &args.set,
+                    &args.unset,
+                )?;
+            let session = connect_remote_access(&args.remote).await?;
             let response =
                 management_unary_call!(session, "update settings", update_settings, request)?;
             args.remote.print_output(&response)

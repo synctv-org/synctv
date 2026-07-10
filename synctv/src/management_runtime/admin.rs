@@ -919,18 +919,8 @@ impl AdminRuntime for ManagementAdminRuntime {
             .update_room_settings(
                 admin_proto::UpdateRoomSettingsRequest {
                     room_id: command.room_id,
-                    allow_guest_join: command.allow_guest_join,
-                    max_members: command.max_members,
-                    require_approval: command.require_approval,
-                    allow_auto_join: command.allow_auto_join,
-                    chat_enabled: command.chat_enabled,
-                    auto_play: command.auto_play,
-                    admin_added_permissions: command.admin_added_permissions,
-                    admin_removed_permissions: command.admin_removed_permissions,
-                    member_added_permissions: command.member_added_permissions,
-                    member_removed_permissions: command.member_removed_permissions,
-                    guest_added_permissions: command.guest_added_permissions,
-                    guest_removed_permissions: command.guest_removed_permissions,
+                    settings: Some(command.settings),
+                    update_mask: Some(command.update_mask),
                 },
                 admin_user_id,
             )

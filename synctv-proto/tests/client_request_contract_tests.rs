@@ -11,7 +11,7 @@ use synctv_proto::client::{
     MoveMediaRequest, MovePlaylistRequest, OAuth2ProviderInstancePathRequest,
     OAuth2ProviderTypePathRequest, PasskeyAuthenticatorAssertionResponse,
     RejectRoomJoinReviewRequest, RoomJoinReviewPathRequest, RoomMediaTargetPathRequest,
-    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest,
+    RoomMemberTargetPathRequest, RoomPathRequest, RoomPlaylistTargetPathRequest, RoomSettingsPatch,
     RoomStreamListSortBy, SortDirection, StartOpaqueLoginRequest, StartPlaybackRequest,
     TransferRoomOwnershipRequest, UnlinkProviderRequest, UpdatePlaybackStateRequest,
     UpdatePlaylistRequest, UpdateRoomSettingsRequest, UploadUserAvatarObjectRequest,
@@ -148,14 +148,17 @@ fn test_protojson_custom_json_name_rejects_proto_field_name() {
 #[test]
 fn test_room_settings_patch_uses_lower_camel_case_fields() {
     let patch: UpdateRoomSettingsRequest =
-        serde_json::from_str(r#"{"chatEnabled":false,"allowGuestJoin":true}"#)
+        serde_json::from_str(
+            r#"{"settings":{"chatEnabled":false,"allowGuestJoin":true},"updateMask":"chatEnabled,allowGuestJoin"}"#,
+        )
             .expect("lowerCamelCase room settings patch should deserialize");
 
-    assert_eq!(patch.chat_enabled, Some(false));
-    assert_eq!(patch.allow_guest_join, Some(true));
+    let settings = patch.settings.expect("settings");
+    assert_eq!(settings.chat_enabled, Some(false));
+    assert_eq!(settings.allow_guest_join, Some(true));
 
     let error = serde_json::from_str::<UpdateRoomSettingsRequest>(
-        r#"{"chat_enabled":false,"allow_guest_join":true}"#,
+        r#"{"settings":{"chat_enabled":false,"allow_guest_join":true},"updateMask":"chatEnabled,allowGuestJoin"}"#,
     )
     .expect_err("snake_case room settings patch fields should be rejected");
     assert!(error.to_string().contains("chat_enabled"));
@@ -172,10 +175,9 @@ fn test_get_server_time_request_uses_lower_camel_case_query_field() {
 
 #[test]
 fn test_room_settings_patch_rejects_duplicate_canonical_field() {
-    let error = serde_json::from_str::<UpdateRoomSettingsRequest>(
-        r#"{"chatEnabled":true,"chatEnabled":false}"#,
-    )
-    .expect_err("duplicate room settings field should be rejected");
+    let error =
+        serde_json::from_str::<RoomSettingsPatch>(r#"{"chatEnabled":true,"chatEnabled":false}"#)
+            .expect_err("duplicate room settings field should be rejected");
 
     assert!(error.to_string().contains("duplicate field"));
 }
@@ -183,7 +185,7 @@ fn test_room_settings_patch_rejects_duplicate_canonical_field() {
 #[test]
 fn test_update_room_settings_rejects_duplicate_canonical_field() {
     let error = serde_json::from_str::<UpdateRoomSettingsRequest>(
-        r#"{"chatEnabled":true,"chatEnabled":false}"#,
+        r#"{"settings":{"chatEnabled":true},"settings":{"chatEnabled":false},"updateMask":"chatEnabled"}"#,
     )
     .expect_err("duplicate room settings field should be rejected");
 

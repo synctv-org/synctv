@@ -30,6 +30,7 @@ pub(crate) mod realtime_lifecycle;
 pub(crate) mod resource_change;
 pub(crate) mod room_cache_fanout;
 pub(crate) mod room_lifecycle_fanout;
+pub(crate) mod room_settings_mapping;
 pub(crate) mod runtime;
 pub(crate) mod runtime_adapters;
 pub(crate) mod server_settings;

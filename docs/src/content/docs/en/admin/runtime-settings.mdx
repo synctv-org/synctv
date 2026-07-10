@@ -10,13 +10,13 @@ Runtime settings are hot-updated product policy stored in PostgreSQL. Use them f
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
+synctv settings update --set user.enablePasswordSignup=true
 ```
 
 Permission defaults are runtime settings too. Guests use a dedicated ceiling, so media-resource, chat-write, and administration permissions are rejected:
 
 ```bash
-synctv settings update --request-json '{"settings":{"permissions":{"guestDefaultPermissions":"40"}},"updateMask":"permissions.guestDefaultPermissions"}'
+synctv settings update --set permissions.guestDefaultPermissions=40
 ```
 
 ## Where a Change Belongs

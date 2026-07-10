@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -744,21 +745,15 @@ fn parse_optional_room_settings_json(
 ) -> Result<Option<synctv_proto::client::RoomSettings>> {
     normalized_optional_cli_value(raw)
         .map(|raw| {
-            let patch: synctv_proto::client::UpdateRoomSettingsRequest =
+            let patch: synctv_proto::client::RoomSettingsPatch =
                 serde_json::from_str(&raw).context("invalid room settings patch JSON")?;
             Ok(room_settings_patch_to_full_settings(patch))
         })
         .transpose()
 }
 
-fn parse_required_room_settings_json(
-    raw: &str,
-) -> Result<synctv_proto::admin::UpdateRoomSettingsRequest> {
-    serde_json::from_str(raw).context("invalid room settings patch JSON")
-}
-
 pub(in crate::cli) fn room_settings_patch_to_full_settings(
-    patch: synctv_proto::client::UpdateRoomSettingsRequest,
+    patch: synctv_proto::client::RoomSettingsPatch,
 ) -> synctv_proto::client::RoomSettings {
     let defaults = synctv_core::models::RoomSettings::default();
     let default_auto_play = defaults.auto_play.value;
@@ -922,6 +917,134 @@ where
     T: DeserializeOwned,
 {
     serde_json::from_str(raw).with_context(|| format!("Invalid {label} JSON"))
+}
+
+pub(in crate::cli) fn parse_masked_settings_request<T>(
+    label: &str,
+    request_json: Option<&str>,
+    set: &[String],
+    unset: &[String],
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    if let Some(raw) = request_json {
+        return parse_cli_json(label, raw);
+    }
+    if set.is_empty() && unset.is_empty() {
+        bail!("provide at least one --set or --unset, or use --request-json");
+    }
+
+    let mut settings = serde_json::Map::new();
+    let mut paths = Vec::with_capacity(set.len() + unset.len());
+    let mut seen = BTreeSet::new();
+
+    for assignment in set {
+        let (path, raw_value) = assignment
+            .split_once('=')
+            .ok_or_else(|| anyhow!("invalid --set '{assignment}'; expected PATH=VALUE"))?;
+        register_mask_path(path, &mut paths, &mut seen)?;
+        let mut value = serde_json::from_str(raw_value)
+            .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
+        if let serde_json::Value::String(name) = &value {
+            if let Some(enum_value) = cli_settings_enum_value(path, name) {
+                value = serde_json::Value::Number(enum_value.into());
+            }
+        }
+        if value.is_null() {
+            bail!("--set '{path}' cannot use null; use --unset {path}");
+        }
+        insert_json_path(&mut settings, path, value)?;
+    }
+    for path in unset {
+        register_mask_path(path, &mut paths, &mut seen)?;
+    }
+
+    serde_json::from_value(serde_json::json!({
+        "settings": settings,
+        "updateMask": paths.join(","),
+    }))
+    .with_context(|| format!("Invalid {label} values"))
+}
+
+fn cli_settings_enum_value(path: &str, raw: &str) -> Option<i32> {
+    let value = raw.trim().to_ascii_uppercase().replace('-', "_");
+    match path {
+        "autoPlay.mode" => match value.as_str() {
+            "UNSPECIFIED" | "PLAY_MODE_UNSPECIFIED" => Some(0),
+            "SEQUENTIAL" | "PLAY_MODE_SEQUENTIAL" => Some(1),
+            "REPEAT_ONE" | "PLAY_MODE_REPEAT_ONE" => Some(2),
+            "REPEAT_ALL" | "PLAY_MODE_REPEAT_ALL" => Some(3),
+            "SHUFFLE" | "PLAY_MODE_SHUFFLE" => Some(4),
+            _ => None,
+        },
+        "roomCreation.passwordPolicy" => match value.as_str() {
+            "UNSPECIFIED" | "ROOM_PASSWORD_POLICY_UNSPECIFIED" => Some(0),
+            "OPTIONAL" | "ROOM_PASSWORD_POLICY_OPTIONAL" => Some(1),
+            "REQUIRED" | "ROOM_PASSWORD_POLICY_REQUIRED" => Some(2),
+            "FORBIDDEN" | "ROOM_PASSWORD_POLICY_FORBIDDEN" => Some(3),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn register_mask_path<'a>(
+    path: &'a str,
+    paths: &mut Vec<&'a str>,
+    seen: &mut BTreeSet<&'a str>,
+) -> Result<()> {
+    if path.is_empty() || path.split('.').any(str::is_empty) {
+        bail!("settings paths must contain non-empty dot-separated field names");
+    }
+    if !seen.insert(path) {
+        bail!("duplicate settings path '{path}'");
+    }
+    if let Some(conflict) = seen.iter().copied().find(|existing| {
+        let existing = *existing;
+        existing != path
+            && (existing
+                .strip_prefix(path)
+                .is_some_and(|suffix| suffix.starts_with('.'))
+                || path
+                    .strip_prefix(existing)
+                    .is_some_and(|suffix| suffix.starts_with('.')))
+    }) {
+        bail!("conflicting settings paths '{path}' and '{conflict}'");
+    }
+    paths.push(path);
+    Ok(())
+}
+
+fn insert_json_path(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    path: &str,
+    value: serde_json::Value,
+) -> Result<()> {
+    let mut segments = path.split('.');
+    let first = segments
+        .next()
+        .ok_or_else(|| anyhow!("settings path is required"))?;
+    insert_json_segments(object, first, &mut segments, value, path)
+}
+
+fn insert_json_segments<'a>(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    segment: &str,
+    remaining: &mut impl Iterator<Item = &'a str>,
+    value: serde_json::Value,
+    path: &str,
+) -> Result<()> {
+    let Some(next) = remaining.next() else {
+        object.insert(segment.to_string(), value);
+        return Ok(());
+    };
+    let nested = object
+        .entry(segment.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("conflicting settings path '{path}'"))?;
+    insert_json_segments(nested, next, remaining, value, path)
 }
 
 fn parse_cli_optional_json<T>(label: &str, raw: Option<&str>) -> Result<Option<T>>

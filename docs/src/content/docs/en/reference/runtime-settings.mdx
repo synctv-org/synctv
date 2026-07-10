@@ -23,16 +23,19 @@ Do not put startup secrets, database URLs, Redis URLs, listener ports, or slice-
 ```bash
 synctv settings list
 synctv settings get user
-synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
+synctv settings update --set user.enablePasswordSignup=true
 ```
 
-Updates use protobuf `FieldMask`. Keys under `settings` and the JSON form of `updateMask` use lowerCamel names. Separate multiple mask paths with commas:
+Both `--set PATH=VALUE` and `--unset PATH` are repeatable. Plain strings can be unquoted; arrays and objects use JSON:
 
 ```bash
-synctv settings update --request-json '{"settings":{"email":{"whitelistEnabled":true,"whitelistDomains":["example.com"]}},"updateMask":"email.whitelistEnabled,email.whitelistDomains"}'
+synctv settings update \
+  --set email.whitelistEnabled=true \
+  --set 'email.whitelistDomains=["example.com"]'
+synctv settings update --unset email.smtpProxy
 ```
 
-An optional field named by the mask is cleared when it is absent from `settings`. Required fields named by the mask must have a value. The mask accepts leaf paths only.
+The CLI builds the protobuf `FieldMask` automatically. Paths use lowerCamel leaf fields; `--unset` clears optional configuration. `--request-json` accepts a complete `UpdateSettingsRequest` ProtoJSON document for generated configuration and automated batch requests.
 
 Check the current binary with `synctv settings --help`.
 
@@ -218,35 +221,37 @@ Main service startup CORS is `server.cors_allowed_origins`. Runtime CORS is for 
   <TabItem label="Enable password signup" icon="setting">
 
 ```bash
-synctv settings update --request-json '{"settings":{"user":{"enablePasswordSignup":true}},"updateMask":"user.enablePasswordSignup"}'
+synctv settings update --set user.enablePasswordSignup=true
 ```
 
   </TabItem>
   <TabItem label="Review password signup" icon="approve-check-circle">
 
 ```bash
-synctv settings update --request-json '{"settings":{"user":{"passwordSignupNeedReview":true}},"updateMask":"user.passwordSignupNeedReview"}'
+synctv settings update --set user.passwordSignupNeedReview=true
 ```
 
   </TabItem>
   <TabItem label="Limit room count" icon="document">
 
 ```bash
-synctv settings update --request-json '{"settings":{"roomCreation":{"maxRoomsPerUser":"20"}},"updateMask":"roomCreation.maxRoomsPerUser"}'
+synctv settings update --set roomCreation.maxRoomsPerUser=20
 ```
 
   </TabItem>
   <TabItem label="Chat retention" icon="warning">
 
 ```bash
-synctv settings update --request-json '{"settings":{"chat":{"maxMessagesPerRoom":"1000","messageRetentionDays":"180"}},"updateMask":"chat.maxMessagesPerRoom,chat.messageRetentionDays"}'
+synctv settings update \
+  --set chat.maxMessagesPerRoom=1000 \
+  --set chat.messageRetentionDays=180
 ```
 
   </TabItem>
   <TabItem label="Configure OAuth2" icon="document">
 
 ```bash
-synctv settings update --request-json '{"settings":{"oauth2":{"providers":[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]}},"updateMask":"oauth2.providers"}'
+synctv settings update --set 'oauth2.providers=[{"name":"github","enableSignup":true,"signupNeedReview":false,"github":{"clientId":"github-client-id","clientSecret":"github-client-secret","redirectUrl":"https://app.example.com/oauth2/callback"}}]'
 ```
 
   </TabItem>

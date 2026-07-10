@@ -222,18 +222,8 @@ pub struct GetRoomSettingsQuery {
 #[derive(Debug, Clone)]
 pub struct UpdateRoomSettingsCommand {
     pub room_id: String,
-    pub allow_guest_join: Option<bool>,
-    pub max_members: Option<u64>,
-    pub require_approval: Option<bool>,
-    pub allow_auto_join: Option<bool>,
-    pub chat_enabled: Option<bool>,
-    pub auto_play: Option<client_proto::AutoPlaySettingsPatch>,
-    pub admin_added_permissions: Option<u64>,
-    pub admin_removed_permissions: Option<u64>,
-    pub member_added_permissions: Option<u64>,
-    pub member_removed_permissions: Option<u64>,
-    pub guest_added_permissions: Option<u64>,
-    pub guest_removed_permissions: Option<u64>,
+    pub settings: client_proto::RoomSettingsPatch,
+    pub update_mask: synctv_proto::FieldMask,
 }
 
 #[derive(Debug, Clone)]

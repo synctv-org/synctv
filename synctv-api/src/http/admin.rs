@@ -2505,11 +2505,15 @@ mod tests {
 
     #[test]
     fn test_update_room_settings_request_accepts_protojson_body() -> TestResult {
-        let json = r#"{"roomId":"room_body","allowGuestJoin":true}"#;
+        let json = r#"{"roomId":"room_body","settings":{"allowGuestJoin":true},"updateMask":"allowGuestJoin"}"#;
         let mut req: admin::UpdateRoomSettingsRequest = serde_json::from_str(json)?;
         req.room_id = "room_1".to_string();
         assert_eq!(req.room_id, "room_1");
-        assert_eq!(req.allow_guest_join, Some(true));
+        assert_eq!(req.settings.expect("settings").allow_guest_join, Some(true));
+        assert_eq!(
+            req.update_mask.expect("update mask").paths,
+            ["allow_guest_join"]
+        );
         Ok(())
     }
 

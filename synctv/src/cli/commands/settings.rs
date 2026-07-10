@@ -12,7 +12,7 @@ pub enum SettingsSubcommand {
     List(SettingsListArgs),
     /// Get one effective settings section
     Get(SettingsGetArgs),
-    /// Update runtime settings using an UpdateSettingsRequest ProtoJSON document
+    /// Update runtime settings
     Update(SettingsUpdateArgs),
     /// Send a test email using the current runtime email settings
     TestEmail(SettingsTestEmailArgs),
@@ -34,9 +34,21 @@ pub struct SettingsGetArgs {
 
 #[derive(Debug, Args)]
 pub struct SettingsUpdateArgs {
+    /// Set a settings leaf using PATH=VALUE; may be repeated.
+    #[arg(long, value_name = "PATH=VALUE", conflicts_with = "request_json")]
+    pub set: Vec<String>,
+
+    /// Unset a settings leaf; may be repeated.
+    #[arg(long, value_name = "PATH", conflicts_with = "request_json")]
+    pub unset: Vec<String>,
+
     /// UpdateSettingsRequest encoded as ProtoJSON.
-    #[arg(long = "request-json", value_name = "JSON", required = true)]
-    pub request_json: String,
+    #[arg(
+        long = "request-json",
+        value_name = "JSON",
+        conflicts_with_all = ["set", "unset"]
+    )]
+    pub request_json: Option<String>,
 
     #[command(flatten)]
     pub remote: RemoteAccessArgs,

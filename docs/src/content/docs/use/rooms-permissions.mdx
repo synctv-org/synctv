@@ -128,7 +128,7 @@ SyncTV 有两层角色，不能混为一谈。
 
 ```bash
 synctv room settings get <ROOM_ID>
-synctv room settings update <ROOM_ID> --settings-json '{"requireApproval":true}'
+synctv room settings update <ROOM_ID> --set requireApproval=true --set autoPlay.mode=shuffle
 ```
 
 ## 成员权限覆盖

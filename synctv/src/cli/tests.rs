@@ -1472,6 +1472,117 @@ fn cli_parses_room_transfer_owner() {
 }
 
 #[test]
+fn cli_parses_room_favorite_commands() {
+    let add = Cli::parse_from([
+        "synctv",
+        "room",
+        "favorite",
+        "add",
+        "room_abc",
+        "--username",
+        "alice",
+    ]);
+    match add.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Favorite(RoomFavoriteCommand {
+                    command: RoomFavoriteSubcommand::Add(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.room_id, "room_abc");
+            assert_eq!(args.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.actor.user_id, None);
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let remove = Cli::parse_from([
+        "synctv",
+        "room",
+        "favorite",
+        "remove",
+        "room_abc",
+        "--user-id",
+        "usr_abc",
+    ]);
+    match remove.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Favorite(RoomFavoriteCommand {
+                    command: RoomFavoriteSubcommand::Remove(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.room_id, "room_abc");
+            assert_eq!(args.actor.username, None);
+            assert_eq!(args.actor.user_id.as_deref(), Some("usr_abc"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+
+    let list = Cli::parse_from([
+        "synctv",
+        "room",
+        "favorite",
+        "list",
+        "--username",
+        "alice",
+        "--page",
+        "2",
+        "--page-size",
+        "10",
+        "--search",
+        "movie",
+    ]);
+    match list.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Favorite(RoomFavoriteCommand {
+                    command: RoomFavoriteSubcommand::List(args),
+                }),
+            ..
+        }) => {
+            assert_eq!(args.actor.username.as_deref(), Some("alice"));
+            assert_eq!(args.actor.user_id, None);
+            assert_eq!(args.page, 2);
+            assert_eq!(args.page_size, 10);
+            assert_eq!(args.search.as_deref(), Some("movie"));
+        }
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
+fn root_global_flags_propagate_to_room_favorite() {
+    let cli = Cli::parse_from([
+        "synctv",
+        "--endpoint",
+        "http://127.0.0.1:50052",
+        "room",
+        "favorite",
+        "add",
+        "room_abc",
+        "--username",
+        "alice",
+    ]);
+    let cli = apply_root_global_overrides(cli);
+    match cli.command {
+        Commands::Room(RoomCommand {
+            command:
+                RoomSubcommand::Favorite(RoomFavoriteCommand {
+                    command: RoomFavoriteSubcommand::Add(args),
+                }),
+            ..
+        }) => assert_eq!(
+            args.remote.global.endpoint.as_deref(),
+            Some("http://127.0.0.1:50052")
+        ),
+        other => panic!("unexpected command parsed: {other:?}"),
+    }
+}
+
+#[test]
 fn cli_room_transfer_owner_help_is_clear() {
     let mut command = Cli::command();
     let room = command
@@ -5212,6 +5323,7 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
             creator: None,
             category: None,
             labels: Vec::new(),
+            favorited: false,
         }),
         playback_state: None,
         membership_status: synctv_proto::common::MemberStatus::Active as i32,
@@ -5284,6 +5396,33 @@ fn render_human_output_uses_room_and_member_enums_by_context() {
         "2026-04-04 08:34:17 +00:00 (UTC) (1775291657)"
     );
     assert_eq!(instances["instances"][0]["status"], "disconnected");
+}
+
+#[test]
+fn render_human_output_includes_room_favorite_state() {
+    let room = synctv_proto::client::Room {
+        id: "room-1".into(),
+        name: "General".into(),
+        created_by: "owner-1".into(),
+        status: synctv_proto::common::RoomStatus::Active as i32,
+        availability: synctv_proto::client::ResourceAvailability::Available as i32,
+        favorited: true,
+        ..Default::default()
+    };
+
+    let favorite = render_human_output(&synctv_proto::client::FavoriteRoomResponse {
+        room: Some(room.clone()),
+    })
+    .expect("favorite room human output should render");
+    let favorites = render_human_output(&synctv_proto::client::ListFavoriteRoomsResponse {
+        rooms: vec![room],
+        total: 1,
+    })
+    .expect("favorite rooms human output should render");
+
+    assert_eq!(favorite["room"]["favorited"], true);
+    assert_eq!(favorites["rooms"][0]["favorited"], true);
+    assert_eq!(favorites["total"], 1);
 }
 
 #[test]

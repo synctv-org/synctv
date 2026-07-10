@@ -991,6 +991,11 @@ fn register_extracted_user_routes() -> Router<AppState> {
     Router::new()
         .route("/api/user", get(user::get_me))
         .route("/api/user/rooms", get(user::list_my_rooms))
+        .route("/api/user/favorite-rooms", get(user::list_favorite_rooms))
+        .route(
+            "/api/user/rooms/{roomId}/favorite",
+            axum::routing::put(user::favorite_room).delete(user::unfavorite_room),
+        )
         .route("/api/user", axum::routing::patch(user::update_user))
         .route(
             "/api/user/avatar/upload-session",

@@ -236,6 +236,12 @@ fn merge_room_command_globals(command: &mut RoomCommand, root: &GlobalConfigArgs
         RoomSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Get(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::TransferOwner(args) => merge_remote_access_args(&mut args.remote, root),
+        RoomSubcommand::Favorite(command) => match &mut command.command {
+            RoomFavoriteSubcommand::Add(args) | RoomFavoriteSubcommand::Remove(args) => {
+                merge_remote_access_args(&mut args.remote, root);
+            }
+            RoomFavoriteSubcommand::List(args) => merge_remote_access_args(&mut args.remote, root),
+        },
         RoomSubcommand::SetPassword(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Ban(args) => merge_remote_access_args(&mut args.remote, root),
         RoomSubcommand::Unban(args) => merge_remote_access_args(&mut args.remote, root),

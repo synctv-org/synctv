@@ -926,6 +926,191 @@ impl RoomRepository {
         Ok((rooms, count))
     }
 
+    pub async fn favorite_for_user(&self, user_id: &UserId, room_id: &RoomId) -> Result<()> {
+        let affected = sqlx::query(
+            "INSERT INTO room_favorites (user_id, room_id)
+             SELECT rm.user_id, rm.room_id
+             FROM room_members rm
+             JOIN rooms r ON r.id = rm.room_id
+             WHERE rm.user_id = $1
+               AND rm.room_id = $2
+               AND r.deleted_at IS NULL
+             ON CONFLICT (user_id, room_id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(room_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if affected > 0 || self.is_current_member(user_id, room_id).await? {
+            Ok(())
+        } else if self.get_by_id(room_id).await?.is_none() {
+            Err(Error::NotFound(format!("Room {room_id} not found")))
+        } else {
+            Err(Error::Authorization(
+                synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM.to_string(),
+            ))
+        }
+    }
+
+    pub async fn unfavorite_for_user(&self, user_id: &UserId, room_id: &RoomId) -> Result<()> {
+        let exists = self.get_by_id(room_id).await?.is_some();
+        if !exists {
+            return Err(Error::NotFound(format!("Room {room_id} not found")));
+        }
+
+        sqlx::query(
+            "DELETE FROM room_favorites
+             WHERE user_id = $1 AND room_id = $2",
+        )
+        .bind(user_id)
+        .bind(room_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn is_current_member(&self, user_id: &UserId, room_id: &RoomId) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM room_members
+                WHERE user_id = $1 AND room_id = $2
+             )",
+        )
+        .bind(user_id)
+        .bind(room_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    pub async fn is_favorited_by_user(&self, user_id: &UserId, room_id: &RoomId) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM room_favorites rf
+                WHERE rf.user_id = $1
+                  AND rf.room_id = $2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM room_members rm
+                      WHERE rm.user_id = rf.user_id AND rm.room_id = rf.room_id
+                  )
+             )",
+        )
+        .bind(user_id)
+        .bind(room_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
+    }
+
+    pub async fn favorite_room_ids_for_user(
+        &self,
+        user_id: &UserId,
+        room_ids: &[RoomId],
+    ) -> Result<HashSet<RoomId>> {
+        if room_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        let ids: Vec<i64> = room_ids.iter().map(RoomId::as_i64).collect();
+        let rows: Vec<RoomId> = sqlx::query_scalar(
+            "SELECT room_id
+             FROM room_favorites rf
+             WHERE rf.user_id = $1
+               AND rf.room_id = ANY($2)
+               AND EXISTS (
+                   SELECT 1
+                   FROM room_members rm
+                   WHERE rm.user_id = rf.user_id AND rm.room_id = rf.room_id
+               )",
+        )
+        .bind(user_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    pub async fn list_favorites_for_user(
+        &self,
+        user_id: &UserId,
+        pagination: PageParams,
+        search: Option<&str>,
+    ) -> Result<(Vec<Room>, i64)> {
+        let limit = pagination.limit_i64()?;
+        let offset = pagination.offset_i64()?;
+        let search_pattern = search.and_then(ilike_contains_pattern);
+
+        let mut count_builder = QueryBuilder::<Postgres>::new(
+            "SELECT COUNT(*)
+             FROM room_favorites rf
+             JOIN room_members rm ON rm.user_id = rf.user_id AND rm.room_id = rf.room_id
+             JOIN rooms r ON r.id = rf.room_id",
+        );
+        let mut has_condition = false;
+        Self::push_where_prefix(&mut count_builder, &mut has_condition);
+        count_builder.push("rf.user_id = ").push_bind(user_id);
+
+        let mut favorite_query = RoomListQuery {
+            pagination,
+            search: search.map(ToOwned::to_owned),
+            status: Some(RoomStatus::Active),
+            is_banned: Some(false),
+            ..Default::default()
+        };
+        favorite_query.search = search.map(ToOwned::to_owned);
+        Self::push_room_list_filters(
+            &mut count_builder,
+            &favorite_query,
+            search_pattern.as_ref(),
+            &mut has_condition,
+        );
+        Self::push_where_prefix(&mut count_builder, &mut has_condition);
+        count_builder.push(ACCESSIBLE_ROOM_CREATOR_CONDITION);
+        let count: i64 = count_builder
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await?;
+
+        let mut list_builder = QueryBuilder::<Postgres>::new("SELECT ");
+        Self::push_room_projection(&mut list_builder);
+        list_builder.push(
+            " FROM room_favorites rf
+              JOIN room_members rm ON rm.user_id = rf.user_id AND rm.room_id = rf.room_id
+              JOIN rooms r ON r.id = rf.room_id
+              LEFT JOIN room_categories rc ON rc.id = r.category_id",
+        );
+        let mut has_condition = false;
+        Self::push_where_prefix(&mut list_builder, &mut has_condition);
+        list_builder.push("rf.user_id = ").push_bind(user_id);
+        Self::push_room_list_filters(
+            &mut list_builder,
+            &favorite_query,
+            search_pattern.as_ref(),
+            &mut has_condition,
+        );
+        Self::push_where_prefix(&mut list_builder, &mut has_condition);
+        list_builder.push(ACCESSIBLE_ROOM_CREATOR_CONDITION);
+        list_builder
+            .push(" ORDER BY rf.created_at DESC, r.id DESC LIMIT ")
+            .push_bind(limit)
+            .push(" OFFSET ")
+            .push_bind(offset);
+        let rooms = list_builder
+            .build_query_as::<RoomRow>()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(Into::into)
+            .collect();
+
+        Ok((rooms, count))
+    }
+
     /// List rooms with member count (optimized with JOIN)
     pub async fn list_with_count(
         &self,

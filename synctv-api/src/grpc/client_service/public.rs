@@ -40,7 +40,7 @@ impl PublicService for ClientServiceImpl {
         let client_api = self.client_api.clone();
         let response = executor
             .execute_public_endpoint(&metadata, EndpointRateLimitCategory::Read, || async move {
-                client_api.list_rooms(req).await
+                client_api.list_rooms(req, None).await
             })
             .await
             .map_err(map_api_error)?;

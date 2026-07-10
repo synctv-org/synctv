@@ -8,18 +8,20 @@ use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
     ConfirmEmailBindRequest, CreateRoomRequest, CreateUserAvatarUploadSessionRequest,
     CreateUserAvatarUploadSessionResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    FinishOpaquePasswordUpdateRequest, FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
+    FavoriteRoomRequest, FavoriteRoomResponse, FinishOpaquePasswordUpdateRequest,
+    FinishPasskeyBindRequest, FinishRoomPasswordLoginRequest,
     FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
     GetProfileRequest, GetRoomRequest, GetRoomResponse, GetUserAvatarObjectRequest,
     GetUserPreferencesRequest, GetUserPreferencesResponse, JoinRoomRequest, JoinRoomResponse,
-    ListMyRoomsRequest, ListMyRoomsResponse, ListPasskeysRequest, ListPasskeysResponse,
-    LogoutRequest, LogoutResponse, PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
-    RequestSensitiveOperationEmailCodeResponse, Room, SetUsernameRequest, StartEmailBindRequest,
-    StartEmailBindResponse, StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse,
-    StartPasskeyBindRequest, StartPasskeyBindResponse, StartRoomPasswordLoginRequest,
-    StartRoomPasswordLoginResponse, StartSensitiveOperationPasskeyRequest,
-    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
-    StartSensitiveOperationVerificationResponse, UnbindEmailRequest, UpdateUserAvatarRequest,
+    ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsRequest, ListMyRoomsResponse,
+    ListPasskeysRequest, ListPasskeysResponse, LogoutRequest, LogoutResponse, PasskeyCredential,
+    RequestSensitiveOperationEmailCodeRequest, RequestSensitiveOperationEmailCodeResponse, Room,
+    SetUsernameRequest, StartEmailBindRequest, StartEmailBindResponse,
+    StartOpaquePasswordUpdateRequest, StartOpaquePasswordUpdateResponse, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartRoomPasswordLoginRequest, StartRoomPasswordLoginResponse,
+    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
+    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
+    UnbindEmailRequest, UnfavoriteRoomRequest, UnfavoriteRoomResponse, UpdateUserAvatarRequest,
     UpdateUserPreferencesRequest, UpdateUserPreferencesResponse, UploadUserAvatarObjectRequest,
     UploadUserAvatarObjectResponse, User, UserAvatarObjectResponse,
 };
@@ -740,6 +742,73 @@ impl UserService for ClientServiceImpl {
                 EndpointRateLimitCategory::Read,
                 move |authenticated| async move {
                     client_api.list_my_rooms(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn favorite_room(
+        &self,
+        request: Request<FavoriteRoomRequest>,
+    ) -> Result<Response<FavoriteRoomResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api.favorite_room(&authenticated.user_id, req).await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn unfavorite_room(
+        &self,
+        request: Request<UnfavoriteRoomRequest>,
+    ) -> Result<Response<UnfavoriteRoomResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Write,
+                move |authenticated| async move {
+                    client_api
+                        .unfavorite_room(&authenticated.user_id, req)
+                        .await
+                },
+            )
+            .await
+            .map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_favorite_rooms(
+        &self,
+        request: Request<ListFavoriteRoomsRequest>,
+    ) -> Result<Response<ListFavoriteRoomsResponse>, Status> {
+        let metadata = self.request_metadata(&request)?;
+        let req = request.into_inner();
+        let executor = self.client_api.clone();
+        let client_api = self.client_api.clone();
+        let response = executor
+            .execute_user_endpoint(
+                &metadata,
+                EndpointRateLimitCategory::Read,
+                move |authenticated| async move {
+                    client_api
+                        .list_favorite_rooms(&authenticated.user_id, req)
+                        .await
                 },
             )
             .await

@@ -62,23 +62,24 @@ use crate::proto::{
     CreatePlaylistRequest, CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest,
     DeleteMediaRequest, DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest,
     EditMediaRequest, EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-    EmbyLogoutRequest, EvictExpiredSliceCacheRequest, GetPlaybackRequest, GetPlaylistRequest,
-    GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest,
-    GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest, GetSliceCacheStatsRequest,
-    GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest, GetUserRoomsRequest,
-    KickMemberRequest, KickRoomStreamRequest, KickStreamRequest, ListActiveStreamsRequest,
-    ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest, ListPlaylistsRequest,
-    ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
-    ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
-    MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
-    RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
-    ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
-    SetUserPasswordRequest, ShutdownMode as ProtoShutdownMode, StartPlaybackRequest,
-    StopPlaybackRequest, StopServerEvent, StopServerRequest, TransferRoomOwnershipRequest,
-    UnbanRoomRequest, UnbanUserRequest, UpdateMemberDisplayTagRequest,
-    UpdateMemberPermissionsRequest, UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest,
-    UpdatePlaylistRequest, UpdateRoomPasswordRequest, UpdateUserPreferencesRequest,
-    UpdateUserRoleRequest, UpdateUserUsernameRequest, UserRef,
+    EmbyLogoutRequest, EvictExpiredSliceCacheRequest, FavoriteRoomRequest, GetPlaybackRequest,
+    GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest,
+    GetServerStateRequest, GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
+    GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
+    GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
+    ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListFavoriteRoomsRequest,
+    ListMediaRequest, ListPlaylistsRequest, ListRoomCreationReviewsRequest,
+    ListRoomJoinReviewsRequest, ListRoomStreamsRequest, ListRoomsRequest,
+    ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest, MovePlaylistRequest,
+    PurgeSliceCacheRequest, RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
+    RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
+    SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
+    ShutdownMode as ProtoShutdownMode, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+    StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+    UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
+    UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
+    UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
+    UpdateUserUsernameRequest, UserRef,
 };
 use crate::provider_runtime::{
     AddProviderInstanceCommand, AlistListQuery, AlistLoginCommand, AlistLoginCredential,
@@ -641,6 +642,105 @@ impl ManagementServiceImpl {
             &creator,
             &self.public_id_codec,
         )
+    }
+
+    async fn client_room_for_favorite_response(
+        &self,
+        room: &Room,
+        favorited: bool,
+    ) -> Result<client_proto::Room, Status> {
+        let settings = self
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .map_err(map_core_error)?;
+        let member_count = self
+            .room_service
+            .get_member_count(&room.id)
+            .await
+            .map_err(map_core_error)?;
+        let creator = self
+            .user_service
+            .get_user(&room.created_by)
+            .await
+            .map_err(map_core_error)?;
+        let mut response = created_room_to_client_proto(
+            room,
+            &settings,
+            member_count,
+            &creator,
+            &self.public_id_codec,
+        )?;
+        response.favorited = favorited;
+        Ok(response)
+    }
+
+    async fn favorite_room_for_actor(
+        &self,
+        actor_user_id: UserId,
+        req: client_proto::FavoriteRoomRequest,
+    ) -> Result<client_proto::FavoriteRoomResponse, Status> {
+        synctv_proto::validate(&req)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let room_id = room_id_from_public(&req.room_id, &self.public_id_codec)?;
+        let room = self
+            .room_service
+            .favorite_room(&actor_user_id, &room_id)
+            .await
+            .map_err(map_core_error)?;
+        Ok(client_proto::FavoriteRoomResponse {
+            room: Some(self.client_room_for_favorite_response(&room, true).await?),
+        })
+    }
+
+    async fn unfavorite_room_for_actor(
+        &self,
+        actor_user_id: UserId,
+        req: client_proto::UnfavoriteRoomRequest,
+    ) -> Result<client_proto::UnfavoriteRoomResponse, Status> {
+        synctv_proto::validate(&req)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let room_id = room_id_from_public(&req.room_id, &self.public_id_codec)?;
+        let room = self
+            .room_service
+            .unfavorite_room(&actor_user_id, &room_id)
+            .await
+            .map_err(map_core_error)?;
+        Ok(client_proto::UnfavoriteRoomResponse {
+            room: Some(self.client_room_for_favorite_response(&room, false).await?),
+        })
+    }
+
+    async fn list_favorite_rooms_for_actor(
+        &self,
+        actor_user_id: UserId,
+        req: client_proto::ListFavoriteRoomsRequest,
+    ) -> Result<client_proto::ListFavoriteRoomsResponse, Status> {
+        synctv_proto::validate(&req)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let page = defaultable_page_i32_to_u32(req.page);
+        let page_size = defaultable_page_size_i32_to_u32(req.page_size, 100);
+        let search = (!req.search.is_empty()).then_some(req.search);
+        let (rooms, total) = self
+            .room_service
+            .list_favorite_rooms(
+                &actor_user_id,
+                PageParams::new(page, page_size),
+                search.as_deref(),
+            )
+            .await
+            .map_err(map_core_error)?;
+
+        let mut response_rooms = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            response_rooms.push(self.client_room_for_favorite_response(&room, true).await?);
+        }
+
+        Ok(client_proto::ListFavoriteRoomsResponse {
+            rooms: response_rooms,
+            total: i32::try_from(total)
+                .map_err(|_| Status::internal("favorite room total exceeds i32::MAX"))?,
+        })
     }
 
     async fn chat_messages_to_client_proto(
@@ -2112,6 +2212,49 @@ impl ManagementService for ManagementServiceImpl {
                 &req.room_id,
                 client_proto::TransferRoomOwnershipRequest { new_owner_user_id },
             )
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn favorite_room(
+        &self,
+        request: Request<FavoriteRoomRequest>,
+    ) -> Result<Response<client_proto::FavoriteRoomResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = self.favorite_room_for_actor(actor_user_id, request).await?;
+        Ok(Response::new(response))
+    }
+
+    async fn unfavorite_room(
+        &self,
+        request: Request<UnfavoriteRoomRequest>,
+    ) -> Result<Response<client_proto::UnfavoriteRoomResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = self
+            .unfavorite_room_for_actor(actor_user_id, request)
+            .await?;
+        Ok(Response::new(response))
+    }
+
+    async fn list_favorite_rooms(
+        &self,
+        request: Request<ListFavoriteRoomsRequest>,
+    ) -> Result<Response<client_proto::ListFavoriteRoomsResponse>, Status> {
+        self.check_admin_get_validated(&request)?;
+        let req = request.into_inner();
+        let (actor_user_id, request) = self
+            .resolve_client_actor_and_request(req.actor, req.request)
+            .await?;
+        let response = self
+            .list_favorite_rooms_for_actor(actor_user_id, request)
             .await?;
         Ok(Response::new(response))
     }

@@ -46,6 +46,8 @@ pub enum RoomSubcommand {
     Chat(RoomChatCommand),
     /// Transfer room ownership to another existing member
     TransferOwner(RoomTransferOwnerArgs),
+    /// Manage a user's favorite rooms
+    Favorite(RoomFavoriteCommand),
     /// Manage room members
     Member(RoomMemberCommand),
     /// Playback lifecycle operations
@@ -137,6 +139,52 @@ impl RoomTransferTargetUserArgs {
         }
         .to_management_proto()
     }
+}
+
+#[derive(Debug, Args)]
+pub struct RoomFavoriteCommand {
+    #[command(subcommand)]
+    pub command: RoomFavoriteSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RoomFavoriteSubcommand {
+    /// Add a room to a user's favorites
+    Add(RoomFavoriteUpdateArgs),
+    /// Remove a room from a user's favorites
+    Remove(RoomFavoriteUpdateArgs),
+    /// List a user's favorite rooms
+    List(RoomFavoriteListArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RoomFavoriteUpdateArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[arg(allow_hyphen_values = true)]
+    pub room_id: String,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct RoomFavoriteListArgs {
+    #[command(flatten)]
+    pub remote: RemoteAccessArgs,
+
+    #[command(flatten)]
+    pub actor: ActorUserArgs,
+
+    #[arg(long, default_value_t = 1)]
+    pub page: i32,
+
+    #[arg(long, default_value_t = 50)]
+    pub page_size: i32,
+
+    #[arg(long)]
+    pub search: Option<String>,
 }
 
 #[derive(Debug, Args)]

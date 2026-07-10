@@ -74,6 +74,55 @@ pub(super) async fn execute_room(room_command: RoomCommand) -> Result<()> {
             )?;
             args.remote.print_output(&response)
         }
+        RoomSubcommand::Favorite(favorite_command) => match favorite_command.command {
+            RoomFavoriteSubcommand::Add(args) => {
+                let session = connect_remote_access(&args.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "favorite room",
+                    favorite_room,
+                    management_proto::FavoriteRoomRequest {
+                        actor: Some(args.actor.to_management_proto()?),
+                        request: Some(synctv_proto::client::FavoriteRoomRequest {
+                            room_id: args.room_id,
+                        }),
+                    }
+                )?;
+                args.remote.print_output(&response)
+            }
+            RoomFavoriteSubcommand::Remove(args) => {
+                let session = connect_remote_access(&args.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "unfavorite room",
+                    unfavorite_room,
+                    management_proto::UnfavoriteRoomRequest {
+                        actor: Some(args.actor.to_management_proto()?),
+                        request: Some(synctv_proto::client::UnfavoriteRoomRequest {
+                            room_id: args.room_id,
+                        }),
+                    }
+                )?;
+                args.remote.print_output(&response)
+            }
+            RoomFavoriteSubcommand::List(args) => {
+                let session = connect_remote_access(&args.remote).await?;
+                let response = management_unary_call!(
+                    session,
+                    "list favorite rooms",
+                    list_favorite_rooms,
+                    management_proto::ListFavoriteRoomsRequest {
+                        actor: Some(args.actor.to_management_proto()?),
+                        request: Some(synctv_proto::client::ListFavoriteRoomsRequest {
+                            page: args.page,
+                            page_size: args.page_size,
+                            search: args.search.unwrap_or_default(),
+                        }),
+                    }
+                )?;
+                args.remote.print_output(&response)
+            }
+        },
         RoomSubcommand::Settings(settings_command) => match settings_command.command {
             RoomSettingsSubcommand::Get(args) => {
                 let session = connect_remote_access(&args.remote).await?;

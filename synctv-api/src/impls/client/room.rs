@@ -116,6 +116,51 @@ impl ClientApiImpl {
             .map_err(ApiError::from)
     }
 
+    async fn favorite_room_ids_for_viewer(
+        &self,
+        viewer_id: Option<UserId>,
+        room_ids: &[synctv_core::models::RoomId],
+    ) -> Result<std::collections::HashSet<synctv_core::models::RoomId>, ApiError> {
+        match viewer_id {
+            Some(user_id) => self
+                .room_service
+                .favorite_room_ids_for_user(&user_id, room_ids)
+                .await
+                .map_err(ApiError::from),
+            None => Ok(std::collections::HashSet::new()),
+        }
+    }
+
+    async fn room_to_proto_for_favorite_view(
+        &self,
+        room: &synctv_core::models::Room,
+    ) -> Result<synctv_proto::client::Room, ApiError> {
+        let settings = self
+            .room_service
+            .get_room_settings(&room.id)
+            .await
+            .map_err(ApiError::from)?;
+        let presence = self
+            .presence_service
+            .room_stats(room.id)
+            .await
+            .map_err(ApiError::from)?;
+        let availability = self
+            .room_service
+            .room_availability(room)
+            .await
+            .map_err(ApiError::from)?;
+        self.room_to_proto_with_availability_presence_and_loaded_cover(
+            room,
+            Some(&settings),
+            self.load_room_member_count(&room.id).await?,
+            availability,
+            Some(&presence),
+            None,
+        )
+        .await
+    }
+
     async fn load_room_playback_state_proto(
         &self,
         room_id: &synctv_core::models::RoomId,
@@ -170,6 +215,7 @@ impl ClientApiImpl {
     pub async fn list_rooms(
         &self,
         req: synctv_proto::client::ListRoomsRequest,
+        viewer_id: Option<UserId>,
     ) -> Result<synctv_proto::client::ListRoomsResponse, ApiError> {
         let query = build_public_room_list_query(req, &self.public_id_codec)?;
         let (rooms, total) = self
@@ -205,14 +251,17 @@ impl ClientApiImpl {
             .map(|stats| (stats.room_id, stats))
             .collect();
         let creator_views = self.load_room_creator_public_views(&rooms).await?;
+        let favorite_room_ids = self
+            .favorite_room_ids_for_viewer(viewer_id, &room_ids)
+            .await?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for r in &rooms {
             let member_count = crate::impls::room_member_count_or_zero(&member_counts, &r.id);
             let availability = required_room_availability(&availability_map, &r.id)?;
             let settings = required_room_settings(&room_settings_map, &r.id)?;
-            room_list.push(
-                self.room_to_proto_with_availability_presence_and_loaded_cover(
+            let mut proto_room = self
+                .room_to_proto_with_availability_presence_and_loaded_cover(
                     r,
                     Some(settings),
                     Some(member_count),
@@ -220,8 +269,9 @@ impl ClientApiImpl {
                     presence_by_room.get(&r.id).copied(),
                     Some(Self::required_creator_public_view(&creator_views, r)?),
                 )
-                .await?,
-            );
+                .await?;
+            proto_room.favorited = favorite_room_ids.contains(&r.id);
+            room_list.push(proto_room);
         }
 
         Ok(synctv_proto::client::ListRoomsResponse {
@@ -263,6 +313,9 @@ impl ClientApiImpl {
         let room_models: Vec<synctv_core::models::Room> =
             rooms.iter().map(|(room, _, _, _)| room.clone()).collect();
         let creator_views = self.load_room_creator_public_views(&room_models).await?;
+        let favorite_room_ids = self
+            .favorite_room_ids_for_viewer(Some(uid), &room_ids)
+            .await?;
 
         let mut room_list = Vec::with_capacity(rooms.len());
         for (room, role, _status, member_count) in &rooms {
@@ -281,18 +334,19 @@ impl ClientApiImpl {
             } else {
                 synctv_proto::client::MyRoomRelation::Participating as i32
             };
+            let mut proto_room = self
+                .room_to_proto_with_availability_presence_and_loaded_cover(
+                    room,
+                    Some(settings),
+                    Some(*member_count),
+                    synctv_core::service::ClientResourceAvailability::Available,
+                    presence_by_room.get(&room.id).copied(),
+                    Some(Self::required_creator_public_view(&creator_views, room)?),
+                )
+                .await?;
+            proto_room.favorited = favorite_room_ids.contains(&room.id);
             room_list.push(synctv_proto::client::MyRoom {
-                room: Some(
-                    self.room_to_proto_with_availability_presence_and_loaded_cover(
-                        room,
-                        Some(settings),
-                        Some(*member_count),
-                        synctv_core::service::ClientResourceAvailability::Available,
-                        presence_by_room.get(&room.id).copied(),
-                        Some(Self::required_creator_public_view(&creator_views, room)?),
-                    )
-                    .await?,
-                ),
+                room: Some(proto_room),
                 permissions,
                 role: room_role_to_proto(*role),
                 relation,
@@ -302,6 +356,84 @@ impl ClientApiImpl {
         Ok(synctv_proto::client::ListMyRoomsResponse {
             rooms: room_list,
             total: i64_to_i32_api(total, "my room total")?,
+        })
+    }
+
+    pub async fn favorite_room(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::FavoriteRoomRequest,
+    ) -> Result<synctv_proto::client::FavoriteRoomResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let room_id = self.parse_room_id(&req.room_id)?;
+        let room = self
+            .room_service
+            .favorite_room(&uid, &room_id)
+            .await
+            .map_err(ApiError::from)?;
+        let mut proto_room = self.room_to_proto_for_favorite_view(&room).await?;
+        proto_room.favorited = true;
+        Ok(synctv_proto::client::FavoriteRoomResponse {
+            room: Some(proto_room),
+        })
+    }
+
+    pub async fn unfavorite_room(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::UnfavoriteRoomRequest,
+    ) -> Result<synctv_proto::client::UnfavoriteRoomResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let room_id = self.parse_room_id(&req.room_id)?;
+        let room = self
+            .room_service
+            .unfavorite_room(&uid, &room_id)
+            .await
+            .map_err(ApiError::from)?;
+        let mut proto_room = self.room_to_proto_for_favorite_view(&room).await?;
+        proto_room.favorited = false;
+        Ok(synctv_proto::client::UnfavoriteRoomResponse {
+            room: Some(proto_room),
+        })
+    }
+
+    pub async fn list_favorite_rooms(
+        &self,
+        user_id: &UserId,
+        req: synctv_proto::client::ListFavoriteRoomsRequest,
+    ) -> Result<synctv_proto::client::ListFavoriteRoomsResponse, ApiError> {
+        crate::impls::validate_proto_request(&req)?;
+        let uid = *user_id;
+        let page = positive_i32_to_u32(req.page, DEFAULT_ROOM_PAGE);
+        let page_size = if req.page_size > 0 {
+            req.page_size.cast_unsigned().min(MAX_ROOM_PAGE_SIZE)
+        } else {
+            DEFAULT_ROOM_PAGE_SIZE
+        };
+        let pagination = PageParams::new(Some(page), Some(page_size));
+        let search = (!req.search.is_empty()).then_some(req.search);
+        let (rooms, total) = self
+            .room_service
+            .list_favorite_rooms(&uid, pagination, search.as_deref())
+            .await
+            .map_err(ApiError::from)?;
+        let room_ids: Vec<synctv_core::models::RoomId> = rooms.iter().map(|room| room.id).collect();
+        let favorite_room_ids = self
+            .favorite_room_ids_for_viewer(Some(uid), &room_ids)
+            .await?;
+
+        let mut response_rooms = Vec::with_capacity(rooms.len());
+        for room in rooms {
+            let mut proto_room = self.room_to_proto_for_favorite_view(&room).await?;
+            proto_room.favorited = favorite_room_ids.contains(&room.id);
+            response_rooms.push(proto_room);
+        }
+
+        Ok(synctv_proto::client::ListFavoriteRoomsResponse {
+            rooms: response_rooms,
+            total: i64_to_i32_api(total, "favorite room total")?,
         })
     }
 
@@ -443,18 +575,26 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        let mut proto_room = self
+            .room_to_proto_with_availability_presence_and_loaded_cover(
+                &room,
+                Some(&settings),
+                self.load_room_member_count(&rid).await?,
+                synctv_core::service::ClientResourceAvailability::Available,
+                Some(&presence),
+                None,
+            )
+            .await?;
+        if let Some(user_id) = actor.user_id() {
+            proto_room.favorited = self
+                .room_service
+                .is_room_favorited_by_user(&user_id, &rid)
+                .await
+                .map_err(ApiError::from)?;
+        }
+
         Ok(synctv_proto::client::GetRoomResponse {
-            room: Some(
-                self.room_to_proto_with_availability_presence_and_loaded_cover(
-                    &room,
-                    Some(&settings),
-                    self.load_room_member_count(&rid).await?,
-                    synctv_core::service::ClientResourceAvailability::Available,
-                    Some(&presence),
-                    None,
-                )
-                .await?,
-            ),
+            room: Some(proto_room),
             playback_state: Some(playback_state),
         })
     }
@@ -2399,7 +2539,7 @@ mod tests {
     use synctv_core::{
         models::{
             ChatMessage, ChatMessagePin, ChatMessageWithAttachments, ChatPinEvent,
-            ChatPinEventKind, RoomId, SignupMethod, User,
+            ChatPinEventKind, RoomId, RoomRole, SignupMethod, User,
         },
         repository::UserRepository,
         service::RoomService,
@@ -2469,6 +2609,132 @@ mod tests {
             },
             crate::test_support::client_api_runtime(),
         )
+    }
+
+    async fn create_user(
+        pool: &sqlx::PgPool,
+        username: &str,
+    ) -> TestResult<synctv_core::models::User> {
+        UserRepository::new(pool.clone())
+            .create(&User::new(username.to_string(), SignupMethod::Password))
+            .await
+            .map_err(|error| test_error(error.to_string()))
+    }
+
+    #[tokio::test]
+    async fn favorite_room_requires_current_membership() -> TestResult {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service =
+            std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+        let owner = create_user(&pool, "favorite_requires_owner").await?;
+        let outsider = create_user(&pool, "favorite_requires_outsider").await?;
+        let api = test_client_api(pool, user_service);
+        let (room, _) = api_ok(
+            api.room_service
+                .create_room(
+                    "Favorite membership room".to_string(),
+                    String::new(),
+                    owner.id,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        let room_id = codec_ok(api.public_id_codec.encode_room_id(room.id))?;
+
+        let error = api_err(
+            api.favorite_room(
+                &outsider.id,
+                synctv_proto::client::FavoriteRoomRequest { room_id },
+            )
+            .await,
+        )?;
+
+        assert!(
+            matches!(error, crate::impls::ApiError::Authorization(ref message) if message.contains(synctv_common::messages::NOT_A_MEMBER_OF_THIS_ROOM)),
+            "expected membership authorization error, got {error:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn leaving_room_removes_favorite_room() -> TestResult {
+        let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
+        let user_service =
+            std::sync::Arc::new(synctv_core_testing::create_test_user_service(pool.clone()));
+        let owner = create_user(&pool, "favorite_leave_owner").await?;
+        let member = create_user(&pool, "favorite_leave_member").await?;
+        let api = test_client_api(pool, user_service);
+        let (room, _) = api_ok(
+            api.room_service
+                .create_room(
+                    "Favorite leave room".to_string(),
+                    String::new(),
+                    owner.id,
+                    None,
+                    None,
+                )
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        api_ok(
+            api.room_service
+                .add_member(room.id, owner.id, member.id, RoomRole::Member, false)
+                .await
+                .map_err(crate::impls::ApiError::from),
+        )?;
+        let room_id = codec_ok(api.public_id_codec.encode_room_id(room.id))?;
+
+        let favorite = api_ok(
+            api.favorite_room(
+                &member.id,
+                synctv_proto::client::FavoriteRoomRequest {
+                    room_id: room_id.clone(),
+                },
+            )
+            .await,
+        )?;
+        assert!(
+            favorite.room.as_ref().is_some_and(|room| room.favorited),
+            "favorite response should mark the room as favorited"
+        );
+
+        let favorites_before_leave = api_ok(
+            api.list_favorite_rooms(
+                &member.id,
+                synctv_proto::client::ListFavoriteRoomsRequest {
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                },
+            )
+            .await,
+        )?;
+        assert_eq!(favorites_before_leave.total, 1);
+        assert_eq!(favorites_before_leave.rooms.len(), 1);
+
+        api_ok(api.leave_room(&member.id, &room_id).await)?;
+
+        let favorites_after_leave = api_ok(
+            api.list_favorite_rooms(
+                &member.id,
+                synctv_proto::client::ListFavoriteRoomsRequest {
+                    page: 1,
+                    page_size: 20,
+                    search: String::new(),
+                },
+            )
+            .await,
+        )?;
+        assert_eq!(favorites_after_leave.total, 0);
+        assert!(favorites_after_leave.rooms.is_empty());
+        assert!(!api
+            .room_service
+            .is_room_favorited_by_user(&member.id, &room.id)
+            .await
+            .map_err(|error| test_error(error.to_string()))?);
+        Ok(())
     }
 
     #[test]

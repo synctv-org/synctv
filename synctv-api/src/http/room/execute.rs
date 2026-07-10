@@ -68,6 +68,38 @@ where
     .boxed()
 }
 
+pub(in crate::http::room) fn execute_optional_user_endpoint<'a, T, F, Fut>(
+    state: &'a AppState,
+    request_meta: RequestMetadata,
+    category: EndpointRateLimitCategory,
+    scope: EndpointRateLimitScope,
+    operation: F,
+) -> BoxFuture<'a, Result<T, super::super::AppError>>
+where
+    T: Send + 'a,
+    F: FnOnce(
+            std::sync::Arc<crate::impls::ClientApiImpl>,
+            Option<synctv_core::service::AuthenticatedToken>,
+        ) -> Fut
+        + Send
+        + 'a,
+    Fut: Future<Output = Result<T, crate::impls::ApiError>> + Send + 'a,
+{
+    async move {
+        let request_meta = request_metadata(request_meta);
+        let client_api = state.shared_api_runtime.client_api.clone();
+        let client_api_clone = client_api.clone();
+        let scoped = request_meta.with_endpoint_scope(Some(scope));
+        client_api
+            .execute_optional_user_endpoint(&scoped, category, move |authenticated| {
+                operation(client_api_clone, authenticated)
+            })
+            .await
+            .map_err(super::super::error::map_api_error)
+    }
+    .boxed()
+}
+
 pub(crate) fn execute_room_actor_endpoint<'a, T, F, Fut>(
     state: &'a AppState,
     request_meta: RequestMetadata,

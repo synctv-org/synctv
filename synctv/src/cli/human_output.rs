@@ -138,6 +138,7 @@ pub(in crate::cli) struct HumanRoom {
     is_banned: bool,
     availability: String,
     version: i64,
+    favorited: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -774,6 +775,12 @@ pub(in crate::cli) struct HumanRoomsResponse<T> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(in crate::cli) struct HumanRoomResponse<T> {
+    room: Option<T>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct HumanRoomMembersResponse<T> {
     members: Vec<T>,
     total: i32,
@@ -1050,6 +1057,7 @@ impl ToHuman for synctv_proto::client::Room {
             availability: humanize_resource_availability(i64::from(self.availability))
                 .unwrap_or_else(|| self.availability.to_string()),
             version: self.version,
+            favorited: self.favorited,
         }
     }
 }
@@ -1808,6 +1816,37 @@ impl ToHuman for synctv_proto::client::JoinRoomResponse {
 }
 
 impl ToHuman for synctv_proto::client::ListRoomsResponse {
+    type Human = HumanRoomsResponse<HumanRoom>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomsResponse {
+            rooms: self.rooms.to_human(),
+            total: self.total,
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::FavoriteRoomResponse {
+    type Human = HumanRoomResponse<HumanRoom>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomResponse {
+            room: self.room.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::UnfavoriteRoomResponse {
+    type Human = HumanRoomResponse<HumanRoom>;
+
+    fn to_human(&self) -> Self::Human {
+        HumanRoomResponse {
+            room: self.room.to_human(),
+        }
+    }
+}
+
+impl ToHuman for synctv_proto::client::ListFavoriteRoomsResponse {
     type Human = HumanRoomsResponse<HumanRoom>;
 
     fn to_human(&self) -> Self::Human {

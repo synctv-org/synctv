@@ -907,15 +907,18 @@ async fn test_room_state_filters_and_member_count_ignore_pending_and_banned_memb
         .unwrap();
 
     let public_rooms = client_api
-        .list_rooms(synctv_proto::client::ListRoomsRequest {
-            page: 1,
-            page_size: 20,
-            search: "Matrix".to_string(),
-            sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
-            sort_direction: synctv_proto::client::SortDirection::Asc as i32,
-            category_id: String::new(),
-            label_ids: Vec::new(),
-        })
+        .list_rooms(
+            synctv_proto::client::ListRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: "Matrix".to_string(),
+                sort_by: synctv_proto::client::RoomListSortBy::Name as i32,
+                sort_direction: synctv_proto::client::SortDirection::Asc as i32,
+                category_id: String::new(),
+                label_ids: Vec::new(),
+            },
+            None,
+        )
         .await
         .unwrap();
     let public_names: Vec<&str> = public_rooms

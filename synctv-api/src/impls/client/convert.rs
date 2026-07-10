@@ -1359,6 +1359,7 @@ pub(crate) fn try_room_to_proto_with_availability_and_presence(
             .iter()
             .map(|label| room_label_to_proto(label, public_id_codec))
             .collect::<Result<Vec<_>, _>>()?,
+        favorited: false,
     })
 }
 

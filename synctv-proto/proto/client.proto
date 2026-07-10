@@ -78,6 +78,9 @@ service UserService {
   rpc StartRoomPasswordLogin(StartRoomPasswordLoginRequest) returns (StartRoomPasswordLoginResponse);
   rpc FinishRoomPasswordLogin(FinishRoomPasswordLoginRequest) returns (JoinRoomResponse);
   rpc ListMyRooms(ListMyRoomsRequest) returns (ListMyRoomsResponse);
+  rpc FavoriteRoom(FavoriteRoomRequest) returns (FavoriteRoomResponse);
+  rpc UnfavoriteRoom(UnfavoriteRoomRequest) returns (UnfavoriteRoomResponse);
+  rpc ListFavoriteRooms(ListFavoriteRoomsRequest) returns (ListFavoriteRoomsResponse);
 }
 
 // ==================== Room Service ====================
@@ -397,6 +400,7 @@ message Room {
   UserPublicView creator = 15;
   RoomCategory category = 16;
   repeated RoomLabel labels = 17;
+  bool favorited = 18;
 }
 
 message RoomCategory {
@@ -4033,6 +4037,52 @@ message MyRoom {
   uint64 permissions = 2; // User's permissions in this room
   synctv.common.RoomMemberRole role = 3; // Room member role
   MyRoomRelation relation = 4;
+}
+
+message FavoriteRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message FavoriteRoomResponse {
+  Room room = 1;
+}
+
+message UnfavoriteRoomRequest {
+  string room_id = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+    pattern: "^room_[A-Za-z0-9]+$"
+  }];
+}
+
+message UnfavoriteRoomResponse {
+  Room room = 1;
+}
+
+message ListFavoriteRoomsRequest {
+  option (buf.validate.message).cel = {
+    id: "list_favorite_rooms.page"
+    message: "page must be 0 (use default) or at least 1"
+    expression: "this.page == 0 || this.page >= 1"
+  };
+  option (buf.validate.message).cel = {
+    id: "list_favorite_rooms.page_size"
+    message: "page_size must be 0 (use default) or between 1 and 100"
+    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
+  };
+
+  int32 page = 1;
+  int32 page_size = 2;
+  string search = 3 [(buf.validate.field).string = {max_len: 100}];
+}
+
+message ListFavoriteRoomsResponse {
+  repeated Room rooms = 1;
+  int32 total = 2;
 }
 
 // Room Discovery

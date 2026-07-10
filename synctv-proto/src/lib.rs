@@ -460,6 +460,7 @@ mod tests {
             creator: None,
             category: None,
             labels: Vec::new(),
+            favorited: false,
         };
         let bytes = room.encode_to_vec();
         let decoded = crate::client::Room::decode(bytes.as_slice()).unwrap();

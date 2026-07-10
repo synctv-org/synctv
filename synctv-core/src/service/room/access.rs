@@ -222,6 +222,51 @@ impl RoomService {
         Ok((rooms, total))
     }
 
+    pub async fn favorite_room(&self, user_id: &UserId, room_id: &RoomId) -> Result<Room> {
+        self.check_membership(room_id, user_id).await?;
+        self.room_repo.favorite_for_user(user_id, room_id).await?;
+        self.get_room(room_id).await
+    }
+
+    pub async fn unfavorite_room(&self, user_id: &UserId, room_id: &RoomId) -> Result<Room> {
+        self.check_membership(room_id, user_id).await?;
+        self.room_repo.unfavorite_for_user(user_id, room_id).await?;
+        self.get_room(room_id).await
+    }
+
+    pub async fn is_room_favorited_by_user(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+    ) -> Result<bool> {
+        self.room_repo.is_favorited_by_user(user_id, room_id).await
+    }
+
+    pub async fn favorite_room_ids_for_user(
+        &self,
+        user_id: &UserId,
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashSet<RoomId>> {
+        self.room_repo
+            .favorite_room_ids_for_user(user_id, room_ids)
+            .await
+    }
+
+    pub async fn list_favorite_rooms(
+        &self,
+        user_id: &UserId,
+        pagination: PageParams,
+        search: Option<&str>,
+    ) -> Result<(Vec<Room>, i64)> {
+        pagination.validate()?;
+        let (mut rooms, total) = self
+            .room_repo
+            .list_favorites_for_user(user_id, pagination, search)
+            .await?;
+        self.hydrate_rooms_taxonomy(&mut rooms).await?;
+        Ok((rooms, total))
+    }
+
     pub async fn list_rooms_with_count(
         &self,
         query: &RoomListQuery,

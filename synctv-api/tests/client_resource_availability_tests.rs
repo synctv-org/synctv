@@ -575,15 +575,18 @@ async fn public_room_discovery_marks_room_unavailable_when_creator_is_banned() {
         .unwrap();
 
     let list_response = client_api
-        .list_rooms(synctv_proto::client::ListRoomsRequest {
-            page: 1,
-            page_size: 20,
-            search: String::new(),
-            sort_by: synctv_proto::client::RoomListSortBy::CreatedAt as i32,
-            sort_direction: synctv_proto::client::SortDirection::Desc as i32,
-            category_id: String::new(),
-            label_ids: Vec::new(),
-        })
+        .list_rooms(
+            synctv_proto::client::ListRoomsRequest {
+                page: 1,
+                page_size: 20,
+                search: String::new(),
+                sort_by: synctv_proto::client::RoomListSortBy::CreatedAt as i32,
+                sort_direction: synctv_proto::client::SortDirection::Desc as i32,
+                category_id: String::new(),
+                label_ids: Vec::new(),
+            },
+            None,
+        )
         .await
         .unwrap();
 

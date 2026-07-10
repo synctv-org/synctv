@@ -13,12 +13,14 @@ use crate::impls::EndpointRateLimitCategory;
 use synctv_proto::client::User;
 use synctv_proto::client::{
     CloseAccountRequest, CloseAccountResponse, DeletePasskeyRequest, DeletePasskeyResponse,
-    FinishPasskeyBindRequest, FinishSensitiveOperationVerificationRequest,
-    FinishSensitiveOperationVerificationResponse, ListMyRoomsResponse, ListPasskeysResponse,
+    FavoriteRoomRequest, FavoriteRoomResponse, FinishPasskeyBindRequest,
+    FinishSensitiveOperationVerificationRequest, FinishSensitiveOperationVerificationResponse,
+    ListFavoriteRoomsRequest, ListFavoriteRoomsResponse, ListMyRoomsResponse, ListPasskeysResponse,
     PasskeyCredential, RequestSensitiveOperationEmailCodeRequest,
-    RequestSensitiveOperationEmailCodeResponse, StartPasskeyBindRequest, StartPasskeyBindResponse,
-    StartSensitiveOperationPasskeyRequest, StartSensitiveOperationPasskeyResponse,
-    StartSensitiveOperationVerificationRequest, StartSensitiveOperationVerificationResponse,
+    RequestSensitiveOperationEmailCodeResponse, RoomPathRequest, StartPasskeyBindRequest,
+    StartPasskeyBindResponse, StartSensitiveOperationPasskeyRequest,
+    StartSensitiveOperationPasskeyResponse, StartSensitiveOperationVerificationRequest,
+    StartSensitiveOperationVerificationResponse, UnfavoriteRoomRequest, UnfavoriteRoomResponse,
 };
 use synctv_proto::client::{
     CompleteUserAvatarUploadSessionRequest, CompleteUserAvatarUploadSessionResponse,
@@ -988,6 +990,78 @@ pub async fn list_my_rooms(
             &request_meta,
             EndpointRateLimitCategory::Read,
             |auth| async move { client_api.list_my_rooms(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn favorite_room(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomPathRequest>,
+) -> AppResult<Json<FavoriteRoomResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let req = FavoriteRoomRequest {
+        room_id: path.room_id,
+    };
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.favorite_room(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn unfavorite_room(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    Path(path): Path<RoomPathRequest>,
+) -> AppResult<Json<UnfavoriteRoomResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let req = UnfavoriteRoomRequest {
+        room_id: path.room_id,
+    };
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Write,
+            |auth| async move { client_api.unfavorite_room(&auth.user_id, req).await },
+        )
+        .await
+        .map_err(super::error::map_api_error)?;
+
+    Ok(Json(response))
+}
+
+pub async fn list_favorite_rooms(
+    request_meta: RequestMetadata,
+    State(state): State<AppState>,
+    ProtoQuery(req): ProtoQuery<ListFavoriteRoomsRequest>,
+) -> AppResult<Json<ListFavoriteRoomsResponse>> {
+    let request_meta = request_meta
+        .0
+        .with_timeout(Some(synctv_core::resilience::timeout::HTTP_REQUEST_TIMEOUT));
+    let executor = state.shared_api_runtime.client_api.clone();
+    let client_api = state.shared_api_runtime.client_api.clone();
+    let response = executor
+        .execute_user_endpoint(
+            &request_meta,
+            EndpointRateLimitCategory::Read,
+            |auth| async move { client_api.list_favorite_rooms(&auth.user_id, req).await },
         )
         .await
         .map_err(super::error::map_api_error)?;

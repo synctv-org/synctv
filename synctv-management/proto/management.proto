@@ -55,6 +55,9 @@ service ManagementService {
     rpc UpdateRoomSettings(synctv.admin.UpdateRoomSettingsRequest) returns (synctv.admin.Room);
     rpc ResetRoomSettings(ResetRoomSettingsRequest) returns (synctv.admin.Room);
     rpc TransferRoomOwnership(TransferRoomOwnershipRequest) returns (synctv.client.Room);
+    rpc FavoriteRoom(FavoriteRoomRequest) returns (synctv.client.FavoriteRoomResponse);
+    rpc UnfavoriteRoom(UnfavoriteRoomRequest) returns (synctv.client.UnfavoriteRoomResponse);
+    rpc ListFavoriteRooms(ListFavoriteRoomsRequest) returns (synctv.client.ListFavoriteRoomsResponse);
     rpc UpdateRoomPassword(UpdateRoomPasswordRequest) returns (synctv.admin.UpdateRoomPasswordResponse);
     rpc BanRoom(BanRoomRequest) returns (synctv.admin.Room);
     rpc UnbanRoom(UnbanRoomRequest) returns (synctv.admin.Room);
@@ -466,6 +469,21 @@ message TransferRoomOwnershipRequest {
     string room_id = 1;
     UserRef actor = 2;
     UserRef new_owner = 3;
+}
+
+message FavoriteRoomRequest {
+    UserRef actor = 1;
+    synctv.client.FavoriteRoomRequest request = 2;
+}
+
+message UnfavoriteRoomRequest {
+    UserRef actor = 1;
+    synctv.client.UnfavoriteRoomRequest request = 2;
+}
+
+message ListFavoriteRoomsRequest {
+    UserRef actor = 1;
+    synctv.client.ListFavoriteRoomsRequest request = 2;
 }
 
 message AddMemberRequest {

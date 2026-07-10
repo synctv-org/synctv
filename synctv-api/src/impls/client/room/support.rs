@@ -131,9 +131,9 @@ pub(super) fn proto_sort_direction(
     }
 }
 
-const DEFAULT_ROOM_PAGE: u32 = 1;
-const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
-const MAX_ROOM_PAGE_SIZE: u32 = 100;
+pub(super) const DEFAULT_ROOM_PAGE: u32 = 1;
+pub(super) const DEFAULT_ROOM_PAGE_SIZE: u32 = 20;
+pub(super) const MAX_ROOM_PAGE_SIZE: u32 = 100;
 pub(super) const DEFAULT_HOT_ROOM_LIMIT: i64 = 10;
 pub(super) const DEFAULT_HOT_ROOM_LIMIT_USIZE: usize = 10;
 

@@ -3,7 +3,10 @@ use axum::{
     Json,
 };
 
-use super::execute::{execute_public_endpoint, execute_room_actor_endpoint, execute_user_endpoint};
+use super::execute::{
+    execute_optional_user_endpoint, execute_public_endpoint, execute_room_actor_endpoint,
+    execute_user_endpoint,
+};
 use crate::http::validation::ProtoQuery;
 use crate::http::{middleware::RequestMetadata, AppResult, AppState};
 use crate::impls::{EndpointRateLimitCategory, EndpointRateLimitScope};
@@ -291,12 +294,15 @@ pub async fn list_or_get_rooms(
     State(state): State<AppState>,
     ProtoQuery(req): ProtoQuery<ListRoomsRequest>,
 ) -> AppResult<Json<ListRoomsResponse>> {
-    let response = execute_public_endpoint(
+    let response = execute_optional_user_endpoint(
         &state,
         request_meta,
         EndpointRateLimitCategory::Read,
         EndpointRateLimitScope::RoomList,
-        move |client_api| async move { client_api.list_rooms(req).await },
+        move |client_api, authenticated| async move {
+            let viewer_id = authenticated.map(|auth| auth.user_id);
+            client_api.list_rooms(req, viewer_id).await
+        },
     )
     .await?;
 

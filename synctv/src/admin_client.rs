@@ -359,21 +359,21 @@ mod tests {
         CreatePublishKeyRequest, CreateRoomRequest, CreateUserRequest, DeleteMediaRequest,
         DeletePlaylistRequest, DeleteRoomRequest, DeleteUserRequest, EditMediaRequest,
         EmbyGetBindsRequest, EmbyGetMeRequest, EmbyListRequest, EmbyLoginRequest,
-        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, GetPlaybackRequest, GetPlaylistRequest,
-        GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest, GetServerStateRequest,
-        GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
+        EmbyLogoutRequest, EvictExpiredSliceCacheRequest, FavoriteRoomRequest, GetPlaybackRequest,
+        GetPlaylistRequest, GetRoomMembersRequest, GetRoomRequest, GetRoomSettingsRequest,
+        GetServerStateRequest, GetServerStateResponse, GetServiceStateRequest, GetSettingsRequest,
         GetSliceCacheStatsRequest, GetStreamInfoRequest, GetUserPreferencesRequest, GetUserRequest,
         GetUserRoomsRequest, KickMemberRequest, KickRoomStreamRequest, KickStreamRequest,
-        ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest, ListMediaRequest,
-        ListPlaylistsRequest, ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest,
-        ListRoomStreamsRequest, ListRoomsRequest, ListUserRegistrationReviewsRequest,
-        ListUsersRequest, MoveMediaRequest, MovePlaylistRequest, PurgeSliceCacheRequest,
-        RejectRoomCreationReviewRequest, RejectRoomJoinReviewRequest,
-        RejectUserRegistrationReviewRequest, RemoveAdminRequest, ResetRoomSettingsRequest,
-        SearchChatMessagesRequest, SendTestEmailRequest, SetUserPasswordRequest,
-        StartPlaybackRequest, StopPlaybackRequest, StopServerEvent, StopServerRequest,
-        TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
-        UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
+        ListActiveStreamsRequest, ListAdminsRequest, ListBanRecordsRequest,
+        ListFavoriteRoomsRequest, ListMediaRequest, ListPlaylistsRequest,
+        ListRoomCreationReviewsRequest, ListRoomJoinReviewsRequest, ListRoomStreamsRequest,
+        ListRoomsRequest, ListUserRegistrationReviewsRequest, ListUsersRequest, MoveMediaRequest,
+        MovePlaylistRequest, PurgeSliceCacheRequest, RejectRoomCreationReviewRequest,
+        RejectRoomJoinReviewRequest, RejectUserRegistrationReviewRequest, RemoveAdminRequest,
+        ResetRoomSettingsRequest, SearchChatMessagesRequest, SendTestEmailRequest,
+        SetUserPasswordRequest, StartPlaybackRequest, StopPlaybackRequest, StopServerEvent,
+        StopServerRequest, TransferRoomOwnershipRequest, UnbanRoomRequest, UnbanUserRequest,
+        UnfavoriteRoomRequest, UpdateMemberDisplayTagRequest, UpdateMemberPermissionsRequest,
         UpdateMemberRemarkNameRequest, UpdatePlaybackStateRequest, UpdatePlaylistRequest,
         UpdateRoomPasswordRequest, UpdateUserPreferencesRequest, UpdateUserRoleRequest,
         UpdateUserUsernameRequest,
@@ -707,6 +707,25 @@ mod tests {
             &self,
             _: Request<GetRoomRequest>,
         ) -> std::result::Result<Response<admin_proto::Room>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn favorite_room(
+            &self,
+            _: Request<FavoriteRoomRequest>,
+        ) -> std::result::Result<Response<client_proto::FavoriteRoomResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn unfavorite_room(
+            &self,
+            _: Request<UnfavoriteRoomRequest>,
+        ) -> std::result::Result<Response<client_proto::UnfavoriteRoomResponse>, Status> {
+            unavailable_test_management_response()
+        }
+        async fn list_favorite_rooms(
+            &self,
+            _: Request<ListFavoriteRoomsRequest>,
+        ) -> std::result::Result<Response<client_proto::ListFavoriteRoomsResponse>, Status>
+        {
             unavailable_test_management_response()
         }
         async fn list_room_categories(

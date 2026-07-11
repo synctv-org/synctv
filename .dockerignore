@@ -5,13 +5,7 @@ target/
 .claude/
 .tmp/
 logs/
-.data-dev/
 .dev-data/
-.local-data/
-.e2e-data/
-.e2e-logs/
-.e2e-media/
-.e2e-tools/
 docs/
 benches/
 *.md

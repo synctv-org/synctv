@@ -8,9 +8,7 @@ target/
 .claude/
 .tmp/
 logs/
-.data-dev/
 .dev-data/
-.local-data/
 
 # Secrets and configuration
 *.pem

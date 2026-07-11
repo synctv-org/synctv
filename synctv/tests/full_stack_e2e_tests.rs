@@ -61,6 +61,16 @@ fn trusted_dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
     sqlx::AssertSqlSafe(sql)
 }
 
+fn page_pagination(
+    page: u32,
+) -> Option<synctv_proto::client::list_playlist_items_request::Pagination> {
+    Some(
+        synctv_proto::client::list_playlist_items_request::Pagination::Page(
+            synctv_proto::client::PagePagination { page },
+        ),
+    )
+}
+
 fn quote_pg_ident(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
@@ -2646,7 +2656,7 @@ async fn full_stack_cli_room_lifecycle_commands_use_remote_management_endpoint()
     let mut list_items = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: page_pagination(1),
         page_size: 50,
         search: String::new(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -7395,7 +7405,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
     let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: page_pagination(1),
         page_size: 50,
         search: String::new(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -7416,7 +7426,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         .await
         .expect("initial playlist items request should succeed")
         .into_inner();
-    assert_eq!(initial_api_snapshot.total, 0);
+    assert_eq!(initial_api_snapshot.total, Some(0));
     assert!(!initial_api_snapshot.version.is_empty());
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(8);
@@ -7427,7 +7437,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
             ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: page_pagination(1),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -7459,7 +7469,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         Duration::from_secs(10),
         |message| {
             resource_playlist_items(message)
-                .is_some_and(|snapshot| snapshot.total == 0 && !snapshot.version.is_empty())
+                .is_some_and(|snapshot| snapshot.total == Some(0) && !snapshot.version.is_empty())
         },
         "initial grpc playlist items snapshot",
     )
@@ -7467,7 +7477,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
     let snapshot = resource_playlist_items(&initial_snapshot)
         .expect("playlist items snapshot should be present");
     assert_eq!(snapshot.version, initial_api_snapshot.version);
-    assert_eq!(snapshot.total, 0);
+    assert_eq!(snapshot.total, Some(0));
     let initial_version = snapshot.version.clone();
 
     let added_media = run_synctv_remote_cli_json(
@@ -7497,7 +7507,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
         |message| {
             resource_playlist_items(message).is_some_and(|snapshot| {
                 snapshot.media.iter().any(|media| media.id == media_id)
-                    && snapshot.total == 1
+                    && snapshot.total == Some(1)
                     && !snapshot.version.is_empty()
             })
         },
@@ -7507,7 +7517,7 @@ async fn full_stack_grpc_message_stream_watch_playlist_items_receives_initial_an
 
     let snapshot =
         resource_playlist_items(&updated_snapshot).expect("updated snapshot should be present");
-    assert_eq!(snapshot.total, 1);
+    assert_eq!(snapshot.total, Some(1));
     assert!(snapshot.media.iter().any(|media| media.id == media_id));
     assert_ne!(
         snapshot.version, initial_version,
@@ -7746,7 +7756,7 @@ async fn full_stack_websocket_room_messages_cover_chat_playback_media_settings_a
             String::new(),
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                page: 1,
+                pagination: page_pagination(1),
                 page_size: 100,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -8326,7 +8336,7 @@ async fn full_stack_websocket_room_messages_include_playlist_lifecycle_events() 
             String::new(),
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
-                page: 1,
+                pagination: page_pagination(1),
                 page_size: 100,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -8645,7 +8655,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
     let mut initial_list_request = tonic::Request::new(ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: page_pagination(1),
         page_size: 50,
         search: String::new(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -8668,7 +8678,8 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         .into_inner();
     let expected_initial_version = initial_api_snapshot.version.clone();
     assert_eq!(
-        initial_api_snapshot.total, 0,
+        initial_api_snapshot.total,
+        Some(0),
         "new room should start with an empty playlist-items snapshot"
     );
 
@@ -8680,7 +8691,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
             ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: page_pagination(1),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -8699,7 +8710,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         Duration::from_secs(10),
         |message| {
             resource_playlist_items(message)
-                .is_some_and(|snapshot| snapshot.total == 0 && !snapshot.version.is_empty())
+                .is_some_and(|snapshot| snapshot.total == Some(0) && !snapshot.version.is_empty())
         },
         "initial websocket playlist items snapshot",
     )
@@ -8707,7 +8718,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
     let snapshot = resource_playlist_items(&initial_snapshot)
         .expect("playlist items snapshot should be present");
     assert_eq!(snapshot.version, expected_initial_version);
-    assert_eq!(snapshot.total, 0);
+    assert_eq!(snapshot.total, Some(0));
     let initial_version = snapshot.version.clone();
 
     let added_media = run_synctv_remote_cli_json(
@@ -8737,7 +8748,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
         |message| {
             resource_playlist_items(message).is_some_and(|snapshot| {
                 snapshot.media.iter().any(|media| media.id == media_id)
-                    && snapshot.total == 1
+                    && snapshot.total == Some(1)
                     && !snapshot.version.is_empty()
             })
         },
@@ -8747,7 +8758,7 @@ async fn full_stack_websocket_watch_playlist_items_receives_initial_and_future_u
 
     let snapshot =
         resource_playlist_items(&updated_snapshot).expect("updated snapshot should be present");
-    assert_eq!(snapshot.total, 1);
+    assert_eq!(snapshot.total, Some(1));
     assert!(snapshot.media.iter().any(|media| media.id == media_id));
     assert_ne!(
         snapshot.version, initial_version,

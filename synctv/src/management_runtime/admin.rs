@@ -1280,7 +1280,7 @@ impl AdminRuntime for ManagementAdminRuntime {
         let req = client_proto::ListPlaylistItemsRequest {
             playlist_id: query.playlist_id,
             target: query.target,
-            page: query.page,
+            pagination: query.pagination,
             page_size: query.page_size,
             search: query.search,
             source_provider: query.source_provider,

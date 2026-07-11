@@ -2,7 +2,7 @@ use synctv_core::{
     models::{
         MediaListQuery as CoreMediaListQuery, PlaylistListQuery as CorePlaylistListQuery, UserId,
     },
-    provider::DynamicListQuery,
+    provider::{DynamicListQuery, DynamicPagination},
 };
 
 use crate::impls::client::convert::{
@@ -19,8 +19,8 @@ use super::{
     i64_count_to_usize, i64_to_i32_api, map_admin_media_sort, map_admin_playlist_sort,
     map_admin_playlist_sort_from_media_sort, map_client_sort_direction,
     map_resource_availability_filter, normalize_non_empty_filter, page_i32_to_usize,
-    page_offset_usize, page_size_i32_to_usize, u64_to_i64_api, usize_to_i32_api, usize_to_i64_api,
-    AdminApiImpl, ApiError,
+    page_offset_usize, page_size_i32_to_usize, page_u32_to_usize, usize_to_i32_api,
+    usize_to_i64_api, usize_to_u32_api, usize_to_u64_api, AdminApiImpl, ApiError,
 };
 
 impl AdminApiImpl {
@@ -456,7 +456,12 @@ impl AdminApiImpl {
                 ));
             }
             let playlist_query = CorePlaylistListQuery {
-                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+                pagination: crate::impls::proto_page_params_u32(
+                    crate::impls::client::media::playlist_items_page(&req)?,
+                    req.page_size,
+                    50,
+                    100,
+                ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: proto_source_provider_filter(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -466,7 +471,12 @@ impl AdminApiImpl {
                 sort_direction: map_client_sort_direction(req.sort_direction)?,
             };
             let media_query = CoreMediaListQuery {
-                pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+                pagination: crate::impls::proto_page_params_u32(
+                    crate::impls::client::media::playlist_items_page(&req)?,
+                    req.page_size,
+                    50,
+                    100,
+                ),
                 search: normalize_non_empty_filter(&req.search),
                 source_provider: proto_source_provider_filter(req.source_provider)?,
                 provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -489,8 +499,8 @@ impl AdminApiImpl {
             let total = folder_count.checked_add(file_count).ok_or_else(|| {
                 ApiError::Internal("root playlist/media count exceeds usize::MAX".to_string())
             })?;
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-            let page = page_i32_to_usize(req.page)?;
+            let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
+            let page = page_u32_to_usize(crate::impls::client::media::playlist_items_page(&req)?)?;
             let skip = page_offset_usize(page, page_size, "root playlist/media offset")?;
             let (playlists, media) = if skip < folder_count {
                 let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
@@ -564,12 +574,13 @@ impl AdminApiImpl {
             let mut response = synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: proto_playlists,
                 media: proto_media,
-                total: usize_to_i32_api(total, "playlist item total")?,
-                folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
-                file_count: usize_to_i32_api(file_count, "playlist file count")?,
+                total: Some(usize_to_u64_api(total, "playlist item total")?),
+                folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+                file_count: usize_to_u64_api(file_count, "playlist file count")?,
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
                 version: String::new(),
+                pagination: None,
             };
             response.version =
                 crate::impls::client::media::compute_playlist_items_response_version(&response)?;
@@ -602,12 +613,13 @@ impl AdminApiImpl {
                 let mut response = synctv_proto::client::ListPlaylistItemsResponse {
                     playlists: Vec::new(),
                     media: Vec::new(),
-                    total: 0,
+                    total: Some(0),
                     folder_count: 0,
                     file_count: 0,
                     dynamic_items: Vec::new(),
                     current_path,
                     version: String::new(),
+                    pagination: None,
                 };
                 response.version =
                     crate::impls::client::media::compute_playlist_items_response_version(
@@ -616,9 +628,37 @@ impl AdminApiImpl {
                 return Ok(response);
             }
 
-            let page = page_i32_to_usize(req.page)?;
-            let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-            let items = self
+            let page = match req.pagination.as_ref() {
+                Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) => {
+                    page_u32_to_usize(page.page)?
+                }
+                _ => 1,
+            };
+            let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
+            let search = crate::impls::client::media::normalize_non_empty_filter(&req.search);
+            let pagination = if playlist.source_provider
+                == Some(synctv_core::models::SourceProvider::Cloudreve)
+                && search.is_none()
+            {
+                match req.pagination.as_ref() {
+                    Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        pagination,
+                    )) => DynamicPagination::Page {
+                        page: page_u32_to_usize(pagination.page)?,
+                    },
+                    Some(
+                        synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
+                            pagination,
+                        ),
+                    ) => DynamicPagination::Cursor {
+                        cursor: Some(pagination.cursor.clone()).filter(|value| !value.is_empty()),
+                    },
+                    None => DynamicPagination::Cursor { cursor: None },
+                }
+            } else {
+                DynamicPagination::Page { page }
+            };
+            let result = self
                 .room_service
                 .media_service()
                 .admin_list_dynamic_playlist_items(
@@ -627,18 +667,18 @@ impl AdminApiImpl {
                     &playlist_id,
                     target.as_ref(),
                     DynamicListQuery {
-                        page,
+                        pagination,
                         page_size,
-                        search: crate::impls::client::media::normalize_non_empty_filter(
-                            &req.search,
-                        ),
+                        search,
                         refresh: req.refresh,
                     },
                 )
                 .await
                 .map_err(ApiError::from)?;
+            let response_pagination = result.pagination.clone();
 
-            let dynamic_items = items
+            let dynamic_items = result
+                .items
                 .into_iter()
                 .map(|item| {
                     use synctv_core::provider::{DirectoryItemThumbnail, ItemType};
@@ -698,10 +738,7 @@ impl AdminApiImpl {
                         name: item.name,
                         item_type,
                         target: optional_provider_target_to_proto(Some(&item.target)),
-                        size: item
-                            .size
-                            .map(|size| u64_to_i64_api(size, "dynamic playlist item size"))
-                            .transpose()?,
+                        size: item.size,
                         thumbnail,
                         modified_at: item.modified_at,
                         description: item.description.unwrap_or_default(),
@@ -731,12 +768,28 @@ impl AdminApiImpl {
             let mut response = synctv_proto::client::ListPlaylistItemsResponse {
                 playlists: Vec::new(),
                 media: Vec::new(),
-                total: -1,
+                total: None,
                 folder_count: 0,
                 file_count: 0,
                 dynamic_items,
                 current_path,
                 version: String::new(),
+                pagination: Some(match response_pagination {
+                    DynamicPagination::Page { page } => {
+                        synctv_proto::client::list_playlist_items_response::Pagination::Page(
+                            synctv_proto::client::PagePagination {
+                                page: usize_to_u32_api(page, "playlist page")?,
+                            },
+                        )
+                    }
+                    DynamicPagination::Cursor { cursor } => {
+                        synctv_proto::client::list_playlist_items_response::Pagination::Cursor(
+                            synctv_proto::client::CursorPagination {
+                                cursor: cursor.unwrap_or_default(),
+                            },
+                        )
+                    }
+                }),
             };
             response.version =
                 crate::impls::client::media::compute_playlist_items_response_version(&response)?;
@@ -750,7 +803,12 @@ impl AdminApiImpl {
         }
 
         let playlist_query = CorePlaylistListQuery {
-            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+            pagination: crate::impls::proto_page_params_u32(
+                crate::impls::client::media::playlist_items_page(&req)?,
+                req.page_size,
+                50,
+                100,
+            ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: proto_source_provider_filter(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -760,7 +818,12 @@ impl AdminApiImpl {
             sort_direction: map_client_sort_direction(req.sort_direction)?,
         };
         let media_query = CoreMediaListQuery {
-            pagination: crate::impls::proto_page_params(req.page, req.page_size, 50, 100),
+            pagination: crate::impls::proto_page_params_u32(
+                crate::impls::client::media::playlist_items_page(&req)?,
+                req.page_size,
+                50,
+                100,
+            ),
             search: normalize_non_empty_filter(&req.search),
             source_provider: proto_source_provider_filter(req.source_provider)?,
             provider_instance_name: normalize_non_empty_filter(&req.provider_instance_name),
@@ -783,8 +846,8 @@ impl AdminApiImpl {
         let total = folder_count.checked_add(file_count).ok_or_else(|| {
             ApiError::Internal("playlist child count exceeds usize::MAX".to_string())
         })?;
-        let page_size = crate::impls::proto_page_size_usize(req.page_size, 50, 100)?;
-        let page = page_i32_to_usize(req.page)?;
+        let page_size = crate::impls::proto_page_size_u32_usize(req.page_size, 50, 100)?;
+        let page = page_u32_to_usize(crate::impls::client::media::playlist_items_page(&req)?)?;
         let skip = page_offset_usize(page, page_size, "playlist child offset")?;
         let (playlists, media) = if skip < folder_count {
             let playlist_limit = usize_to_i64_api(page_size, "playlist page size")?;
@@ -861,12 +924,13 @@ impl AdminApiImpl {
         let mut response = synctv_proto::client::ListPlaylistItemsResponse {
             playlists: proto_playlists,
             media: proto_media,
-            total: usize_to_i32_api(total, "playlist item total")?,
-            folder_count: usize_to_i32_api(folder_count, "playlist folder count")?,
-            file_count: usize_to_i32_api(file_count, "playlist file count")?,
+            total: Some(usize_to_u64_api(total, "playlist item total")?),
+            folder_count: usize_to_u64_api(folder_count, "playlist folder count")?,
+            file_count: usize_to_u64_api(file_count, "playlist file count")?,
             dynamic_items: Vec::new(),
             current_path,
             version: String::new(),
+            pagination: None,
         };
         response.version =
             crate::impls::client::media::compute_playlist_items_response_version(&response)?;

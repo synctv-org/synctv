@@ -693,15 +693,18 @@ message ListMediaRequest {
     string room_id = 1;
     string playlist_id = 2;
     synctv.client.ProviderTarget target = 3;
-    int32 page = 4;
-    int32 page_size = 5;
-    string search = 6;
-    synctv.source_config.SourceProvider source_provider = 7;
-    string provider_instance_name = 8;
-    MediaListSortBy sort_by = 9;
-    SortDirection sort_direction = 10;
-    bool refresh = 11;
-    synctv.client.ResourceAvailabilityFilter availability = 12;
+    oneof pagination {
+        synctv.client.PagePagination page = 4;
+        synctv.client.CursorPagination cursor = 5;
+    }
+    uint32 page_size = 6;
+    string search = 7;
+    synctv.source_config.SourceProvider source_provider = 8;
+    string provider_instance_name = 9;
+    MediaListSortBy sort_by = 10;
+    SortDirection sort_direction = 11;
+    bool refresh = 12;
+    synctv.client.ResourceAvailabilityFilter availability = 13;
 }
 
 message AddMediaRequest {

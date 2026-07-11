@@ -18,6 +18,7 @@ pub enum MediaSourceConfig {
     Emby(EmbyMediaSourceConfig),
     Rtmp(RtmpMediaSourceConfig),
     LiveProxy(LiveProxyMediaSourceConfig),
+    Cloudreve(CloudreveMediaSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -30,6 +31,7 @@ pub enum MediaSourceConfig {
 pub enum PlaylistSourceConfig {
     Alist(AlistPlaylistSourceConfig),
     Emby(EmbyPlaylistSourceConfig),
+    Cloudreve(CloudrevePlaylistSourceConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -238,6 +240,20 @@ pub struct AlistPlaylistSourceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudreveMediaSourceConfig {
+    pub path: String,
+    pub server_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudrevePlaylistSourceConfig {
+    pub path: String,
+    pub server_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EmbyMediaSourceConfig {
     pub item_id: String,
     pub server_id: String,
@@ -270,6 +286,7 @@ impl MediaSourceConfig {
             Self::Emby(_) => SourceProvider::Emby,
             Self::Rtmp(_) => SourceProvider::Rtmp,
             Self::LiveProxy(_) => SourceProvider::LiveProxy,
+            Self::Cloudreve(_) => SourceProvider::Cloudreve,
         }
     }
 
@@ -292,6 +309,7 @@ impl PlaylistSourceConfig {
         match self {
             Self::Alist(_) => SourceProvider::Alist,
             Self::Emby(_) => SourceProvider::Emby,
+            Self::Cloudreve(_) => SourceProvider::Cloudreve,
         }
     }
 

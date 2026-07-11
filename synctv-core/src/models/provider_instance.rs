@@ -336,6 +336,14 @@ pub enum ProviderCredential {
         api_key: String,
         emby_user_id: String,
     },
+
+    #[serde(rename = "cloudreve")]
+    /// Cloudreve credentials. Passwords are encrypted by the repository.
+    Cloudreve {
+        host: String,
+        email: String,
+        password: String,
+    },
 }
 
 impl Default for ProviderCredential {

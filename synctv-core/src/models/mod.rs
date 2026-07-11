@@ -203,8 +203,8 @@ pub use provider_instance::{
     ProviderInstanceListQuery, ProviderInstanceListSortBy, UserProviderCredential,
 };
 pub use provider_target::{
-    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, EmbyTarget,
-    ProviderTarget,
+    hash_empty_provider_target, hash_optional_provider_target, AlistTarget, CloudreveTarget,
+    EmbyTarget, ProviderTarget,
 };
 pub use query::SortDirection;
 pub use realtime_event::{
@@ -225,10 +225,10 @@ pub use settings::RuntimeSetting;
 pub use source_config::{
     detect_direct_url_format, AlistMediaSourceConfig, AlistPlaylistSourceConfig,
     BilibiliLiveSourceConfig, BilibiliMediaSourceConfig, BilibiliPgcSourceConfig,
-    BilibiliVideoSourceConfig, DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig,
-    DirectUrlMediaSourceConfig, DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig,
-    EmbyPlaylistSourceConfig, LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig,
-    RtmpMediaSourceConfig,
+    BilibiliVideoSourceConfig, CloudreveMediaSourceConfig, CloudrevePlaylistSourceConfig,
+    DirectUrlDanmakuSourceConfig, DirectUrlMediaResourceConfig, DirectUrlMediaSourceConfig,
+    DirectUrlSubtitleSourceConfig, EmbyMediaSourceConfig, EmbyPlaylistSourceConfig,
+    LiveProxyMediaSourceConfig, MediaSourceConfig, PlaylistSourceConfig, RtmpMediaSourceConfig,
 };
 pub use user::{
     CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserListSortBy,
@@ -349,6 +349,7 @@ mod tests {
             (SourceProvider::Emby, 4, "emby"),
             (SourceProvider::Rtmp, 5, "rtmp"),
             (SourceProvider::LiveProxy, 6, "live_proxy"),
+            (SourceProvider::Cloudreve, 7, "cloudreve"),
         ];
 
         for (provider, code, name) in PROVIDERS {

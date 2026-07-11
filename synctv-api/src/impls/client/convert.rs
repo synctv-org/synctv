@@ -399,6 +399,13 @@ pub(crate) fn provider_target_to_proto(
                 },
             )),
         },
+        synctv_core::models::ProviderTarget::Cloudreve(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Cloudreve(
+                client_proto::CloudreveTarget {
+                    relative_path: target.relative_path.clone(),
+                },
+            )),
+        },
     }
 }
 
@@ -423,6 +430,9 @@ pub(crate) fn provider_target_from_proto(
         }
         client_proto::provider_target::Target::Emby(target) => {
             synctv_core::models::ProviderTarget::emby(target.item_id)
+        }
+        client_proto::provider_target::Target::Cloudreve(target) => {
+            synctv_core::models::ProviderTarget::cloudreve(target.relative_path)
         }
     }))
 }
@@ -603,6 +613,12 @@ pub(crate) fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
             Provider::LiveProxy(live_proxy_media_source_config_to_proto(config))
         }
+        synctv_core::models::MediaSourceConfig::Cloudreve(config) => {
+            Provider::Cloudreve(source_config_proto::CloudreveMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
     };
 
     Ok(source_config_proto::MediaSourceConfig {
@@ -621,6 +637,12 @@ pub(crate) fn playlist_source_config_to_proto(
         }
         synctv_core::models::PlaylistSourceConfig::Emby(config) => {
             Provider::Emby(emby_playlist_source_config_to_proto(config))
+        }
+        synctv_core::models::PlaylistSourceConfig::Cloudreve(config) => {
+            Provider::Cloudreve(source_config_proto::CloudrevePlaylistSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
         }
     };
 
@@ -1488,6 +1510,7 @@ fn media_resource_metadata_to_proto(
         }
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
+        synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
     };
 
     synctv_proto::client::ResourceMetadata {

@@ -142,6 +142,12 @@ enum StoredProviderCredential {
         api_key: EncryptedCredentialValue,
         emby_user_id: String,
     },
+    #[serde(rename = "cloudreve")]
+    Cloudreve {
+        host: String,
+        email: String,
+        password: EncryptedCredentialValue,
+    },
 }
 
 impl StoredProviderCredential {
@@ -179,6 +185,15 @@ impl StoredProviderCredential {
                 api_key: EncryptedCredentialValue::encrypt_string(encryption, api_key)?,
                 emby_user_id: emby_user_id.clone(),
             }),
+            ProviderCredential::Cloudreve {
+                host,
+                email,
+                password,
+            } => Ok(Self::Cloudreve {
+                host: host.clone(),
+                email: email.clone(),
+                password: EncryptedCredentialValue::encrypt_string(encryption, password)?,
+            }),
         }
     }
 
@@ -212,6 +227,15 @@ impl StoredProviderCredential {
                 host: host.clone(),
                 api_key: api_key.decrypt_string(encryption)?,
                 emby_user_id: emby_user_id.clone(),
+            }),
+            Self::Cloudreve {
+                host,
+                email,
+                password,
+            } => Ok(ProviderCredential::Cloudreve {
+                host: host.clone(),
+                email: email.clone(),
+                password: password.decrypt_string(encryption)?,
             }),
         }
     }

@@ -14,7 +14,14 @@ pub(super) async fn execute_media(media_command: MediaCommand) -> Result<()> {
                     playlist_id: normalized_optional_cli_value(args.playlist_id.as_deref())
                         .unwrap_or_default(),
                     target: parse_optional_provider_target_json(args.target_json.as_deref())?,
-                    page: args.page,
+                    pagination: Some(match args.cursor {
+                        Some(cursor) => management_proto::list_media_request::Pagination::Cursor(
+                            synctv_proto::client::CursorPagination { cursor },
+                        ),
+                        None => management_proto::list_media_request::Pagination::Page(
+                            synctv_proto::client::PagePagination { page: args.page },
+                        ),
+                    }),
                     page_size: args.page_size,
                     search: args.search.unwrap_or_default(),
                     source_provider: optional_source_provider_to_proto_i32(args.source_provider),

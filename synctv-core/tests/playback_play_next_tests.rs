@@ -21,8 +21,9 @@ use synctv_core::{
         UserRole, UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem,
-        PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+        DirectoryItem, DynamicFolder, DynamicListQuery, DynamicListResult, DynamicPagination,
+        ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext,
+        ProviderError,
     },
     repository::{
         MediaRepository, ProviderInstanceRepository, UserProviderCredentialRepository,
@@ -123,6 +124,7 @@ fn decode_alist_target(target: &ProviderTarget) -> String {
     match target {
         ProviderTarget::Alist(target) => target.relative_path.clone(),
         ProviderTarget::Emby(_) => panic!("expected alist target"),
+        ProviderTarget::Cloudreve(_) => panic!("expected alist target"),
     }
 }
 
@@ -343,7 +345,7 @@ impl DynamicFolder for TestDynamicProvider {
         _playlist: &Playlist,
         target: Option<&ProviderTarget>,
         _query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>, ProviderError> {
+    ) -> Result<DynamicListResult, ProviderError> {
         if self.require_credential_encryption && ctx.credential_encryption.is_none() {
             return Err(ProviderError::EncryptionRequired(self.provider_type));
         }
@@ -380,7 +382,11 @@ impl DynamicFolder for TestDynamicProvider {
             ],
             _ => Vec::new(),
         };
-        Ok(items)
+        Ok(DynamicListResult {
+            has_more: false,
+            items,
+            pagination: DynamicPagination::Page { page: 1 },
+        })
     }
 
     async fn resolve_item(
@@ -1663,7 +1669,7 @@ async fn test_list_dynamic_playlist_items_passes_credential_encryption_to_provid
             &playlist.id,
             None,
             DynamicListQuery {
-                page: 1,
+                pagination: DynamicPagination::Page { page: 1 },
                 page_size: 20,
                 ..DynamicListQuery::default()
             },

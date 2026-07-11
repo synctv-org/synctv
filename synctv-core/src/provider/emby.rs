@@ -6,9 +6,9 @@ use super::{
     access::EmbyAccess,
     provider_client::{create_remote_emby_client, EmbyClientArc, ProviderClientManager},
     DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment, DynamicFolder,
-    DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo,
-    PlaybackResult, PreparedSourceConfig, ProviderContext, ProviderCredentialDependency,
-    ProviderError, SourceConfig, SourceCover,
+    DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider, NextPlayItem,
+    PlaybackClientProfile, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     EmbyPlaybackMetadata, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackMedia,
@@ -1982,7 +1982,7 @@ impl DynamicFolder for EmbyProvider {
         playlist: &crate::models::Playlist,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>, ProviderError> {
+    ) -> Result<DynamicListResult, ProviderError> {
         let config = playlist
             .source_config
             .as_ref()
@@ -1998,7 +1998,7 @@ impl DynamicFolder for EmbyProvider {
             )
             .await?;
 
-        let page = query.page.max(1);
+        let page = query.page().max(1);
         let page_size = query.page_size.max(1);
         let list_req = emby_dynamic_list_request(
             &resolved,
@@ -2037,7 +2037,11 @@ impl DynamicFolder for EmbyProvider {
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
 
-        Ok(items)
+        Ok(DynamicListResult {
+            has_more: items.len() >= query.page_size.max(1),
+            items,
+            pagination: DynamicPagination::Page { page },
+        })
     }
 
     async fn resolve_item(
@@ -2113,7 +2117,7 @@ impl DynamicFolder for EmbyProvider {
                             playlist,
                             Some(&sibling_target),
                             DynamicListQuery {
-                                page: current_page,
+                                pagination: DynamicPagination::Page { page: current_page },
                                 page_size: PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },
@@ -2181,7 +2185,7 @@ impl DynamicFolder for EmbyProvider {
                             playlist,
                             Some(&sibling_target),
                             DynamicListQuery {
-                                page: 1,
+                                pagination: DynamicPagination::Page { page: 1 },
                                 page_size: PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },
@@ -2222,7 +2226,7 @@ impl DynamicFolder for EmbyProvider {
                             playlist,
                             Some(&sibling_target),
                             DynamicListQuery {
-                                page,
+                                pagination: DynamicPagination::Page { page },
                                 page_size: PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },

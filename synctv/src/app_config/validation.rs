@@ -658,6 +658,11 @@ impl AppConfig {
             &self.media_providers.emby,
             &mut errors,
         );
+        Self::validate_local_provider_http_config(
+            "media_providers.cloudreve",
+            &self.media_providers.cloudreve,
+            &mut errors,
+        );
 
         // Validate CORS origins
         if !self.server.cors_allowed_origins.is_empty() {

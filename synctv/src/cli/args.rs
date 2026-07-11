@@ -665,6 +665,7 @@ pub enum CliSourceProvider {
     Emby,
     Rtmp,
     LiveProxy,
+    Cloudreve,
 }
 
 impl CliSourceProvider {
@@ -676,6 +677,7 @@ impl CliSourceProvider {
             Self::Emby => synctv_proto::source_config::SourceProvider::Emby,
             Self::Rtmp => synctv_proto::source_config::SourceProvider::Rtmp,
             Self::LiveProxy => synctv_proto::source_config::SourceProvider::LiveProxy,
+            Self::Cloudreve => synctv_proto::source_config::SourceProvider::Cloudreve,
         }
     }
 

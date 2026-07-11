@@ -2,6 +2,7 @@
 
 pub(crate) mod alist;
 pub(crate) mod bilibili;
+pub(crate) mod cloudreve;
 pub(crate) mod common;
 pub(crate) mod emby;
 pub(crate) mod playback;
@@ -12,6 +13,7 @@ use synctv_realtime::fanout::RealtimeEventService;
 
 pub use alist::{AlistApiImpl, ProviderApiRuntime};
 pub use bilibili::BilibiliApiImpl;
+pub use cloudreve::CloudreveApiImpl;
 pub(crate) use common::{
     provider_instance_name_for_provider, provider_instance_name_for_response,
     resolve_bound_instance_name,

@@ -149,6 +149,7 @@ fn media_providers_options(config: &AppConfig) -> MediaProvidersOptions {
         alist: http(&config.media_providers.alist),
         bilibili: http(&config.media_providers.bilibili),
         emby: http(&config.media_providers.emby),
+        cloudreve: http(&config.media_providers.cloudreve),
     }
 }
 

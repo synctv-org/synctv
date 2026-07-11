@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::{
     models::{Playlist, PlaylistId, RoomId, SourceProvider, UserId},
     provider::{
-        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, MediaProvider,
-        NextPlayItem, ProviderContext,
+        DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
+        MediaProvider, NextPlayItem, ProviderContext,
     },
     Error, Result,
 };
@@ -105,7 +105,7 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>> {
+    ) -> Result<DynamicListResult> {
         let prepared = self.prepare_dynamic_playlist(&room_id, playlist_id).await?;
         let ctx =
             self.dynamic_playlist_context(&prepared, Some(&admin_user_id), Some(&admin_user_id));
@@ -142,7 +142,7 @@ impl MediaService {
         playlist_id: &PlaylistId,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>> {
+    ) -> Result<DynamicListResult> {
         self.permission_service
             .check_permission(
                 &room_id,

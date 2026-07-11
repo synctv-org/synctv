@@ -831,9 +831,9 @@ pub(in crate::cli) struct HumanMediaBatchResponse<T> {
 pub(in crate::cli) struct HumanPlaylistItemsResponse<P, M> {
     playlists: Vec<P>,
     media: Vec<M>,
-    total: i32,
-    folder_count: i32,
-    file_count: i32,
+    total: Option<u64>,
+    folder_count: u64,
+    file_count: u64,
     dynamic_items: Vec<synctv_proto::client::PlaylistItem>,
     current_path: Vec<synctv_proto::client::PlaylistBrowsePathNode>,
     version: String,
@@ -2653,6 +2653,7 @@ fn humanize_source_provider(raw: i32) -> String {
         Ok(synctv_proto::source_config::SourceProvider::Emby) => "emby".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::Rtmp) => "rtmp".to_string(),
         Ok(synctv_proto::source_config::SourceProvider::LiveProxy) => "liveProxy".to_string(),
+        Ok(synctv_proto::source_config::SourceProvider::Cloudreve) => "cloudreve".to_string(),
         Err(_) => raw.to_string(),
     }
 }

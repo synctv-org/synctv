@@ -48,10 +48,10 @@ use crate::mapping::{
     validate_client_actor_user,
 };
 use crate::proto::{
-    management_service_server::ManagementService, AddAdminRequest, AddAlistMediaRequest,
-    AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest, AddBilibiliVideoMediaRequest,
-    AddDirectUrlMediaRequest, AddEmbyMediaRequest, AddMediaRequest, AddMemberRequest,
-    AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
+    list_media_request, management_service_server::ManagementService, AddAdminRequest,
+    AddAlistMediaRequest, AddBilibiliLiveMediaRequest, AddBilibiliPgcMediaRequest,
+    AddBilibiliVideoMediaRequest, AddDirectUrlMediaRequest, AddEmbyMediaRequest, AddMediaRequest,
+    AddMemberRequest, AlistGetBindsRequest, AlistGetMeRequest, AlistListRequest, AlistLoginRequest,
     AlistLogoutRequest, AlistSearchRequest, ApproveRoomCreationReviewRequest,
     ApproveRoomJoinReviewRequest, ApproveUserRegistrationReviewRequest, BanRoomRequest,
     BanUserRequest, BatchBanRoomsRequest, BatchBanUsersRequest, BatchDeleteRoomsRequest,
@@ -2771,7 +2771,14 @@ impl ManagementService for ManagementServiceImpl {
                     room_id: req.room_id,
                     playlist_id: req.playlist_id,
                     target: req.target,
-                    page: req.page,
+                    pagination: req.pagination.map(|pagination| match pagination {
+                        list_media_request::Pagination::Page(page) => {
+                            client_proto::list_playlist_items_request::Pagination::Page(page)
+                        }
+                        list_media_request::Pagination::Cursor(cursor) => {
+                            client_proto::list_playlist_items_request::Pagination::Cursor(cursor)
+                        }
+                    }),
                     page_size: req.page_size,
                     search: req.search,
                     source_provider: req.source_provider,

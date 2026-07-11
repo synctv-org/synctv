@@ -202,5 +202,8 @@ pub(crate) fn source_provider_from_proto_filter(
         source_config_proto::SourceProvider::LiveProxy => {
             Ok(Some(synctv_core::models::SourceProvider::LiveProxy))
         }
+        source_config_proto::SourceProvider::Cloudreve => {
+            Ok(Some(synctv_core::models::SourceProvider::Cloudreve))
+        }
     }
 }

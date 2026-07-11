@@ -319,10 +319,15 @@ message EmbyTarget {
   string item_id = 1;
 }
 
+message CloudreveTarget {
+  string relative_path = 1;
+}
+
 message ProviderTarget {
   oneof target {
     AlistTarget alist = 1;
     EmbyTarget emby = 2;
+    CloudreveTarget cloudreve = 3;
   }
 }
 
@@ -1902,45 +1907,49 @@ message DeleteEntriesResponse {
 message ListPlaylistItemsRequest {
   string playlist_id = 1; // Empty means room root; otherwise the playlist being browsed
   ProviderTarget target = 2; // Provider-facing browse target payload (omitted for room root or dynamic root)
-  option (buf.validate.message).cel = {
-    id: "list_playlist_items.page"
-    message: "page must be 0 (use default) or at least 1"
-    expression: "this.page == 0 || this.page >= 1"
-  };
-  option (buf.validate.message).cel = {
-    id: "list_playlist_items.page_size"
-    message: "page_size must be 0 (use default) or between 1 and 100"
-    expression: "this.page_size == 0 || (this.page_size >= 1 && this.page_size <= 100)"
-  };
-
-  int32 page = 3;
-  int32 page_size = 4;
-  string search = 5 [(buf.validate.field).string = {max_len: 100}];
-  synctv.source_config.SourceProvider source_provider = 6 [(buf.validate.field).enum.defined_only = true];
-  string provider_instance_name = 7 [
+  oneof pagination {
+    PagePagination page = 3;
+    CursorPagination cursor = 4;
+  }
+  uint32 page_size = 5 [(buf.validate.field).uint32.lte = 100];
+  string search = 6 [(buf.validate.field).string = {max_len: 100}];
+  synctv.source_config.SourceProvider source_provider = 7 [(buf.validate.field).enum.defined_only = true];
+  string provider_instance_name = 8 [
     (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
     (buf.validate.field).string = {
       pattern: "^[A-Za-z0-9_-]+$"
       max_len: 64
     }
   ];
-  MediaListSortBy sort_by = 8 [(buf.validate.field).enum.defined_only = true];
-  SortDirection sort_direction = 9 [(buf.validate.field).enum.defined_only = true];
-  ResourceAvailabilityFilter availability = 10 [(buf.validate.field).enum.defined_only = true];
-  bool refresh = 11; // For dynamic provider playlists, force upstream directory cache refresh when supported.
+  MediaListSortBy sort_by = 9 [(buf.validate.field).enum.defined_only = true];
+  SortDirection sort_direction = 10 [(buf.validate.field).enum.defined_only = true];
+  ResourceAvailabilityFilter availability = 11 [(buf.validate.field).enum.defined_only = true];
+  bool refresh = 12; // For provider playlists, force upstream directory cache refresh when supported.
+}
+
+message PagePagination {
+  uint32 page = 1 [(buf.validate.field).uint32.gte = 1];
+}
+
+message CursorPagination {
+  string cursor = 1;
 }
 
 message ListPlaylistItemsResponse {
   repeated Playlist playlists = 1; // Child playlists (folders, listed first)
   repeated Media media = 2; // Media items (files, listed after folders)
-  int32 total = 3; // Total number of items (playlists + media)
-  int32 folder_count = 4; // Number of playlists (folders)
-  int32 file_count = 5; // Number of media items (files)
+  optional uint64 total = 3; // Total number of items when the provider reports one.
+  uint64 folder_count = 4; // Number of playlists (folders)
+  uint64 file_count = 5; // Number of media items (files)
 
   // For dynamic playlists only
   repeated PlaylistItem dynamic_items = 6; // Remote provider items (used when browsing dynamic folders)
   repeated PlaylistBrowsePathNode current_path = 7; // Breadcrumb path for the current browse location
   string version = 8; // Snapshot version for this browse result
+  oneof pagination {
+    PagePagination page = 9;
+    CursorPagination cursor = 10; // Cursor for the next page; empty at the end.
+  }
 }
 
 enum ItemType {
@@ -1953,7 +1962,7 @@ message PlaylistItem {
   string name = 1; // Item name
   ItemType item_type = 2; // Item type (PLAYLIST or MEDIA)
   ProviderTarget target = 3; // Provider-facing target payload for this item
-  optional int64 size = 4; // File size in bytes (for files)
+  optional uint64 size = 4; // File size in bytes (for files)
   optional string thumbnail = 5; // Thumbnail URL
   optional int64 modified_at = 6; // Modified time (Unix timestamp)
   string description = 7;

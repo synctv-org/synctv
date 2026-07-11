@@ -14,6 +14,7 @@ use synctv_proto::playback_provider::live_proxy::live_proxy_playback_provider_se
 use synctv_proto::playback_provider::rtmp::rtmp_playback_provider_service_server::RtmpPlaybackProviderServiceServer;
 use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
 use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+use synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer;
 use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
 use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
 use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
@@ -116,6 +117,7 @@ impl_grpc_service_ext!(<T> synctv_proto::client::o_auth2_service_server::OAuth2S
 impl_grpc_service_ext!(<T> synctv_proto::admin::admin_service_server::AdminServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
 impl_grpc_service_ext!(<T> synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer<T>);
@@ -331,6 +333,7 @@ async fn set_registered_grpc_services_with_status(
     if state.provider_services_registered {
         use synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer;
         use synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer;
+        use synctv_proto::providers::cloudreve::cloudreve_provider_service_server::CloudreveProviderServiceServer;
         use synctv_proto::providers::common::provider_common_service_server::ProviderCommonServiceServer;
         use synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer;
         use synctv_proto::providers::rtmp::rtmp_provider_service_server::RtmpProviderServiceServer;
@@ -349,6 +352,11 @@ async fn set_registered_grpc_services_with_status(
             health_reporter,
             true,
             BilibiliProviderServiceServer<providers::bilibili::BilibiliProviderGrpcService>
+        );
+        set_service_status!(
+            health_reporter,
+            true,
+            CloudreveProviderServiceServer<providers::cloudreve::CloudreveProviderGrpcService>
         );
         set_service_status!(
             health_reporter,
@@ -552,6 +560,7 @@ pub struct GrpcServerOptions<'a> {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    pub cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
     pub proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     pub ssrf_guard: synctv_common::ssrf::SsrfGuard,
     pub proxy_http_client: reqwest::Client,
@@ -630,6 +639,7 @@ struct FallbackHttpAppStateDeps {
     bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     alist_api: Arc<crate::impls::AlistApiImpl>,
     emby_api: Arc<crate::impls::EmbyApiImpl>,
+    cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
     proxy_slice_cache: Arc<synctv_proxy::slice_cache::SliceCache>,
     ssrf_guard: synctv_common::ssrf::SsrfGuard,
     proxy_http_client: reqwest::Client,
@@ -695,6 +705,7 @@ fn build_fallback_http_app_state(
             bilibili_api: deps.bilibili_api,
             alist_api: deps.alist_api,
             emby_api: deps.emby_api,
+            cloudreve_api: deps.cloudreve_api,
             shared_proxy_signing_key: deps.proxy_signing_key,
             builtin_stun_url: deps.builtin_stun_url,
             webrtc_status: deps.webrtc_status,
@@ -767,6 +778,7 @@ async fn build_axum_router_with_health(
         bilibili_api,
         alist_api,
         emby_api,
+        cloudreve_api,
         proxy_slice_cache,
         ssrf_guard,
         proxy_http_client,
@@ -837,6 +849,7 @@ async fn build_axum_router_with_health(
             bilibili_api: bilibili_api.clone(),
             alist_api: alist_api.clone(),
             emby_api: emby_api.clone(),
+            cloudreve_api: cloudreve_api.clone(),
             proxy_slice_cache: proxy_slice_cache.clone(),
             ssrf_guard: ssrf_guard.clone(),
             proxy_http_client: proxy_http_client.clone(),
@@ -1193,6 +1206,19 @@ async fn build_axum_router_with_health(
             ),
         );
         routes.add_service(
+            CloudreveProviderServiceServer::new(
+                providers::cloudreve::CloudreveProviderGrpcService::new(
+                    &shared_api_runtime,
+                    shared_api_runtime.request_executor.clone(),
+                    Arc::new(runtime_settings.clone()),
+                ),
+            )
+            .with_transport_settings(
+                max_message_size,
+                runtime_settings.server.grpc_compression_enabled,
+            ),
+        );
+        routes.add_service(
             EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
                 &shared_api_runtime,
                 shared_api_runtime.request_executor.clone(),
@@ -1536,8 +1562,8 @@ mod tests {
     use crate::impls::{
         client::RoomActor, AdminApiImpl, AdminApiOptions, AdminApiRuntime, AlistApiImpl,
         BilibiliApiImpl, ClientApiImpl, ClientApiOptions, ClientApiRuntime,
-        ClientApiRuntimeServices, EmbyApiImpl, ProviderApiRuntime, ProviderCommonApiImpl,
-        ProviderCommonApiRuntime, RequestExecutor,
+        ClientApiRuntimeServices, CloudreveApiImpl, EmbyApiImpl, ProviderApiRuntime,
+        ProviderCommonApiImpl, ProviderCommonApiRuntime, RequestExecutor,
     };
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -2102,6 +2128,10 @@ mod tests {
             credential_backed_providers.emby.clone(),
             provider_api_runtime,
         ));
+        let cloudreve_api = Arc::new(CloudreveApiImpl::new(
+            credential_backed_providers.cloudreve.clone(),
+            event_service.clone(),
+        ));
         let presence_service = Arc::new(synctv_core::service::OnlinePresenceService::local());
         let client_api = Arc::new(ClientApiImpl::new_with_runtime(
             ClientApiOptions {
@@ -2221,6 +2251,7 @@ mod tests {
                 bilibili_api: bilibili_api.clone(),
                 alist_api: alist_api.clone(),
                 emby_api: emby_api.clone(),
+                cloudreve_api: cloudreve_api.clone(),
                 proxy_slice_cache: proxy_slice_cache.clone(),
                 ssrf_guard: ssrf_guard.clone(),
                 proxy_http_client: proxy_http_client.clone(),

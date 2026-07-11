@@ -310,7 +310,16 @@ pub async fn watch_playlist_items(
     let request = ListPlaylistItemsRequest {
         playlist_id: query.playlist_id.unwrap_or_default(),
         target: None,
-        page: query.page.unwrap_or_default(),
+        pagination: Some(match query.cursor {
+            Some(cursor) => synctv_proto::client::list_playlist_items_request::Pagination::Cursor(
+                synctv_proto::client::CursorPagination { cursor },
+            ),
+            None => synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination {
+                    page: query.page.unwrap_or(1),
+                },
+            ),
+        }),
         page_size: query.page_size.unwrap_or_default(),
         search: query.search.unwrap_or_default(),
         source_provider: query

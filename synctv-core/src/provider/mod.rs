@@ -29,6 +29,7 @@ mod live_helpers;
 // MediaProvider implementations (adapters)
 mod alist;
 mod bilibili;
+mod cloudreve;
 mod direct_url;
 mod emby;
 mod live_proxy;
@@ -57,9 +58,9 @@ pub use synctv_common::{ExecutionControl, ExecutionControlError};
 pub use traits::{
     BilibiliLiveDanmakuEvent, BilibiliLiveDanmakuEventKind, BilibiliLiveDanmakuProvider,
     BilibiliLiveDanmakuStream, DirectoryItem, DirectoryItemThumbnail, DynamicBrowsePathSegment,
-    DynamicFolder, DynamicListQuery, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
-    PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency, SourceConfig,
-    SourceConfigKind, SourceCover,
+    DynamicFolder, DynamicListQuery, DynamicListResult, DynamicPagination, ItemType, MediaProvider,
+    NextPlayItem, PlaybackInfo, PlaybackResult, PreparedSourceConfig, ProviderCredentialDependency,
+    SourceConfig, SourceConfigKind, SourceCover,
 };
 
 use crate::models::media::{PlaybackMedia, PlaybackMediaProvider, PlaybackRtmpMedia};
@@ -96,6 +97,7 @@ pub use bilibili::{
     BilibiliUserInfoResponse, BilibiliVideoInfo, DASH_MANIFEST_METADATA_KEY, LIVE_DANMAKU_FORMAT,
     LIVE_DANMAKU_TRACK_NAME,
 };
+pub use cloudreve::{CloudreveBind, CloudreveListResponse, CloudreveProvider};
 pub use direct_url::DirectUrlProvider;
 pub use emby::{
     EmbyListItem, EmbyListRequest, EmbyListResponse, EmbyLoginAndPersistRequest,
@@ -141,6 +143,7 @@ pub struct ProviderSet {
     pub direct_url: std::sync::Arc<DirectUrlProvider>,
     pub rtmp: std::sync::Arc<RtmpProvider>,
     pub live_proxy: std::sync::Arc<LiveProxyProvider>,
+    pub cloudreve: std::sync::Arc<CloudreveProvider>,
 }
 
 fn provider_http_client_for_ssrf_guard(
@@ -175,7 +178,7 @@ impl ProviderSet {
         ssrf_guard: synctv_common::ssrf::SsrfGuard,
     ) -> Self {
         let client_manager = std::sync::Arc::new(
-            ProviderClientManager::new_with_provider_http_client(provider_http_client),
+            ProviderClientManager::new_with_provider_http_client(provider_http_client.clone()),
         );
         Self {
             alist: std::sync::Arc::new(AlistProvider::with_client_manager(
@@ -195,6 +198,9 @@ impl ProviderSet {
             )),
             rtmp: std::sync::Arc::new(RtmpProvider::new()),
             live_proxy: std::sync::Arc::new(LiveProxyProvider::new_with_ssrf_guard(ssrf_guard)),
+            cloudreve: std::sync::Arc::new(CloudreveProvider::with_http_client(
+                provider_http_client,
+            )),
         }
     }
 
@@ -206,10 +212,11 @@ impl ProviderSet {
         Self {
             alist: Arc::new(self.alist.with_credential_repo(credential_repo.clone())),
             bilibili: Arc::new(self.bilibili.with_credential_repo(credential_repo.clone())),
-            emby: Arc::new(self.emby.with_credential_repo(credential_repo)),
+            emby: Arc::new(self.emby.with_credential_repo(credential_repo.clone())),
             direct_url: self.direct_url.clone(),
             rtmp: self.rtmp.clone(),
             live_proxy: self.live_proxy.clone(),
+            cloudreve: Arc::new(self.cloudreve.with_credential_repo(credential_repo)),
         }
     }
 }

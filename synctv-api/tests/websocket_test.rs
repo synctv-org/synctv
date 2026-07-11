@@ -1064,6 +1064,10 @@ mod websocket_e2e {
             credential_backed_providers.emby.clone(),
             provider_api_runtime,
         ));
+        let cloudreve_api = Arc::new(synctv_api::CloudreveApiImpl::new(
+            credential_backed_providers.cloudreve.clone(),
+            realtime_manager.clone(),
+        ));
 
         let ws_ticket_service = Arc::new(synctv_core::service::WsTicketService::local_only(None));
 
@@ -1160,6 +1164,7 @@ mod websocket_e2e {
             bilibili_api,
             alist_api,
             emby_api,
+            cloudreve_api,
             shared_proxy_signing_key,
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),

@@ -1,8 +1,8 @@
 use super::*;
 use crate::models::{PlaylistId, RoomId, SourceProvider, UserId};
 use crate::provider::{
-    DirectoryItem, DynamicFolder, DynamicListQuery, MediaProvider, NextPlayItem, PlaybackResult,
-    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig,
+    DynamicFolder, DynamicListQuery, MediaProvider, NextPlayItem, PlaybackResult, ProviderContext,
+    ProviderCredentialDependency, ProviderError, SourceConfig,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -110,8 +110,8 @@ impl DynamicFolder for CredentialOwnerCheckProvider {
         _playlist: &Playlist,
         _target: Option<&crate::models::ProviderTarget>,
         _query: DynamicListQuery,
-    ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
-        Ok(Vec::new())
+    ) -> std::result::Result<crate::provider::DynamicListResult, ProviderError> {
+        Ok(crate::provider::DynamicListResult::default())
     }
 
     async fn resolve_item(
@@ -191,8 +191,8 @@ impl DynamicFolder for AlistCredentialDependencyCheckProvider {
         _playlist: &Playlist,
         _target: Option<&crate::models::ProviderTarget>,
         _query: DynamicListQuery,
-    ) -> std::result::Result<Vec<DirectoryItem>, ProviderError> {
-        Ok(Vec::new())
+    ) -> std::result::Result<crate::provider::DynamicListResult, ProviderError> {
+        Ok(crate::provider::DynamicListResult::default())
     }
 
     async fn resolve_item(

@@ -306,6 +306,7 @@ pub struct SharedApiRuntime {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    pub cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
     pub provider_access_service: Arc<dyn synctv_core::provider::ProviderAccessService>,
     pub provider_stores: Arc<dyn synctv_core::provider::ProviderStoreResolver>,
     pub playback_transport_services: Arc<PlaybackTransportServices>,

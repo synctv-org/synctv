@@ -285,7 +285,11 @@ fn test_list_playlist_items_request_allows_room_root_with_empty_playlist_id() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: String::new(),
         source_provider: SourceProvider::Unspecified as i32,
@@ -613,7 +617,7 @@ fn test_playlist_source_config_oneof_only_contains_dynamic_playlist_providers() 
         .collect::<Vec<_>>();
     fields.sort();
 
-    assert_eq!(fields, ["alist", "emby"]);
+    assert_eq!(fields, ["alist", "cloudreve", "emby"]);
 }
 
 #[test]
@@ -924,7 +928,11 @@ fn test_list_playlist_items_request_rejects_invalid_provider_filters() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 20,
         search: String::new(),
         source_provider: 99,
@@ -963,7 +971,11 @@ fn test_list_playlist_items_request_rejects_too_long_search() {
     let request = ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 20,
         search: "a".repeat(101),
         source_provider: SourceProvider::Unspecified as i32,

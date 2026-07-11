@@ -591,7 +591,7 @@ fn test_list_playlist_items_body_deserialize_room_root() -> TestResult {
     let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert!(req.playlist_id.is_empty());
     assert!(req.target.is_none());
-    assert_eq!(req.page, 0);
+    assert!(req.pagination.is_none());
     assert_eq!(req.page_size, 0);
     assert_eq!(req.availability, 0);
     Ok(())
@@ -599,7 +599,7 @@ fn test_list_playlist_items_body_deserialize_room_root() -> TestResult {
 
 #[test]
 fn test_list_playlist_items_body_deserialize_alist_target() -> TestResult {
-    let json = r#"{"playlistId":"pl1","target":{"alist":{"relativePath":"season-1"}},"page":2,"pageSize":25}"#;
+    let json = r#"{"playlistId":"pl1","target":{"alist":{"relativePath":"season-1"}},"page":{"page":2},"pageSize":25}"#;
     let req: ListPlaylistItemsRequest = serde_json::from_str(json)?;
     assert_eq!(req.playlist_id, "pl1");
     let Some(synctv_proto::client::ProviderTarget {
@@ -609,7 +609,12 @@ fn test_list_playlist_items_body_deserialize_alist_target() -> TestResult {
         return Err(test_error("alist target should deserialize"));
     };
     assert_eq!(target.relative_path, "season-1");
-    assert_eq!(req.page, 2);
+    let Some(synctv_proto::client::list_playlist_items_request::Pagination::Page(page)) =
+        req.pagination
+    else {
+        return Err(test_error("page pagination should deserialize"));
+    };
+    assert_eq!(page.page, 2);
     assert_eq!(req.page_size, 25);
     assert_eq!(req.availability, 0);
     Ok(())

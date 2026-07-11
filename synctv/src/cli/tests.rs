@@ -5534,12 +5534,13 @@ fn render_human_output_includes_playlist_items_snapshot_version() {
             description: String::new(),
             thumbnail: None,
         }],
-        total: 2,
+        total: Some(2),
         folder_count: 1,
         file_count: 1,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
         version: "items-v42".into(),
+        pagination: None,
     })
     .expect("playlist items human output should render");
 

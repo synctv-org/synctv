@@ -127,6 +127,49 @@ async fn test_user_provider_credential_storage_keeps_alist_metadata_plaintext() 
 }
 
 #[tokio::test]
+async fn test_user_provider_credential_storage_encrypts_cloudreve_password() {
+    let encryption = ok(CredentialEncryption::new(&[13u8; 32]), "encryption key");
+    let credential = ProviderCredential::Cloudreve {
+        host: "https://cloudreve.example.com".to_string(),
+        email: "alice@example.com".to_string(),
+        password: "secret-password".to_string(),
+    };
+
+    let stored = ok(
+        UserProviderCredentialRepository::encrypt_credential_with(Some(&encryption), &credential),
+        "credential should encrypt",
+    );
+    let stored_json = ok(
+        serde_json::to_value(&stored).map_err(crate::Error::from),
+        "stored credential should serialize",
+    );
+
+    assert_eq!(stored_json["type"], "cloudreve");
+    assert_eq!(stored_json["host"], "https://cloudreve.example.com");
+    assert_eq!(stored_json["email"], "alice@example.com");
+    assert!(stored_json["password"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("enc:")));
+    assert_ne!(stored_json["password"], "secret-password");
+
+    let decrypted = ok(
+        UserProviderCredentialRepository::decrypt_credential_with(Some(&encryption), &stored),
+        "stored credential should decrypt",
+    );
+    let ProviderCredential::Cloudreve {
+        host,
+        email,
+        password,
+    } = decrypted
+    else {
+        panic!("expected cloudreve credential");
+    };
+    assert_eq!(host, "https://cloudreve.example.com");
+    assert_eq!(email, "alice@example.com");
+    assert_eq!(password, "secret-password");
+}
+
+#[tokio::test]
 async fn test_provider_instance_repo_requires_encryption_when_sensitive_fields_present() {
     let err = err(
         ProviderInstanceRepository::ensure_encryption_for_sensitive_fields_with(

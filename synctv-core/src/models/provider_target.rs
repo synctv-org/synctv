@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 pub enum ProviderTarget {
     Alist(AlistTarget),
     Emby(EmbyTarget),
+    Cloudreve(CloudreveTarget),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -25,6 +26,12 @@ pub struct EmbyTarget {
     pub item_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudreveTarget {
+    pub relative_path: String,
+}
+
 impl ProviderTarget {
     #[must_use]
     pub fn alist(relative_path: String) -> Self {
@@ -34,6 +41,11 @@ impl ProviderTarget {
     #[must_use]
     pub fn emby(item_id: String) -> Self {
         Self::Emby(EmbyTarget { item_id })
+    }
+
+    #[must_use]
+    pub fn cloudreve(relative_path: String) -> Self {
+        Self::Cloudreve(CloudreveTarget { relative_path })
     }
 
     pub fn stable_bytes(&self) -> crate::Result<Vec<u8>> {
@@ -57,6 +69,10 @@ impl ProviderTarget {
             Self::Emby(target) => {
                 bytes.push(2);
                 push_field(&mut bytes, &target.item_id)?;
+            }
+            Self::Cloudreve(target) => {
+                bytes.push(3);
+                push_field(&mut bytes, &target.relative_path)?;
             }
         }
         Ok(bytes)

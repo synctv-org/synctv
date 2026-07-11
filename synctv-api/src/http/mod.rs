@@ -315,6 +315,7 @@ pub struct RouterOptions {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    pub cloudreve_api: Arc<crate::impls::CloudreveApiImpl>,
     /// Shared proxy signing key reused across transports.
     pub shared_proxy_signing_key: Arc<ProxySigningKey>,
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
@@ -501,6 +502,7 @@ pub(crate) fn build_shared_api_runtime(
         bilibili_api: options.bilibili_api.clone(),
         alist_api: options.alist_api.clone(),
         emby_api: options.emby_api.clone(),
+        cloudreve_api: options.cloudreve_api.clone(),
         provider_access_service,
         provider_stores,
         playback_transport_services: options.playback_transport_services.clone(),
@@ -1373,6 +1375,10 @@ fn register_provider_management_routes() -> Router<AppState> {
                     "/api/providers/alist",
                     providers::alist::alist_auth_routes(),
                 )
+                .nest(
+                    "/api/providers/cloudreve",
+                    providers::cloudreve::cloudreve_auth_routes(),
+                )
                 .nest("/api/providers/emby", providers::emby::emby_auth_routes()),
         )
         .merge(
@@ -1384,6 +1390,10 @@ fn register_provider_management_routes() -> Router<AppState> {
                 .nest(
                     "/api/providers/alist",
                     providers::alist::alist_read_routes(),
+                )
+                .nest(
+                    "/api/providers/cloudreve",
+                    providers::cloudreve::cloudreve_read_routes(),
                 )
                 .nest("/api/providers/emby", providers::emby::emby_read_routes()),
         )

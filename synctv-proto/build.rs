@@ -25,7 +25,7 @@ const MAIN_PBJSON_PREFIXES: [&str; 5] = [
     ".synctv.admin",
 ];
 
-const PROVIDER_PROTO_FILES: [&str; 10] = [
+const PROVIDER_PROTO_FILES: [&str; 12] = [
     "proto/providers/bilibili.proto",
     "proto/providers/bilibili_service.proto",
     "proto/providers/alist.proto",
@@ -36,14 +36,17 @@ const PROVIDER_PROTO_FILES: [&str; 10] = [
     "proto/providers/common_service.proto",
     "proto/providers/rtmp.proto",
     "proto/providers/rtmp_service.proto",
+    "proto/providers/cloudreve.proto",
+    "proto/providers/cloudreve_service.proto",
 ];
 const PROVIDER_PROTO_INCLUDES: [&str; 1] = ["."];
-const PROVIDER_PBJSON_PREFIXES: [&str; 5] = [
+const PROVIDER_PBJSON_PREFIXES: [&str; 6] = [
     ".synctv.provider.common",
     ".synctv.provider.rtmp",
     ".synctv.provider.bilibili",
     ".synctv.provider.alist",
     ".synctv.provider.emby",
+    ".synctv.provider.cloudreve",
 ];
 
 const PLAYBACK_PROVIDER_PROTO_FILES: [&str; 7] = [
@@ -582,6 +585,7 @@ fn build_provider_protos(
         "proto/providers/emby.proto",
         "proto/providers/common.proto",
         "proto/providers/rtmp.proto",
+        "proto/providers/cloudreve.proto",
     ])?;
     let mut builder = tonic_prost_build::configure()
         .build_server(true)
@@ -596,6 +600,7 @@ fn build_provider_protos(
             ".synctv.provider.bilibili",
             ".synctv.provider.alist",
             ".synctv.provider.emby",
+            ".synctv.provider.cloudreve",
         ],
     );
     builder = add_query_params_attrs(builder, &[".synctv.provider.common.ProviderInstanceQuery"]);

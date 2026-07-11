@@ -585,7 +585,7 @@ async fn test_list_dynamic_playlist_items_with_credential_backed_provider_withou
             &playlist.id,
             None,
             DynamicListQuery {
-                page: 1,
+                pagination: synctv_core::provider::DynamicPagination::Page { page: 1 },
                 page_size: 20,
                 ..DynamicListQuery::default()
             },

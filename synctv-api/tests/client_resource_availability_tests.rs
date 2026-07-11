@@ -263,7 +263,11 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 20,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -277,7 +281,7 @@ async fn list_playlist_items_root_includes_unavailable_resources_and_marks_avail
         .await
         .unwrap();
 
-    assert_eq!(response.total, 4);
+    assert_eq!(response.total, Some(4));
     assert_eq!(response.folder_count, 2);
     assert_eq!(response.file_count, 2);
     assert_eq!(response.playlists.len(), 2);
@@ -375,7 +379,11 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 1,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -389,7 +397,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .await
         .unwrap();
 
-    assert_eq!(page_one.total, 2);
+    assert_eq!(page_one.total, Some(2));
     assert_eq!(page_one.folder_count, 1);
     assert_eq!(page_one.file_count, 1);
     assert_eq!(page_one.playlists.len(), 1);
@@ -403,7 +411,11 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 2,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 2 },
+                    ),
+                ),
                 page_size: 1,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -417,7 +429,7 @@ async fn list_playlist_items_root_availability_filter_updates_counts_and_paginat
         .await
         .unwrap();
 
-    assert_eq!(page_two.total, 2);
+    assert_eq!(page_two.total, Some(2));
     assert_eq!(page_two.folder_count, 1);
     assert_eq!(page_two.file_count, 1);
     assert!(page_two.playlists.is_empty());
@@ -447,7 +459,11 @@ async fn list_playlist_items_root_returns_stable_version_until_contents_change()
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 20,
         search: String::new(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,

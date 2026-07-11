@@ -22,6 +22,9 @@ fn source_provider_to_proto(provider: synctv_core::models::SourceProvider) -> i3
         synctv_core::models::SourceProvider::LiveProxy => {
             source_config_proto::SourceProvider::LiveProxy as i32
         }
+        synctv_core::models::SourceProvider::Cloudreve => {
+            source_config_proto::SourceProvider::Cloudreve as i32
+        }
     }
 }
 
@@ -42,6 +45,12 @@ fn playlist_source_config_to_proto(
             Provider::Emby(source_config_proto::EmbyPlaylistSourceConfig {
                 server_id: config.server_id,
                 item_id: config.item_id,
+            })
+        }
+        synctv_core::models::PlaylistSourceConfig::Cloudreve(config) => {
+            Provider::Cloudreve(source_config_proto::CloudrevePlaylistSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
             })
         }
     };
@@ -150,6 +159,12 @@ fn media_source_config_to_proto(
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => {
             Provider::LiveProxy(source_config_proto::LiveProxyMediaSourceConfig { url: config.url })
         }
+        synctv_core::models::MediaSourceConfig::Cloudreve(config) => {
+            Provider::Cloudreve(source_config_proto::CloudreveMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            })
+        }
     };
 
     source_config_proto::MediaSourceConfig {
@@ -190,6 +205,7 @@ fn media_resource_metadata_to_proto(
         }
         synctv_core::models::MediaSourceConfig::Rtmp(_) => "rtmp".to_string(),
         synctv_core::models::MediaSourceConfig::LiveProxy(config) => config.url.clone(),
+        synctv_core::models::MediaSourceConfig::Cloudreve(config) => config.path.clone(),
     };
 
     client_proto::ResourceMetadata {

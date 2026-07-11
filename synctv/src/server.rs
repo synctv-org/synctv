@@ -175,6 +175,7 @@ struct SharedProviderApiImpls {
     bilibili: Arc<synctv_api::BilibiliApiImpl>,
     alist: Arc<synctv_api::AlistApiImpl>,
     emby: Arc<synctv_api::EmbyApiImpl>,
+    cloudreve: Arc<synctv_api::CloudreveApiImpl>,
 }
 
 #[derive(Clone)]
@@ -409,7 +410,11 @@ fn build_provider_api_impls(
     ));
     let emby = Arc::new(synctv_api::EmbyApiImpl::new_with_runtime(
         credential_backed_providers.emby.clone(),
-        provider_api_runtime,
+        provider_api_runtime.clone(),
+    ));
+    let cloudreve = Arc::new(synctv_api::CloudreveApiImpl::new(
+        credential_backed_providers.cloudreve.clone(),
+        provider_api_runtime.event_service.clone(),
     ));
 
     Ok(SharedProviderApiImpls {
@@ -417,6 +422,7 @@ fn build_provider_api_impls(
         bilibili,
         alist,
         emby,
+        cloudreve,
     })
 }
 
@@ -2021,6 +2027,10 @@ impl SyncTvServer {
                 .clone(),
             alist_api: shared_http_app_state.shared_api_runtime.alist_api.clone(),
             emby_api: shared_http_app_state.shared_api_runtime.emby_api.clone(),
+            cloudreve_api: shared_http_app_state
+                .shared_api_runtime
+                .cloudreve_api
+                .clone(),
             proxy_slice_cache: shared_http_app_state.proxy_slice_cache.clone(),
             ssrf_guard: shared_http_app_state.ssrf_guard.clone(),
             proxy_http_client: shared_http_app_state.proxy_http_client.clone(),
@@ -2183,6 +2193,7 @@ impl SyncTvServer {
                 bilibili_api: provider_api_impls.bilibili.clone(),
                 alist_api: provider_api_impls.alist.clone(),
                 emby_api: provider_api_impls.emby.clone(),
+                cloudreve_api: provider_api_impls.cloudreve.clone(),
                 shared_proxy_signing_key: shared_provider_runtime.signing_key.clone(),
                 builtin_stun_url: self.builtin_stun_url(),
                 webrtc_status: self.current_webrtc_status(),
@@ -2737,6 +2748,7 @@ mod tests {
             bilibili_api: provider_api_impls.bilibili.clone(),
             alist_api: provider_api_impls.alist.clone(),
             emby_api: provider_api_impls.emby.clone(),
+            cloudreve_api: provider_api_impls.cloudreve.clone(),
             shared_proxy_signing_key: shared_runtime.signing_key.clone(),
             builtin_stun_url: None,
             webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),

@@ -51,8 +51,8 @@ pub use messaging::{
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{
-    AlistApiImpl, BilibiliApiImpl, EmbyApiImpl, ProviderApiRuntime, ProviderCommonApiImpl,
-    ProviderCommonApiRuntime,
+    AlistApiImpl, BilibiliApiImpl, CloudreveApiImpl, EmbyApiImpl, ProviderApiRuntime,
+    ProviderCommonApiImpl, ProviderCommonApiRuntime,
 };
 pub use request_context::{
     ApiRequestContext, EndpointRateLimitCategory, EndpointRateLimitScope, RequestExecutor,
@@ -222,6 +222,32 @@ pub(crate) fn proto_page_size_usize(
     max_page_size: u32,
 ) -> Result<usize, ApiError> {
     usize::try_from(proto_page_params(1, page_size, default_page_size, max_page_size).page_size)
+        .map_err(|_| ApiError::Internal("page size exceeds usize::MAX".to_string()))
+}
+
+pub(crate) fn proto_page_params_u32(
+    page: u32,
+    page_size: u32,
+    default_page_size: u32,
+    max_page_size: u32,
+) -> synctv_core::models::PageParams {
+    let page = page.max(1);
+    let default_page_size = default_page_size.clamp(1, max_page_size);
+    let page_size = if page_size > 0 {
+        page_size.clamp(1, max_page_size)
+    } else {
+        default_page_size
+    };
+
+    synctv_core::models::PageParams::new(Some(page), Some(page_size))
+}
+
+pub(crate) fn proto_page_size_u32_usize(
+    page_size: u32,
+    default_page_size: u32,
+    max_page_size: u32,
+) -> Result<usize, ApiError> {
+    usize::try_from(proto_page_params_u32(1, page_size, default_page_size, max_page_size).page_size)
         .map_err(|_| ApiError::Internal("page size exceeds usize::MAX".to_string()))
 }
 

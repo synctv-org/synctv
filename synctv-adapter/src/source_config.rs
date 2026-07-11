@@ -36,6 +36,12 @@ pub fn media_source_config_from_proto(
         Provider::LiveProxy(config) => synctv_core::models::MediaSourceConfig::LiveProxy(
             live_proxy_media_source_config_from_proto(config),
         ),
+        Provider::Cloudreve(config) => synctv_core::models::MediaSourceConfig::Cloudreve(
+            synctv_core::models::CloudreveMediaSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            },
+        ),
     };
 
     Ok((config.provider(), config))
@@ -58,6 +64,12 @@ pub fn playlist_source_config_from_proto(
         ),
         Provider::Emby(config) => synctv_core::models::PlaylistSourceConfig::Emby(
             emby_playlist_source_config_from_proto(config),
+        ),
+        Provider::Cloudreve(config) => synctv_core::models::PlaylistSourceConfig::Cloudreve(
+            synctv_core::models::CloudrevePlaylistSourceConfig {
+                server_id: config.server_id,
+                path: config.path,
+            },
         ),
     };
 

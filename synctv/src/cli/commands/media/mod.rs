@@ -40,10 +40,13 @@ pub struct MediaListArgs {
     pub target_json: Option<String>,
 
     #[arg(long, default_value_t = 1)]
-    pub page: i32,
+    pub page: u32,
+
+    #[arg(long)]
+    pub cursor: Option<String>,
 
     #[arg(long, default_value_t = 50)]
-    pub page_size: i32,
+    pub page_size: u32,
 
     #[arg(long)]
     pub search: Option<String>,

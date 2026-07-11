@@ -659,11 +659,12 @@ fn empty_playlist_items_response(
     synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
-        total: 0,
+        total: Some(0),
         folder_count: 0,
         file_count: 0,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
+        pagination: None,
         version: version.into(),
     }
 }
@@ -5012,11 +5013,12 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
                     cover: None,
                     thumbnail: None,
                 }],
-                total: 1,
+                total: Some(1),
                 folder_count: 0,
                 file_count: 1,
                 dynamic_items: Vec::new(),
                 current_path: Vec::new(),
+                pagination: None,
                 version: "items-v1".to_string(),
             },
         }));
@@ -5029,7 +5031,11 @@ async fn test_observe_playlist_items_without_cursor_sends_snapshot_immediately()
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5083,11 +5089,12 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
         MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
-            total: 0,
+            total: Some(0),
             folder_count: 0,
             file_count: 0,
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
+            pagination: None,
             version: "items-v1".to_string(),
         });
     let handler = test_message_handler_for_user_with_runtime(
@@ -5100,7 +5107,11 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "batch-coalesce".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5131,11 +5142,12 @@ async fn test_observed_playlist_items_batch_coalesces_identical_snapshot_loads()
     snapshot_service.replace(synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
-        total: 0,
+        total: Some(0),
         folder_count: 0,
         file_count: 0,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
+        pagination: None,
         version: "items-v2".to_string(),
     });
 
@@ -5324,11 +5336,12 @@ async fn test_observe_playlist_items_requires_inner_request() {
         MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
-            total: 0,
+            total: Some(0),
             folder_count: 0,
             file_count: 0,
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
+            pagination: None,
             version: "items-v1".to_string(),
         });
     let handler = test_message_handler_for_user_with_runtime(
@@ -5389,7 +5402,11 @@ async fn test_observed_playlist_items_refresh_flag_is_not_persisted() {
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "consume-refresh".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5441,7 +5458,11 @@ async fn test_resource_event_send_failure_propagates_and_removes_observation() {
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "send-failure".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5538,7 +5559,11 @@ async fn test_other_subscriber_send_failure_does_not_fail_refresh_caller() {
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "other-send-failure".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5621,7 +5646,11 @@ async fn test_stale_refresh_after_unobserve_does_not_send_resource_event() {
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "stale-refresh".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5692,7 +5721,11 @@ async fn test_stale_refresh_failure_after_unobserve_does_not_send_observe_error(
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "stale-refresh-failure".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5767,7 +5800,11 @@ async fn test_observed_playlist_items_singleflight_coalesces_concurrent_connecti
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "singleflight-concurrent".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5826,7 +5863,11 @@ async fn test_room_event_refresh_without_durable_cursor_refreshes_best_effort() 
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "missing-durable-cursor".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5883,11 +5924,12 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
         MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
-            total: 0,
+            total: Some(0),
             folder_count: 0,
             file_count: 0,
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
+            pagination: None,
             version: "items-v1".to_string(),
         });
     let sender_a = RecordingMessageSender::new();
@@ -5932,7 +5974,11 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     let request = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "room-hub-refresh".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -5966,11 +6012,12 @@ async fn test_media_resource_hub_coalesces_event_refresh_and_fans_out() {
     snapshot_service.replace(synctv_proto::client::ListPlaylistItemsResponse {
         playlists: Vec::new(),
         media: Vec::new(),
-        total: 0,
+        total: Some(0),
         folder_count: 0,
         file_count: 0,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
+        pagination: None,
         version: "items-v2".to_string(),
     });
     let event = RealtimeEvent::MediaAdded {
@@ -6069,7 +6116,11 @@ async fn test_media_resource_hub_refresh_dedupe_tracks_subscription_generation()
     let request_a = synctv_proto::client::ListPlaylistItemsRequest {
         playlist_id: String::new(),
         target: None,
-        page: 1,
+        pagination: Some(
+            synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                synctv_proto::client::PagePagination { page: 1 },
+            ),
+        ),
         page_size: 50,
         search: "generation-dedupe-a".to_string(),
         source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -6327,11 +6378,12 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
         MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
-            total: 0,
+            total: Some(0),
             folder_count: 0,
             file_count: 0,
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
+            pagination: None,
             version: "items-v1".to_string(),
         });
     let handler = handler
@@ -6346,7 +6398,11 @@ async fn test_observe_playlist_items_sends_current_snapshot() {
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -6397,11 +6453,12 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
         MutablePlaylistItemsSnapshotService::new(synctv_proto::client::ListPlaylistItemsResponse {
             playlists: Vec::new(),
             media: Vec::new(),
-            total: 0,
+            total: Some(0),
             folder_count: 0,
             file_count: 0,
             dynamic_items: Vec::new(),
             current_path: Vec::new(),
+            pagination: None,
             version: "items-v1".to_string(),
         });
     let handler = handler
@@ -6416,7 +6473,11 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -6463,11 +6524,12 @@ async fn test_observed_playlist_items_receive_future_media_updates() {
             cover: None,
             thumbnail: None,
         }],
-        total: 1,
+        total: Some(1),
         folder_count: 0,
         file_count: 1,
         dynamic_items: Vec::new(),
         current_path: Vec::new(),
+        pagination: None,
         version: "items-v2".to_string(),
     });
 

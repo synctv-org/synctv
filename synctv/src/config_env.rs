@@ -748,6 +748,14 @@ pub(crate) fn apply_env_overrides_with(
         "SYNCTV_MEDIA_PROVIDERS_EMBY_CONNECT_TIMEOUT_SECONDS",
         &mut config.media_providers.emby.connect_timeout_seconds,
     )?;
+    env_override_parse(
+        "SYNCTV_MEDIA_PROVIDERS_CLOUDREVE_REQUEST_TIMEOUT_SECONDS",
+        &mut config.media_providers.cloudreve.request_timeout_seconds,
+    )?;
+    env_override_parse(
+        "SYNCTV_MEDIA_PROVIDERS_CLOUDREVE_CONNECT_TIMEOUT_SECONDS",
+        &mut config.media_providers.cloudreve.connect_timeout_seconds,
+    )?;
 
     env_override_enum("SYNCTV_WEBRTC_MODE", &mut |val| {
         match val.to_lowercase().as_str() {

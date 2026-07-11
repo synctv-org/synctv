@@ -18,8 +18,9 @@ use synctv_core::{
         UserStatus,
     },
     provider::{
-        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
-        MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+        DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery,
+        DynamicListResult, ItemType, MediaProvider, NextPlayItem, PlaybackInfo, PlaybackResult,
+        ProviderContext, ProviderError,
     },
     repository::{MediaRepository, ProviderInstanceRepository, UserRepository},
     service::{
@@ -61,6 +62,7 @@ fn decode_alist_target(target: &ProviderTarget) -> String {
     match target {
         ProviderTarget::Alist(target) => target.relative_path.clone(),
         ProviderTarget::Emby(_) => panic!("expected alist provider target"),
+        ProviderTarget::Cloudreve(_) => panic!("expected alist provider target"),
     }
 }
 
@@ -301,39 +303,42 @@ impl DynamicFolder for StubDynamicProvider {
         _playlist: &Playlist,
         target: Option<&ProviderTarget>,
         _query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>, ProviderError> {
-        Ok(
-            match target
-                .map(decode_alist_target)
-                .as_deref()
-                .unwrap_or_default()
-            {
-                "" => vec![DirectoryItem {
-                    name: self.folder_cursor().to_string(),
-                    item_type: ItemType::Playlist,
-                    target: alist_target(self.folder_cursor()),
-                    size: None,
-                    thumbnail: None,
-                    description: None,
-                    modified_at: None,
-                }],
-                cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
-                    name: self
-                        .first_item_path()
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or(self.first_item_path())
-                        .to_string(),
-                    item_type: ItemType::Media,
-                    target: alist_target(self.first_item_path()),
-                    size: None,
-                    thumbnail: None,
-                    description: None,
-                    modified_at: None,
-                }],
-                _ => Vec::new(),
-            },
-        )
+    ) -> Result<DynamicListResult, ProviderError> {
+        let items = match target
+            .map(decode_alist_target)
+            .as_deref()
+            .unwrap_or_default()
+        {
+            "" => vec![DirectoryItem {
+                name: self.folder_cursor().to_string(),
+                item_type: ItemType::Playlist,
+                target: alist_target(self.folder_cursor()),
+                size: None,
+                thumbnail: None,
+                description: None,
+                modified_at: None,
+            }],
+            cursor if cursor == self.folder_cursor() => vec![DirectoryItem {
+                name: self
+                    .first_item_path()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(self.first_item_path())
+                    .to_string(),
+                item_type: ItemType::Media,
+                target: alist_target(self.first_item_path()),
+                size: None,
+                thumbnail: None,
+                description: None,
+                modified_at: None,
+            }],
+            _ => Vec::new(),
+        };
+        Ok(DynamicListResult {
+            has_more: false,
+            items,
+            pagination: synctv_core::provider::DynamicPagination::Page { page: 1 },
+        })
     }
 
     async fn resolve_item(
@@ -673,7 +678,11 @@ async fn test_list_playlist_items_returns_current_path_for_dynamic_playlist() {
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id.clone(),
                 target: proto_alist_target("season-1"),
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -1307,7 +1316,11 @@ async fn test_dynamic_playlist_list_items_uses_bound_provider_instance() {
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: playlist_public_id,
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,
@@ -1427,7 +1440,11 @@ async fn test_list_playlist_items_allows_room_root_with_empty_playlist_id() {
             synctv_proto::client::ListPlaylistItemsRequest {
                 playlist_id: String::new(),
                 target: None,
-                page: 1,
+                pagination: Some(
+                    synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                        synctv_proto::client::PagePagination { page: 1 },
+                    ),
+                ),
                 page_size: 50,
                 search: String::new(),
                 source_provider: synctv_proto::source_config::SourceProvider::Unspecified as i32,

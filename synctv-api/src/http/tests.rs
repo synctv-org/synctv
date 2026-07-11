@@ -67,6 +67,7 @@ struct TestProviderApiImpls {
     bilibili: Arc<crate::impls::BilibiliApiImpl>,
     alist: Arc<crate::impls::AlistApiImpl>,
     emby: Arc<crate::impls::EmbyApiImpl>,
+    cloudreve: Arc<crate::impls::CloudreveApiImpl>,
 }
 
 struct TestCoreApiImpls {
@@ -210,9 +211,10 @@ fn test_provider_api_impls(
             request_executor,
         },
     ));
+    let event_service = Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new());
     let runtime = crate::impls::ProviderApiRuntime {
         access_service: provider_access_service,
-        event_service: Arc::new(synctv_realtime::fanout::LocalNoopRealtimeEventService::new()),
+        event_service: event_service.clone(),
     };
     let credential_backed_providers = providers.with_credential_repo(credential_repo);
     let bilibili = Arc::new(
@@ -231,12 +233,17 @@ fn test_provider_api_impls(
         credential_backed_providers.emby.clone(),
         runtime,
     ));
+    let cloudreve = Arc::new(crate::impls::CloudreveApiImpl::new(
+        credential_backed_providers.cloudreve.clone(),
+        event_service,
+    ));
 
     Ok(TestProviderApiImpls {
         provider_common,
         bilibili,
         alist,
         emby,
+        cloudreve,
     })
 }
 
@@ -786,6 +793,7 @@ fn test_app_state_with_rate_limits(
         bilibili_api: provider_api_impls.bilibili.clone(),
         alist_api: provider_api_impls.alist.clone(),
         emby_api: provider_api_impls.emby.clone(),
+        cloudreve_api: provider_api_impls.cloudreve.clone(),
         shared_proxy_signing_key,
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),
@@ -1263,6 +1271,7 @@ async fn test_build_app_state_reuses_injected_proxy_cache() -> TestResult {
         bilibili_api: injected_provider_api_impls.bilibili.clone(),
         alist_api: injected_provider_api_impls.alist.clone(),
         emby_api: injected_provider_api_impls.emby.clone(),
+        cloudreve_api: injected_provider_api_impls.cloudreve.clone(),
         shared_proxy_signing_key: injected_proxy_signing_key.clone(),
         builtin_stun_url: None,
         webrtc_status: synctv_core::service::WebRtcRuntimeStatus::peer_to_peer_stun_disabled(),

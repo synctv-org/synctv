@@ -4,6 +4,7 @@
 
 pub(crate) mod alist;
 pub(crate) mod bilibili;
+pub(crate) mod cloudreve;
 pub(crate) mod common;
 pub(crate) mod emby;
 pub(crate) mod rtmp;

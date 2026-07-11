@@ -183,6 +183,19 @@ pub mod providers {
 
     #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
     #[allow(clippy::pedantic)]
+    pub mod cloudreve {
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.cloudreve.rs"
+        ));
+        include!(concat!(
+            env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
+            "/synctv.provider.cloudreve.serde.rs"
+        ));
+    }
+
+    #[cfg_attr(feature = "openapi", allow(clippy::large_stack_arrays))]
+    #[allow(clippy::pedantic)]
     pub mod alist {
         include!(concat!(
             env!("SYNCTV_PROTO_PROVIDERS_OUT_DIR"),
@@ -1912,7 +1925,11 @@ mod tests {
         let items = crate::client::ListPlaylistItemsRequest {
             playlist_id: String::new(),
             target: None,
-            page: -1,
+            pagination: Some(
+                crate::client::list_playlist_items_request::Pagination::Page(
+                    crate::client::PagePagination { page: 0 },
+                ),
+            ),
             page_size: 101,
             search: String::new(),
             source_provider: crate::source_config::SourceProvider::Unspecified as i32,
@@ -1951,7 +1968,7 @@ mod tests {
         crate::validate(&crate::client::ListPlaylistItemsRequest {
             playlist_id: String::new(),
             target: None,
-            page: 0,
+            pagination: None,
             page_size: 0,
             search: String::new(),
             source_provider: crate::source_config::SourceProvider::Unspecified as i32,

@@ -15,6 +15,10 @@ pub(in crate::impls::admin) fn page_i32_to_usize(value: i32) -> Result<usize, Ap
     usize::try_from(normalized).map_err(|_| ApiError::Internal("page exceeds usize::MAX".into()))
 }
 
+pub(in crate::impls::admin) fn page_u32_to_usize(value: u32) -> Result<usize, ApiError> {
+    usize::try_from(value.max(1)).map_err(|_| ApiError::Internal("page exceeds usize::MAX".into()))
+}
+
 pub(in crate::impls::admin) fn page_size_i32_to_usize(
     value: i32,
     max: i32,
@@ -34,6 +38,20 @@ pub(in crate::impls::admin) fn usize_to_i32_api(
     field: &'static str,
 ) -> Result<i32, ApiError> {
     i32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i32::MAX")))
+}
+
+pub(in crate::impls::admin) fn usize_to_u32_api(
+    value: usize,
+    field: &'static str,
+) -> Result<u32, ApiError> {
+    u32::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u32::MAX")))
+}
+
+pub(in crate::impls::admin) fn usize_to_u64_api(
+    value: usize,
+    field: &'static str,
+) -> Result<u64, ApiError> {
+    u64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds u64::MAX")))
 }
 
 pub(in crate::impls::admin) fn i64_to_i32_api(
@@ -60,13 +78,6 @@ pub(in crate::impls::admin) fn i64_count_to_usize(
         )));
     }
     usize::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds usize::MAX")))
-}
-
-pub(in crate::impls::admin) fn u64_to_i64_api(
-    value: u64,
-    field: &'static str,
-) -> Result<i64, ApiError> {
-    i64::try_from(value).map_err(|_| ApiError::Internal(format!("{field} exceeds i64::MAX")))
 }
 
 pub(in crate::impls::admin) fn page_offset_usize(

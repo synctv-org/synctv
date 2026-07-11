@@ -413,6 +413,9 @@ fn source_provider_to_proto(provider: Option<synctv_core::models::SourceProvider
         Some(synctv_core::models::SourceProvider::LiveProxy) => {
             source_config_proto::SourceProvider::LiveProxy as i32
         }
+        Some(synctv_core::models::SourceProvider::Cloudreve) => {
+            source_config_proto::SourceProvider::Cloudreve as i32
+        }
         None => source_config_proto::SourceProvider::Unspecified as i32,
     }
 }

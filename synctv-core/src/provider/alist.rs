@@ -7,10 +7,10 @@ use super::upstream_transport::alist as alist_upstream;
 use super::{
     access::{AlistAccess, AlistBinding},
     provider_client::{create_remote_alist_client, AlistClientArc, ProviderClientManager},
-    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, ItemType,
-    MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo, PlaybackResult,
-    PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig, ProviderContext,
-    ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
+    DirectoryItem, DynamicBrowsePathSegment, DynamicFolder, DynamicListQuery, DynamicListResult,
+    DynamicPagination, ItemType, MediaProvider, NextPlayItem, PlaybackClientProfile, PlaybackInfo,
+    PlaybackResult, PlaybackStreamPreference, PlaybackSubtitlePreference, PreparedSourceConfig,
+    ProviderContext, ProviderCredentialDependency, ProviderError, SourceConfig, SourceCover,
 };
 use crate::models::media::{
     AlistPlaybackMetadata, AlistTranscodingTaskMetadata, AlistVideoPreviewMetadata,
@@ -2224,7 +2224,7 @@ impl DynamicFolder for AlistProvider {
         playlist: &crate::models::Playlist,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>, ProviderError> {
+    ) -> Result<DynamicListResult, ProviderError> {
         // Parse playlist's source_config to get base path
         let config = playlist
             .source_config
@@ -2261,7 +2261,7 @@ impl DynamicFolder for AlistProvider {
             )
             .await?;
 
-        let page = usize_to_u64(query.page.max(1), "Alist page")?;
+        let page = usize_to_u64(query.page().max(1), "Alist page")?;
         let per_page = usize_to_u64(query.page_size.max(1), "Alist page size")?;
         let search = query
             .search
@@ -2354,7 +2354,13 @@ impl DynamicFolder for AlistProvider {
                 .collect::<Result<Vec<_>, ProviderError>>()?
         };
 
-        Ok(items)
+        Ok(DynamicListResult {
+            has_more: items.len() >= query.page_size.max(1),
+            items,
+            pagination: DynamicPagination::Page {
+                page: query.page().max(1),
+            },
+        })
     }
 
     async fn resolve_item(
@@ -2400,7 +2406,7 @@ impl DynamicFolder for AlistProvider {
                     playlist,
                     parent_target.as_ref(),
                     DynamicListQuery {
-                        page,
+                        pagination: DynamicPagination::Page { page },
                         page_size: LIST_PAGE_SIZE,
                         ..DynamicListQuery::default()
                     },
@@ -2482,7 +2488,7 @@ impl DynamicFolder for AlistProvider {
                             playlist,
                             parent_target.as_ref(),
                             DynamicListQuery {
-                                page: current_page,
+                                pagination: DynamicPagination::Page { page: current_page },
                                 page_size: LIST_PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },
@@ -2553,7 +2559,7 @@ impl DynamicFolder for AlistProvider {
                             playlist,
                             parent_target.as_ref(),
                             DynamicListQuery {
-                                page: 1,
+                                pagination: DynamicPagination::Page { page: 1 },
                                 page_size: LIST_PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },
@@ -2596,7 +2602,7 @@ impl DynamicFolder for AlistProvider {
                             playlist,
                             parent_target.as_ref(),
                             DynamicListQuery {
-                                page,
+                                pagination: DynamicPagination::Page { page },
                                 page_size: LIST_PAGE_SIZE,
                                 ..DynamicListQuery::default()
                             },

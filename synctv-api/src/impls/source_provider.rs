@@ -16,6 +16,7 @@ pub(crate) fn proto_source_provider_required(value: i32) -> Result<SourceProvide
         source_config_proto::SourceProvider::Emby => Ok(SourceProvider::Emby),
         source_config_proto::SourceProvider::Rtmp => Ok(SourceProvider::Rtmp),
         source_config_proto::SourceProvider::LiveProxy => Ok(SourceProvider::LiveProxy),
+        source_config_proto::SourceProvider::Cloudreve => Ok(SourceProvider::Cloudreve),
     }
 }
 
@@ -42,6 +43,7 @@ pub(crate) const fn core_source_provider_to_proto(provider: SourceProvider) -> i
         SourceProvider::Emby => source_config_proto::SourceProvider::Emby as i32,
         SourceProvider::Rtmp => source_config_proto::SourceProvider::Rtmp as i32,
         SourceProvider::LiveProxy => source_config_proto::SourceProvider::LiveProxy as i32,
+        SourceProvider::Cloudreve => source_config_proto::SourceProvider::Cloudreve as i32,
     }
 }
 
@@ -81,6 +83,10 @@ mod tests {
         (
             SourceProvider::LiveProxy,
             source_config_proto::SourceProvider::LiveProxy,
+        ),
+        (
+            SourceProvider::Cloudreve,
+            source_config_proto::SourceProvider::Cloudreve,
         ),
     ];
 

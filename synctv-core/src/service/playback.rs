@@ -110,7 +110,9 @@ fn live_status_for_media_source(
         (SourceProvider::Bilibili, crate::models::MediaSourceConfig::Bilibili(config)) => {
             Some(matches!(config, BilibiliMediaSourceConfig::Live(_)))
         }
-        (SourceProvider::Alist | SourceProvider::Emby, _) => Some(false),
+        (SourceProvider::Alist | SourceProvider::Emby | SourceProvider::Cloudreve, _) => {
+            Some(false)
+        }
         (SourceProvider::Rtmp | SourceProvider::LiveProxy, _) => Some(true),
         _ => None,
     }
@@ -127,7 +129,8 @@ fn live_status_for_playlist_source(
         SourceProvider::DirectUrl
         | SourceProvider::Bilibili
         | SourceProvider::Rtmp
-        | SourceProvider::LiveProxy => None,
+        | SourceProvider::LiveProxy
+        | SourceProvider::Cloudreve => None,
     }
 }
 

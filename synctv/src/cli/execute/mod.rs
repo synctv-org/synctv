@@ -837,8 +837,8 @@ fn media_source_config_json_to_proto(
 ) -> Result<synctv_proto::source_config::MediaSourceConfig> {
     use synctv_proto::source_config::{
         media_source_config, AlistMediaSourceConfig, BilibiliMediaSourceConfig,
-        DirectUrlMediaSourceConfig, EmbyMediaSourceConfig, LiveProxyMediaSourceConfig,
-        RtmpMediaSourceConfig,
+        CloudreveMediaSourceConfig, DirectUrlMediaSourceConfig, EmbyMediaSourceConfig,
+        LiveProxyMediaSourceConfig, RtmpMediaSourceConfig,
     };
 
     let provider = match provider {
@@ -878,6 +878,12 @@ fn media_source_config_json_to_proto(
                 raw,
             )?)
         }
+        CliSourceProvider::Cloudreve => {
+            media_source_config::Provider::Cloudreve(parse_cli_json::<CloudreveMediaSourceConfig>(
+                "cloudreve media sourceConfig",
+                raw,
+            )?)
+        }
     };
     Ok(synctv_proto::source_config::MediaSourceConfig {
         provider: Some(provider),
@@ -889,7 +895,8 @@ fn playlist_source_config_json_to_proto(
     raw: &str,
 ) -> Result<synctv_proto::source_config::PlaylistSourceConfig> {
     use synctv_proto::source_config::{
-        playlist_source_config, AlistPlaylistSourceConfig, EmbyPlaylistSourceConfig,
+        playlist_source_config, AlistPlaylistSourceConfig, CloudrevePlaylistSourceConfig,
+        EmbyPlaylistSourceConfig,
     };
 
     let provider = match provider {
@@ -905,11 +912,44 @@ fn playlist_source_config_json_to_proto(
                 raw,
             )?)
         }
+        CliSourceProvider::Cloudreve => {
+            playlist_source_config::Provider::Cloudreve(parse_cli_json::<
+                CloudrevePlaylistSourceConfig,
+            >(
+                "cloudreve playlist sourceConfig", raw
+            )?)
+        }
         other => bail!("{other:?} does not support playlist source_config"),
     };
     Ok(synctv_proto::source_config::PlaylistSourceConfig {
         provider: Some(provider),
     })
+}
+
+#[cfg(test)]
+mod source_config_tests {
+    use super::*;
+
+    type TestResult<T = ()> = anyhow::Result<T>;
+
+    #[test]
+    fn parses_cloudreve_playlist_source_config() -> TestResult {
+        let config = playlist_source_config_json_to_proto(
+            CliSourceProvider::Cloudreve,
+            r#"{"serverId":"cloudreve-server","path":"cloudreve://my/Shows"}"#,
+        )?;
+
+        let Some(synctv_proto::source_config::playlist_source_config::Provider::Cloudreve(config)) =
+            config.provider
+        else {
+            return Err(anyhow::anyhow!(
+                "Cloudreve playlist config did not produce its provider oneof"
+            ));
+        };
+        assert_eq!(config.server_id, "cloudreve-server");
+        assert_eq!(config.path, "cloudreve://my/Shows");
+        Ok(())
+    }
 }
 
 pub(in crate::cli) fn parse_cli_json<T>(label: &str, raw: &str) -> Result<T>

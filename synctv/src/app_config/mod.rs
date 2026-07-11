@@ -1156,6 +1156,7 @@ pub struct MediaProvidersConfig {
     pub alist: LocalProviderHttpConfig,
     pub bilibili: LocalProviderHttpConfig,
     pub emby: LocalProviderHttpConfig,
+    pub cloudreve: LocalProviderHttpConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

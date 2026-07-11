@@ -303,16 +303,61 @@ pub struct DirectoryItem {
 }
 
 /// Query options for browsing provider-backed dynamic playlists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DynamicPagination {
+    Page { page: usize },
+    Cursor { cursor: Option<String> },
+}
+
+impl Default for DynamicPagination {
+    fn default() -> Self {
+        Self::Page { page: 1 }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DynamicListQuery {
-    /// Page number, 1-indexed at the provider boundary.
-    pub page: usize,
+    pub pagination: DynamicPagination,
     /// Maximum items per page.
     pub page_size: usize,
     /// Optional provider-side search term.
     pub search: Option<String>,
     /// Force the upstream provider to refresh its directory cache when supported.
     pub refresh: bool,
+}
+
+impl DynamicListQuery {
+    #[must_use]
+    pub const fn page(&self) -> usize {
+        match self.pagination {
+            DynamicPagination::Page { page } => page,
+            DynamicPagination::Cursor { .. } => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DynamicListResult {
+    pub items: Vec<DirectoryItem>,
+    pub pagination: DynamicPagination,
+    pub has_more: bool,
+}
+
+impl std::ops::Deref for DynamicListResult {
+    type Target = [DirectoryItem];
+
+    fn deref(&self) -> &Self::Target {
+        &self.items
+    }
+}
+
+impl IntoIterator for DynamicListResult {
+    type Item = DirectoryItem;
+    type IntoIter = std::vec::IntoIter<DirectoryItem>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
 }
 
 /// Media provider trait.
@@ -545,7 +590,7 @@ pub trait DynamicFolder: MediaProvider {
         playlist: &crate::models::Playlist,
         target: Option<&crate::models::ProviderTarget>,
         query: DynamicListQuery,
-    ) -> Result<Vec<DirectoryItem>, ProviderError>;
+    ) -> Result<DynamicListResult, ProviderError>;
 
     /// Resolve a single playable media item inside a dynamic playlist.
     ///

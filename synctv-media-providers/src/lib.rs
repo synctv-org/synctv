@@ -26,6 +26,7 @@ mod credential;
 // HTTP clients (no MediaProvider dependency)
 pub mod alist;
 pub mod bilibili;
+pub mod cloudreve;
 pub mod emby;
 
 // gRPC servers (wrap HTTP clients)
@@ -40,6 +41,7 @@ pub mod transport_dto;
 // Re-export client types for convenience
 pub use alist::{AlistClient, AlistError};
 pub use bilibili::{BilibiliClient, BilibiliError};
+pub use cloudreve::CloudreveClient;
 pub use emby::{EmbyClient, EmbyError};
 pub use error::{
     check_response, fetch_json, json_with_limit, provider_backoff, with_retry, ProviderClientError,

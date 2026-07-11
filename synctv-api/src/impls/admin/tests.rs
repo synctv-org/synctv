@@ -2330,7 +2330,11 @@ async fn test_admin_client_list_endpoints_reject_invalid_proto_requests() -> Tes
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
                     target: None,
-                    page: 1,
+                    pagination: Some(
+                        synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                            synctv_proto::client::PagePagination { page: 1 },
+                        ),
+                    ),
                     page_size: 20,
                     search: String::new(),
                     source_provider: 99,
@@ -5614,7 +5618,11 @@ async fn test_list_media_bypasses_room_membership_requirement_for_global_admin()
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
                     target: None,
-                    page: 1,
+                    pagination: Some(
+                        synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                            synctv_proto::client::PagePagination { page: 1 },
+                        ),
+                    ),
                     page_size: 20,
                     search: String::new(),
                     source_provider: synctv_proto::source_config::SourceProvider::Unspecified
@@ -5798,7 +5806,11 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
                 synctv_proto::client::ListPlaylistItemsRequest {
                     playlist_id: String::new(),
                     target: None,
-                    page: 1,
+                    pagination: Some(
+                        synctv_proto::client::list_playlist_items_request::Pagination::Page(
+                            synctv_proto::client::PagePagination { page: 1 },
+                        ),
+                    ),
                     page_size: 10,
                     search: "alpha".to_string(),
                     source_provider: synctv_proto::source_config::SourceProvider::DirectUrl as i32,
@@ -5813,7 +5825,7 @@ async fn test_list_media_respects_search_filters_and_sort_for_static_root() -> T
             .await,
     )?;
 
-    assert_eq!(response.total, 1);
+    assert_eq!(response.total, Some(1));
     assert_eq!(response.folder_count, 0);
     assert_eq!(response.file_count, 1);
     assert!(response.playlists.is_empty());

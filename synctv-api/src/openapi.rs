@@ -3,7 +3,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::http::providers::{
-    alist, bilibili, common, emby,
+    alist, bilibili, cloudreve, common, emby,
     playback_provider::{
         alist as playback_provider_alist, bilibili as playback_provider_bilibili,
         direct_url as playback_provider_direct_url, emby as playback_provider_emby,
@@ -103,6 +103,12 @@ pub struct GoogleRpcStatusSchema {
         alist::me,
         alist::logout,
         alist::binds,
+        cloudreve::login,
+        cloudreve::list,
+        cloudreve::search,
+        cloudreve::me,
+        cloudreve::logout,
+        cloudreve::binds,
         emby::login,
         emby::list,
         emby::me,
@@ -436,6 +442,8 @@ pub struct GoogleRpcStatusSchema {
             client::ReportChatMessageTarget,
             client::ListPlaylistItemsRequest,
             client::ListPlaylistItemsResponse,
+            client::PagePagination,
+            client::CursorPagination,
             client::DeletePlaylistResponse,
             client::UpdatePlaylistRequest,
             client::Playlist,
@@ -479,6 +487,21 @@ pub struct GoogleRpcStatusSchema {
             synctv_proto::providers::alist::GetMeResponse,
             synctv_proto::providers::alist::LogoutRequest,
             synctv_proto::providers::alist::LogoutResponse,
+            synctv_proto::providers::cloudreve::LoginRequest,
+            synctv_proto::providers::cloudreve::LoginResponse,
+            synctv_proto::providers::cloudreve::ListRequest,
+            synctv_proto::providers::cloudreve::ListResponse,
+            synctv_proto::providers::cloudreve::PagePagination,
+            synctv_proto::providers::cloudreve::CursorPagination,
+            synctv_proto::providers::cloudreve::SearchRequest,
+            synctv_proto::providers::cloudreve::SearchResponse,
+            synctv_proto::providers::cloudreve::FileItem,
+            synctv_proto::providers::cloudreve::GetMeRequest,
+            synctv_proto::providers::cloudreve::GetMeResponse,
+            synctv_proto::providers::cloudreve::LogoutRequest,
+            synctv_proto::providers::cloudreve::LogoutResponse,
+            synctv_proto::providers::cloudreve::GetBindsResponse,
+            synctv_proto::providers::cloudreve::BindInfo,
             synctv_proto::providers::emby::LoginRequest,
             synctv_proto::providers::emby::LoginResponse,
             synctv_proto::providers::emby::GetBindsResponse,
@@ -711,6 +734,56 @@ mod tests {
         assert!(
             !notifications_security.is_empty(),
             "authenticated endpoints should keep bearer auth requirements"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn openapi_documents_cloudreve_provider_contract() -> TestResult {
+        let doc = openapi_json()?;
+
+        for (path, method) in [
+            ("/api/providers/cloudreve/login", "post"),
+            ("/api/providers/cloudreve/list", "post"),
+            ("/api/providers/cloudreve/search", "post"),
+            ("/api/providers/cloudreve/me", "post"),
+            ("/api/providers/cloudreve/logout", "post"),
+            ("/api/providers/cloudreve/binds", "get"),
+        ] {
+            let operation = &doc["paths"][path][method];
+            assert!(
+                operation.is_object(),
+                "{method} {path} should be documented"
+            );
+            assert!(
+                operation["responses"]["200"].is_object(),
+                "{method} {path} should document its success response"
+            );
+            assert!(
+                operation["security"].is_array(),
+                "{method} {path} should require bearer authentication"
+            );
+        }
+
+        for path in [
+            "/api/providers/cloudreve/login",
+            "/api/providers/cloudreve/list",
+            "/api/providers/cloudreve/search",
+            "/api/providers/cloudreve/me",
+            "/api/providers/cloudreve/logout",
+        ] {
+            assert!(
+                doc["paths"][path]["post"]["requestBody"].is_object(),
+                "POST {path} should document its protobuf request body"
+            );
+        }
+
+        let schemas = doc["components"]["schemas"]
+            .as_object()
+            .ok_or_else(|| test_error("OpenAPI components.schemas should be an object"))?;
+        assert!(
+            schemas.keys().any(|name| name.contains("cloudreve")),
+            "Cloudreve protobuf schemas should be registered"
         );
         Ok(())
     }

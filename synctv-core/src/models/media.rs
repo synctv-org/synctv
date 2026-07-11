@@ -66,6 +66,7 @@ pub enum SourceProvider {
     Emby,
     Rtmp,
     LiveProxy,
+    Cloudreve,
 }
 
 pub type ProviderType = SourceProvider;
@@ -81,6 +82,7 @@ impl FromStr for SourceProvider {
             "emby" => Ok(Self::Emby),
             "rtmp" => Ok(Self::Rtmp),
             "live_proxy" => Ok(Self::LiveProxy),
+            "cloudreve" => Ok(Self::Cloudreve),
             other => Err(format!("Unknown provider type: {other}")),
         }
     }
@@ -96,6 +98,7 @@ impl SourceProvider {
             Self::Emby => 4,
             Self::Rtmp => 5,
             Self::LiveProxy => 6,
+            Self::Cloudreve => 7,
         }
     }
 
@@ -108,6 +111,7 @@ impl SourceProvider {
             Self::Emby => "emby",
             Self::Rtmp => "rtmp",
             Self::LiveProxy => "live_proxy",
+            Self::Cloudreve => "cloudreve",
         }
     }
 }
@@ -123,6 +127,7 @@ impl TryFrom<i16> for SourceProvider {
             4 => Ok(Self::Emby),
             5 => Ok(Self::Rtmp),
             6 => Ok(Self::LiveProxy),
+            7 => Ok(Self::Cloudreve),
             other => Err(format!("Unknown provider type code: {other}")),
         }
     }

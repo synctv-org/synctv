@@ -10,6 +10,7 @@ enum SourceProvider {
   SOURCE_PROVIDER_EMBY = 4;
   SOURCE_PROVIDER_RTMP = 5;
   SOURCE_PROVIDER_LIVE_PROXY = 6;
+  SOURCE_PROVIDER_CLOUDREVE = 7;
 }
 
 message DirectUrlMediaResourceConfig {
@@ -56,6 +57,16 @@ message AlistPlaylistSourceConfig {
   string server_id = 1;
   string path = 2;
   optional string password = 3;
+}
+
+message CloudreveMediaSourceConfig {
+  string server_id = 1;
+  string path = 2;
+}
+
+message CloudrevePlaylistSourceConfig {
+  string server_id = 1;
+  string path = 2;
 }
 
 message EmbyMediaSourceConfig {
@@ -108,6 +119,7 @@ message MediaSourceConfig {
     EmbyMediaSourceConfig emby = 4;
     RtmpMediaSourceConfig rtmp = 5;
     LiveProxyMediaSourceConfig live_proxy = 6;
+    CloudreveMediaSourceConfig cloudreve = 7;
   }
 }
 
@@ -115,5 +127,6 @@ message PlaylistSourceConfig {
   oneof provider {
     AlistPlaylistSourceConfig alist = 1;
     EmbyPlaylistSourceConfig emby = 2;
+    CloudrevePlaylistSourceConfig cloudreve = 3;
   }
 }

@@ -6,8 +6,8 @@
 
 use crate::models::normalize_provider_instance_name;
 use crate::provider::{
-    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, LiveProxyProvider,
-    MediaProvider, ProviderClientManager, RtmpProvider,
+    AlistProvider, BilibiliProvider, CloudreveProvider, DirectUrlProvider, EmbyProvider,
+    LiveProxyProvider, MediaProvider, ProviderClientManager, RtmpProvider,
 };
 use crate::service::RemoteProviderManager;
 use crate::Result;
@@ -35,6 +35,7 @@ pub struct MediaProvidersOptions {
     pub alist: LocalProviderHttpOptions,
     pub bilibili: LocalProviderHttpOptions,
     pub emby: LocalProviderHttpOptions,
+    pub cloudreve: LocalProviderHttpOptions,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -275,6 +276,27 @@ impl ProvidersManager {
         );
 
         // RTMP factory
+        let ssrf_guard_cloudreve = ssrf_guard.clone();
+        self.register_factory(
+            CloudreveProvider::NAME,
+            Box::new(move |_instance_id, config, _instance_manager| {
+                let client = match provider_http_client_from_config(config, &ssrf_guard_cloudreve)?
+                {
+                    Some(client) => client,
+                    None => synctv_media_providers::build_provider_http_client(
+                        ssrf_guard_cloudreve.clone(),
+                    )
+                    .map_err(|error| {
+                        crate::Error::Internal(format!(
+                            "Failed to build Cloudreve HTTP client: {error}"
+                        ))
+                    })?,
+                };
+                Ok(Arc::new(CloudreveProvider::with_http_client(client)))
+            }),
+        );
+
+        // RTMP factory
         self.register_factory(
             RtmpProvider::NAME,
             Box::new(|_instance_id, _config, _instance_manager| Ok(Arc::new(RtmpProvider::new()))),
@@ -381,6 +403,9 @@ impl ProvidersManager {
                 AlistProvider::NAME => LocalProviderConfig::with_http(options.alist.clone()),
                 BilibiliProvider::NAME => LocalProviderConfig::with_http(options.bilibili.clone()),
                 EmbyProvider::NAME => LocalProviderConfig::with_http(options.emby.clone()),
+                CloudreveProvider::NAME => {
+                    LocalProviderConfig::with_http(options.cloudreve.clone())
+                }
                 _ => LocalProviderConfig::default(),
             };
 
@@ -541,6 +566,7 @@ mod tests {
         assert!(manager.has_factory("rtmp"));
         assert!(manager.has_factory("direct_url"));
         assert!(manager.has_factory("live_proxy"));
+        assert!(manager.has_factory("cloudreve"));
         assert!(!manager.has_factory("unknown"));
     }
 
@@ -552,7 +578,8 @@ mod tests {
         assert!(types.contains(&"alist".to_string()));
         assert!(types.contains(&"bilibili".to_string()));
         assert!(types.contains(&"live_proxy".to_string()));
-        assert_eq!(types.len(), 6);
+        assert!(types.contains(&"cloudreve".to_string()));
+        assert_eq!(types.len(), 7);
     }
 
     #[tokio::test]

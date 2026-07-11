@@ -529,6 +529,13 @@ pub fn provider_target_to_proto(target: &ProviderTarget) -> client_proto::Provid
                 },
             )),
         },
+        ProviderTarget::Cloudreve(target) => client_proto::ProviderTarget {
+            target: Some(client_proto::provider_target::Target::Cloudreve(
+                client_proto::CloudreveTarget {
+                    relative_path: target.relative_path.clone(),
+                },
+            )),
+        },
     }
 }
 

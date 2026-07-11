@@ -70,7 +70,7 @@ impl TryFrom<i32> for ReviewStatus {
     }
 }
 
-sqlx_i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
+i16_enum!(ReviewStatus, "Invalid ReviewStatus value", {
     Pending = 1,
     Approved = 2,
     Rejected = 3,

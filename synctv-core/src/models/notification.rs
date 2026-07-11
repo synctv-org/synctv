@@ -4,10 +4,6 @@
 
 use crate::models::{id::UserId, query::SortDirection};
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
-    Decode, Encode, Postgres, Type,
-};
 
 sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,7 +68,7 @@ impl std::str::FromStr for NotificationType {
     }
 }
 
-sqlx_i16_enum!(NotificationType, "Invalid notification type", {
+i16_enum!(NotificationType, "Invalid notification type", {
     RoomInvitation = 1,
     SystemAnnouncement = 2,
     RoomEvent = 3,
@@ -81,11 +77,10 @@ sqlx_i16_enum!(NotificationType, "Invalid notification type", {
 });
 
 /// Notification model
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     pub id: i64,
     pub user_id: UserId,
-    #[sqlx(rename = "type")]
     pub notification_type: NotificationType,
     pub title: String,
     pub content: String,
@@ -115,32 +110,6 @@ pub struct NotificationData {
     pub username: Option<String>,
     pub message_id: Option<String>,
     pub action_url: Option<String>,
-}
-
-impl Type<Postgres> for NotificationData {
-    fn type_info() -> PgTypeInfo {
-        <sqlx::types::Json<NotificationData> as Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &PgTypeInfo) -> bool {
-        <sqlx::types::Json<NotificationData> as Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl Encode<'_, Postgres> for NotificationData {
-    fn encode_by_ref(
-        &self,
-        buf: &mut PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::types::Json(self).encode_by_ref(buf)
-    }
-}
-
-impl<'r> Decode<'r, Postgres> for NotificationData {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sqlx::types::Json(data) = <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
-        Ok(data)
-    }
 }
 
 pub(crate) fn default_notification_data() -> NotificationData {

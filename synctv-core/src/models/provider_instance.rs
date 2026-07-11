@@ -133,7 +133,7 @@ impl Default for ProviderInstanceListQuery {
 ///
 /// Represents a remote media provider instance that can be deployed in different regions
 /// for cross-region video parsing and content delivery.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInstance {
     /// Instance name (primary key, unique identifier)
     pub name: String,
@@ -250,7 +250,7 @@ fn trim_optional_string(value: Option<String>) -> Option<String> {
 /// User Media Provider Credential
 ///
 /// Stores user-specific credentials for media providers (Bilibili cookies, Alist passwords, etc.)
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProviderCredential {
     /// Credential row ID.
     pub id: i64,

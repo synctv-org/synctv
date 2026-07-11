@@ -151,58 +151,6 @@ pub fn provider_type_codes_from_names<'a>(
         .collect()
 }
 
-#[derive(Debug, Clone)]
-pub struct ProviderTypeName(pub SourceProvider);
-
-impl TryFrom<i16> for ProviderTypeName {
-    type Error = String;
-
-    fn try_from(value: i16) -> Result<Self, Self::Error> {
-        SourceProvider::try_from(value).map(Self)
-    }
-}
-
-impl sqlx::Type<sqlx::Postgres> for ProviderTypeName {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        <i16 as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeName {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
-        let code = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self(SourceProvider::try_from(code)?))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ProviderTypeNames(pub Vec<SourceProvider>);
-
-impl sqlx::Type<sqlx::Postgres> for ProviderTypeNames {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <Vec<i16> as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        <Vec<i16> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for ProviderTypeNames {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
-        let codes = <Vec<i16> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        let names = codes
-            .into_iter()
-            .map(SourceProvider::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self(names))
-    }
-}
-
 impl std::fmt::Display for SourceProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -210,7 +158,7 @@ impl std::fmt::Display for SourceProvider {
 }
 
 /// Media file (video/audio)
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Media {
     pub id: MediaId,
     pub playlist_id: Option<PlaylistId>,

@@ -25,6 +25,7 @@ pub(crate) mod room_resource_event;
 pub(crate) mod room_settings;
 pub(crate) mod room_taxonomy;
 pub(crate) mod settings;
+mod sqlx_types;
 pub(crate) mod system_stats;
 pub(crate) mod user;
 pub(crate) mod user_email;

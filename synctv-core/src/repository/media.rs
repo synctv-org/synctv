@@ -2,14 +2,14 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.2
 
-use super::query_builder::ilike_contains_pattern;
+use super::{query_builder::ilike_contains_pattern, sqlx_types::ProviderTypeName};
 use sqlx::PgPool;
 use std::collections::{BTreeSet, HashMap};
 
 use crate::{
     models::{
         normalize_provider_instance_name, Media, MediaId, MediaListQuery, PageParams, PlaylistId,
-        ProviderTypeName, RoomId, UserId,
+        RoomId, UserId,
     },
     Result,
 };

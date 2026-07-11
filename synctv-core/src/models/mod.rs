@@ -59,7 +59,7 @@ macro_rules! sort_field_enum {
     };
 }
 
-macro_rules! sqlx_i16_enum {
+macro_rules! i16_enum {
     ($name:ident, $error:literal, { $($variant:ident = $value:literal),+ $(,)? }) => {
         impl From<$name> for i16 {
             fn from(value: $name) -> Self {
@@ -80,29 +80,6 @@ macro_rules! sqlx_i16_enum {
             }
         }
 
-        impl sqlx::Type<sqlx::Postgres> for $name {
-            fn type_info() -> sqlx::postgres::PgTypeInfo {
-                <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-            }
-        }
-
-        impl sqlx::Encode<'_, sqlx::Postgres> for $name {
-            fn encode_by_ref(
-                &self,
-                buf: &mut sqlx::postgres::PgArgumentBuffer,
-            ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-                <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&i16::from(*self), buf)
-            }
-        }
-
-        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $name {
-            fn decode(
-                value: sqlx::postgres::PgValueRef<'r>,
-            ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-                let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-                Self::try_from(value).map_err(Into::into)
-            }
-        }
     };
 }
 
@@ -189,8 +166,7 @@ pub use media::{
     PlaybackDirectUrlSubtitle, PlaybackEmbyMedia, PlaybackEmbySubtitle, PlaybackExternalDanmaku,
     PlaybackExternalMedia, PlaybackExternalSubtitle, PlaybackInfo, PlaybackLiveProxyMedia,
     PlaybackMedia, PlaybackMediaMetadata, PlaybackMediaProvider, PlaybackMetadata, PlaybackResult,
-    PlaybackRtmpMedia, PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, ProviderTypeName,
-    ProviderTypeNames, SourceProvider,
+    PlaybackRtmpMedia, PlaybackSubtitle, PlaybackSubtitleProvider, ProviderType, SourceProvider,
 };
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,

@@ -747,7 +747,7 @@ impl TryFrom<i32> for Role {
     }
 }
 
-sqlx_i16_enum!(Role, "Invalid Role value", {
+i16_enum!(Role, "Invalid Role value", {
     Creator = 1,
     Admin = 2,
     Member = 3,

@@ -1,8 +1,4 @@
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
-    Decode, Encode, Postgres, Type,
-};
 use std::fmt;
 use std::str::FromStr;
 
@@ -179,32 +175,6 @@ impl AuditDetails {
             reason: Some(reason.into()),
             ..Default::default()
         }
-    }
-}
-
-impl Type<Postgres> for AuditDetails {
-    fn type_info() -> PgTypeInfo {
-        <sqlx::types::Json<AuditDetails> as Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &PgTypeInfo) -> bool {
-        <sqlx::types::Json<AuditDetails> as Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl Encode<'_, Postgres> for AuditDetails {
-    fn encode_by_ref(
-        &self,
-        buf: &mut PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::types::Json(self).encode_by_ref(buf)
-    }
-}
-
-impl<'r> Decode<'r, Postgres> for AuditDetails {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sqlx::types::Json(data) = <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
-        Ok(data)
     }
 }
 

@@ -139,31 +139,6 @@ macro_rules! numeric_id_type {
                 Ok(Self(id))
             }
         }
-
-        impl sqlx::Type<sqlx::Postgres> for $name {
-            fn type_info() -> sqlx::postgres::PgTypeInfo {
-                <i64 as sqlx::Type<sqlx::Postgres>>::type_info()
-            }
-        }
-
-        impl sqlx::Encode<'_, sqlx::Postgres> for $name {
-            fn encode_by_ref(
-                &self,
-                buf: &mut sqlx::postgres::PgArgumentBuffer,
-            ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-                <i64 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-            }
-        }
-
-        impl<'r> sqlx::Decode<'r, sqlx::Postgres> for $name {
-            fn decode(
-                value: sqlx::postgres::PgValueRef<'r>,
-            ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-                let id = <i64 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-                validate_id(id, $label)?;
-                Ok(Self(id))
-            }
-        }
     };
 }
 

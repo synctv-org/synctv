@@ -2,11 +2,11 @@
 //!
 //! Design reference: external design doc 04-database-design.md §2.4.1
 
-use super::{query_builder::ilike_contains_pattern, required_count};
+use super::{query_builder::ilike_contains_pattern, required_count, sqlx_types::ProviderTypeName};
 use crate::{
     models::{
         normalize_provider_instance_name, Playlist, PlaylistId, PlaylistListQuery,
-        PlaylistSourceConfig, ProviderTypeName, RoomId, SourceProvider,
+        PlaylistSourceConfig, RoomId, SourceProvider,
     },
     Result,
 };

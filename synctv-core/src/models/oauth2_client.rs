@@ -157,30 +157,6 @@ pub fn oauth2_provider_type_name_from_code(code: i16) -> Result<String, String> 
     OAuth2Provider::try_from(code).map(|provider| provider.to_string())
 }
 
-impl sqlx::Type<sqlx::Postgres> for OAuth2Provider {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for OAuth2Provider {
-    fn encode_by_ref(
-        &self,
-        buf: &mut sqlx::postgres::PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_i16(), buf)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for OAuth2Provider {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let value = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Self::try_from(value)?)
-    }
-}
-
 impl std::fmt::Display for OAuth2Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

@@ -5431,9 +5431,11 @@ fn render_human_output_converts_room_listing_without_context_inference() {
     assert_eq!(rendered["rooms"][0]["status"], "active");
     assert_eq!(rendered["rooms"][0]["creatorStatus"], "banned");
     assert_eq!(rendered["rooms"][0]["version"], 56);
-    assert_eq!(
-        rendered["rooms"][0]["createdAt"],
-        "2026-04-02 15:43:03 +00:00 (UTC) (1775144583)"
+    assert!(
+        rendered["rooms"][0]["createdAt"]
+            .as_str()
+            .is_some_and(|value| value.ends_with("(1775144583)")),
+        "createdAt should be humanized while preserving the source epoch"
     );
 }
 

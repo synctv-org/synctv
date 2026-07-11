@@ -6,7 +6,7 @@ use super::{
     provider_target::{hash_empty_provider_target, hash_optional_provider_target, ProviderTarget},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoomPlaybackState {
     pub room_id: RoomId,
     pub playing_media_id: Option<MediaId>,
@@ -20,7 +20,7 @@ pub struct RoomPlaybackState {
     pub version: i64, // For optimistic locking
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RoomPlaybackProgress {
     pub id: i64,
     pub room_id: RoomId,
@@ -43,7 +43,7 @@ pub enum PlaybackDurationStatus {
     Failed,
 }
 
-sqlx_i16_enum!(PlaybackDurationStatus, "invalid playback duration status", {
+i16_enum!(PlaybackDurationStatus, "invalid playback duration status", {
     Unknown = 0,
     Pending = 1,
     Available = 2,
@@ -68,12 +68,12 @@ pub enum PlaybackDurationSource {
     Probe,
 }
 
-sqlx_i16_enum!(PlaybackDurationSource, "invalid playback duration source", {
+i16_enum!(PlaybackDurationSource, "invalid playback duration source", {
     Provider = 1,
     Probe = 2,
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlaybackSourceMetadata {
     pub room_id: RoomId,
     pub media_id: Option<MediaId>,

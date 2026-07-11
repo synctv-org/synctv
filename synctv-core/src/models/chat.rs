@@ -1,7 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef};
-use sqlx::{Decode, Encode, Postgres, Type};
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
@@ -66,7 +64,7 @@ impl FromStr for ChatMessageType {
     }
 }
 
-sqlx_i16_enum!(ChatMessageType, "Invalid chat message type", {
+i16_enum!(ChatMessageType, "Invalid chat message type", {
     User = 1,
     SystemMemberJoined = 1001,
 });
@@ -142,7 +140,7 @@ impl std::fmt::Display for ChatAttachmentKind {
     }
 }
 
-sqlx_i16_enum!(ChatAttachmentKind, "Invalid chat attachment kind", {
+i16_enum!(ChatAttachmentKind, "Invalid chat attachment kind", {
     File = 1,
     Image = 2,
     Audio = 3,
@@ -187,7 +185,7 @@ impl FromStr for ChatMessageStatus {
     }
 }
 
-sqlx_i16_enum!(ChatMessageStatus, "Invalid chat message status", {
+i16_enum!(ChatMessageStatus, "Invalid chat message status", {
     Active = 1,
     Edited = 2,
     Deleted = 3,
@@ -290,34 +288,7 @@ impl ChatPlaybackMetadata {
     }
 }
 
-impl Type<Postgres> for ChatMetadata {
-    fn type_info() -> PgTypeInfo {
-        <sqlx::types::Json<ChatMetadata> as Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &PgTypeInfo) -> bool {
-        <sqlx::types::Json<ChatMetadata> as Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl Encode<'_, Postgres> for ChatMetadata {
-    fn encode_by_ref(
-        &self,
-        buf: &mut PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::types::Json(self).encode_by_ref(buf)
-    }
-}
-
-impl<'r> Decode<'r, Postgres> for ChatMetadata {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sqlx::types::Json(metadata) =
-            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
-        Ok(metadata)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub id: i64,
@@ -422,7 +393,7 @@ pub struct SendChatRequest {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatAttachment {
     pub id: String,
@@ -433,7 +404,6 @@ pub struct ChatAttachment {
     pub filename: Option<String>,
     pub storage_backend: String,
     pub object_key: String,
-    #[sqlx(default)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_access: Option<super::file_storage::FileObjectAccess>,
     pub url: Option<String>,
@@ -443,10 +413,8 @@ pub struct ChatAttachment {
     pub height: Option<i32>,
     pub metadata: super::file_storage::FileMetadata,
     pub created_at: DateTime<Utc>,
-    #[sqlx(skip)]
     #[serde(default)]
     pub reuse_token: Option<String>,
-    #[sqlx(skip)]
     #[serde(default)]
     pub reuse_expires_at: Option<DateTime<Utc>>,
 }
@@ -509,7 +477,7 @@ pub struct ChatMessageWithAttachments {
     pub pin: Option<ChatMessagePin>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessagePin {
     pub room_id: RoomId,
@@ -572,7 +540,7 @@ pub struct ChatMentionInput {
     pub length: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMention {
     pub room_id: RoomId,
@@ -606,7 +574,7 @@ pub struct DeleteChatMessage {
     pub expected_version: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatReaction {
     pub room_id: RoomId,
     pub message_id: i64,
@@ -617,7 +585,7 @@ pub struct ChatReaction {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatReactionSummary {
     pub key: String,
@@ -625,7 +593,7 @@ pub struct ChatReactionSummary {
     pub reacted_by_me: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatReactionUser {
     pub user_id: UserId,
     pub reaction_key: String,
@@ -663,7 +631,7 @@ pub enum ChatEventKind {
     ReactionsChanged = 4,
 }
 
-sqlx_i16_enum!(ChatEventKind, "Invalid chat event kind", {
+i16_enum!(ChatEventKind, "Invalid chat event kind", {
     Created = 1,
     Edited = 2,
     Deleted = 3,
@@ -753,14 +721,14 @@ pub struct ChatPinEventLog {
     pub event: ChatPinEvent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventCursor {
     pub event_id: Option<String>,
     pub sequence: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatReadState {
     pub room_id: RoomId,
     pub user_id: UserId,

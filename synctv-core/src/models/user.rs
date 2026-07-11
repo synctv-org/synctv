@@ -183,12 +183,12 @@ impl TryFrom<i32> for UserStatus {
     }
 }
 
-sqlx_i16_enum!(UserStatus, "Invalid UserStatus value", {
+i16_enum!(UserStatus, "Invalid UserStatus value", {
     Active = 1,
     Banned = 2,
 });
 
-sqlx_i16_enum!(UserRole, "Invalid UserRole value", {
+i16_enum!(UserRole, "Invalid UserRole value", {
     Root = 1,
     Admin = 2,
     User = 3,
@@ -257,7 +257,7 @@ impl std::fmt::Display for SignupMethod {
     }
 }
 
-sqlx_i16_enum!(SignupMethod, "Unknown SignupMethod value", {
+i16_enum!(SignupMethod, "Unknown SignupMethod value", {
     Unknown = 0,
     Email = 1,
     Password = 2,

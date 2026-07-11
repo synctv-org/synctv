@@ -54,7 +54,7 @@ impl Default for PlaylistListQuery {
 }
 
 /// Playlist (directory/folder)
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: PlaylistId,
     pub room_id: RoomId,

@@ -1,9 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
-    Decode, Encode, Postgres, Type,
-};
 use std::str::FromStr;
 
 use super::{ContentReportId, RoomId, UserId};
@@ -44,7 +40,7 @@ impl FromStr for ContentReportTargetType {
     }
 }
 
-sqlx_i16_enum!(
+i16_enum!(
     ContentReportTargetType,
     "Invalid ContentReportTargetType value",
     {
@@ -78,7 +74,7 @@ impl ContentReportStatus {
     }
 }
 
-sqlx_i16_enum!(ContentReportStatus, "Invalid ContentReportStatus value", {
+i16_enum!(ContentReportStatus, "Invalid ContentReportStatus value", {
     Open = 1,
     Reviewing = 2,
     Resolved = 3,
@@ -137,34 +133,7 @@ impl ContentReportMetadata {
     }
 }
 
-impl Type<Postgres> for ContentReportMetadata {
-    fn type_info() -> PgTypeInfo {
-        <sqlx::types::Json<ContentReportMetadata> as Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &PgTypeInfo) -> bool {
-        <sqlx::types::Json<ContentReportMetadata> as Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl Encode<'_, Postgres> for ContentReportMetadata {
-    fn encode_by_ref(
-        &self,
-        buf: &mut PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::types::Json(self).encode_by_ref(buf)
-    }
-}
-
-impl<'r> Decode<'r, Postgres> for ContentReportMetadata {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sqlx::types::Json(metadata) =
-            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
-        Ok(metadata)
-    }
-}
-
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ContentReport {
     pub id: ContentReportId,
     pub reporter_user_id: UserId,
@@ -187,7 +156,7 @@ pub struct ContentReport {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct ContentReportAdminRow {
     pub id: ContentReportId,
     pub reporter_user_id: UserId,

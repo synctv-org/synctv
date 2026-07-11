@@ -40,3 +40,19 @@ fn provider_upstream_transport_uses_media_provider_transport_dto_boundary() {
         );
     }
 }
+
+#[test]
+fn domain_models_are_database_independent() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let models_dir = manifest_dir.join("src/models");
+
+    for path in rust_files_under(&models_dir) {
+        let content = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+        assert!(
+            !content.contains("sqlx::"),
+            "{} contains SQLx representations; keep them in src/repository/sqlx_types.rs or repository-owned row types",
+            path.display()
+        );
+    }
+}

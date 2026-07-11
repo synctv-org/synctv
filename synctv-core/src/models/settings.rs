@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// One flat runtime setting row.
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSetting {
     pub key: String,
     /// Rust field matches the database column; serialized output keeps the shorter `group` name.

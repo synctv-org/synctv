@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef};
-use sqlx::{Decode, Encode, Postgres, Type};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(
@@ -76,31 +74,4 @@ pub fn hash_optional_provider_target(target: Option<&ProviderTarget>) -> crate::
 #[must_use]
 pub fn hash_empty_provider_target() -> String {
     hex::encode(Sha256::digest([]))
-}
-
-impl Type<Postgres> for ProviderTarget {
-    fn type_info() -> PgTypeInfo {
-        <sqlx::types::Json<ProviderTarget> as Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &PgTypeInfo) -> bool {
-        <sqlx::types::Json<ProviderTarget> as Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl Encode<'_, Postgres> for ProviderTarget {
-    fn encode_by_ref(
-        &self,
-        buf: &mut PgArgumentBuffer,
-    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::types::Json(self).encode_by_ref(buf)
-    }
-}
-
-impl<'r> Decode<'r, Postgres> for ProviderTarget {
-    fn decode(value: PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let sqlx::types::Json(target) =
-            <sqlx::types::Json<Self> as Decode<Postgres>>::decode(value)?;
-        Ok(target)
-    }
 }

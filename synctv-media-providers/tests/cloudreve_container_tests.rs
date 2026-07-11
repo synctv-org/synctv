@@ -99,9 +99,7 @@ async fn cloudreve_v4_container_matches_login_user_and_list_contracts() -> anyho
     .await?;
     ensure_cloudreve_success(&create_folder, "folder creation")?;
 
-    let listing = client
-        .list(&token.access_token, "", 1, None, 20)
-        .await?;
+    let listing = client.list(&token.access_token, "", 1, None, 20).await?;
     let folder = listing
         .files
         .iter()

@@ -265,7 +265,7 @@ impl From<crate::impls::ApiError> for AppError {
             extra_headers: Vec::new(),
         };
         if let crate::impls::ApiError::RangeNotSatisfiable { total_size } = err {
-            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{}", total_size.max(0))) {
+            if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total_size}")) {
                 app_err = app_err.with_header(header::CONTENT_RANGE, value);
             }
         }

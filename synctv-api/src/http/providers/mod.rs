@@ -325,9 +325,7 @@ fn map_proxy_execution_error(err: anyhow::Error) -> AppError {
         }
         Some(synctv_proxy::ProxyErrorKind::RangeNotSatisfiable) => {
             if let Some(total_size) = synctv_proxy::proxy_range_not_satisfiable_total_size(&err) {
-                AppError::from(ApiError::RangeNotSatisfiable {
-                    total_size: i64::try_from(total_size).unwrap_or(i64::MAX),
-                })
+                AppError::from(ApiError::RangeNotSatisfiable { total_size })
             } else {
                 AppError::new(StatusCode::RANGE_NOT_SATISFIABLE, err.to_string())
             }

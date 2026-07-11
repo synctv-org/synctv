@@ -2904,15 +2904,15 @@ message FileUploadRange {
 }
 
 message FileByteRange {
-  int64 start = 1;
-  int64 end_inclusive = 2;
+  uint64 start = 1;
+  uint64 end_inclusive = 2;
 }
 
 message FileRangeRequest {
   oneof range {
     FileByteRange exact = 1;
-    int64 from_start = 2;
-    int64 suffix_length = 3;
+    uint64 from_start = 2;
+    uint64 suffix_length = 3;
   }
 }
 

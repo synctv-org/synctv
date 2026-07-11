@@ -44,6 +44,68 @@ fn empty_reference_metadata() -> FileReferenceMetadata {
     FileReferenceMetadata::File(FileMetadata::default())
 }
 
+#[test]
+fn file_ranges_resolve_to_consistent_closed_intervals() {
+    assert_eq!(
+        resolve_file_range(Some(FileRangeRequest::From { start: 900 }), 1_000)
+            .expect("from range should resolve"),
+        Some(FileByteRange {
+            start: 900,
+            end_inclusive: 999,
+        })
+    );
+    assert_eq!(
+        resolve_file_range(Some(FileRangeRequest::Suffix { length: 100 }), 1_000)
+            .expect("suffix range should resolve"),
+        Some(FileByteRange {
+            start: 900,
+            end_inclusive: 999,
+        })
+    );
+    assert_eq!(
+        resolve_file_range(Some(FileRangeRequest::Suffix { length: 100 }), 80)
+            .expect("large suffix should resolve to the full object"),
+        Some(FileByteRange {
+            start: 0,
+            end_inclusive: 79,
+        })
+    );
+    assert_eq!(
+        resolve_file_range(
+            Some(FileRangeRequest::Exact(FileByteRange {
+                start: 60,
+                end_inclusive: 100,
+            })),
+            80,
+        )
+        .expect("exact range should clamp to the object end"),
+        Some(FileByteRange {
+            start: 60,
+            end_inclusive: 79,
+        })
+    );
+    assert_eq!(
+        resolve_file_range(None, 0).expect("full empty object should resolve"),
+        None
+    );
+}
+
+#[test]
+fn file_ranges_reject_invalid_and_unsatisfiable_requests() {
+    assert!(matches!(
+        resolve_file_range(Some(FileRangeRequest::Suffix { length: 0 }), 100),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        resolve_file_range(Some(FileRangeRequest::From { start: 100 }), 100),
+        Err(Error::RangeNotSatisfiable { total_size: 100 })
+    ));
+    assert!(matches!(
+        resolve_file_range(Some(FileRangeRequest::Suffix { length: 1 }), 0),
+        Err(Error::RangeNotSatisfiable { total_size: 0 })
+    ));
+}
+
 fn single_manifest_part(
     size_bytes: i64,
     checksum_sha256: impl Into<String>,
@@ -2690,6 +2752,24 @@ async fn database_storage_resumable_upload_completes_after_all_parts() {
     assert_eq!(ranged.range, Some(requested));
     assert_eq!(ranged.total_size_bytes, payload_size(&payload));
     assert_eq!(ranged.data, payload[3..9]);
+    let suffix = ok(
+        storage
+            .get_object(GetFileObject {
+                encoded_object_key: read_encoded_object_key.clone(),
+                read_token: read_token.clone(),
+                range: Some(FileRangeRequest::Suffix { length: 4 }),
+            })
+            .await,
+        "database suffix range should read",
+    );
+    assert_eq!(suffix.data, payload[payload.len() - 4..]);
+    assert_eq!(
+        suffix.range,
+        Some(FileByteRange {
+            start: u64::try_from(payload.len() - 4).expect("test offset should fit"),
+            end_inclusive: u64::try_from(payload.len() - 1).expect("test offset should fit"),
+        })
+    );
 }
 
 #[tokio::test]
@@ -3162,7 +3242,10 @@ async fn database_storage_range_reads_from_permanent_blob_parts() {
     );
     assert_eq!(loaded.range, Some(requested));
     assert_eq!(loaded.total_size_bytes, payload_size(&payload));
-    assert_eq!(loaded.size_bytes, requested.size_bytes());
+    assert_eq!(
+        loaded.size_bytes,
+        i64::try_from(requested.size_bytes()).expect("test range should fit i64")
+    );
     assert_eq!(loaded.data, payload[1024..4096]);
 }
 
@@ -3171,8 +3254,7 @@ async fn s3_storage_multipart_session_returns_native_part_urls() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3252,8 +3334,7 @@ async fn s3_storage_single_object_session_uses_backend_proxy_upload() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3371,8 +3452,7 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3427,15 +3507,18 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
     let download = ok(
         storage
             .get_object_stream(GetFileObject {
-                encoded_object_key,
-                read_token,
+                encoded_object_key: encoded_object_key.clone(),
+                read_token: read_token.clone(),
                 range: Some(FileRangeRequest::Exact(requested)),
             })
             .await,
         "S3 object range should stream",
     );
     assert_eq!(download.metadata.range, Some(requested));
-    assert_eq!(download.metadata.size_bytes, requested.size_bytes());
+    assert_eq!(
+        download.metadata.size_bytes,
+        i64::try_from(requested.size_bytes()).expect("test range should fit i64")
+    );
     assert_eq!(download.metadata.total_size_bytes, payload_size(&payload));
     assert_eq!(download.metadata.mime_type, "application/pdf");
     let chunks = ok(
@@ -3447,6 +3530,24 @@ async fn s3_storage_streams_range_from_backend_proxy_path() {
         .flat_map(std::iter::IntoIterator::into_iter)
         .collect::<Vec<_>>();
     assert_eq!(collected, payload[4..12]);
+    let suffix = ok(
+        storage
+            .get_object(GetFileObject {
+                encoded_object_key,
+                read_token,
+                range: Some(FileRangeRequest::Suffix { length: 100 }),
+            })
+            .await,
+        "S3 suffix range should read",
+    );
+    assert_eq!(suffix.data, payload);
+    assert_eq!(
+        suffix.range,
+        Some(FileByteRange {
+            start: 0,
+            end_inclusive: 15,
+        })
+    );
 }
 
 #[tokio::test]
@@ -3454,8 +3555,7 @@ async fn s3_storage_multipart_completion_uses_part_manifest_digest() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3583,8 +3683,7 @@ async fn s3_storage_store_upload_accepts_server_mediated_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3704,8 +3803,7 @@ async fn s3_storage_rejects_part_outside_declared_manifest() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3783,8 +3881,7 @@ async fn s3_storage_server_mediated_upload_is_bound_to_session_key() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -3915,8 +4012,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -4018,8 +4114,7 @@ async fn s3_storage_multipart_completion_rejects_manifest_mismatch() {
 #[tokio::test]
 async fn s3_public_constructor_requires_repository_for_upload_session() {
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(
@@ -4067,8 +4162,7 @@ async fn s3_multipart_completion_uses_all_recorded_parts() {
     let (_postgres, pool) = synctv_core_testing::create_test_pool().await;
     let repository = Arc::new(FileStorageRepository::new(pool.clone()));
     let operator = ok(
-        opendal::Operator::new(opendal::services::Memory::default())
-            .map(opendal::OperatorBuilder::finish),
+        opendal::Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
     );
     let storage = ok(

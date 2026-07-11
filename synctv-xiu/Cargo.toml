@@ -7,7 +7,7 @@ license = "MIT"
 
 [features]
 default = []
-oss = ["dep:opendal"]
+oss = ["dep:opendal", "dep:opendal-http-transport-reqwest"]
 tls-aws-lc = ["synctv-common/tls-aws-lc"]
 tls-ring = ["synctv-common/tls-ring"]
 tls-webpki-roots = ["synctv-common/tls-webpki-roots"]
@@ -69,6 +69,7 @@ backon.workspace = true
 
 # Object storage (optional, behind `oss` feature)
 opendal = { workspace = true, optional = true }
+opendal-http-transport-reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

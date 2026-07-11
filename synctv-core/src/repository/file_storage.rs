@@ -3,13 +3,13 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::{
     models::{
-        FileBlob, FileBlobCompression, FileBlobPart, FileCleanupJob, FileCleanupMetadata,
-        FileMetadata, FileObject, FileObjectGroup, FileObjectVariant, FileReferenceMetadata,
-        FileReferenceTarget, FileUploadSessionKind, FileUploadSessionMetadata,
-        FileUploadSessionPart, FileUploadSessionRecord, FileVariantMetadata, StoredFileReference,
-        UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS, FILE_OBJECT_KEY_MAX_CHARS,
-        FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS, FILE_SHA256_HEX_CHARS,
-        FILE_STORAGE_BACKEND_MAX_CHARS,
+        FileBlob, FileBlobCompression, FileBlobPart, FileByteRange, FileCleanupJob,
+        FileCleanupMetadata, FileMetadata, FileObject, FileObjectGroup, FileObjectVariant,
+        FileReferenceMetadata, FileReferenceTarget, FileUploadSessionKind,
+        FileUploadSessionMetadata, FileUploadSessionPart, FileUploadSessionRecord,
+        FileVariantMetadata, StoredFileReference, UserId, FILE_CLEANUP_ORIGIN_MAX_CHARS,
+        FILE_OBJECT_KEY_MAX_CHARS, FILE_REFERENCE_ID_MAX_CHARS, FILE_REFERENCE_KIND_MAX_CHARS,
+        FILE_SHA256_HEX_CHARS, FILE_STORAGE_BACKEND_MAX_CHARS,
     },
     Error, Result,
 };
@@ -1389,12 +1389,15 @@ impl FileStorageRepository {
         &self,
         storage_backend: &str,
         object_key: &str,
-        start: i64,
-        end_inclusive: i64,
+        range: FileByteRange,
     ) -> Result<Vec<FileBlobPart>> {
-        if start < 0 || end_inclusive < start {
+        if range.end_inclusive < range.start {
             return Err(Error::InvalidInput("file range is invalid".to_string()));
         }
+        let start = i64::try_from(range.start)
+            .map_err(|_| Error::InvalidInput("file range exceeds database limits".to_string()))?;
+        let end_inclusive = i64::try_from(range.end_inclusive)
+            .map_err(|_| Error::InvalidInput("file range exceeds database limits".to_string()))?;
         let rows = sqlx::query_as!(
             FileBlobPart,
             r#"

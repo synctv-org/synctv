@@ -1023,9 +1023,7 @@ fn map_proxy_execution_error(err: &anyhow::Error) -> ApiError {
             ApiError::Authorization("Proxy target is not allowed by SSRF policy".to_string())
         }
         Some(synctv_proxy::ProxyErrorKind::RangeNotSatisfiable) => ApiError::RangeNotSatisfiable {
-            total_size: synctv_proxy::proxy_range_not_satisfiable_total_size(err)
-                .and_then(|size| i64::try_from(size).ok())
-                .unwrap_or(0),
+            total_size: synctv_proxy::proxy_range_not_satisfiable_total_size(err).unwrap_or(0),
         },
         Some(synctv_proxy::ProxyErrorKind::InvalidRequest) => {
             ApiError::InvalidInput(err.to_string())

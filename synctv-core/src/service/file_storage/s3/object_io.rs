@@ -122,10 +122,13 @@ impl S3CompatibleFileStorageService {
         } else {
             self.stat_object(&object_key).await
         };
-        let total_size_bytes = object.as_ref().map(|object| object.size_bytes).or_else(|| {
-            stat.as_ref()
-                .and_then(|stat| i64::try_from(stat.content_length()).ok())
-        });
+        let total_size_bytes = match object.as_ref() {
+            Some(object) => Some(
+                u64::try_from(object.size_bytes)
+                    .map_err(|_| Error::Internal("file object size is invalid".to_string()))?,
+            ),
+            None => stat.as_ref().map(opendal::Metadata::content_length),
+        };
         let Some(total_size_bytes) = total_size_bytes else {
             if request.range.is_some() {
                 return Err(Error::InvalidInput(
@@ -172,18 +175,22 @@ impl S3CompatibleFileStorageService {
                 stream: futures::stream::once(async move { Ok(data.to_bytes()) }).boxed(),
             });
         };
-        let range = super::super::resolve_file_range(request.range, total_size_bytes)?;
-        let read_range = range.unwrap_or(FileByteRange {
-            start: 0,
-            end_inclusive: total_size_bytes - 1,
-        });
-        let start = u64::try_from(read_range.start)
-            .map_err(|_| Error::InvalidInput("file range is invalid".to_string()))?;
-        let end = read_range
-            .end_inclusive
-            .checked_add(1)
-            .and_then(|end| u64::try_from(end).ok())
-            .ok_or_else(|| Error::InvalidInput("file range is invalid".to_string()))?;
+        let requested_range = request.range;
+        let range = super::super::resolve_file_range(requested_range, total_size_bytes)?;
+        let storage_range = match requested_range {
+            None => opendal::BytesRange::default(),
+            Some(crate::models::FileRangeRequest::Exact(_)) => {
+                let resolved = range
+                    .ok_or_else(|| Error::Internal("resolved file range is missing".to_string()))?;
+                opendal::BytesRange::new(resolved.start, Some(resolved.size_bytes()))
+            }
+            Some(crate::models::FileRangeRequest::From { start }) => {
+                opendal::BytesRange::new(start, None)
+            }
+            Some(crate::models::FileRangeRequest::Suffix { length }) => {
+                opendal::BytesRange::suffix(length)
+            }
+        };
         let mime_type = object
             .as_ref()
             .map(|object| object.mime_type.clone())
@@ -208,7 +215,7 @@ impl S3CompatibleFileStorageService {
             .await
             .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
         let bytes_stream = reader
-            .into_bytes_stream(start..end)
+            .into_bytes_stream(storage_range)
             .await
             .map_err(|error| Error::NotFound(format!("File object not found: {error}")))?;
         let stream = bytes_stream
@@ -223,8 +230,15 @@ impl S3CompatibleFileStorageService {
                 storage_backend: self.config.storage_backend.clone(),
                 object_key,
                 mime_type,
-                size_bytes: read_range.size_bytes(),
-                total_size_bytes,
+                size_bytes: i64::try_from(
+                    range.map_or(total_size_bytes, FileByteRange::size_bytes),
+                )
+                .map_err(|_| {
+                    Error::Internal("file range size exceeds storage limits".to_string())
+                })?,
+                total_size_bytes: i64::try_from(total_size_bytes).map_err(|_| {
+                    Error::Internal("file object size exceeds storage limits".to_string())
+                })?,
                 content_manifest_sha256,
                 compression: FileBlobCompression::None,
                 range,

@@ -70,7 +70,10 @@ mod inner {
             }
 
             // Build operator
-            let operator = Operator::new(builder)?.finish();
+            opendal::HttpTransporter::install_default(
+                opendal_http_transport_reqwest::ReqwestTransport::default(),
+            );
+            let operator = Operator::new(builder)?;
 
             Ok(Self {
                 config,

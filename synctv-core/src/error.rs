@@ -42,7 +42,7 @@ pub enum Error {
     InvalidInput(String),
 
     #[error("Range not satisfiable: total size {total_size}")]
-    RangeNotSatisfiable { total_size: i64 },
+    RangeNotSatisfiable { total_size: u64 },
 
     #[error("Rate limited: {0}")]
     RateLimited(String),

@@ -1350,8 +1350,7 @@ async fn s3_file_storage_rejects_tampered_upload_session_image() {
     let operator = ok(
         Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
-    )
-    .finish();
+    );
     let service = ok(
         S3CompatibleFileStorageService::new_with_repository(
             test_s3_file_storage_config(),
@@ -1422,8 +1421,7 @@ async fn s3_file_storage_creates_resumable_upload_session() {
     let operator = ok(
         Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
-    )
-    .finish();
+    );
     let service = ok(
         S3CompatibleFileStorageService::new_with_repository(
             test_s3_file_storage_config(),
@@ -1513,8 +1511,7 @@ async fn image_upload_sessions_resume_pending_session_for_reused_client_ids() {
     let operator = ok(
         Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
-    )
-    .finish();
+    );
     let service = ok(
         S3CompatibleFileStorageService::new_with_repository(
             test_s3_file_storage_config(),
@@ -1589,8 +1586,7 @@ async fn s3_file_storage_reuses_registered_object_with_ownership_proof() {
     let operator = ok(
         Operator::new(opendal::services::Memory::default()),
         "memory operator should build",
-    )
-    .finish();
+    );
     ok(
         operator.write(&object_key, b"data".to_vec()).await,
         "object should be written",

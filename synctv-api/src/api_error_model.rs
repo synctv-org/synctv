@@ -66,7 +66,7 @@ impl GoogleApiError {
             crate::impls::ApiError::RangeNotSatisfiable { total_size } => {
                 details.set_resource_info(
                     "byte_range",
-                    total_size.max(&0).to_string(),
+                    total_size.to_string(),
                     "",
                     "Requested byte range is not satisfiable",
                 );

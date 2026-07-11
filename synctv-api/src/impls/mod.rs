@@ -467,7 +467,7 @@ pub enum ApiError {
         violations: Vec<ApiFieldViolation>,
     },
     RangeNotSatisfiable {
-        total_size: i64,
+        total_size: u64,
     },
     BadGateway(String),
     RequestTimeout(String),

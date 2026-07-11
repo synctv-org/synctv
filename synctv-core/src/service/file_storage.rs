@@ -333,34 +333,30 @@ pub(super) fn upload_manifest_is_single_object(
 
 pub(super) fn resolve_file_range(
     request: Option<FileRangeRequest>,
-    total_size_bytes: i64,
+    total_size_bytes: u64,
 ) -> Result<Option<FileByteRange>> {
     let Some(request) = request else {
         return Ok(None);
     };
-    if total_size_bytes <= 0 {
-        return Err(Error::RangeNotSatisfiable {
-            total_size: total_size_bytes.max(0),
-        });
+    if total_size_bytes == 0 {
+        return Err(Error::RangeNotSatisfiable { total_size: 0 });
     }
     let range = match request {
         FileRangeRequest::Exact(range) => {
-            if range.start < 0 || range.end_inclusive < range.start {
-                return Err(Error::InvalidInput("file range is invalid".to_string()));
-            }
-            range
-        }
-        FileRangeRequest::From { start } => {
-            if start < 0 {
+            if range.end_inclusive < range.start {
                 return Err(Error::InvalidInput("file range is invalid".to_string()));
             }
             FileByteRange {
-                start,
-                end_inclusive: total_size_bytes - 1,
+                start: range.start,
+                end_inclusive: range.end_inclusive.min(total_size_bytes - 1),
             }
         }
+        FileRangeRequest::From { start } => FileByteRange {
+            start,
+            end_inclusive: total_size_bytes - 1,
+        },
         FileRangeRequest::Suffix { length } => {
-            if length <= 0 {
+            if length == 0 {
                 return Err(Error::InvalidInput("file range is invalid".to_string()));
             }
             let size = length.min(total_size_bytes);

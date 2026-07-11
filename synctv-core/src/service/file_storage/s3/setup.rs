@@ -4,6 +4,10 @@ use super::S3FileStorageConfig;
 use crate::{Error, Result};
 
 pub(super) fn s3_operator_from_config(config: &S3FileStorageConfig) -> Result<Operator> {
+    crate::install_process_crypto_provider();
+    opendal::HttpTransporter::install_default(
+        opendal_http_transport_reqwest::ReqwestTransport::default(),
+    );
     let mut builder = S3::default()
         .endpoint(config.endpoint.trim())
         .access_key_id(config.access_key_id.trim())
@@ -18,7 +22,6 @@ pub(super) fn s3_operator_from_config(config: &S3FileStorageConfig) -> Result<Op
     }
 
     Operator::new(builder)
-        .map(opendal::OperatorBuilder::finish)
         .map_err(|error| Error::Internal(format!("failed to initialize S3 file storage: {error}")))
 }
 

@@ -127,26 +127,42 @@ impl DatabaseFileStorageService {
         else {
             return Err(Error::NotFound("File object not found".to_string()));
         };
-        let range = super::resolve_file_range(request.range, object.size_bytes)?;
+        let total_size = u64::try_from(object.size_bytes)
+            .map_err(|_| Error::Internal("file object size is invalid".to_string()))?;
+        let range = super::resolve_file_range(request.range, total_size)?;
+        if total_size == 0 {
+            return Ok(FileObjectDownload {
+                metadata: FileObjectMetadata {
+                    storage_backend: self.storage_backend.clone(),
+                    object_key,
+                    mime_type: object.mime_type,
+                    size_bytes: 0,
+                    total_size_bytes: 0,
+                    content_manifest_sha256: object.content_manifest_sha256,
+                    compression: FileBlobCompression::None,
+                    range: None,
+                    metadata: object.metadata,
+                    created_at: object.created_at,
+                },
+                stream: futures::stream::empty().boxed(),
+            });
+        }
         let read_range = range.unwrap_or(FileByteRange {
             start: 0,
-            end_inclusive: object.size_bytes - 1,
+            end_inclusive: total_size - 1,
         });
         let parts = self
             .repository
-            .list_blob_parts_overlapping_range(
-                &self.storage_backend,
-                &object_key,
-                read_range.start,
-                read_range.end_inclusive,
-            )
+            .list_blob_parts_overlapping_range(&self.storage_backend, &object_key, read_range)
             .await?;
         ensure_database_parts_cover_range(&parts, read_range)?;
         let metadata = FileObjectMetadata {
             storage_backend: self.storage_backend.clone(),
             object_key,
             mime_type: object.mime_type,
-            size_bytes: read_range.size_bytes(),
+            size_bytes: i64::try_from(read_range.size_bytes()).map_err(|_| {
+                Error::Internal("file range size exceeds database limits".to_string())
+            })?,
             total_size_bytes: object.size_bytes,
             content_manifest_sha256: object.content_manifest_sha256,
             compression: FileBlobCompression::None,
@@ -329,7 +345,7 @@ struct DecompressedBlobPart {
     data: Vec<u8>,
 }
 
-fn range_end_exclusive(range: FileByteRange) -> Result<i64> {
+fn range_end_exclusive(range: FileByteRange) -> Result<u64> {
     range
         .end_inclusive
         .checked_add(1)
@@ -345,14 +361,17 @@ fn ensure_database_parts_cover_range(parts: &[FileBlobPart], range: FileByteRang
     let end_exclusive = range_end_exclusive(range)?;
     let mut expected = range.start;
     for part in parts {
-        let part_end = part
-            .offset_bytes
-            .checked_add(part.size_bytes)
+        let part_start = u64::try_from(part.offset_bytes)
+            .map_err(|_| Error::Internal("file blob part offset is invalid".to_string()))?;
+        let part_size = u64::try_from(part.size_bytes)
+            .map_err(|_| Error::Internal("file blob part size is invalid".to_string()))?;
+        let part_end = part_start
+            .checked_add(part_size)
             .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
         if part_end <= expected {
             continue;
         }
-        if part.offset_bytes > expected {
+        if part_start > expected {
             return Err(Error::Internal(
                 "file object is missing one or more blob parts".to_string(),
             ));
@@ -369,10 +388,12 @@ fn ensure_database_parts_cover_range(parts: &[FileBlobPart], range: FileByteRang
 
 async fn database_part_chunk(part: FileBlobPart, range: FileByteRange) -> Result<bytes::Bytes> {
     let part_data = decompress_blob_part(part).await?;
-    let part_start_absolute = part_data.offset_bytes;
-    let part_end_absolute = part_data
-        .offset_bytes
-        .checked_add(part_data.size_bytes)
+    let part_start_absolute = u64::try_from(part_data.offset_bytes)
+        .map_err(|_| Error::Internal("file blob part offset is invalid".to_string()))?;
+    let part_size = u64::try_from(part_data.size_bytes)
+        .map_err(|_| Error::Internal("file blob part size is invalid".to_string()))?;
+    let part_end_absolute = part_start_absolute
+        .checked_add(part_size)
         .ok_or_else(|| Error::Internal("file blob part offset overflow".to_string()))?;
     let read_start_absolute = range.start.max(part_start_absolute);
     let read_end_absolute = range_end_exclusive(range)?.min(part_end_absolute);
@@ -1310,12 +1331,24 @@ impl FileStorageService for DatabaseFileStorageService {
                     let ranges = ownership_proof.ranges.clone();
                     let mut chunks = Vec::with_capacity(ranges.len());
                     for range in &ranges {
+                        let start = u64::try_from(range.offset).map_err(|_| {
+                            Error::Internal("file ownership proof range is invalid".to_string())
+                        })?;
+                        let length = u64::try_from(range.length).map_err(|_| {
+                            Error::Internal("file ownership proof range is invalid".to_string())
+                        })?;
+                        let end_inclusive = start
+                            .checked_add(length)
+                            .and_then(|end| end.checked_sub(1))
+                            .ok_or_else(|| {
+                                Error::Internal("file ownership proof range is invalid".to_string())
+                            })?;
                         let data = self
                             .load_range_data(
                                 &object_key,
                                 Some(FileRangeRequest::Exact(FileByteRange {
-                                    start: range.offset,
-                                    end_inclusive: range.offset + i64::from(range.length) - 1,
+                                    start,
+                                    end_inclusive,
                                 })),
                             )
                             .await?;
@@ -1482,16 +1515,15 @@ impl FileStorageService for DatabaseFileStorageService {
                         .and_then(|end| end.checked_sub(1))
                         .ok_or_else(|| Error::Internal("file reader range overflow".to_string()))?;
                     let range = FileByteRange {
-                        start: offset,
-                        end_inclusive,
+                        start: u64::try_from(offset).map_err(|_| {
+                            Error::Internal("file reader offset is invalid".to_string())
+                        })?,
+                        end_inclusive: u64::try_from(end_inclusive).map_err(|_| {
+                            Error::Internal("file reader range is invalid".to_string())
+                        })?,
                     };
                     let parts = repository
-                        .list_blob_parts_overlapping_range(
-                            &storage_backend,
-                            &object_key,
-                            range.start,
-                            range.end_inclusive,
-                        )
+                        .list_blob_parts_overlapping_range(&storage_backend, &object_key, range)
                         .await?;
                     ensure_database_parts_cover_range(&parts, range)?;
                     let mut out = bytes::BytesMut::with_capacity(length);

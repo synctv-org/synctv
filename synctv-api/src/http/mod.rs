@@ -153,9 +153,9 @@ pub(crate) fn optional_file_range(
         ("", "") => Err(AppError::bad_request("Invalid Range header")),
         ("", suffix) => {
             let length = suffix
-                .parse::<i64>()
+                .parse::<u64>()
                 .map_err(|_| AppError::bad_request("Invalid Range header"))?;
-            if length <= 0 {
+            if length == 0 {
                 return Err(AppError::bad_request("Invalid Range header"));
             }
             Ok(Some(synctv_core::models::FileRangeRequest::Suffix {
@@ -164,21 +164,18 @@ pub(crate) fn optional_file_range(
         }
         (start, "") => {
             let start = start
-                .parse::<i64>()
+                .parse::<u64>()
                 .map_err(|_| AppError::bad_request("Invalid Range header"))?;
-            if start < 0 {
-                return Err(AppError::bad_request("Invalid Range header"));
-            }
             Ok(Some(synctv_core::models::FileRangeRequest::From { start }))
         }
         (start, end) => {
             let start = start
-                .parse::<i64>()
+                .parse::<u64>()
                 .map_err(|_| AppError::bad_request("Invalid Range header"))?;
             let end_inclusive = end
-                .parse::<i64>()
+                .parse::<u64>()
                 .map_err(|_| AppError::bad_request("Invalid Range header"))?;
-            if start < 0 || end_inclusive < start {
+            if end_inclusive < start {
                 return Err(AppError::bad_request("Invalid Range header"));
             }
             Ok(Some(synctv_core::models::FileRangeRequest::Exact(

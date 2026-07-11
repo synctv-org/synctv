@@ -727,13 +727,13 @@ pub enum StoreFileUploadResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileByteRange {
-    pub start: i64,
-    pub end_inclusive: i64,
+    pub start: u64,
+    pub end_inclusive: u64,
 }
 
 impl FileByteRange {
     #[must_use]
-    pub const fn size_bytes(self) -> i64 {
+    pub const fn size_bytes(self) -> u64 {
         self.end_inclusive - self.start + 1
     }
 }
@@ -741,8 +741,8 @@ impl FileByteRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileRangeRequest {
     Exact(FileByteRange),
-    From { start: i64 },
-    Suffix { length: i64 },
+    From { start: u64 },
+    Suffix { length: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

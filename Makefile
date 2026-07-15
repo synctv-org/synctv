@@ -14,7 +14,11 @@ DEV_STACK_WAIT_SERVICES ?= $(DEV_STACK_SERVICES) rustfs-init openlist-init emby-
 DEV_WAIT_TIMEOUT ?= 120
 DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
-DEV_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
+CPU_COUNT ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
+DEV_JOBS ?= $(CPU_COUNT)
+CONFIGURED_RUSTFLAGS := $(strip $(RUSTFLAGS))
+override RUSTFLAGS := $(strip $(CONFIGURED_RUSTFLAGS) -Zthreads=$(CPU_COUNT))
+export RUSTFLAGS
 DEV_FEATURES ?=
 DEV_CARGO_FEATURE_ARGS := $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
 RELEASE_FEATURES ?=

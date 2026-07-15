@@ -16,11 +16,12 @@ DEV_LOG_TAIL ?= 100
 DEV_START_TIMEOUT ?= 120
 CPU_COUNT ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 1)
 DEV_JOBS ?= $(CPU_COUNT)
+RUSTC_THREADS ?= $(CPU_COUNT)
 CONFIGURED_RUSTFLAGS := $(strip $(RUSTFLAGS))
-override RUSTFLAGS := $(strip $(CONFIGURED_RUSTFLAGS) -Zthreads=$(CPU_COUNT))
+override RUSTFLAGS := $(strip $(CONFIGURED_RUSTFLAGS) -Zthreads=$(RUSTC_THREADS))
 export RUSTFLAGS
-DEV_FEATURES ?=
-DEV_CARGO_FEATURE_ARGS := $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
+DEV_FEATURES ?= tls-aws-lc tls-webpki-roots
+DEV_CARGO_FEATURE_ARGS := --no-default-features $(if $(strip $(DEV_FEATURES)),--features "$(DEV_FEATURES)",)
 RELEASE_FEATURES ?=
 RELEASE_CARGO_FEATURE_ARGS := $(if $(strip $(RELEASE_FEATURES)),--features "$(RELEASE_FEATURES)",)
 DEV_SSRF_ENABLED ?= false
@@ -113,7 +114,7 @@ dev-stack: dev-up ## Start OpenList, Emby, Jellyfin, RustFS, and Casdoor after c
 	@$(MAKE) dev-env
 
 dev-build: ## Build the local SyncTV binary used by background dev commands.
-	SQLX_OFFLINE=true $(CARGO) build -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
+	SQLX_OFFLINE=true $(CARGO) build -j "$(DEV_JOBS)" -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS)
 
 release-build: ## Build the optimized SyncTV release binary.
 	SQLX_OFFLINE=true $(CARGO) build --release -p synctv --bin synctv $(RELEASE_CARGO_FEATURE_ARGS)
@@ -121,7 +122,7 @@ release-build: ## Build the optimized SyncTV release binary.
 dev-serve: dev-up ## Run SyncTV locally with development defaults.
 	mkdir -p "$(DEV_DATA_DIR)/run"
 	$(DEV_ENV_EXPORTS); \
-	SQLX_OFFLINE=true $(CARGO) run -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
+	SQLX_OFFLINE=true $(CARGO) run -j "$(DEV_JOBS)" -p synctv --bin synctv $(DEV_CARGO_FEATURE_ARGS) -- serve
 
 dev-start: dev-up dev-build ## Start SyncTV in the background with development defaults.
 	@mkdir -p "$(DEV_DATA_DIR)/run"

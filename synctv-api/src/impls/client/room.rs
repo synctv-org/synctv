@@ -1035,6 +1035,10 @@ impl ClientApiImpl {
             .create_ticket_with_control(user_id, &room_id, password_version, request_control)
             .await
             .map_err(ApiError::from)?;
+        self.room_service
+            .record_room_visit(&room_id, user_id)
+            .await
+            .map_err(ApiError::from)?;
 
         let public_room_id = self
             .public_id_codec
@@ -1088,7 +1092,7 @@ impl ClientApiImpl {
                     .await
                     .map_err(ApiError::from)?
                     .version;
-                ws_ticket_service
+                let ticket = ws_ticket_service
                     .create_ticket_with_control(
                         &user_id,
                         &room_id,
@@ -1096,7 +1100,12 @@ impl ClientApiImpl {
                         request_control,
                     )
                     .await
-                    .map_err(ApiError::from)?
+                    .map_err(ApiError::from)?;
+                self.room_service
+                    .record_room_visit(&room_id, &user_id)
+                    .await
+                    .map_err(ApiError::from)?;
+                ticket
             }
             RoomActor::Guest(access) => ws_ticket_service
                 .create_guest_ticket_with_control(
@@ -2817,7 +2826,7 @@ mod tests {
         assert_eq!(query.relation, synctv_core::models::MyRoomRelation::All);
         assert_eq!(
             query.sort_by,
-            synctv_core::models::MyRoomListSortBy::JoinedAt
+            synctv_core::models::MyRoomListSortBy::Frequent
         );
         assert_eq!(
             query.sort_direction,

@@ -121,6 +121,148 @@ async fn test_add_with_options_full_flow() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_record_visit_deduplicates_and_drives_room_sorting() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("owner_room_visits"))
+        .await
+        .checked("test operation should succeed");
+    let visitor = user_repo
+        .create(&make_user("visitor_room_visits"))
+        .await
+        .checked("test operation should succeed");
+    let frequent_room = room_repo
+        .create(&make_room("Frequent Room", &owner.id))
+        .await
+        .checked("test operation should succeed");
+    let recent_room = room_repo
+        .create(&make_room("Recent Room", &owner.id))
+        .await
+        .checked("test operation should succeed");
+
+    for room in [&frequent_room, &recent_room] {
+        member_repo
+            .add(&make_member(room.id, visitor.id, RoomRole::Member))
+            .await
+            .checked("test operation should succeed");
+    }
+
+    let first_visit = Utc::now() - chrono::Duration::hours(1);
+    assert!(member_repo
+        .record_visit(
+            &frequent_room.id,
+            &visitor.id,
+            first_visit - chrono::Duration::minutes(30),
+            first_visit,
+        )
+        .await
+        .checked("first visit should be recorded"));
+
+    let duplicate_visit = first_visit + chrono::Duration::minutes(5);
+    member_repo
+        .record_visit(
+            &frequent_room.id,
+            &visitor.id,
+            duplicate_visit - chrono::Duration::minutes(30),
+            duplicate_visit,
+        )
+        .await
+        .checked("duplicate visit should refresh recency");
+
+    let reconnect_visit = first_visit + chrono::Duration::minutes(20);
+    member_repo
+        .record_visit(
+            &frequent_room.id,
+            &visitor.id,
+            reconnect_visit - chrono::Duration::minutes(30),
+            reconnect_visit,
+        )
+        .await
+        .checked("reconnect should preserve the original counting window");
+
+    let second_counted_visit = first_visit + chrono::Duration::minutes(40);
+    member_repo
+        .record_visit(
+            &frequent_room.id,
+            &visitor.id,
+            second_counted_visit - chrono::Duration::minutes(30),
+            second_counted_visit,
+        )
+        .await
+        .checked("visit outside the counting window should increment frequency");
+
+    let most_recent_visit = first_visit + chrono::Duration::minutes(45);
+    member_repo
+        .record_visit(
+            &recent_room.id,
+            &visitor.id,
+            most_recent_visit - chrono::Duration::minutes(30),
+            most_recent_visit,
+        )
+        .await
+        .checked("recent room visit should be recorded");
+
+    let visit_count: i64 = sqlx::query_scalar(
+        "SELECT visit_count FROM room_members WHERE room_id = $1 AND user_id = $2",
+    )
+    .bind(frequent_room.id)
+    .bind(visitor.id)
+    .fetch_one(&pool)
+    .await
+    .checked("visit count should be readable");
+    assert_eq!(visit_count, 2);
+
+    room_repo
+        .favorite_for_user(&visitor.id, &frequent_room.id)
+        .await
+        .checked("frequent room should be favorited");
+    room_repo
+        .favorite_for_user(&visitor.id, &recent_room.id)
+        .await
+        .checked("recent room should be favorited");
+    let (favorite_results, favorite_total) = room_repo
+        .list_favorites_for_user(&visitor.id, PageParams::new(Some(1), Some(10)), None)
+        .await
+        .checked("favorite room sorting should succeed");
+    assert_eq!(favorite_total, 2);
+    assert_eq!(favorite_results[0].id, frequent_room.id);
+
+    let base_query = MyRoomListQuery {
+        pagination: PageParams::new(Some(1), Some(10)),
+        sort_direction: SortDirection::Desc,
+        ..Default::default()
+    };
+    let (frequent_results, _) = member_repo
+        .list_by_user_with_query(
+            &visitor.id,
+            &MyRoomListQuery {
+                sort_by: MyRoomListSortBy::Frequent,
+                ..base_query.clone()
+            },
+        )
+        .await
+        .checked("frequent room sorting should succeed");
+    assert_eq!(frequent_results[0].0.id, frequent_room.id);
+
+    let (recent_results, _) = member_repo
+        .list_by_user_with_query(
+            &visitor.id,
+            &MyRoomListQuery {
+                sort_by: MyRoomListSortBy::LastVisitedAt,
+                ..base_query
+            },
+        )
+        .await
+        .checked("recent room sorting should succeed");
+    assert_eq!(recent_results[0].0.id, recent_room.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_capacity_at_max_members() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -17,6 +17,8 @@ use crate::{
 };
 
 impl RoomService {
+    const ROOM_VISIT_COUNT_INTERVAL_SECS: i64 = 30 * 60;
+
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
@@ -110,6 +112,22 @@ impl RoomService {
 
     pub async fn room_exists(&self, room_id: &RoomId) -> Result<bool> {
         self.room_repo.exists(room_id).await
+    }
+
+    /// Record that an authenticated member entered a room.
+    pub async fn record_room_visit(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
+        let visited_at = self.clock.now();
+        let counted_before =
+            visited_at - chrono::Duration::seconds(Self::ROOM_VISIT_COUNT_INTERVAL_SECS);
+        let recorded = self
+            .member_repo
+            .record_visit(room_id, user_id, counted_before, visited_at)
+            .await?;
+        if recorded {
+            Ok(())
+        } else {
+            Err(Error::NotFound("Room membership not found".to_string()))
+        }
     }
 
     pub async fn get_room(&self, room_id: &RoomId) -> Result<Room> {

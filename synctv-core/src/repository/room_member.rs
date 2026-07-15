@@ -358,6 +358,18 @@ impl RoomMemberRepository {
         use crate::models::SortDirection;
 
         match (query.sort_by, query.sort_direction) {
+            (MyRoomListSortBy::Frequent, SortDirection::Asc) => {
+                "rm.visit_count ASC, rm.last_visited_at ASC NULLS FIRST, r.id ASC"
+            }
+            (MyRoomListSortBy::Frequent, SortDirection::Desc) => {
+                "rm.visit_count DESC, rm.last_visited_at DESC NULLS LAST, r.id DESC"
+            }
+            (MyRoomListSortBy::LastVisitedAt, SortDirection::Asc) => {
+                "rm.last_visited_at ASC NULLS FIRST, rm.visit_count ASC, r.id ASC"
+            }
+            (MyRoomListSortBy::LastVisitedAt, SortDirection::Desc) => {
+                "rm.last_visited_at DESC NULLS LAST, rm.visit_count DESC, r.id DESC"
+            }
             (MyRoomListSortBy::JoinedAt, SortDirection::Asc) => "rm.joined_at ASC, r.id ASC",
             (MyRoomListSortBy::JoinedAt, SortDirection::Desc) => "rm.joined_at DESC, r.id DESC",
             (MyRoomListSortBy::Name, SortDirection::Asc) => "r.name ASC, r.id ASC",
@@ -420,6 +432,38 @@ impl RoomMemberRepository {
         let added = self.add_with_executor(member, &mut tx).await?;
         tx.commit().await?;
         Ok(added)
+    }
+
+    /// Record a room visit and increment its frequency counter when the
+    /// previous counted visit falls outside the application-defined window.
+    pub async fn record_visit(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        counted_before: chrono::DateTime<chrono::Utc>,
+        visited_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r"UPDATE room_members
+              SET visit_count = visit_count + CASE
+                      WHEN last_counted_visit_at IS NULL OR last_counted_visit_at <= $3 THEN 1
+                      ELSE 0
+                  END,
+                  last_counted_visit_at = CASE
+                      WHEN last_counted_visit_at IS NULL OR last_counted_visit_at <= $3 THEN $4
+                      ELSE last_counted_visit_at
+                  END,
+                  last_visited_at = $4
+              WHERE room_id = $1 AND user_id = $2",
+        )
+        .bind(room_id)
+        .bind(user_id)
+        .bind(counted_before)
+        .bind(visited_at)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() == 1)
     }
 
     /// Add user to room using a provided transaction connection.
@@ -2595,7 +2639,7 @@ impl RoomMemberRepository {
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                          rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
                          rc.created_at, rc.updated_at,
-	                     rm.role, rm.joined_at
+	                     rm.role, rm.joined_at, rm.last_visited_at, rm.visit_count
             ORDER BY {order_by_sql}
             LIMIT $2 OFFSET $3
             "
@@ -2679,7 +2723,7 @@ impl RoomMemberRepository {
 	                     r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                          rc.id, rc.key, rc.name, rc.description, rc.sort_order, rc.is_enabled,
                          rc.created_at, rc.updated_at,
-	                     rm.role, rm.joined_at
+	                     rm.role, rm.joined_at, rm.last_visited_at, rm.visit_count
             ORDER BY {order_by_sql}
             LIMIT $2 OFFSET $3
             "

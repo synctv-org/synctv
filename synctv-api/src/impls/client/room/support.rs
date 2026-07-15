@@ -100,7 +100,13 @@ pub(super) fn proto_my_room_list_sort_by(
         ApiError::InvalidInput("Unsupported related room list sort field".to_string())
     })? {
         synctv_proto::client::MyRoomListSortBy::Unspecified
-        | synctv_proto::client::MyRoomListSortBy::JoinedAt => {
+        | synctv_proto::client::MyRoomListSortBy::Frequent => {
+            Ok(synctv_core::models::MyRoomListSortBy::Frequent)
+        }
+        synctv_proto::client::MyRoomListSortBy::LastVisitedAt => {
+            Ok(synctv_core::models::MyRoomListSortBy::LastVisitedAt)
+        }
+        synctv_proto::client::MyRoomListSortBy::JoinedAt => {
             Ok(synctv_core::models::MyRoomListSortBy::JoinedAt)
         }
         synctv_proto::client::MyRoomListSortBy::Name => {

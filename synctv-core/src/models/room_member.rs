@@ -173,6 +173,11 @@ sort_field_enum! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
     pub enum MyRoomListSortBy {
+        Frequent => { display: "frequent", sql: "rm.visit_count" },
+        LastVisitedAt => {
+            display: "last_visited_at",
+            sql: "rm.last_visited_at"
+        },
         Name => { display: "name", sql: "r.name" },
         CreatedAt => { display: "created_at", sql: "r.created_at" },
         UpdatedAt => { display: "updated_at", sql: "r.updated_at" },
@@ -182,7 +187,7 @@ sort_field_enum! {
         },
         JoinedAt => { display: "joined_at", sql: "rm.joined_at" },
     }
-    default = JoinedAt;
+    default = Frequent;
     error = "Unknown related room list field";
 }
 
@@ -218,7 +223,7 @@ impl Default for MyRoomListQuery {
             status: None,
             is_banned: None,
             relation: MyRoomRelation::All,
-            sort_by: MyRoomListSortBy::JoinedAt,
+            sort_by: MyRoomListSortBy::Frequent,
             sort_direction: SortDirection::Desc,
         }
     }

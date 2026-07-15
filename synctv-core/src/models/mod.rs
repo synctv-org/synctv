@@ -347,7 +347,7 @@ mod tests {
             "last_activity_at",
             "r.last_activity_at"
         );
-        assert_eq!(MyRoomListSortBy::default(), MyRoomListSortBy::JoinedAt);
+        assert_eq!(MyRoomListSortBy::default(), MyRoomListSortBy::Frequent);
 
         assert_sort_field!(
             NotificationListSortBy,

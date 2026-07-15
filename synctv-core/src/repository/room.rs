@@ -1096,7 +1096,12 @@ impl RoomRepository {
         Self::push_where_prefix(&mut list_builder, &mut has_condition);
         list_builder.push(ACCESSIBLE_ROOM_CREATOR_CONDITION);
         list_builder
-            .push(" ORDER BY rf.created_at DESC, r.id DESC LIMIT ")
+            .push(
+                " ORDER BY rm.visit_count DESC,
+                           rm.last_visited_at DESC NULLS LAST,
+                           rf.created_at DESC,
+                           r.id DESC LIMIT ",
+            )
             .push_bind(limit)
             .push(" OFFSET ")
             .push_bind(offset);

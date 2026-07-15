@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS room_members (
     display_tag VARCHAR(16) NOT NULL DEFAULT '',
 
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_visited_at TIMESTAMPTZ,
+    last_counted_visit_at TIMESTAMPTZ,
+    visit_count BIGINT NOT NULL DEFAULT 0
+        CHECK (visit_count >= 0),
 
     version BIGINT NOT NULL DEFAULT 0,
 
@@ -28,4 +32,6 @@ CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_id);
 CREATE INDEX IF NOT EXISTS idx_room_members_user_active
     ON room_members(user_id, room_id, role, joined_at DESC);
 CREATE INDEX IF NOT EXISTS idx_room_members_role
-    ON room_members(room_id, role);
+ON room_members(room_id, role);
+CREATE INDEX IF NOT EXISTS idx_room_members_user_frequency
+ON room_members(user_id, visit_count DESC, last_visited_at DESC NULLS LAST, room_id);
